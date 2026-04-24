@@ -130,6 +130,40 @@ web/src/jsMain/.../
   main/MainScreen.kt                  ← DOM rendering + event handling
 ```
 
+## Source-file documentation
+
+Every Kotlin source file in this project is expected to carry thorough, up-to-date documentation. The codebase is small enough that we can keep it pristine; big-picture comments and good KDoc make the layered architecture self-explanatory, which matters because much of the code is per-platform glue that rarely gets re-read.
+
+### File-level header comment
+
+At the very top of every `.kt` file, above the `package` declaration, include a block comment that states:
+
+1. The file's filename (and platform source set where relevant, e.g. `MainScreen.kt (jsMain)`).
+2. The file's purpose — what concept it owns and how it fits into the layered architecture described above.
+3. Any non-obvious rules the reader needs to know before editing (e.g. "commonMain only — no DOM imports", "platform facade, no business rules").
+
+Use `/* … */` for file-level comments rather than KDoc `/** … */` — the file header is for humans, not for the API doc generator.
+
+### Class and function KDoc
+
+Every top-level class, object, interface, and non-trivial function gets KDoc. "Non-trivial" excludes one-line delegation methods on facade classes, but even those should at least reference the underlying function (e.g. `/** See DocumentViewBackingViewModel.moveLeft. */`). Private helpers inside a class that are genuinely one-liners with obvious names can be left undocumented; anything with real logic should have KDoc.
+
+Each KDoc block should cover:
+
+- **Purpose.** What the function/class does, in one or two sentences. Avoid rephrasing the name.
+- **Callers.** Who calls it and why. This is often the most valuable field in this codebase — it's how the reader reconstructs the intent flow across layers. Use a `### Callers` sub-heading for classes with multiple distinct callers, or a short "Called by …" sentence for functions.
+- **`@param`** for every parameter, with enough context to answer "what should I pass here?". Mention invariants (ranges, non-null expectations, format conventions) where they exist.
+- **`@property`** for every property on a `data class` — the same standard as `@param`.
+- **`@return`** when the return value is non-trivial. Omit for `Unit` and for getters whose meaning is exhausted by the type.
+- **Invariants / side effects.** Flag any state mutations, flow emissions, or ordering constraints that aren't obvious from the signature.
+
+### Style
+
+- Use KDoc markdown (`[SomeSymbol]` for cross-references, backticks for code) so IDE rendering and Dokka output stay tidy.
+- Prefer short sentences and bullet points to long paragraphs.
+- Avoid restating the obvious ("this method returns a boolean"). Documentation earns its place only when it explains something the signature can't.
+- When you add or rename a class or function, update every KDoc that references it — stale references are worse than none.
+
 ## Adding a feature
 
 1. Decide whether it's a *document* operation (content change that would matter to any viewer) or a *view* operation (cursor, selection, UI-local behavior).

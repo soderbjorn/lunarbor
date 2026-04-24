@@ -1,3 +1,32 @@
+/*
+ * MainScreen.kt (jsMain)
+ * ----------------------
+ * DOM view for the web platform. Renders the note into a `<div>`-based custom
+ * editor and wires keyboard / mouse / clipboard events into
+ * `MainViewModel` intents.
+ *
+ * The screen is composed of two stacked regions inside a flex column:
+ *
+ *   ┌───────────────────────────────┐
+ *   │  header  (zoom breadcrumb)    │  ← fixed height, stays put when editor scrolls
+ *   ├───────────────────────────────┤
+ *   │  editor  (lines, cursor, …)   │  ← grows, owns scroll
+ *   └───────────────────────────────┘
+ *
+ * The header shows "Root" when the viewer is at the document root, or the
+ * text of the current zoom target otherwise. Clicking the header while
+ * zoomed returns to root. Clicking a bullet marker (•) in the editor zooms
+ * into that bullet's subtree.
+ *
+ * When zoomed, only the zoom target's descendant rows are painted, and
+ * visual-row↔absolute-row translation in hit-testing and scroll-into-view
+ * is offset by the visible slice's start row.
+ *
+ * This file holds only platform glue — no business rules, no document
+ * logic. User input is translated to intent calls on `MainViewModel`;
+ * nothing else.
+ */
+
 package se.soderbjorn.notegrow.main
 
 import kotlinx.browser.document
@@ -12,6 +41,18 @@ import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.dom.events.MouseEvent
 
+/**
+ * The note editor's web view.
+ *
+ * ### Callers
+ * - Instantiated in `Main.kt` (web entry point) after the DI graph is
+ *   built; exactly one instance per document.
+ * - `render` is the only public entry point — called once to mount the UI
+ *   into a host element.
+ *
+ * @param viewModel Platform VM that exposes state and accepts intents.
+ * @param scope Coroutine scope owning the paint-loop collector.
+ */
 class MainScreen(
     private val viewModel: MainViewModel,
     private val scope: CoroutineScope
@@ -20,6 +61,7 @@ class MainScreen(
     private val fontSize = 14
     private val lineHeightPx = 20
     private val editorPaddingPx = 12
+    private val headerPaddingPx = 10
 
     private val wrapWidthFlow = MutableStateFlow(40)
 
@@ -29,12 +71,22 @@ class MainScreen(
     private var lastDragClientY: Double = 0.0
     private var autoScrollHandle: Int? = null
 
+    private var headerElement: HTMLElement? = null
+    private var editorElement: HTMLElement? = null
+
+    /**
+     * Mounts the editor UI into [root]. Clears any prior content, builds
+     * the header + editor DOM, wires up input listeners, and starts the
+     * paint-loop collector. Safe to call once per app startup.
+     *
+     * @param root Host element that fills the browser viewport.
+     */
     fun render(root: HTMLElement) {
         root.innerHTML = ""
-        ensureCursorStyles()
+        ensureStyles()
         document.documentElement?.let { (it as HTMLElement).style.backgroundColor = "#1e1e1e" }
         document.body?.let {
-            val bodyStyle = (it as HTMLElement).style
+            val bodyStyle = it.style
             bodyStyle.margin = "0"
             bodyStyle.padding = "0"
             bodyStyle.backgroundColor = "#1e1e1e"
@@ -44,6 +96,25 @@ class MainScreen(
         root.style.display = "flex"
         root.style.flexDirection = "column"
         root.style.backgroundColor = "#1e1e1e"
+
+        val header = document.createElement("div") as HTMLElement
+        header.className = "notegrow-header"
+        header.style.apply {
+            flex = "0 0 auto"
+            padding = "${headerPaddingPx}px ${editorPaddingPx}px"
+            fontFamily = this@MainScreen.fontFamily
+            fontSize = "${this@MainScreen.fontSize}px"
+            lineHeight = "${this@MainScreen.lineHeightPx}px"
+            backgroundColor = "#252525"
+            color = "#e6e6e6"
+            setProperty("border-bottom", "1px solid #333333")
+            setProperty("user-select", "none")
+            whiteSpace = "nowrap"
+            setProperty("overflow", "hidden")
+            setProperty("text-overflow", "ellipsis")
+        }
+        root.appendChild(header)
+        headerElement = header
 
         val editor = document.createElement("div") as HTMLElement
         editor.setAttribute("tabindex", "0")
@@ -64,6 +135,7 @@ class MainScreen(
             setProperty("user-select", "none")
         }
         root.appendChild(editor)
+        editorElement = editor
 
         charWidthPx = measureCharWidth()
         updateWrapWidth(editor, charWidthPx)
@@ -83,11 +155,21 @@ class MainScreen(
             combine(viewModel.stateFlow, wrapWidthFlow) { state, width -> state to width }
                 .collect { (state, width) ->
                     val backing = state.backingState
-                    if (backing == null) paintLoading(editor) else paint(editor, backing, width)
+                    if (backing == null) {
+                        paintLoading(editor)
+                        paintHeader(null)
+                    } else {
+                        paint(editor, backing, width)
+                        paintHeader(backing)
+                    }
                 }
         }
     }
 
+    /**
+     * Renders the "Loading…" placeholder into [editor]. Used on cold start
+     * until the document is read from disk.
+     */
     private fun paintLoading(editor: HTMLElement) {
         editor.innerHTML = ""
         val loading = document.createElement("div") as HTMLElement
@@ -96,6 +178,58 @@ class MainScreen(
         editor.appendChild(loading)
     }
 
+    /**
+     * Repaints the sticky header to reflect the current zoom state.
+     * Shows "Root" when not zoomed, or the zoom target's text when zoomed.
+     * Clicking the header while zoomed returns to root.
+     *
+     * @param backing Latest backing state, or `null` during the initial
+     *   loading phase (in which case the header shows a muted placeholder).
+     */
+    private fun paintHeader(backing: DocumentViewBackingViewModel.State?) {
+        val header = headerElement ?: return
+        header.innerHTML = ""
+        val zoom = backing?.let { viewModel.zoomInfo(it) }
+        val label = document.createElement("span") as HTMLElement
+        if (zoom == null) {
+            label.textContent = "Root"
+            label.style.apply {
+                color = "#9aa0a6"
+                cursor = "default"
+            }
+            header.onclick = null
+            header.style.cursor = "default"
+        } else {
+            val title = zoom.titleText.ifEmpty { "Untitled" }
+            label.textContent = title
+            label.style.apply {
+                color = "#e6e6e6"
+                fontWeight = "600"
+            }
+            val hint = document.createElement("span") as HTMLElement
+            hint.textContent = "Root  /  "
+            hint.style.apply {
+                color = "#9aa0a6"
+                marginRight = "0"
+            }
+            header.appendChild(hint)
+            header.style.cursor = "pointer"
+            header.title = "Back to Root"
+            header.onclick = { _ ->
+                viewModel.zoomOut()
+                editorElement?.focus()
+            }
+        }
+        header.appendChild(label)
+    }
+
+    /**
+     * Keyboard event router. Maps DOM key events to `MainViewModel` intents,
+     * handling Cmd/Ctrl shortcuts, Alt-word movement, basic navigation,
+     * editing, and printable characters.
+     *
+     * Called from the `keydown` listener registered on the editor div.
+     */
     private fun handleKey(event: KeyboardEvent) {
         val extend = event.shiftKey
         val cmd = event.ctrlKey || event.metaKey
@@ -152,6 +286,13 @@ class MainScreen(
                 event.preventDefault()
             }
             "Enter" -> { viewModel.insertNewline(); event.preventDefault() }
+            "Escape" -> {
+                val backing = viewModel.stateFlow.value.backingState
+                if (backing != null && viewModel.zoomInfo(backing) != null) {
+                    viewModel.zoomOut()
+                    event.preventDefault()
+                }
+            }
             "Tab" -> {
                 if (event.shiftKey) {
                     viewModel.outdentLine()
@@ -169,6 +310,10 @@ class MainScreen(
         }
     }
 
+    /**
+     * Writes [text] to the browser clipboard. A no-op when the Clipboard
+     * API is unavailable (some older browsers, insecure contexts).
+     */
     private fun writeClipboard(text: String) {
         val clipboard = window.asDynamic().navigator?.clipboard
         if (clipboard != null && clipboard != undefined) {
@@ -176,6 +321,10 @@ class MainScreen(
         }
     }
 
+    /**
+     * Reads the browser clipboard asynchronously and, when available,
+     * inserts the text at the caret via `viewModel.insertText`.
+     */
     private fun readClipboard() {
         val clipboard = window.asDynamic().navigator?.clipboard
         if (clipboard == null || clipboard == undefined) return
@@ -186,6 +335,17 @@ class MainScreen(
         })
     }
 
+    /**
+     * Repaints the editor for the current [state]. Renders only the rows
+     * inside the current zoom range (or the whole document when at root).
+     *
+     * Called from the paint-loop collector after every state or wrap-width
+     * change.
+     *
+     * @param editor The editor DOM node.
+     * @param state Latest backing state.
+     * @param wrapWidth Current character wrap width.
+     */
     private fun paint(editor: HTMLElement, state: DocumentViewBackingViewModel.State, wrapWidth: Int) {
         editor.innerHTML = ""
         if (!state.isLoaded) {
@@ -195,7 +355,13 @@ class MainScreen(
 
         val width = wrapWidth.coerceAtLeast(1)
         val selection = DocumentViewBackingViewModel.selectionOf(state)
-        state.lines.forEachIndexed { row, line ->
+        val zoom = viewModel.zoomInfo(state)
+        val startRow = zoom?.startRow ?: 0
+        val endRowInclusive = zoom?.endRowInclusive ?: state.lines.lastIndex
+        if (endRowInclusive < startRow) return  // zoomed into an empty subtree (transient)
+
+        for (row in startRow..endRowInclusive) {
+            val line = state.lines[row]
             val chunks = DocumentLayout.wrapLine(line, width).toMutableList()
             val cursorInfo = if (row == state.cursorRow) {
                 DocumentLayout.cursorVisualPosition(line, state.cursorCol, width).also {
@@ -231,15 +397,59 @@ class MainScreen(
                 textSpan.textContent = displayChunk
                 chunkDiv.appendChild(textSpan)
 
+                if (chunkIndex == 0 && bulletCol >= 0) {
+                    appendBulletClickTarget(chunkDiv, bulletCol, row)
+                }
+
                 if (cursorInfo != null && cursorInfo.chunkIndex == chunkIndex) {
                     appendCursor(chunkDiv, cursorInfo.colInChunk)
                 }
                 editor.appendChild(chunkDiv)
             }
         }
-        scrollCursorIntoView(editor, state, width)
+        scrollCursorIntoView(editor, state, width, startRow, endRowInclusive)
     }
 
+    /**
+     * Overlays a transparent clickable element on top of a bullet marker so
+     * clicking `•` zooms into that bullet without also moving the caret.
+     *
+     * @param chunkDiv The rendered chunk that contains the bullet character.
+     * @param bulletCol Column of the bullet within that chunk.
+     * @param absoluteRow Absolute row of the bullet, passed to `zoomInto`.
+     */
+    private fun appendBulletClickTarget(chunkDiv: HTMLElement, bulletCol: Int, absoluteRow: Int) {
+        val target = document.createElement("div") as HTMLElement
+        target.className = "notegrow-bullet"
+        target.title = "Zoom into bullet"
+        target.style.apply {
+            setProperty("position", "absolute")
+            left = "${bulletCol * charWidthPx}px"
+            top = "0"
+            width = "${charWidthPx}px"
+            height = "${lineHeightPx}px"
+            setProperty("z-index", "3")
+            cursor = "pointer"
+        }
+        target.addEventListener("mousedown", { event ->
+            val me = event as MouseEvent
+            me.stopPropagation()
+            me.preventDefault()
+        })
+        target.addEventListener("click", { event ->
+            val me = event as MouseEvent
+            me.stopPropagation()
+            me.preventDefault()
+            viewModel.zoomInto(absoluteRow)
+            editorElement?.focus()
+        })
+        chunkDiv.appendChild(target)
+    }
+
+    /**
+     * Paints a translucent rectangle representing the portion of the user's
+     * selection that falls inside one rendered chunk.
+     */
     private fun appendSelectionHighlight(
         chunkDiv: HTMLElement,
         highlight: DocumentLayout.ChunkHighlight
@@ -258,13 +468,23 @@ class MainScreen(
         chunkDiv.appendChild(div)
     }
 
+    /**
+     * Scrolls [editor] so that the caret row is in view. Works correctly
+     * both at document root and when zoomed: visual row is computed over
+     * the currently-rendered slice, not the whole document.
+     */
     private fun scrollCursorIntoView(
         editor: HTMLElement,
         state: DocumentViewBackingViewModel.State,
-        width: Int
+        width: Int,
+        startRow: Int,
+        endRowInclusive: Int
     ) {
+        val cursorRow = state.cursorRow
+        if (cursorRow < startRow || cursorRow > endRowInclusive) return
+        val visibleLines = state.lines.subList(startRow, endRowInclusive + 1)
         val visualRow = DocumentLayout.visualRowOfCursor(
-            state.lines, state.cursorRow, state.cursorCol, width
+            visibleLines, cursorRow - startRow, state.cursorCol, width
         )
         val top = editorPaddingPx + visualRow * lineHeightPx
         val bottom = top + lineHeightPx
@@ -277,6 +497,10 @@ class MainScreen(
         }
     }
 
+    /**
+     * Mouse-down handler: sets caret, starts word/line selection on
+     * double/triple click, and begins drag-to-select for single click.
+     */
     private fun handleMouseDown(editor: HTMLElement, event: MouseEvent) {
         if (event.button.toInt() != 0) return
         lastDragClientX = event.clientX.toDouble()
@@ -301,6 +525,10 @@ class MainScreen(
         event.preventDefault()
     }
 
+    /**
+     * Mouse-move handler used during drag-to-select. Delegates to
+     * [extendDragSelection] when a drag is in progress.
+     */
     private fun handleMouseMove(editor: HTMLElement, event: MouseEvent) {
         if (!isDragging) return
         lastDragClientX = event.clientX.toDouble()
@@ -309,6 +537,11 @@ class MainScreen(
         event.preventDefault()
     }
 
+    /**
+     * Grows the active selection toward the current mouse position,
+     * auto-scrolling when the pointer is above or below the editor's
+     * visible rectangle.
+     */
     private fun extendDragSelection(editor: HTMLElement) {
         val rect = editor.getBoundingClientRect()
         val cy = lastDragClientY
@@ -330,12 +563,20 @@ class MainScreen(
         viewModel.moveTo(point.first, point.second, extend = true)
     }
 
+    /**
+     * Scroll step for auto-scroll while drag-selecting past the visible
+     * rectangle. Ramps up as the pointer moves farther outside.
+     */
     private fun stepForDistance(distance: Double): Double {
         val base = lineHeightPx.toDouble()
         val ramp = (distance / 20.0).coerceIn(1.0, 4.0)
         return base * ramp
     }
 
+    /**
+     * Starts the interval timer that drives auto-scroll while drag-selecting.
+     * Idempotent — a second call while a timer is already running is a no-op.
+     */
     private fun startAutoScroll(editor: HTMLElement) {
         if (autoScrollHandle != null) return
         autoScrollHandle = window.setInterval({
@@ -347,27 +588,49 @@ class MainScreen(
         }, 30)
     }
 
+    /** Cancels the auto-scroll interval if one is active. */
     private fun stopAutoScroll() {
         val handle = autoScrollHandle ?: return
         window.clearInterval(handle)
         autoScrollHandle = null
     }
 
+    /**
+     * Converts a mouse event into an absolute (row, col) pair on the
+     * document. Returns `null` while the document is still loading.
+     */
     private fun pointFromEvent(editor: HTMLElement, event: MouseEvent): Pair<Int, Int>? =
         pointFromClient(editor, event.clientX.toDouble(), event.clientY.toDouble())
 
+    /**
+     * Converts a pair of client-space pixel coordinates into an absolute
+     * (row, col) on the document, accounting for wrap width and — when
+     * zoomed — the row offset between the visible slice and the full
+     * document.
+     */
     private fun pointFromClient(editor: HTMLElement, clientX: Double, clientY: Double): Pair<Int, Int>? {
         val backing = viewModel.stateFlow.value.backingState ?: return null
         if (!backing.isLoaded) return null
+        val zoom = viewModel.zoomInfo(backing)
+        val startRow = zoom?.startRow ?: 0
+        val endRowInclusive = zoom?.endRowInclusive ?: backing.lines.lastIndex
+        if (endRowInclusive < startRow) return null
+        val visibleLines = backing.lines.subList(startRow, endRowInclusive + 1)
         val rect = editor.getBoundingClientRect()
         val localX = clientX - rect.left - editorPaddingPx + editor.scrollLeft
         val localY = clientY - rect.top - editorPaddingPx + editor.scrollTop
         val charWidth = if (charWidthPx > 0.0) charWidthPx else 1.0
         val visualRow = (localY / lineHeightPx).toInt().coerceAtLeast(0)
         val visualCol = ((localX / charWidth) + 0.5).toInt().coerceAtLeast(0)
-        return DocumentLayout.locateLogicalPosition(backing.lines, visualRow, visualCol, wrapWidthFlow.value)
+        val (localRow, col) = DocumentLayout.locateLogicalPosition(
+            visibleLines, visualRow, visualCol, wrapWidthFlow.value
+        )
+        return (startRow + localRow) to col
     }
 
+    /**
+     * Appends the blinking caret span at column [col] inside a chunk.
+     */
     private fun appendCursor(container: HTMLElement, col: Int) {
         val cursor = document.createElement("span") as HTMLElement
         cursor.className = "notegrow-cursor"
@@ -384,7 +647,12 @@ class MainScreen(
         container.appendChild(cursor)
     }
 
-    private fun ensureCursorStyles() {
+    /**
+     * Injects the stylesheet that drives caret blinking, scrollbars, and
+     * bullet-hover styling. Runs once — the guard on the `id` makes repeat
+     * calls cheap.
+     */
+    private fun ensureStyles() {
         val existing = document.getElementById("notegrow-cursor-style")
         if (existing != null) return
         val style = document.createElement("style") as HTMLElement
@@ -411,10 +679,22 @@ class MainScreen(
             .notegrow-editor::-webkit-scrollbar-thumb:hover {
                 background: #5e5e5e;
             }
+            .notegrow-bullet:hover {
+                background: rgba(90, 176, 255, 0.25);
+                border-radius: 3px;
+            }
+            .notegrow-header:hover {
+                background: #2a2a2a;
+            }
         """.trimIndent()
         document.head?.appendChild(style)
     }
 
+    /**
+     * Measures the width of a single `M` at the editor's font, so cursor
+     * and selection overlays can position themselves in character-unit
+     * multiples of that width.
+     */
     private fun measureCharWidth(): Double {
         val canvas = document.createElement("canvas") as HTMLCanvasElement
         val ctx = canvas.getContext("2d").asDynamic()
@@ -422,6 +702,11 @@ class MainScreen(
         return (ctx.measureText("M").width as Number).toDouble()
     }
 
+    /**
+     * Recomputes the wrap width (in characters) from the editor's pixel
+     * width and pushes it onto [wrapWidthFlow]. Called on startup and on
+     * window resize.
+     */
     private fun updateWrapWidth(editor: HTMLElement, charWidth: Double) {
         val usableWidth = (editor.clientWidth - 24).coerceAtLeast(charWidth.toInt())
         val chars = (usableWidth / charWidth).toInt().coerceAtLeast(1)
