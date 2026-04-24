@@ -1,0 +1,40 @@
+{
+  "name": "notegrow-electron",
+  "version": "0.1.0",
+  "description": "Electron desktop wrapper for the Notegrow web app",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "se.soderbjorn.notegrow",
+    "productName": "Notegrow",
+    "copyright": "Copyright © 2026 Robert Söderbjörn",
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "resources/web/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity",
+      "identity": null
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
+}

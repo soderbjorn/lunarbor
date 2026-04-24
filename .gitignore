@@ -1,0 +1,49 @@
+# Gradle
+.gradle/
+build/
+!**/src/**/build/
+!**/gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin
+.kotlin/
+kotlin-js-store/
+
+# Local configuration
+local.properties
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# VS Code
+.vscode/
+
+# Xcode / iOS
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+Pods/
+*.xcuserstate
+
+# Node / Electron
+node_modules/
+dist/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.local
