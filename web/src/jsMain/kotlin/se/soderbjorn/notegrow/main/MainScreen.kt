@@ -84,18 +84,18 @@ class MainScreen(
     fun render(root: HTMLElement) {
         root.innerHTML = ""
         ensureStyles()
-        document.documentElement?.let { (it as HTMLElement).style.backgroundColor = "#1e1e1e" }
+        document.documentElement?.let { (it as HTMLElement).style.backgroundColor = "var(--t-terminal-bg, #1e1e1e)" }
         document.body?.let {
             val bodyStyle = it.style
             bodyStyle.margin = "0"
             bodyStyle.padding = "0"
-            bodyStyle.backgroundColor = "#1e1e1e"
+            bodyStyle.backgroundColor = "var(--t-terminal-bg, #1e1e1e)"
         }
         root.style.margin = "0"
         root.style.height = "100vh"
         root.style.display = "flex"
         root.style.flexDirection = "column"
-        root.style.backgroundColor = "#1e1e1e"
+        root.style.backgroundColor = "var(--t-terminal-bg, #1e1e1e)"
 
         val header = document.createElement("div") as HTMLElement
         header.className = "notegrow-header"
@@ -105,8 +105,8 @@ class MainScreen(
             fontFamily = this@MainScreen.fontFamily
             fontSize = "${this@MainScreen.fontSize}px"
             lineHeight = "${this@MainScreen.lineHeightPx}px"
-            backgroundColor = "#252525"
-            color = "#e6e6e6"
+            backgroundColor = "var(--t-surface-raised, #252525)"
+            color = "var(--t-terminal-fg, #e6e6e6)"
             setProperty("border-bottom", "1px solid #333333")
             setProperty("user-select", "none")
             whiteSpace = "nowrap"
@@ -129,8 +129,8 @@ class MainScreen(
             setProperty("overflow-x", "hidden")
             setProperty("overflow-y", "auto")
             outline = "none"
-            backgroundColor = "#1e1e1e"
-            color = "#e6e6e6"
+            backgroundColor = "var(--t-terminal-bg, #1e1e1e)"
+            color = "var(--t-terminal-fg, #e6e6e6)"
             setProperty("caret-color", "transparent")
             setProperty("user-select", "none")
         }
@@ -194,7 +194,7 @@ class MainScreen(
         if (zoom == null) {
             label.textContent = "Root"
             label.style.apply {
-                color = "#9aa0a6"
+                color = "var(--t-text-secondary, #9aa0a6)"
                 cursor = "default"
             }
             header.onclick = null
@@ -203,13 +203,13 @@ class MainScreen(
             val title = zoom.titleText.ifEmpty { "Untitled" }
             label.textContent = title
             label.style.apply {
-                color = "#e6e6e6"
+                color = "var(--t-terminal-fg, #e6e6e6)"
                 fontWeight = "600"
             }
             val hint = document.createElement("span") as HTMLElement
             hint.textContent = "Root  /  "
             hint.style.apply {
-                color = "#9aa0a6"
+                color = "var(--t-text-secondary, #9aa0a6)"
                 marginRight = "0"
             }
             header.appendChild(hint)
@@ -461,7 +461,7 @@ class MainScreen(
             top = "0"
             width = "${highlight.widthChars * charWidthPx}px"
             height = "${lineHeightPx}px"
-            backgroundColor = "rgba(90, 176, 255, 0.3)"
+            backgroundColor = "var(--t-terminal-selection, rgba(90, 176, 255, 0.3))"
             setProperty("pointer-events", "none")
             setProperty("z-index", "0")
         }
@@ -640,7 +640,7 @@ class MainScreen(
             top = "0"
             width = "2px"
             height = "${lineHeightPx}px"
-            backgroundColor = "#5ab0ff"
+            backgroundColor = "var(--t-terminal-cursor, #5ab0ff)"
             setProperty("pointer-events", "none")
             setProperty("z-index", "2")
         }
@@ -669,22 +669,22 @@ class MainScreen(
                 width: 12px;
             }
             .notegrow-editor::-webkit-scrollbar-track {
-                background: #1e1e1e;
+                background: var(--t-terminal-bg, #1e1e1e);
             }
             .notegrow-editor::-webkit-scrollbar-thumb {
-                background: #4a4a4a;
+                background: var(--t-border-strong, #4a4a4a);
                 border-radius: 6px;
-                border: 2px solid #1e1e1e;
+                border: 2px solid var(--t-terminal-bg, #1e1e1e);
             }
             .notegrow-editor::-webkit-scrollbar-thumb:hover {
-                background: #5e5e5e;
+                background: var(--t-text-tertiary, #5e5e5e);
             }
             .notegrow-bullet:hover {
-                background: rgba(90, 176, 255, 0.25);
+                background: var(--t-terminal-selection, rgba(90, 176, 255, 0.25));
                 border-radius: 3px;
             }
             .notegrow-header:hover {
-                background: #2a2a2a;
+                background: var(--t-surface-overlay, #2a2a2a);
             }
         """.trimIndent()
         document.head?.appendChild(style)
