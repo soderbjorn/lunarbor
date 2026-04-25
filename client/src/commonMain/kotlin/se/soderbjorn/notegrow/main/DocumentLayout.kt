@@ -82,6 +82,24 @@ object DocumentLayout {
         return if (line[indent] == '*' && line[indent + 1] == ' ') indent else -1
     }
 
+    /**
+     * Walks downward from [row] and returns the last absolute row index that
+     * belongs to its subtree. A line belongs to the subtree if it is a bullet
+     * with indent strictly greater than [parentIndent]; anything else
+     * (including non-bullet prose) terminates.
+     *
+     * @return [row] itself when the subtree is empty.
+     */
+    fun subtreeEnd(lines: List<String>, row: Int, parentIndent: Int): Int {
+        var end = row
+        while (end + 1 <= lines.lastIndex) {
+            val col = bulletAsteriskColumn(lines[end + 1])
+            if (col < 0 || col <= parentIndent) break
+            end++
+        }
+        return end
+    }
+
     data class ChunkHighlight(val leftChars: Int, val widthChars: Double)
 
     /**

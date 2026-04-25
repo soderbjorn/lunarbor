@@ -104,6 +104,15 @@ class DocumentBackingViewModel(
     private var lastSavedText: String = ""
     private var nextIdValue: Long = 1L
 
+    /**
+     * Persistence-only metadata: which logical lines correspond to subtrees
+     * the repository has split into their own `.nogr` files, and the relative
+     * directory each one currently lives in. Populated on load and updated
+     * on every save tick. Not part of [State] because the view layer doesn't
+     * need to see it.
+     */
+    private val promotedSubtrees: MutableMap<LineId, String> = mutableMapOf()
+
     init {
         scope.launch { loadFromDisk() }
         scope.launch { runAutoSaveLoop() }
@@ -212,24 +221,31 @@ class DocumentBackingViewModel(
     }
 
     /**
-     * One-shot initial load from [repository]. Assigns a fresh [LineId] to
-     * every loaded line and flips [State.isLoaded] to `true`.
+     * One-shot initial load from [repository]. Recursively composes the
+     * outline from `root.nogr` plus any nested promoted child files,
+     * assigns a fresh [LineId] to every loaded line, and stashes the
+     * row→dirRel map by [LineId] in [promotedSubtrees] for the autosave loop.
      *
      * Called exactly once from [init]; no caller should invoke it directly.
      */
     private suspend fun loadFromDisk() {
-        val text = repository.load()
-        lastSavedText = text
-        val lines = if (text.isEmpty()) listOf("") else text.split("\n")
+        val loaded = repository.load()
+        val lines = loaded.lines.ifEmpty { listOf("") }
         val ids = List(lines.size) { allocateId() }
+        promotedSubtrees.clear()
+        for ((row, dir) in loaded.promotedByRow) {
+            if (row in ids.indices) promotedSubtrees[ids[row]] = dir
+        }
+        lastSavedText = lines.joinToString("\n")
         _stateFlow.value = _stateFlow.value.copy(lines = lines, lineIds = ids, isLoaded = true)
     }
 
     /**
      * Periodically serializes the current document back to disk via
-     * [repository] if — and only if — the text has changed since the last
-     * save. The comparison is on the joined text, so id-only changes do not
-     * trigger a write (there are none today, but this guards against it).
+     * [repository] if — and only if — the composed text has changed since
+     * the last save. After each save, [promotedSubtrees] is rebuilt from
+     * the row→dirRel map the repository returns, keeping it consistent with
+     * disk regardless of any renames or demotions the policy decided.
      *
      * Called exactly once from [init] and runs for the lifetime of [scope].
      */
@@ -240,7 +256,17 @@ class DocumentBackingViewModel(
             if (!state.isLoaded) continue
             val currentText = state.lines.joinToString("\n")
             if (currentText == lastSavedText) continue
-            repository.save(currentText)
+            // Translate the LineId→dir map into row→dir for the repository.
+            val rowToDir = HashMap<Int, String>(promotedSubtrees.size)
+            for ((idx, id) in state.lineIds.withIndex()) {
+                val dir = promotedSubtrees[id] ?: continue
+                rowToDir[idx] = dir
+            }
+            val newRowToDir = repository.save(state.lines, rowToDir)
+            promotedSubtrees.clear()
+            for ((row, dir) in newRowToDir) {
+                if (row in state.lineIds.indices) promotedSubtrees[state.lineIds[row]] = dir
+            }
             lastSavedText = currentText
         }
     }

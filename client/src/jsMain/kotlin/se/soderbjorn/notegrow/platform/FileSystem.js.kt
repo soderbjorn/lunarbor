@@ -26,4 +26,25 @@ actual class FileSystem actual constructor() {
     actual suspend fun writeFile(path: String, content: String) {
         (api.writeFile(path, content) as Promise<Unit>).await()
     }
+
+    actual suspend fun deleteFile(path: String) {
+        (api.deleteFile(path) as Promise<Unit>).await()
+    }
+
+    actual suspend fun deleteDirectoryIfEmpty(path: String) {
+        (api.deleteDirectoryIfEmpty(path) as Promise<Unit>).await()
+    }
+
+    actual suspend fun moveFile(from: String, to: String) {
+        (api.moveFile(from, to) as Promise<Unit>).await()
+    }
+
+    actual suspend fun moveDirectory(from: String, to: String) {
+        (api.moveDirectory(from, to) as Promise<Unit>).await()
+    }
+
+    actual suspend fun listDirectory(path: String): List<String> {
+        val result = (api.listDirectory(path) as Promise<Array<String>>).await()
+        return result.toList()
+    }
 }

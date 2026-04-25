@@ -320,7 +320,7 @@ class DocumentViewBackingViewModel(
         val indent = DocumentLayout.bulletAsteriskColumn(line)
         if (indent < 0) return
         val id = docState.lineIds[row]
-        val endInclusive = subtreeEnd(docState.lines, row, indent)
+        val endInclusive = DocumentLayout.subtreeEnd(docState.lines, row, indent)
         if (endInclusive < row + 1) {
             val childIndent = indent + TAB_SIZE
             val childPrefix = " ".repeat(childIndent) + "* "
@@ -775,7 +775,7 @@ class DocumentViewBackingViewModel(
         if (row !in lines.indices) return null
         val indent = DocumentLayout.bulletAsteriskColumn(lines[row])
         if (indent < 0) return null
-        val end = subtreeEnd(lines, row, indent)
+        val end = DocumentLayout.subtreeEnd(lines, row, indent)
         val titleText = lines[row].substring(minOf(indent + 2, lines[row].length))
         return ZoomInfo(
             zoomRow = row,
@@ -784,24 +784,6 @@ class DocumentViewBackingViewModel(
             endRowInclusive = end,
             titleText = titleText
         )
-    }
-
-    /**
-     * Walks downward from [row] and returns the last absolute row index
-     * that belongs to its subtree. A line belongs to the subtree if it is
-     * a bullet with indent strictly greater than [parentIndent]; anything
-     * else (including non-bullet prose) terminates.
-     *
-     * @return [row] itself when the subtree is empty.
-     */
-    private fun subtreeEnd(lines: List<String>, row: Int, parentIndent: Int): Int {
-        var end = row
-        while (end + 1 <= lines.lastIndex) {
-            val col = DocumentLayout.bulletAsteriskColumn(lines[end + 1])
-            if (col < 0 || col <= parentIndent) break
-            end++
-        }
-        return end
     }
 
     companion object {

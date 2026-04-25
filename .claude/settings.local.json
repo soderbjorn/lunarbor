@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(awk 'NR==135' /Users/soderbjorn/repo/notegrow/main/client/src/commonTest/kotlin/se/soderbjorn/notegrow/data/SubtreeCodecTest.kt)",
+      "Bash(awk NR==135 {print length\\($0\\)} *)",
+      "Bash(awk 'NR==135 || NR==134 || NR==136' /Users/soderbjorn/repo/notegrow/main/client/src/commonTest/kotlin/se/soderbjorn/notegrow/data/SubtreeCodecTest.kt)",
+      "Bash(python3 *)"
+    ]
+  }
+}

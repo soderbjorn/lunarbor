@@ -45,6 +45,43 @@ ipcMain.handle("notegrow:writeFile", async (_event, filePath, content) => {
   await fs.writeFile(filePath, content, "utf8");
 });
 
+ipcMain.handle("notegrow:deleteFile", async (_event, filePath) => {
+  try {
+    await fs.unlink(filePath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return;
+    throw err;
+  }
+});
+
+ipcMain.handle("notegrow:deleteDirectoryIfEmpty", async (_event, dirPath) => {
+  try {
+    await fs.rmdir(dirPath);
+  } catch (err) {
+    if (err && (err.code === "ENOENT" || err.code === "ENOTEMPTY" || err.code === "EEXIST")) return;
+    throw err;
+  }
+});
+
+ipcMain.handle("notegrow:moveFile", async (_event, from, to) => {
+  await fs.mkdir(path.dirname(to), { recursive: true });
+  await fs.rename(from, to);
+});
+
+ipcMain.handle("notegrow:moveDirectory", async (_event, from, to) => {
+  await fs.mkdir(path.dirname(to), { recursive: true });
+  await fs.rename(from, to);
+});
+
+ipcMain.handle("notegrow:listDirectory", async (_event, dirPath) => {
+  try {
+    return await fs.readdir(dirPath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
+});
+
 app.on("second-instance", () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
