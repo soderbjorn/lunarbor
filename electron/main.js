@@ -75,17 +75,101 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, "resources", "web", "index.html"));
+
+  installSharedThemesWatcher();
 }
 
 /**
- * IPC: write the shared darkness ui-settings JSON to disk.
+ * Holds the active `fs.watch` handle so re-creating the window doesn't
+ * leak watchers. `null` when no watcher is attached (or after teardown).
+ *
+ * @type {import('fs').FSWatcher|null}
+ */
+let sharedThemesWatcher = null;
+
+/**
+ * Coalesce timer for fs.watch — some editors fire `change` twice per save
+ * (the file write itself plus a fsync), and a write+rename produces both
+ * `rename` and `change` events. We collapse all events inside a 200ms
+ * window into a single read+notify cycle.
+ *
+ * @type {NodeJS.Timeout|null}
+ */
+let sharedThemesDebounce = null;
+
+/**
+ * Installs an `fs.watch` on the shared darkness ui-settings file. On
+ * each (debounced) change, re-reads the file and IPC-sends the JSON to
+ * the renderer over the `darkness:uiSettingsChanged` channel — but only
+ * when the bytes don't match what this Electron process itself last
+ * wrote (so renderer-driven writes don't loop back as "external" change).
+ *
+ * Called once per BrowserWindow at construction time. Idempotent: closes
+ * any prior watcher first.
+ */
+function installSharedThemesWatcher() {
+  if (sharedThemesWatcher) {
+    try { sharedThemesWatcher.close(); } catch (_) { /* already closed */ }
+    sharedThemesWatcher = null;
+  }
+  const target = defaultDarknessSettingsPath();
+  const dir = path.dirname(target);
+  const fname = path.basename(target);
+  try { fsSync.mkdirSync(dir, { recursive: true }); } catch (_) { /* dir already exists */ }
+  try {
+    sharedThemesWatcher = fsSync.watch(dir, (_eventType, changedName) => {
+      if (changedName !== fname) return;
+      if (sharedThemesDebounce) clearTimeout(sharedThemesDebounce);
+      sharedThemesDebounce = setTimeout(() => {
+        sharedThemesDebounce = null;
+        let bytes;
+        try {
+          bytes = fsSync.readFileSync(target);
+        } catch (err) {
+          // File may have been transiently absent during a rename; ignore.
+          return;
+        }
+        if (lastWrittenBytes && bytes.equals(lastWrittenBytes)) return;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("darkness:uiSettingsChanged", bytes.toString("utf8"));
+        }
+      }, 200);
+    });
+  } catch (err) {
+    // Some filesystems / sandbox configs reject fs.watch — in that case
+    // the renderer simply won't get live updates. Boot-time read still works.
+    sharedThemesWatcher = null;
+  }
+}
+
+/**
+ * Tracks the bytes most recently written by this Electron process so the
+ * file-watch handler installed below doesn't bounce on its own writes.
+ * Compared byte-for-byte with the freshly-read file on every event;
+ * mismatch means a different writer (another Darkness app, a manual edit)
+ * touched the file and the renderer should be notified.
+ *
+ * @type {Buffer|null}
+ */
+let lastWrittenBytes = null;
+
+/**
+ * IPC: write the shared darkness ui-settings JSON to disk **atomically**.
+ * Writes to `<path>.tmp` first, then renames into place — concurrent
+ * readers (this Electron process's own file-watch, the termtastic server,
+ * future Darkness apps) never see a partial write.
+ *
  * Renderer calls this after the user changes a theme via any future
  * theme-editor surface.
  */
 ipcMain.handle("darkness:writeUiSettings", async (_event, json) => {
   const target = defaultDarknessSettingsPath();
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, json, "utf8");
+  const tmp = target + ".tmp";
+  const bytes = Buffer.from(json, "utf8");
+  await fs.writeFile(tmp, bytes);
+  await fs.rename(tmp, target);
+  lastWrittenBytes = bytes;
 });
 
 /**

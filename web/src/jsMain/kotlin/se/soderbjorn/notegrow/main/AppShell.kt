@@ -38,6 +38,7 @@ import se.soderbjorn.darkness.core.UiSettings
 import se.soderbjorn.darkness.core.resolve
 import se.soderbjorn.darkness.web.applyColorScheme
 import se.soderbjorn.darkness.web.applyCssVars
+import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
 import se.soderbjorn.darkness.web.isDarkActive
 import se.soderbjorn.darkness.web.toCssAliasMap
 import se.soderbjorn.darkness.web.toCssVarMap
@@ -91,6 +92,7 @@ class AppShell(
      *   `<div id="app">`).
      */
     fun render(root: HTMLElement) {
+        injectDarknessToolkitStyles()
         applyTheme()
         // Make the host element fill the viewport so the layout has space
         // to expand into. The host stylesheet can override these if it
@@ -111,6 +113,32 @@ class AppShell(
             onResize = { _, _ -> /* No splits yet. */ },
         )
         renderer = LayoutRenderer(root, callbacks).also { it.render(paneTree) }
+
+        subscribeToExternalThemeChanges()
+    }
+
+    /**
+     * Subscribes to the Electron preload's `darknessApi.onUiSettingsChanged`
+     * channel — the host process file-watches the toolkit's shared
+     * ui-settings.json and pushes the freshly-read JSON over IPC whenever
+     * another Darkness app (or a manual edit) rewrites it.
+     *
+     * Each delivery re-parses the JSON via [UiSettings.fromJsonString]
+     * and re-applies the resolved palette to `document.documentElement`,
+     * so the editor live-updates without a page reload.
+     *
+     * No-ops cleanly when the renderer runs outside Electron (no
+     * `darknessApi` global) or when the preload is older than this build.
+     */
+    private fun subscribeToExternalThemeChanges() {
+        val api = js("globalThis.darknessApi") ?: return
+        val onChange = js("api && api.onUiSettingsChanged") ?: return
+        if (js("typeof onChange !== 'function'") as Boolean) return
+        val cb: (String) -> Unit = { json ->
+            val settings = UiSettings.fromJsonString(json)
+            applyTheme(settings)
+        }
+        js("onChange.call(api, cb)")
     }
 
     /**
