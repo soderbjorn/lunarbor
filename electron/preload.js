@@ -26,4 +26,18 @@ contextBridge.exposeInMainWorld("darknessApi", {
   writeUiSettings: (json) => ipcRenderer.invoke("darkness:writeUiSettings", json),
   /** Read UI settings JSON from the shared darkness location, or null. */
   readUiSettings: () => ipcRenderer.invoke("darkness:readUiSettings"),
+  /**
+   * Subscribe to external changes of the shared ui-settings file. The
+   * callback receives the freshly-read JSON string. Self-writes from
+   * this Electron process are filtered out by `main.js`. Returns an
+   * unsubscribe function.
+   *
+   * @param {(json: string) => void} cb invoked once per external change
+   * @returns {() => void} unsubscribe
+   */
+  onUiSettingsChanged: (cb) => {
+    const handler = (_event, json) => { try { cb(json); } catch (_) { /* swallow */ } };
+    ipcRenderer.on("darkness:uiSettingsChanged", handler);
+    return () => ipcRenderer.removeListener("darkness:uiSettingsChanged", handler);
+  },
 });
