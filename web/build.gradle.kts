@@ -24,6 +24,8 @@ kotlin {
         jsMain.dependencies {
             implementation(projects.client)
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.darkness.core)
+            implementation(libs.darkness.web)
         }
     }
 }
