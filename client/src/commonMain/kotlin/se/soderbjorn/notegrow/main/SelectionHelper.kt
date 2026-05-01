@@ -69,6 +69,41 @@ internal fun moved(
 }
 
 /**
+ * Returns the smallest visible row index strictly greater than [fromRow], or `null`
+ * if none exists. "Visible" means the row would be rendered by the paint loop given
+ * the current zoom range and within-file fold state — so callers (cursor movement,
+ * etc.) skip past collapsed subtrees instead of landing on hidden rows that
+ * `clampToVisible` would then bounce back into the parent.
+ */
+internal fun nextVisibleRow(state: DocumentViewBackingViewModel.State, fromRow: Int): Int? {
+    val docState = state.documentState ?: return null
+    val zoom = zoomInfoOf(state)
+    val startRow = zoom?.startRow ?: 0
+    val endRowInclusive = zoom?.endRowInclusive ?: docState.lines.lastIndex
+    if (endRowInclusive < startRow) return null
+    val visible = DocumentLayout.visibleRowsOf(
+        docState.lines, docState.lineIds, state.collapsedIds, startRow, endRowInclusive
+    )
+    return visible.firstOrNull { it > fromRow }
+}
+
+/**
+ * Returns the largest visible row index strictly less than [fromRow], or `null` if
+ * none exists. Symmetric to [nextVisibleRow] — see that doc for rationale.
+ */
+internal fun prevVisibleRow(state: DocumentViewBackingViewModel.State, fromRow: Int): Int? {
+    val docState = state.documentState ?: return null
+    val zoom = zoomInfoOf(state)
+    val startRow = zoom?.startRow ?: 0
+    val endRowInclusive = zoom?.endRowInclusive ?: docState.lines.lastIndex
+    if (endRowInclusive < startRow) return null
+    val visible = DocumentLayout.visibleRowsOf(
+        docState.lines, docState.lineIds, state.collapsedIds, startRow, endRowInclusive
+    )
+    return visible.lastOrNull { it < fromRow }
+}
+
+/**
  * One ancestor entry in the zoom breadcrumb chain. Returned by
  * [bulletAncestorsOf] from outermost-to-innermost order so the view can
  * render a `Root / outer / … / inner / current` style trail.

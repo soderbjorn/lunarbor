@@ -144,6 +144,14 @@ class MainViewModel(
     fun zoomPathSegments(state: DocumentViewBackingViewModel.State): List<String> =
         backingViewModel.zoomPathSegments(state)
 
+    // ---- collapse intents -----------------------------------------------
+
+    /** See `DocumentViewBackingViewModel.toggleCollapse`. */
+    fun toggleCollapse(lineId: LineId) = backingViewModel.toggleCollapse(lineId)
+
+    /** See `DocumentViewBackingViewModel.isPromotedRef`. */
+    fun isPromotedRef(lineId: LineId): Boolean = backingViewModel.isPromotedRef(lineId)
+
     // ---- selection intents ----------------------------------------------
 
     /** See `DocumentViewBackingViewModel.selectAll`. */

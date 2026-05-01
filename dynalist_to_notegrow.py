@@ -300,11 +300,7 @@ def patch_root_file() -> str:
 def main() -> None:
     if not SOURCE.exists():
         raise SystemExit(f"Source folder missing: {SOURCE}")
-    if not NOTEGROW_DB.exists():
-        raise SystemExit(
-            f"Notegrow database missing: {NOTEGROW_DB}\n"
-            "Refusing to auto-create the live database."
-        )
+    NOTEGROW_DB.mkdir(parents=True, exist_ok=True)
 
     # Wipe any prior import only — never touch the rest of NOTEGROW_DB.
     if IMPORT_DIR.exists():

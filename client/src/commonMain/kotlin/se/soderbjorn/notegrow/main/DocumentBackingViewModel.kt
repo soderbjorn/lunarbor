@@ -86,6 +86,16 @@ class DocumentBackingViewModel(
         val lineIds: List<LineId> = listOf(LineId(0L)),
         val isLoaded: Boolean = false,
         val isRestructuring: Boolean = false,
+        /**
+         * The subset of `[[ref]]` rows whose child file is currently spliced
+         * into [lines]. Rows that are file-boundaries on disk (registered in
+         * the private `promotedSubtrees` map) but absent from this set are
+         * folded — their children have not been loaded from disk, and any
+         * autosave tick must leave the corresponding file untouched.
+         *
+         * Mutated only by [expandSubtree] / [collapseSubtree].
+         */
+        val expandedRefIds: Set<LineId> = emptySet(),
     )
 
     /**
@@ -116,9 +126,19 @@ class DocumentBackingViewModel(
      * the repository has split into their own `.nogr` files, and the relative
      * directory each one currently lives in. Populated on load and updated
      * on every save tick. Not part of [State] because the view layer doesn't
-     * need to see it.
+     * need to see it. Every entry here is a file boundary regardless of
+     * whether its children are currently spliced in (see
+     * [State.expandedRefIds]).
      */
     private val promotedSubtrees: MutableMap<LineId, String> = mutableMapOf()
+
+    /**
+     * Guard against concurrent [expandSubtree] calls for the same id. The
+     * intent does I/O and then mutates state; without this guard, two clicks
+     * on the same chevron in quick succession could splice the same children
+     * in twice.
+     */
+    private val inflightExpandIds: MutableSet<LineId> = mutableSetOf()
 
     init {
         scope.launch { loadFromDisk() }
@@ -228,15 +248,17 @@ class DocumentBackingViewModel(
     }
 
     /**
-     * One-shot initial load from [repository]. Recursively composes the
-     * outline from `root.nogr` plus any nested promoted child files,
-     * assigns a fresh [LineId] to every loaded line, and stashes the
-     * row→dirRel map by [LineId] in [promotedSubtrees] for the autosave loop.
+     * One-shot initial load from [repository]. Reads only `root.nogr` (no
+     * recursion into `[[…]]` references), assigns a fresh [LineId] to every
+     * loaded line, and stashes the row→dirRel map by [LineId] in
+     * [promotedSubtrees]. The view layer starts with every reference folded
+     * via [State.expandedRefIds] = `emptySet()`; the user's first click on a
+     * chevron triggers [expandSubtree] which lazy-loads that file.
      *
      * Called exactly once from [init]; no caller should invoke it directly.
      */
     private suspend fun loadFromDisk() {
-        val loaded = repository.load()
+        val loaded = repository.loadRoot()
         val lines = loaded.lines.ifEmpty { listOf("") }
         val ids = List(lines.size) { allocateId() }
         promotedSubtrees.clear()
@@ -244,7 +266,127 @@ class DocumentBackingViewModel(
             if (row in ids.indices) promotedSubtrees[ids[row]] = dir
         }
         lastSavedText = lines.joinToString("\n")
-        _stateFlow.value = _stateFlow.value.copy(lines = lines, lineIds = ids, isLoaded = true)
+        _stateFlow.value = _stateFlow.value.copy(
+            lines = lines,
+            lineIds = ids,
+            isLoaded = true,
+            expandedRefIds = emptySet(),
+        )
+    }
+
+    /**
+     * Returns `true` if [lineId] is a file-boundary reference — i.e. its
+     * subtree lives in a separate `.nogr` file and can be lazy-loaded via
+     * [expandSubtree]. Used by the view layer to choose between view-local
+     * collapse (within-file) and document-level expand/collapse (file
+     * boundary).
+     */
+    fun isPromotedRef(lineId: LineId): Boolean = lineId in promotedSubtrees
+
+    /**
+     * Loads the child file referenced by [lineId] and splices its content
+     * into [State.lines] immediately after the reference row. No-op if
+     * [lineId] is not a registered file boundary, is already expanded, or
+     * is currently being expanded by another caller. New rows allocated
+     * during this call get fresh [LineId]s; nested `[[…]]` references in
+     * the loaded slice are registered in [promotedSubtrees] (and start
+     * unexpanded — the user must click their chevron to dive deeper).
+     *
+     * Called by the view layer's `toggleCollapse` intent when the user
+     * clicks a folded reference's chevron, and by `ZoomNavigation.zoomInto`
+     * when the user attempts to zoom into a folded ref.
+     */
+    suspend fun expandSubtree(lineId: LineId) {
+        val dir = promotedSubtrees[lineId] ?: return
+        val state = _stateFlow.value
+        if (lineId in state.expandedRefIds) return
+        if (!inflightExpandIds.add(lineId)) return
+        try {
+            val row = state.lineIds.indexOf(lineId)
+            if (row < 0) return
+            val parentIndent = DocumentLayout.bulletAsteriskColumn(state.lines[row])
+            if (parentIndent < 0) return
+            val loaded = repository.loadSubtree(dir, parentIndent)
+            // Re-read state in case it changed during the suspend; resolve row
+            // again by id and bail if the row is gone.
+            val current = _stateFlow.value
+            val currentRow = current.lineIds.indexOf(lineId)
+            if (currentRow < 0) return
+            if (lineId in current.expandedRefIds) return
+            val childLines = loaded.lines
+            if (childLines.isEmpty()) {
+                // Broken ref — flip the chevron open with no children, so the
+                // user sees that the click was registered. The next collapse
+                // simply removes the (empty) entry from expandedRefIds.
+                _stateFlow.value = current.copy(
+                    expandedRefIds = current.expandedRefIds + lineId,
+                )
+                return
+            }
+            val newIds = List(childLines.size) { allocateId() }
+            val mergedLines = current.lines.toMutableList()
+            val mergedIdList = current.lineIds.toMutableList()
+            mergedLines.addAll(currentRow + 1, childLines)
+            mergedIdList.addAll(currentRow + 1, newIds)
+            // Register nested refs (rows are local to the loaded slice; offset
+            // them by currentRow + 1 to get absolute document rows).
+            for ((localRow, nestedDir) in loaded.promotedByRow) {
+                val absRow = currentRow + 1 + localRow
+                if (absRow in mergedIdList.indices) {
+                    promotedSubtrees[mergedIdList[absRow]] = nestedDir
+                }
+            }
+            _stateFlow.value = current.copy(
+                lines = mergedLines,
+                lineIds = mergedIdList,
+                expandedRefIds = current.expandedRefIds + lineId,
+            )
+        } finally {
+            inflightExpandIds.remove(lineId)
+        }
+    }
+
+    /**
+     * Removes the children of the reference at [lineId] from [State.lines],
+     * dropping their [LineId]s entirely (and any nested promoted-ref
+     * registrations within the dropped range). The reference row itself
+     * stays — its [LineId] is preserved across collapse/expand cycles so
+     * view-local state can keep pointing at it.
+     *
+     * No-op if [lineId] is not currently expanded.
+     *
+     * Called by the view layer's `toggleCollapse` intent when the user
+     * clicks an expanded reference's chevron.
+     */
+    fun collapseSubtree(lineId: LineId) {
+        val state = _stateFlow.value
+        if (lineId !in state.expandedRefIds) return
+        val row = state.lineIds.indexOf(lineId)
+        if (row < 0) return
+        val parentIndent = DocumentLayout.bulletAsteriskColumn(state.lines[row])
+        if (parentIndent < 0) return
+        val endInclusive = DocumentLayout.subtreeEnd(state.lines, row, parentIndent)
+        if (endInclusive <= row) {
+            _stateFlow.value = state.copy(expandedRefIds = state.expandedRefIds - lineId)
+            return
+        }
+        val newLines = state.lines.toMutableList()
+        val newIds = state.lineIds.toMutableList()
+        // Drop nested promoted-ref registrations and any nested expanded ids
+        // for rows we're about to remove — this is the actual memory release.
+        val droppedIds = HashSet<LineId>()
+        for (i in (row + 1)..endInclusive) droppedIds += state.lineIds[i]
+        for (id in droppedIds) promotedSubtrees.remove(id)
+        repeat(endInclusive - row) {
+            newLines.removeAt(row + 1)
+            newIds.removeAt(row + 1)
+        }
+        val newExpanded = (state.expandedRefIds - lineId) - droppedIds
+        _stateFlow.value = state.copy(
+            lines = newLines,
+            lineIds = newIds,
+            expandedRefIds = newExpanded,
+        )
     }
 
     /**
@@ -263,14 +405,18 @@ class DocumentBackingViewModel(
             if (!state.isLoaded) continue
             val currentText = state.lines.joinToString("\n")
             if (currentText == lastSavedText) continue
-            // Translate the LineId→dir map into row→dir for the repository.
+            // Translate the LineId→dir map into row→dir for the repository,
+            // and project expandedRefIds onto current row indices so the save
+            // can leave unloaded subtrees on disk untouched.
             val rowToDir = HashMap<Int, String>(promotedSubtrees.size)
+            val expandedRefRows = HashSet<Int>(state.expandedRefIds.size)
             for ((idx, id) in state.lineIds.withIndex()) {
                 val dir = promotedSubtrees[id] ?: continue
                 rowToDir[idx] = dir
+                if (id in state.expandedRefIds) expandedRefRows += idx
             }
             val newRowToDir = try {
-                repository.save(state.lines, rowToDir) { active ->
+                repository.save(state.lines, rowToDir, expandedRefRows) { active ->
                     _stateFlow.value = _stateFlow.value.copy(isRestructuring = active)
                 }
             } finally {

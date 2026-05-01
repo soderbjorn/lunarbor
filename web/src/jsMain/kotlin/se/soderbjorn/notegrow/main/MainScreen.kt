@@ -191,7 +191,10 @@ class MainScreen(
         editor.className = "notegrow-editor"
         editor.style.apply {
             flex = "1 1 auto"
-            padding = "${style.editorPaddingPx}px"
+            paddingTop = "${style.editorPaddingTopPx}px"
+            paddingRight = "${style.editorPaddingRightPx}px"
+            paddingBottom = "${style.editorPaddingBottomPx}px"
+            paddingLeft = "${style.editorPaddingLeftPx}px"
             fontFamily = style.fontFamily
             fontSize = "${style.fontSize}px"
             lineHeight = "${style.lineHeightPx}px"

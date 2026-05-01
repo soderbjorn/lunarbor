@@ -47,30 +47,80 @@ class NoteRepository(
     data class Loaded(val lines: List<String>, val promotedByRow: Map<Int, String>)
 
     /**
-     * Reads `root.nogr` and recursively follows every `[[…]]` reference,
-     * inlining child files into one composed outline.
+     * Reads only `root.nogr` and returns its content with every `[[…]]`
+     * reference left verbatim. Children files are not followed; the document
+     * VM lazy-loads each subtree via [loadSubtree] when the user expands the
+     * corresponding bullet.
      *
-     * Missing referenced files are tolerated: the ref line is left verbatim in
-     * the result and not added to [Loaded.promotedByRow]. This means an editor
-     * that opens a half-broken tree (e.g. a child file was renamed externally)
-     * still loads, and the broken ref is visible to the user as plain text.
+     * Missing referenced files are tolerated and not registered in
+     * [Loaded.promotedByRow] — they appear to the user as plain `[[ref]]`
+     * lines and the chevron click will simply produce an empty subtree.
+     *
+     * @return [Loaded] where every entry in [Loaded.promotedByRow] is a row
+     *   whose bullet line still contains the verbatim `[[ref]]` token. The
+     *   document VM uses these to recognise file boundaries on expand.
      */
-    suspend fun load(): Loaded {
+    suspend fun loadRoot(): Loaded {
         fileSystem.ensureDirectory(rootDirectory)
         val rootText = fileSystem.readFileIfExists("$rootDirectory/$rootFileName")
         if (rootText.isNullOrEmpty()) return Loaded(listOf(""), emptyMap())
-        return composeFile(directoryRel = "", fileText = rootText)
+        return parseFileShallow(directoryRel = "", fileText = rootText)
     }
 
     /**
-     * Recursive helper for [load].
+     * Loads the file at `<rootDirectory>/<directoryRel>/<basename>.nogr`
+     * (where `basename` is the last segment of [directoryRel]) without
+     * recursing into nested `[[…]]` references. The returned [Loaded.lines]
+     * are reindented by [parentIndent] + [TAB_SIZE] so they slot under the
+     * parent bullet at the correct depth in the composed outline.
      *
-     * @param directoryRel Path relative to [rootDirectory] of the directory
-     *   that contains the file currently being composed. References inside
-     *   that file resolve relative to this directory.
-     * @param fileText Verbatim text of the file being composed.
+     * Used by [se.soderbjorn.notegrow.main.DocumentBackingViewModel] when
+     * the user expands a previously-collapsed reference bullet.
+     *
+     * @param directoryRel Directory of the child file, relative to
+     *   [rootDirectory]. `"foo/bar"` resolves to
+     *   `<rootDirectory>/foo/bar/bar.nogr`.
+     * @param parentIndent The bullet column of the parent reference row in
+     *   the composed outline. The child file's lines are deepened by
+     *   `parentIndent + TAB_SIZE` so the topmost child sits one indent step
+     *   below its parent.
+     * @return Empty [Loaded] (`listOf("")`, no promoted rows) when the file
+     *   is absent — broken refs degrade to a no-op expand.
      */
-    private suspend fun composeFile(directoryRel: String, fileText: String): Loaded {
+    suspend fun loadSubtree(directoryRel: String, parentIndent: Int): Loaded {
+        if (directoryRel.isEmpty()) return Loaded(listOf(""), emptyMap())
+        val basename = directoryRel.substringAfterLast('/')
+        val absChildPath = "$rootDirectory/$directoryRel/$basename.nogr"
+        val childText = fileSystem.readFileIfExists(absChildPath) ?: return Loaded(emptyList(), emptyMap())
+        val shallow = parseFileShallow(directoryRel = directoryRel, fileText = childText)
+        if (shallow.lines.isEmpty()) return shallow
+        // A file ending in `\n` produces a trailing empty line under `split("\n")`.
+        // That empty would splice into the parent right after the subtree's last
+        // bullet, where it survives a subsequent collapse (subtreeEnd stops at it)
+        // and accumulates one extra blank line per expand/collapse cycle. Trim
+        // trailing empties so the spliced content is exactly the bullet rows.
+        val trimmed = shallow.lines.dropLastWhile { it.isEmpty() }
+        if (trimmed.isEmpty()) return Loaded(emptyList(), emptyMap())
+        val reindented = SubtreeCodec.reindentBy(trimmed, parentIndent + TAB_SIZE)
+        return Loaded(reindented, shallow.promotedByRow)
+    }
+
+    /**
+     * Parses one file into lines without following any nested references.
+     * Each `[[ref]]` token is stripped from its bullet line (matching the
+     * shape the editor sees — a plain bullet without the reference suffix)
+     * and the row is recorded in [Loaded.promotedByRow] keyed by its index.
+     * The caller (or the document VM) restores the `[[ref]]` on save via
+     * [SubtreeCodec.formatRef]; in the meantime, expand/collapse decides
+     * whether the child file's content is spliced under that row.
+     *
+     * @param directoryRel Directory of the file being parsed, relative to
+     *   [rootDirectory]. References inside the file resolve relative to this
+     *   directory; the result records the child's directory relative to
+     *   [rootDirectory] (i.e. with [directoryRel] prepended).
+     * @param fileText Verbatim text of the file.
+     */
+    private fun parseFileShallow(directoryRel: String, fileText: String): Loaded {
         val rawLines = if (fileText.isEmpty()) listOf("") else fileText.split("\n")
         val out = ArrayList<String>(rawLines.size)
         val promoted = HashMap<Int, String>()
@@ -83,23 +133,8 @@ class NoteRepository(
             val childFileRel =
                 if (directoryRel.isEmpty()) ref.refPath else "$directoryRel/${ref.refPath}"
             val childDirRel = childFileRel.substringBeforeLast('/')
-            val absChildPath = "$rootDirectory/$childFileRel"
-            val childText = fileSystem.readFileIfExists(absChildPath)
-            if (childText == null) {
-                // Broken ref — keep the line verbatim; surfaced to the user
-                // for manual fix.
-                out += line
-                continue
-            }
             promoted[out.size] = childDirRel
             out += ref.bulletText
-            val sub = composeFile(childDirRel, childText)
-            val reindented = SubtreeCodec.reindentBy(sub.lines, ref.indent + TAB_SIZE)
-            val baseRow = out.size
-            for ((subRow, dir) in sub.promotedByRow) {
-                promoted[baseRow + subRow] = dir
-            }
-            out.addAll(reindented)
         }
         return Loaded(out, promoted)
     }
@@ -112,6 +147,13 @@ class NoteRepository(
      * @param promotedByRow Row→dirRel map carried over from the previous load
      *   or save. Entries here describe subtrees that are *currently* on disk
      *   as their own files; the save may rename, demote, or leave them alone.
+     * @param expandedRefRows Subset of [promotedByRow]'s keys whose subtrees
+     *   are currently spliced into [lines] in memory. Rows in [promotedByRow]
+     *   but *not* in this set are file boundaries the user has folded — their
+     *   children are absent from [lines] and must be left untouched on disk
+     *   (no child-file rewrite, no rename, no demote). Default: every
+     *   promoted row is treated as expanded (back-compat with callers that
+     *   pre-date lazy loading).
      * @param onPhaseChange Invoked with `true` immediately before the save
      *   begins fanning out file writes/deletes for a *restructuring* tick —
      *   i.e. one that promotes a fresh subtree or demotes a previously
@@ -125,6 +167,7 @@ class NoteRepository(
     suspend fun save(
         lines: List<String>,
         promotedByRow: Map<Int, String>,
+        expandedRefRows: Set<Int> = promotedByRow.keys,
         onPhaseChange: (Boolean) -> Unit = {},
     ): Map<Int, String> {
         fileSystem.ensureDirectory(rootDirectory)
@@ -145,13 +188,19 @@ class NoteRepository(
                 titleLength = title.length,
             )
             val wasPromoted = m.startRow in promotedByRow
-            val keep = if (wasPromoted) {
-                // An already-promoted subtree stays unless it shrinks below
-                // the demote line OR loses its title (would force a rename to
-                // `untitled` which is rarely useful).
-                title.isNotEmpty() && !PromotionPolicy.shouldDemote(m.descendantCount)
-            } else {
-                PromotionPolicy.shouldPromote(span, alreadyPromoted = false)
+            val isUnloaded = wasPromoted && m.startRow !in expandedRefRows
+            val keep = when {
+                // Unloaded refs are file boundaries whose children aren't in
+                // [lines]. We have no view into their real descendant count
+                // and must not rename or demote them — pass through as-is.
+                isUnloaded -> true
+                wasPromoted ->
+                    // An already-promoted (and loaded) subtree stays unless it
+                    // shrinks below the demote line OR loses its title (would
+                    // force a rename to `untitled` which is rarely useful).
+                    title.isNotEmpty() && !PromotionPolicy.shouldDemote(m.descendantCount)
+                else ->
+                    PromotionPolicy.shouldPromote(span, alreadyPromoted = false)
             }
             if (keep) promotedRowsOut += m.startRow
         }
@@ -178,6 +227,7 @@ class NoteRepository(
                 measurementByStartRow = measurementByStartRow,
                 promotedRowsOut = promotedRowsOut,
                 promotedByRow = promotedByRow,
+                expandedRefRows = expandedRefRows,
                 start = 0,
                 endExclusive = lines.size,
                 indentBaseline = 0,
@@ -229,12 +279,20 @@ class NoteRepository(
      * Recursive helper for [save]. Walks one file's slice of the composed
      * outline, decomposing nested promoted subtrees into their own
      * [FilePlan]s and accumulating the current file's plan into [plansOut].
+     *
+     * @param expandedRefRows Rows in [promotedByRow] whose children are
+     *   currently in [lines]. Rows in [promotedByRow] but NOT in this set
+     *   are unloaded — we emit their `[[ref]]` in the parent file but skip
+     *   recursion (no FilePlan, child file untouched on disk) and pin the
+     *   directory name to its previous basename so a title edit while
+     *   collapsed doesn't accidentally rename the file.
      */
     private fun decomposeIntoFiles(
         lines: List<String>,
         measurementByStartRow: Map<Int, SubtreeMeasurement>,
         promotedRowsOut: Set<Int>,
         promotedByRow: Map<Int, String>,
+        expandedRefRows: Set<Int>,
         start: Int,
         endExclusive: Int,
         indentBaseline: Int,
@@ -265,11 +323,20 @@ class NoteRepository(
                 }
             }
         }
-        val previouslyPromoted = topLevelPromoted.filter { it in promotedByRow }
+        // Pin unloaded refs' basenames first so their existing dir survives
+        // the save unchanged even if a sibling has the same title.
+        val unloaded = topLevelPromoted.filter { it !in expandedRefRows && it in promotedByRow }
+        val loadedPreviously = topLevelPromoted.filter { it in expandedRefRows && it in promotedByRow }
         val newlyPromoted = topLevelPromoted.filter { it !in promotedByRow }
         val nameOfRow = HashMap<Int, String>()
         val used = usedByDir.getOrPut(dirRel) { HashSet() }
-        for (row in previouslyPromoted) claimName(lines, row, used, nameOfRow)
+        for (row in unloaded) {
+            val existingDir = promotedByRow.getValue(row)
+            val pinned = existingDir.substringAfterLast('/')
+            used += pinned
+            nameOfRow[row] = pinned
+        }
+        for (row in loadedPreviously) claimName(lines, row, used, nameOfRow)
         for (row in newlyPromoted) claimName(lines, row, used, nameOfRow)
 
         // Build phase: walk lines, emit content for this file, recurse into
@@ -290,21 +357,37 @@ class NoteRepository(
                 // basename, so deeper promotions can't collide with it.
                 usedByDir.getOrPut(childDirRel) { HashSet() }.add(name)
 
-                decomposeIntoFiles(
-                    lines = lines,
-                    measurementByStartRow = measurementByStartRow,
-                    promotedRowsOut = promotedRowsOut,
-                    promotedByRow = promotedByRow,
-                    start = i + 1,
-                    endExclusive = m.endRowInclusive + 1,
-                    indentBaseline = m.indent + TAB_SIZE,
-                    dirRel = childDirRel,
-                    basename = name,
-                    isRoot = false,
-                    usedByDir = usedByDir,
-                    plansOut = plansOut,
-                    newPromotedByRow = newPromotedByRow,
-                )
+                // Recurse for any row whose children are physically in `lines`:
+                // newly promoted rows (not yet in promotedByRow — child file
+                // doesn't exist on disk and must be written for the first
+                // time), and previously promoted rows the user has expanded
+                // (in expandedRefRows — child file gets rewritten). Skip only
+                // for previously promoted but unloaded rows: their children
+                // are not in `lines`, and rewriting from `lines` would
+                // truncate the child file to empty.
+                val isUnloadedRef = i in promotedByRow && i !in expandedRefRows
+                if (!isUnloadedRef) {
+                    decomposeIntoFiles(
+                        lines = lines,
+                        measurementByStartRow = measurementByStartRow,
+                        promotedRowsOut = promotedRowsOut,
+                        promotedByRow = promotedByRow,
+                        expandedRefRows = expandedRefRows,
+                        start = i + 1,
+                        endExclusive = m.endRowInclusive + 1,
+                        indentBaseline = m.indent + TAB_SIZE,
+                        dirRel = childDirRel,
+                        basename = name,
+                        isRoot = false,
+                        usedByDir = usedByDir,
+                        plansOut = plansOut,
+                        newPromotedByRow = newPromotedByRow,
+                    )
+                }
+                // Unloaded refs: skip recursion; the existing child file on
+                // disk is left untouched. m.endRowInclusive equals i for an
+                // unloaded ref (no descendants in `lines`), so the increment
+                // below also works for that case.
 
                 i = m.endRowInclusive + 1
             } else {

@@ -83,6 +83,20 @@ object DocumentLayout {
     }
 
     /**
+     * Smallest column the cursor is allowed to occupy on [line]. For bullet lines this is
+     * the position immediately after the `"* "` marker (`bulletAsteriskColumn(line) + 2`);
+     * for non-bullet lines it is `0`.
+     *
+     * Used by hit-testing and every cursor-movement intent to keep the caret out of the
+     * bullet/indent zone, so the user cannot place the cursor before the bullet and
+     * cannot accidentally backspace through the marker that anchors a row to its subtree.
+     */
+    fun textStartCol(line: String): Int {
+        val bulletCol = bulletAsteriskColumn(line)
+        return if (bulletCol >= 0) bulletCol + 2 else 0
+    }
+
+    /**
      * Walks downward from [row] and returns the last absolute row index that
      * belongs to its subtree. A line belongs to the subtree if it is a bullet
      * with indent strictly greater than [parentIndent]; anything else
@@ -98,6 +112,81 @@ object DocumentLayout {
             end++
         }
         return end
+    }
+
+    /**
+     * `true` when [row] in [lines] is a bullet whose immediate next line is
+     * also a bullet at strictly greater indent than [indent]. [indent] should
+     * be the bullet column of [row] (i.e. [bulletAsteriskColumn] of that line);
+     * pass `-1` for non-bullet rows and the result is always `false`.
+     *
+     * Used by the chevron painter and by [parentBulletIdsOf] to decide whether
+     * a bullet is foldable.
+     */
+    fun hasChildren(lines: List<String>, row: Int, indent: Int): Boolean {
+        if (indent < 0) return false
+        if (row + 1 > lines.lastIndex) return false
+        val nextCol = bulletAsteriskColumn(lines[row + 1])
+        return nextCol > indent
+    }
+
+    /**
+     * Returns the [LineId]s of every bullet row that is "collapsible" — has
+     * children in [lines]. Used by [DocumentViewBackingViewModel] to populate
+     * `collapsedIds` on first load so the editor opens with every parent
+     * folded by default. Reference rows (those whose subtree lives in a
+     * separate `.nogr` file) are not handled here because they have no
+     * children in [lines] before expansion; the view-model adds them
+     * separately via the document VM's `promotedSubtrees` registry.
+     */
+    fun parentBulletIdsOf(lines: List<String>, lineIds: List<LineId>): Set<LineId> {
+        val out = HashSet<LineId>()
+        for (i in lines.indices) {
+            val indent = bulletAsteriskColumn(lines[i])
+            if (indent >= 0 && hasChildren(lines, i, indent)) {
+                if (i in lineIds.indices) out += lineIds[i]
+            }
+        }
+        return out
+    }
+
+    /**
+     * Returns the absolute row indices in `[startRow, endRowInclusive]` that
+     * should be rendered, given a set of [collapsedIds] whose subtrees should
+     * be hidden. A row whose [LineId] is in [collapsedIds] is itself emitted
+     * (the parent is visible) but its descendants are skipped via
+     * [subtreeEnd].
+     *
+     * This helper is the single source of truth shared by the paint loop and
+     * hit-testing so they always agree on what is visible. File-boundary
+     * "collapse" (an unexpanded `[[ref]]`) does not need handling here: when
+     * a ref is collapsed its children are physically absent from [lines]
+     * (the document VM unsplices them), so `visibleRowsOf` only handles
+     * within-file folds.
+     */
+    fun visibleRowsOf(
+        lines: List<String>,
+        lineIds: List<LineId>,
+        collapsedIds: Set<LineId>,
+        startRow: Int,
+        endRowInclusive: Int,
+    ): List<Int> {
+        if (endRowInclusive < startRow) return emptyList()
+        val out = ArrayList<Int>(endRowInclusive - startRow + 1)
+        var row = startRow
+        while (row <= endRowInclusive) {
+            out += row
+            val id = if (row in lineIds.indices) lineIds[row] else null
+            if (id != null && id in collapsedIds) {
+                val indent = bulletAsteriskColumn(lines[row])
+                if (indent >= 0) {
+                    row = subtreeEnd(lines, row, indent) + 1
+                    continue
+                }
+            }
+            row++
+        }
+        return out
     }
 
     data class ChunkHighlight(val leftChars: Int, val widthChars: Double)

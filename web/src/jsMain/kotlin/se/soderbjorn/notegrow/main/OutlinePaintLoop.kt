@@ -24,6 +24,26 @@ import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.MouseEvent
 
 /**
+ * Extra horizontal indent, in pixels, added per nesting level on top of
+ * the natural [TAB_SIZE]-character indent already present in the line
+ * text. A bullet at indent column `c` shifts right by
+ * `(c / TAB_SIZE) * EXTRA_INDENT_PX_PER_LEVEL` pixels. Both the paint
+ * loop and hit-test apply this offset; keep them in sync.
+ */
+internal const val EXTRA_INDENT_PX_PER_LEVEL: Int = 14
+
+/**
+ * Returns the per-row left offset in pixels for a line whose bullet
+ * column (after any zoom-relative indent stripping) is [bulletCol]. Used
+ * by the painter to push deeper bullets further right and by hit-testing
+ * to undo the same shift before mapping a click to a logical column.
+ */
+internal fun lineLeftOffsetPxFor(bulletCol: Int): Int {
+    if (bulletCol <= 0) return 0
+    return (bulletCol / 2) * EXTRA_INDENT_PX_PER_LEVEL
+}
+
+/**
  * Renders the "Loading…" placeholder into [editor]. Used on cold start
  * until the document is read from disk.
  */
@@ -48,6 +68,12 @@ fun paint(
     charWidthPx: Double,
     wrapWidth: Int,
 ) {
+    // Wiping innerHTML drops scrollHeight to 0, which forces the browser to clamp
+    // scrollTop to 0. Capture it now and restore at the end so that repaints not
+    // initiated by the user (e.g. clicking a chevron to collapse a bullet) don't
+    // yank the viewport back to the document start. scrollCursorIntoView still
+    // runs after the restore and pulls the caret into view when needed.
+    val savedScrollTop = editor.scrollTop
     editor.innerHTML = ""
     if (!state.isLoaded) {
         paintLoading(editor)
@@ -60,35 +86,57 @@ fun paint(
     val startRow = zoom?.startRow ?: 0
     val endRowInclusive = zoom?.endRowInclusive ?: state.lines.lastIndex
     if (endRowInclusive < startRow) return
+    val docState = state.documentState ?: return
     // When zoomed, indents render relative to the zoom target so the
-    // closest descendants paint at their natural step (TAB_SIZE) instead
-    // of carrying the absolute leading whitespace of the document root.
-    // Every line in the zoom subtree is a bullet with indent strictly
-    // greater than `zoomIndent` (see DocumentLayout.subtreeEnd) so
-    // dropping `zoomIndent` leading characters is always safe.
-    val zoomIndent = zoom?.zoomIndent ?: 0
-    val viewSelection = if (selection != null && zoomIndent > 0) {
+    // closest descendants paint flush-left rather than indented one level
+    // under the (no longer visible) zoom target. We strip `zoomIndent +
+    // TAB_SIZE` characters: every descendant in the zoom subtree is a
+    // bullet with indent strictly greater than `zoomIndent` (see
+    // DocumentLayout.subtreeEnd), and TAB_SIZE-aligned descendants always
+    // have at least `zoomIndent + TAB_SIZE` leading characters.
+    val viewOriginCol = zoom?.let { it.zoomIndent + DocumentViewBackingViewModel.TAB_SIZE } ?: 0
+    val viewSelection = if (selection != null && viewOriginCol > 0) {
         DocumentViewBackingViewModel.Selection(
             startRow = selection.startRow,
-            startCol = (selection.startCol - zoomIndent).coerceAtLeast(0),
+            startCol = (selection.startCol - viewOriginCol).coerceAtLeast(0),
             endRow = selection.endRow,
-            endCol = (selection.endCol - zoomIndent).coerceAtLeast(0),
+            endCol = (selection.endCol - viewOriginCol).coerceAtLeast(0),
         )
     } else selection
 
-    for (row in startRow..endRowInclusive) {
+    val visibleRows = DocumentLayout.visibleRowsOf(
+        docState.lines, docState.lineIds, state.collapsedIds, startRow, endRowInclusive
+    )
+    for (row in visibleRows) {
         val rawLine = state.lines[row]
-        val line = if (zoomIndent > 0 && rawLine.length >= zoomIndent)
-            rawLine.substring(zoomIndent) else rawLine
+        val line = if (viewOriginCol > 0 && rawLine.length >= viewOriginCol)
+            rawLine.substring(viewOriginCol) else rawLine
         val chunks = DocumentLayout.wrapLine(line, width).toMutableList()
         val cursorInfo = if (row == state.cursorRow) {
-            val cursorColRel = (state.cursorCol - zoomIndent).coerceAtLeast(0)
+            val cursorColRel = (state.cursorCol - viewOriginCol).coerceAtLeast(0)
             DocumentLayout.cursorVisualPosition(line, cursorColRel, width).also {
                 if (it.needsTrailingEmptyChunk) chunks.add("")
             }
         } else null
 
         val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+        val rowId = if (row in docState.lineIds.indices) docState.lineIds[row] else null
+        // A bullet is collapsible if it has children in [lines] OR is a
+        // folded promoted file boundary (its children aren't loaded yet, so
+        // they don't appear in [lines] but may exist on disk). An *expanded*
+        // promoted ref falls back to the same hasChildren check — that way
+        // an empty/broken ref file doesn't paint a useless chevron.
+        val absoluteIndent = DocumentLayout.bulletAsteriskColumn(rawLine)
+        val isFoldedPromotedRef = rowId != null &&
+            documentBackingViewModelRefCheck(viewModel, rowId) &&
+            rowId !in docState.expandedRefIds
+        val isCollapsibleParent = bulletCol >= 0 && rowId != null && (
+            DocumentLayout.hasChildren(docState.lines, row, absoluteIndent) ||
+            isFoldedPromotedRef
+        )
+        val isCollapsedNow = rowId != null && rowId in state.collapsedIds
+        val rowLeftOffsetPx = lineLeftOffsetPxFor(bulletCol)
+
         chunks.forEachIndexed { chunkIndex, chunk ->
             val chunkDiv = document.createElement("div") as HTMLElement
             chunkDiv.style.apply {
@@ -101,7 +149,9 @@ fun paint(
                     viewSelection, row, line, chunkIndex, chunks.size, chunk.length, width
                 )
                 if (highlight != null) {
-                    appendSelectionHighlight(chunkDiv, highlight, charWidthPx, style.lineHeightPx)
+                    appendSelectionHighlight(
+                        chunkDiv, highlight, charWidthPx, style.lineHeightPx, rowLeftOffsetPx
+                    )
                 }
             }
 
@@ -114,24 +164,51 @@ fun paint(
             textSpan.style.apply {
                 setProperty("position", "relative")
                 setProperty("z-index", "1")
+                if (rowLeftOffsetPx > 0) left = "${rowLeftOffsetPx}px"
             }
             textSpan.textContent = displayChunk
             chunkDiv.appendChild(textSpan)
 
             if (chunkIndex == 0 && bulletCol >= 0) {
-                appendBulletClickTarget(chunkDiv, bulletCol, row, charWidthPx, style.lineHeightPx, viewModel) {
-                    editor.focus()
-                }
+                appendBulletClickTarget(
+                    chunkDiv, bulletCol, row, charWidthPx, style.lineHeightPx, viewModel, rowLeftOffsetPx,
+                ) { editor.focus() }
+            }
+            if (chunkIndex == 0 && isCollapsibleParent && rowId != null) {
+                appendChevron(
+                    chunkDiv = chunkDiv,
+                    bulletCol = bulletCol,
+                    rowId = rowId,
+                    isCollapsed = isCollapsedNow,
+                    charWidthPx = charWidthPx,
+                    lineHeightPx = style.lineHeightPx,
+                    viewModel = viewModel,
+                    leftOffsetPx = rowLeftOffsetPx,
+                ) { editor.focus() }
             }
 
             if (cursorInfo != null && cursorInfo.chunkIndex == chunkIndex) {
-                appendCursor(chunkDiv, cursorInfo.colInChunk, charWidthPx, style.lineHeightPx)
+                appendCursor(
+                    chunkDiv, cursorInfo.colInChunk, charWidthPx, style.lineHeightPx, rowLeftOffsetPx
+                )
             }
             editor.appendChild(chunkDiv)
         }
     }
-    scrollCursorIntoView(editor, state, style, width, startRow, endRowInclusive, zoomIndent)
+    editor.scrollTop = savedScrollTop
+    scrollCursorIntoView(editor, state, style, width, startRow, endRowInclusive, viewOriginCol)
 }
+
+/**
+ * Lightweight wrapper so the paint loop can answer "is this a promoted
+ * reference row?" via the view-model facade without leaking the internal
+ * registry. Avoids creating a public accessor on `MainViewModel` just for
+ * paint-time predicates.
+ */
+private fun documentBackingViewModelRefCheck(
+    viewModel: MainViewModel,
+    rowId: LineId,
+): Boolean = viewModel.isPromotedRef(rowId)
 
 /**
  * Overlays a transparent clickable element on top of a bullet marker so
@@ -144,6 +221,7 @@ private fun appendBulletClickTarget(
     charWidthPx: Double,
     lineHeightPx: Int,
     viewModel: MainViewModel,
+    leftOffsetPx: Int,
     onAfterZoom: () -> Unit,
 ) {
     // Comfortable click target — a circular zone centred on the bullet
@@ -153,7 +231,7 @@ private fun appendBulletClickTarget(
     // always sees a chunky dot, not the tiny default glyph. Hovering
     // grows the zone outward (CSS `::after` halo + inner-glyph scale).
     val hitSize = 24
-    val bulletCenterX = (bulletCol + 0.5) * charWidthPx
+    val bulletCenterX = (bulletCol + 0.5) * charWidthPx + leftOffsetPx
     val bulletCenterY = lineHeightPx / 2.0
     val target = document.createElement("div") as HTMLElement
     target.className = "notegrow-bullet"
@@ -206,6 +284,71 @@ private fun appendBulletClickTarget(
 }
 
 /**
+ * Renders a small disclosure chevron just to the left of a bullet glyph.
+ * Defaults to a downward-pointing polyline; rotates `-90deg` when the
+ * bullet is currently collapsed. Click toggles the bullet's fold state
+ * via [MainViewModel.toggleCollapse]. The chevron's own click handler
+ * stops propagation so the click never reaches the editor's caret-
+ * positioning mousedown.
+ */
+private fun appendChevron(
+    chunkDiv: HTMLElement,
+    bulletCol: Int,
+    rowId: LineId,
+    isCollapsed: Boolean,
+    charWidthPx: Double,
+    lineHeightPx: Int,
+    viewModel: MainViewModel,
+    leftOffsetPx: Int,
+    onAfterToggle: () -> Unit,
+) {
+    // Generous touch target so it's easy to hit on touchpads/small screens.
+    val hitSize = 24
+    // Sit the chevron well to the left of the bullet so there's a clear gap
+    // between the disclosure control and the bullet glyph. The 22px gap also
+    // prevents accidental zooms when the user means to toggle.
+    val chevronGapPx = 22.0
+    val centerX = (bulletCol + 0.5) * charWidthPx + leftOffsetPx - chevronGapPx
+    val centerY = lineHeightPx / 2.0
+    val target = document.createElement("div") as HTMLElement
+    target.className = "notegrow-chevron"
+    target.title = if (isCollapsed) "Expand" else "Collapse"
+    target.style.apply {
+        setProperty("position", "absolute")
+        left = "${centerX - hitSize / 2.0}px"
+        top = "${centerY - hitSize / 2.0}px"
+        width = "${hitSize}px"
+        height = "${hitSize}px"
+        // Above the bullet hit-zone so a click in the small overlap goes to
+        // the chevron, not to zoom.
+        setProperty("z-index", "4")
+        cursor = "pointer"
+        display = "flex"
+        alignItems = "center"
+        justifyContent = "center"
+        color = "var(--t-text-tertiary, #7a7a7a)"
+    }
+    val rotation = if (isCollapsed) "rotate(-90deg)" else "none"
+    target.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\" stroke=\"currentColor\" " +
+        "stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
+        "style=\"transform: $rotation; transition: transform 120ms ease; pointer-events: none;\">" +
+        "<polyline points=\"4,6 8,10 12,6\"></polyline></svg>"
+    target.addEventListener("mousedown", { event ->
+        val me = event as MouseEvent
+        me.stopPropagation()
+        me.preventDefault()
+    })
+    target.addEventListener("click", { event ->
+        val me = event as MouseEvent
+        me.stopPropagation()
+        me.preventDefault()
+        viewModel.toggleCollapse(rowId)
+        onAfterToggle()
+    })
+    chunkDiv.appendChild(target)
+}
+
+/**
  * Paints a translucent rectangle representing the portion of the user's
  * selection that falls inside one rendered chunk.
  */
@@ -214,11 +357,12 @@ private fun appendSelectionHighlight(
     highlight: DocumentLayout.ChunkHighlight,
     charWidthPx: Double,
     lineHeightPx: Int,
+    leftOffsetPx: Int,
 ) {
     val div = document.createElement("div") as HTMLElement
     div.style.apply {
         setProperty("position", "absolute")
-        left = "${highlight.leftChars * charWidthPx}px"
+        left = "${highlight.leftChars * charWidthPx + leftOffsetPx}px"
         top = "0"
         width = "${highlight.widthChars * charWidthPx}px"
         height = "${lineHeightPx}px"
@@ -232,12 +376,18 @@ private fun appendSelectionHighlight(
 /**
  * Appends the blinking caret span at column [col] inside a chunk.
  */
-private fun appendCursor(container: HTMLElement, col: Int, charWidthPx: Double, lineHeightPx: Int) {
+private fun appendCursor(
+    container: HTMLElement,
+    col: Int,
+    charWidthPx: Double,
+    lineHeightPx: Int,
+    leftOffsetPx: Int,
+) {
     val cursor = document.createElement("span") as HTMLElement
     cursor.className = "notegrow-cursor"
     cursor.style.apply {
         setProperty("position", "absolute")
-        left = "${col * charWidthPx}px"
+        left = "${col * charWidthPx + leftOffsetPx}px"
         top = "0"
         width = "2px"
         height = "${lineHeightPx}px"
@@ -298,6 +448,15 @@ fun ensureStyles() {
         }
         .notegrow-bullet:active .notegrow-bullet-glyph {
             transform: scale(0.92);
+        }
+        /* Disclosure chevron: dim by default, brightens on hover. The SVG
+           rotates to indicate state via inline style on the svg child. */
+        .notegrow-chevron {
+            opacity: 0.85;
+        }
+        .notegrow-chevron:hover {
+            color: var(--t-text-primary, #e6e6e6);
+            opacity: 1;
         }
         .notegrow-header:hover {
             background: var(--t-surface-overlay, #2a2a2a);

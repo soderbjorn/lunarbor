@@ -6,6 +6,9 @@ build/
 dynalist-import/*
 dynalist-opml-snapshot/*
 
+# Temporary
+libs-repo/
+
 # Kotlin
 .kotlin/
 kotlin-js-store/

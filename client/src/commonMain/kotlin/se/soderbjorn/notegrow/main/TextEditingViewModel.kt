@@ -76,6 +76,13 @@ internal class TextEditingViewModel(
             s.cursorCol > 0 -> {
                 val line = s.lines[s.cursorRow]
                 val leadingSpaces = line.takeWhile { it == ' ' }.length
+                if (isAtBulletMarkerEnd(line, s.cursorCol)) {
+                    // Removing the `"* "` marker would orphan any subtree this bullet anchors.
+                    // Only allow it when the bullet is a leaf — otherwise the user must remove
+                    // the children first (deliberate action, no accidental detachment).
+                    val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+                    if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return
+                }
                 val removed = when {
                     isAtBulletMarkerEnd(line, s.cursorCol) -> 2
                     s.cursorCol <= leadingSpaces && s.cursorCol % TAB_SIZE == 0 -> TAB_SIZE
@@ -147,10 +154,15 @@ internal class TextEditingViewModel(
                 anchorRow = null, anchorCol = null
             )
         }
+        val curLine = st.lines[st.cursorRow]
+        val curMin = DocumentLayout.textStartCol(curLine)
         val (r, c) = when {
-            st.cursorCol > 0 -> st.cursorRow to (st.cursorCol - 1)
-            st.cursorRow > 0 -> (st.cursorRow - 1) to st.lines[st.cursorRow - 1].length
-            else -> st.cursorRow to st.cursorCol
+            st.cursorCol > curMin -> st.cursorRow to (st.cursorCol - 1)
+            else -> {
+                val prev = prevVisibleRow(st, st.cursorRow)
+                if (prev != null) prev to st.lines[prev].length
+                else st.cursorRow to st.cursorCol
+            }
         }
         moved(st, r, c, extend)
     }
@@ -166,45 +178,59 @@ internal class TextEditingViewModel(
         val line = st.lines[st.cursorRow]
         val (r, c) = when {
             st.cursorCol < line.length -> st.cursorRow to (st.cursorCol + 1)
-            st.cursorRow < st.lines.lastIndex -> (st.cursorRow + 1) to 0
-            else -> st.cursorRow to st.cursorCol
+            else -> {
+                val next = nextVisibleRow(st, st.cursorRow)
+                if (next != null) next to DocumentLayout.textStartCol(st.lines[next])
+                else st.cursorRow to st.cursorCol
+            }
         }
         moved(st, r, c, extend)
     }
 
     fun moveUp(extend: Boolean = false) = mutate { st ->
-        if (st.cursorRow == 0) {
+        val targetRow = prevVisibleRow(st, st.cursorRow)
+        if (targetRow == null) {
             if (extend) st else st.copy(anchorRow = null, anchorCol = null)
         } else {
-            val targetRow = st.cursorRow - 1
-            val targetCol = st.cursorCol.coerceAtMost(st.lines[targetRow].length)
+            val targetLine = st.lines[targetRow]
+            val targetCol = st.cursorCol.coerceIn(
+                DocumentLayout.textStartCol(targetLine), targetLine.length
+            )
             moved(st, targetRow, targetCol, extend)
         }
     }
 
     fun moveDown(extend: Boolean = false) = mutate { st ->
-        if (st.cursorRow >= st.lines.lastIndex) {
+        val targetRow = nextVisibleRow(st, st.cursorRow)
+        if (targetRow == null) {
             if (extend) st else st.copy(anchorRow = null, anchorCol = null)
         } else {
-            val targetRow = st.cursorRow + 1
-            val targetCol = st.cursorCol.coerceAtMost(st.lines[targetRow].length)
+            val targetLine = st.lines[targetRow]
+            val targetCol = st.cursorCol.coerceIn(
+                DocumentLayout.textStartCol(targetLine), targetLine.length
+            )
             moved(st, targetRow, targetCol, extend)
         }
     }
 
     fun moveTo(row: Int, col: Int, extend: Boolean = false) = mutate { st ->
         val clampedRow = row.coerceIn(0, st.lines.lastIndex)
-        val clampedCol = col.coerceIn(0, st.lines[clampedRow].length)
+        val line = st.lines[clampedRow]
+        val clampedCol = col.coerceIn(DocumentLayout.textStartCol(line), line.length)
         moved(st, clampedRow, clampedCol, extend)
     }
 
-    fun moveLineStart(extend: Boolean = false) = mutate { moved(it, it.cursorRow, 0, extend) }
+    fun moveLineStart(extend: Boolean = false) = mutate {
+        moved(it, it.cursorRow, DocumentLayout.textStartCol(it.lines[it.cursorRow]), extend)
+    }
 
     fun moveLineEnd(extend: Boolean = false) = mutate {
         moved(it, it.cursorRow, it.lines[it.cursorRow].length, extend)
     }
 
-    fun moveDocStart(extend: Boolean = false) = mutate { moved(it, 0, 0, extend) }
+    fun moveDocStart(extend: Boolean = false) = mutate {
+        moved(it, 0, DocumentLayout.textStartCol(it.lines[0]), extend)
+    }
 
     fun moveDocEnd(extend: Boolean = false) = mutate {
         val lastRow = it.lines.lastIndex
@@ -214,12 +240,15 @@ internal class TextEditingViewModel(
     fun moveWordLeft(extend: Boolean = false) = mutate { st ->
         var row = st.cursorRow
         var col = st.cursorCol
-        if (col == 0 && row > 0) {
-            row--; col = st.lines[row].length
+        var minCol = DocumentLayout.textStartCol(st.lines[row])
+        if (col <= minCol && row > 0) {
+            row--
+            col = st.lines[row].length
+            minCol = DocumentLayout.textStartCol(st.lines[row])
         } else {
             val line = st.lines[row]
-            while (col > 0 && !isWordChar(line[col - 1])) col--
-            while (col > 0 && isWordChar(line[col - 1])) col--
+            while (col > minCol && !isWordChar(line[col - 1])) col--
+            while (col > minCol && isWordChar(line[col - 1])) col--
         }
         moved(st, row, col, extend)
     }
@@ -229,7 +258,8 @@ internal class TextEditingViewModel(
         var col = st.cursorCol
         val line = st.lines[row]
         if (col == line.length && row < st.lines.lastIndex) {
-            row++; col = 0
+            row++
+            col = DocumentLayout.textStartCol(st.lines[row])
         } else {
             while (col < line.length && !isWordChar(line[col])) col++
             while (col < line.length && isWordChar(line[col])) col++
@@ -253,14 +283,15 @@ internal class TextEditingViewModel(
     fun selectWord(row: Int, col: Int) = mutate { st ->
         val clampedRow = row.coerceIn(0, st.lines.lastIndex)
         val line = st.lines[clampedRow]
-        if (line.isEmpty()) {
-            st.copy(cursorRow = clampedRow, cursorCol = 0, anchorRow = clampedRow, anchorCol = 0)
+        val minCol = DocumentLayout.textStartCol(line)
+        if (line.isEmpty() || minCol >= line.length) {
+            st.copy(cursorRow = clampedRow, cursorCol = minCol, anchorRow = clampedRow, anchorCol = minCol)
         } else {
-            val clampedCol = col.coerceIn(0, line.length - 1)
+            val clampedCol = col.coerceIn(minCol, line.length - 1)
             val isWord = isWordChar(line[clampedCol])
             var start = clampedCol
             var end = clampedCol
-            while (start > 0 && isWordChar(line[start - 1]) == isWord) start--
+            while (start > minCol && isWordChar(line[start - 1]) == isWord) start--
             while (end < line.length && isWordChar(line[end]) == isWord) end++
             st.copy(anchorRow = clampedRow, anchorCol = start, cursorRow = clampedRow, cursorCol = end)
         }

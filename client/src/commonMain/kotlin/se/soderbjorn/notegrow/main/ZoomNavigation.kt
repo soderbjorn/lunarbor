@@ -12,6 +12,8 @@
 
 package se.soderbjorn.notegrow.main
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.Companion.TAB_SIZE
 
 /**
@@ -29,6 +31,7 @@ internal class ZoomNavigation(
     private val documentBackingViewModel: DocumentBackingViewModel,
     private val stateProvider: () -> DocumentViewBackingViewModel.State,
     private val patch: ((DocumentViewBackingViewModel.State) -> DocumentViewBackingViewModel.State) -> Unit,
+    private val scope: CoroutineScope,
 ) {
     fun zoomInto(row: Int) {
         val s = stateProvider()
@@ -39,6 +42,15 @@ internal class ZoomNavigation(
         val indent = DocumentLayout.bulletAsteriskColumn(line)
         if (indent < 0) return
         val id = docState.lineIds[row]
+        // If the zoom target is a folded ref, lazy-load its file first then
+        // re-enter zoomInto with the now-loaded subtree.
+        if (documentBackingViewModel.isPromotedRef(id) && id !in docState.expandedRefIds) {
+            scope.launch {
+                documentBackingViewModel.expandSubtree(id)
+                zoomInto(row)
+            }
+            return
+        }
         val endInclusive = DocumentLayout.subtreeEnd(docState.lines, row, indent)
         // Refuse to zoom into a bullet that has neither text of its own nor any
         // children. Without this guard, the leaf-placeholder branch below would
@@ -59,7 +71,8 @@ internal class ZoomNavigation(
                     cursorRow = newChildRow,
                     cursorCol = childPrefix.length,
                     anchorRow = null,
-                    anchorCol = null
+                    anchorCol = null,
+                    collapsedIds = it.collapsedIds - id,
                 )
             }
         } else {
@@ -73,7 +86,8 @@ internal class ZoomNavigation(
                     cursorRow = firstChildRow,
                     cursorCol = targetCol,
                     anchorRow = null,
-                    anchorCol = null
+                    anchorCol = null,
+                    collapsedIds = it.collapsedIds - id,
                 )
             }
         }
@@ -103,7 +117,14 @@ internal class ZoomNavigation(
             zoomOut()
             return
         }
-        patch { it.copy(zoomedLineId = lineId, anchorRow = null, anchorCol = null) }
+        patch {
+            it.copy(
+                zoomedLineId = lineId,
+                anchorRow = null,
+                anchorCol = null,
+                collapsedIds = it.collapsedIds - lineId,
+            )
+        }
     }
 
     fun zoomInfo(state: DocumentViewBackingViewModel.State): DocumentViewBackingViewModel.ZoomInfo? =
