@@ -14,6 +14,11 @@ import org.w3c.dom.HTMLElement
  * Scrolls [editor] so that the caret row in [state] is in view. Works
  * correctly both at document root and when zoomed: visual row is
  * computed over the currently-rendered slice, not the whole document.
+ *
+ * [zoomIndent] mirrors the paint loop's relative-indent transformation —
+ * each visible line is rendered with its first `zoomIndent` characters
+ * dropped, so the wrap math here trims the same amount before computing
+ * the cursor's visual row to stay consistent with what's painted.
  */
 fun scrollCursorIntoView(
     editor: HTMLElement,
@@ -22,12 +27,16 @@ fun scrollCursorIntoView(
     wrapWidth: Int,
     startRow: Int,
     endRowInclusive: Int,
+    zoomIndent: Int = 0,
 ) {
     val cursorRow = state.cursorRow
     if (cursorRow < startRow || cursorRow > endRowInclusive) return
-    val visibleLines = state.lines.subList(startRow, endRowInclusive + 1)
+    val visibleLines = state.lines.subList(startRow, endRowInclusive + 1).map { raw ->
+        if (zoomIndent > 0 && raw.length >= zoomIndent) raw.substring(zoomIndent) else raw
+    }
+    val cursorColRel = (state.cursorCol - zoomIndent).coerceAtLeast(0)
     val visualRow = DocumentLayout.visualRowOfCursor(
-        visibleLines, cursorRow - startRow, state.cursorCol, wrapWidth
+        visibleLines, cursorRow - startRow, cursorColRel, wrapWidth
     )
     val top = style.editorPaddingPx + visualRow * style.lineHeightPx
     val bottom = top + style.lineHeightPx

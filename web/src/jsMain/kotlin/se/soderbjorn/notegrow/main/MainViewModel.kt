@@ -130,8 +130,19 @@ class MainViewModel(
     /** See `DocumentViewBackingViewModel.zoomOut`. */
     fun zoomOut() = backingViewModel.zoomOut()
 
+    /** See `DocumentViewBackingViewModel.zoomTo`. */
+    fun zoomTo(lineId: LineId?) = backingViewModel.zoomTo(lineId)
+
     /** See `DocumentViewBackingViewModel.zoomInfo`. */
     fun zoomInfo(state: DocumentViewBackingViewModel.State) = backingViewModel.zoomInfo(state)
+
+    /** See `DocumentViewBackingViewModel.bulletAncestors`. */
+    fun bulletAncestors(state: DocumentViewBackingViewModel.State) =
+        backingViewModel.bulletAncestors(state)
+
+    /** See `DocumentViewBackingViewModel.zoomPathSegments`. */
+    fun zoomPathSegments(state: DocumentViewBackingViewModel.State): List<String> =
+        backingViewModel.zoomPathSegments(state)
 
     // ---- selection intents ----------------------------------------------
 

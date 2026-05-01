@@ -49,7 +49,15 @@ fun pointFromClient(
     val startRow = zoom?.startRow ?: 0
     val endRowInclusive = zoom?.endRowInclusive ?: backing.lines.lastIndex
     if (endRowInclusive < startRow) return null
-    val visibleLines = backing.lines.subList(startRow, endRowInclusive + 1)
+    // Mirror the paint loop's relative-indent transformation: when zoomed,
+    // each visible line is rendered with its first `zoomIndent` characters
+    // dropped, so the click coordinates we feed into `locateLogicalPosition`
+    // must be against the same trimmed view. Add `zoomIndent` back when
+    // returning the column so the caller stores absolute model columns.
+    val zoomIndent = zoom?.zoomIndent ?: 0
+    val visibleLines = backing.lines.subList(startRow, endRowInclusive + 1).map { raw ->
+        if (zoomIndent > 0 && raw.length >= zoomIndent) raw.substring(zoomIndent) else raw
+    }
     val rect = editor.getBoundingClientRect()
     val localX = clientX - rect.left - style.editorPaddingPx + editor.scrollLeft
     val localY = clientY - rect.top - style.editorPaddingPx + editor.scrollTop
@@ -59,5 +67,5 @@ fun pointFromClient(
     val (localRow, col) = DocumentLayout.locateLogicalPosition(
         visibleLines, visualRow, visualCol, wrapWidth
     )
-    return (startRow + localRow) to col
+    return (startRow + localRow) to (col + zoomIndent)
 }

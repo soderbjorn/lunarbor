@@ -45,6 +45,48 @@ function readDarknessSettingsSync() {
   }
 }
 
+/**
+ * Resolves the per-app darkness layout-state path. Mirrors
+ * `defaultAppLayoutStatePath(appName)` in `toolkit-store/jvmMain` so a
+ * future jvm-side reader (test harness, CLI) sees the same file. Note
+ * that — unlike ui-settings, which is shared across the Darkness app
+ * family — layout-state is **per-app**: notegrow's pane tree has no
+ * meaning to termtastic, and writes happen on every drag.
+ *
+ * @returns {string} absolute path to this app's layout-state.json
+ */
+function defaultAppLayoutStatePath() {
+  const home = os.homedir();
+  if (process.platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "Darkness", APP_NAME, "layout-state.json");
+  } else if (process.platform === "win32") {
+    const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
+    return path.join(appData, "Darkness", APP_NAME, "layout-state.json");
+  } else {
+    const xdg = process.env.XDG_CONFIG_HOME && process.env.XDG_CONFIG_HOME.length > 0
+      ? process.env.XDG_CONFIG_HOME
+      : path.join(home, ".config");
+    return path.join(xdg, "darkness", APP_NAME.toLowerCase(), "layout-state.json");
+  }
+}
+
+/**
+ * Reads this app's layout-state.json synchronously at startup. Same
+ * pattern as [readDarknessSettingsSync] — runs before the BrowserWindow
+ * exists so the JSON can be packed into `additionalArguments` and
+ * exposed to the renderer as `globalThis.__darknessLayoutState` before
+ * any rendering happens.
+ *
+ * @returns {string|null} file contents, or null
+ */
+function readDarknessLayoutStateSync() {
+  try {
+    return fsSync.readFileSync(defaultAppLayoutStatePath(), "utf8");
+  } catch (err) {
+    return null;
+  }
+}
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   return;
@@ -58,9 +100,14 @@ function createWindow() {
   // can hand it off to the Kotlin/JS bundle as `globalThis.__darknessSettings`
   // before any rendering happens.
   const settingsJson = readDarknessSettingsSync();
-  const additionalArguments = settingsJson
-    ? [`--darkness-settings=${encodeURIComponent(settingsJson)}`]
-    : [];
+  const layoutJson = readDarknessLayoutStateSync();
+  const additionalArguments = [];
+  if (settingsJson) {
+    additionalArguments.push(`--darkness-settings=${encodeURIComponent(settingsJson)}`);
+  }
+  if (layoutJson) {
+    additionalArguments.push(`--darkness-layout-state=${encodeURIComponent(layoutJson)}`);
+  }
 
   mainWindow = new BrowserWindow({
     width: 1024,
@@ -179,6 +226,50 @@ ipcMain.handle("darkness:writeUiSettings", async (_event, json) => {
 ipcMain.handle("darkness:readUiSettings", async () => {
   try {
     return await fs.readFile(defaultDarknessSettingsPath(), "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+});
+
+/**
+ * Tracks the bytes most recently written by this Electron process to
+ * the layout-state file, used by [installLayoutStateWatcher] for
+ * self-write suppression. Independent buffer from [lastWrittenBytes]
+ * because the two files have different write cadences.
+ *
+ * @type {Buffer|null}
+ */
+let lastWrittenLayoutBytes = null;
+
+/**
+ * IPC: write this app's layout-state JSON to disk **atomically** in the
+ * per-app subdir. Mirrors [darkness:writeUiSettings] verbatim — same
+ * tmp+rename pattern, same self-write suppression hook — but targets
+ * the per-app `layout-state.json` instead of the shared `ui-settings.json`.
+ *
+ * Renderer calls this on every drag-resize end, tab close, pane
+ * close/expand, and similar layout mutations. Writes are debounced
+ * renderer-side; this handler does no extra throttling.
+ */
+ipcMain.handle("darkness:writeLayoutState", async (_event, json) => {
+  const target = defaultAppLayoutStatePath();
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const tmp = target + ".tmp";
+  const bytes = Buffer.from(json, "utf8");
+  await fs.writeFile(tmp, bytes);
+  await fs.rename(tmp, target);
+  lastWrittenLayoutBytes = bytes;
+});
+
+/**
+ * IPC: read this app's layout-state JSON. Returns null if the file
+ * doesn't exist (first launch). Matches [darkness:readUiSettings]'s
+ * shape so the renderer's preload bridge stays symmetric.
+ */
+ipcMain.handle("darkness:readLayoutState", async () => {
+  try {
+    return await fs.readFile(defaultAppLayoutStatePath(), "utf8");
   } catch (err) {
     if (err && err.code === "ENOENT") return null;
     throw err;

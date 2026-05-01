@@ -44,7 +44,7 @@ val toolkitOverride: String? = settings.providers.gradleProperty("darkness.toolk
 val useArtifacts: Boolean = settings.providers.gradleProperty("darkness.toolkit.useArtifacts").orNull == "true"
 val toolkitCandidates: List<String> = listOfNotNull(
     toolkitOverride,
-    "../../darkness-toolkit/extract-from-termtastic",
+    "../../darkness-toolkit/develop",
     "../../darkness-toolkit/main",
 )
 val toolkitPath: String? = if (useArtifacts) null else toolkitCandidates

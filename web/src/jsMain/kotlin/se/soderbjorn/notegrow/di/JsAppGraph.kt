@@ -20,6 +20,13 @@ object AppScope
 interface JsAppGraph {
     val mainViewModel: MainViewModel
     val coroutineScope: CoroutineScope
+    /**
+     * Singleton holding the live document state. Every notegrow pane
+     * binds its own [DocumentViewBackingViewModel] (with its own zoom
+     * navigation + selection) to this same backing VM so all panes
+     * mutate one shared document but maintain independent views.
+     */
+    val documentBackingViewModel: DocumentBackingViewModel
 
     @SingleIn(AppScope::class)
     @Provides

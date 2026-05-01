@@ -69,6 +69,67 @@ internal fun moved(
 }
 
 /**
+ * One ancestor entry in the zoom breadcrumb chain. Returned by
+ * [bulletAncestorsOf] from outermost-to-innermost order so the view can
+ * render a `Root / outer / … / inner / current` style trail.
+ *
+ * @property lineId    stable id of the ancestor bullet — pass to
+ *   [DocumentViewBackingViewModel.zoomTo] to navigate there.
+ * @property titleText display text of the bullet with leading indent
+ *   and the `"* "` marker stripped. Empty when the bullet has no text.
+ */
+data class BreadcrumbAncestor(
+    val lineId: LineId,
+    val titleText: String,
+)
+
+/**
+ * Walks the bullet hierarchy upward from the currently zoomed line and
+ * returns each ancestor (parent, grandparent, …) in outer-to-inner
+ * order. The zoomed line itself is *not* included — the view already
+ * renders it as the trailing breadcrumb segment via
+ * [DocumentViewBackingViewModel.ZoomInfo.titleText].
+ *
+ * "Ancestor" means: a bullet line above the zoom target whose indent is
+ * strictly less than the running indent, walking up the document. The
+ * first such line is the immediate parent; the next-smaller-indent
+ * bullet above that is the grandparent, and so on, until we reach
+ * indent 0 (a root-level bullet) or the top of the document.
+ *
+ * Used by the editor header to render a clickable breadcrumb trail —
+ * each segment can call back into `zoomTo(ancestor.lineId)` so the user
+ * navigates one level up at a time without losing the current zoom
+ * scope when only a partial ascent is wanted.
+ *
+ * @param state current view-model state
+ * @return ancestors outer-to-inner, or an empty list when not zoomed.
+ */
+internal fun bulletAncestorsOf(
+    state: DocumentViewBackingViewModel.State
+): List<BreadcrumbAncestor> {
+    val zoom = zoomInfoOf(state) ?: return emptyList()
+    val docState = state.documentState ?: return emptyList()
+    val lines = docState.lines
+    val ids = docState.lineIds
+    if (zoom.zoomIndent <= 0) return emptyList()
+
+    val collected = mutableListOf<BreadcrumbAncestor>()
+    var lookingFor = zoom.zoomIndent
+    var row = zoom.zoomRow - 1
+    while (row >= 0 && lookingFor > 0) {
+        val line = lines[row]
+        val indent = DocumentLayout.bulletAsteriskColumn(line)
+        if (indent in 0 until lookingFor) {
+            val title = line.substring(minOf(indent + 2, line.length))
+            collected += BreadcrumbAncestor(lineId = ids[row], titleText = title)
+            lookingFor = indent
+        }
+        row--
+    }
+    return collected.asReversed()
+}
+
+/**
  * Resolves [DocumentViewBackingViewModel.State.zoomedLineId] to concrete
  * row geometry. Returns `null` if there is no zoom, the id is no longer
  * in the document, or the line it points to is no longer a bullet.
@@ -93,6 +154,28 @@ internal fun zoomInfoOf(
         endRowInclusive = end,
         titleText = titleText
     )
+}
+
+/**
+ * Builds the human-readable breadcrumb segments for the current zoom path.
+ *
+ * Returned segments are outer-to-inner: ancestors first (root-most ancestor
+ * at index 0), then the zoom target itself last. Empty when the document is
+ * not currently zoomed — callers should fall back to the document/pane title
+ * in that case.
+ *
+ * Used by AppShell to drive both the toolkit pane header title and the
+ * sidebar pane row label so they stay in sync as the user zooms in/out.
+ *
+ * @param state current view-model state
+ * @return outer-to-inner segments, or an empty list when not zoomed.
+ */
+internal fun zoomPathSegmentsOf(
+    state: DocumentViewBackingViewModel.State
+): List<String> {
+    val zoom = zoomInfoOf(state) ?: return emptyList()
+    val ancestors = bulletAncestorsOf(state)
+    return ancestors.map { it.titleText } + zoom.titleText
 }
 
 /**

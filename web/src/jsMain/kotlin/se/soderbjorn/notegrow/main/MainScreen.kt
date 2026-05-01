@@ -52,8 +52,16 @@ class MainScreen(
     private val drag = DragState()
 
     private var charWidthPx: Double = 0.0
-    private var headerElement: HTMLElement? = null
     private var editorElement: HTMLElement? = null
+
+    /**
+     * Pending `setTimeout` handle for the restructuring banner's show-debounce.
+     * Non-null only between the moment `isRestructuring` flipped true and
+     * either the timer firing (banner becomes visible) or the flag flipping
+     * back to false (timer cancelled, banner stays hidden). Used to keep the
+     * UI calm: restructures that complete inside ~150 ms never surface.
+     */
+    private var bannerShowTimeoutHandle: Int? = null
 
     /**
      * Mounts the editor UI into [root]. Clears any prior content, builds
@@ -67,13 +75,16 @@ class MainScreen(
         ensureStyles()
         installRootStyles(root)
 
-        val header = buildHeaderElement()
-        root.appendChild(header)
-        headerElement = header
-
+        // The zoom breadcrumb that used to live here moved into the
+        // toolkit's pane chrome title (RTL-clipped) — the editor now
+        // mounts directly into the pane content so bullets start at the
+        // very top of the pane.
         val editor = buildEditorElement()
         root.appendChild(editor)
         editorElement = editor
+
+        val restructureBanner = buildRestructureBanner()
+        root.appendChild(restructureBanner)
 
         charWidthPx = measureCharWidth(style)
         wrapWidthFlow.value = wrapWidthInChars(editor, charWidthPx)
@@ -101,13 +112,55 @@ class MainScreen(
                     val backing = state.backingState
                     if (backing == null) {
                         paintLoading(editor)
-                        paintHeader(header, null, viewModel) { editor.focus() }
                     } else {
                         paint(editor, backing, viewModel, style, charWidthPx, width)
-                        paintHeader(header, backing, viewModel) { editor.focus() }
                     }
+                    updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
                 }
         }
+    }
+
+    /**
+     * Drives the visibility of the "Restructuring…" indicator with a small
+     * show-debounce. The banner only appears once `isRestructuring` has been
+     * true for ~150 ms continuously, so the common case (small notes whose
+     * restructure finishes inside one frame) produces no UI flicker. Hiding
+     * is immediate and cancels any pending show-timer.
+     */
+    private fun updateRestructureBanner(banner: HTMLElement, isRestructuring: Boolean) {
+        if (isRestructuring) {
+            // Already visible — nothing to schedule.
+            if (banner.style.display != "none") return
+            // Already armed — let the existing timer fire.
+            if (bannerShowTimeoutHandle != null) return
+            bannerShowTimeoutHandle = window.setTimeout({
+                banner.style.display = "flex"
+                bannerShowTimeoutHandle = null
+            }, 150)
+        } else {
+            bannerShowTimeoutHandle?.let { window.clearTimeout(it) }
+            bannerShowTimeoutHandle = null
+            banner.style.display = "none"
+        }
+    }
+
+    /**
+     * Builds the small floating pill rendered in the bottom-right corner
+     * while the autosave loop is mid-restructure. Pinned to the viewport
+     * via `position: fixed` so it stays put regardless of editor scroll
+     * and so it works inside the toolkit pane chrome without needing
+     * `position: relative` on the host element.
+     */
+    private fun buildRestructureBanner(): HTMLElement {
+        val banner = document.createElement("div") as HTMLElement
+        banner.className = "notegrow-restructuring"
+        val spinner = document.createElement("div") as HTMLElement
+        spinner.className = "notegrow-restructuring-spinner"
+        banner.appendChild(spinner)
+        val label = document.createElement("span") as HTMLElement
+        label.textContent = "Restructuring…"
+        banner.appendChild(label)
+        return banner
     }
 
     private fun installRootStyles(root: HTMLElement) {
@@ -121,30 +174,15 @@ class MainScreen(
             bodyStyle.backgroundColor = "var(--t-terminal-bg, #1e1e1e)"
         }
         root.style.margin = "0"
-        root.style.height = "100vh"
+        // Fill the host container, NOT the viewport. The editor is mounted
+        // inside a toolkit pane whose own height is less than 100vh; using
+        // `100vh` here pushed the header above the visible area, hiding the
+        // zoom breadcrumb.
+        root.style.height = "100%"
+        root.style.minHeight = "0"
         root.style.display = "flex"
         root.style.flexDirection = "column"
         root.style.backgroundColor = "var(--t-terminal-bg, #1e1e1e)"
-    }
-
-    private fun buildHeaderElement(): HTMLElement {
-        val header = document.createElement("div") as HTMLElement
-        header.className = "notegrow-header"
-        header.style.apply {
-            flex = "0 0 auto"
-            padding = "${style.headerPaddingPx}px ${style.editorPaddingPx}px"
-            fontFamily = style.fontFamily
-            fontSize = "${style.fontSize}px"
-            lineHeight = "${style.lineHeightPx}px"
-            backgroundColor = "var(--t-surface-raised, #252525)"
-            color = "var(--t-terminal-fg, #e6e6e6)"
-            setProperty("border-bottom", "1px solid #333333")
-            setProperty("user-select", "none")
-            whiteSpace = "nowrap"
-            setProperty("overflow", "hidden")
-            setProperty("text-overflow", "ellipsis")
-        }
-        return header
     }
 
     private fun buildEditorElement(): HTMLElement {

@@ -1,28 +1,35 @@
 #!/usr/bin/env python3
-"""Convert a Dynalist OPML backup folder to Notegrow on-disk format.
+"""Convert a Dynalist OPML backup folder into the live Notegrow database.
 
-Produces the structure that auto-promotion would have settled into if the user
-had typed every Dynalist outline by hand into Notegrow's editor under the
-production thresholds defined in `auto-promote-plan.md`:
+Writes the imported outline as one promoted child folder under the live
+Notegrow on-disk database at NOTEGROW_DB. The wrapper folder name is
+IMPORT_NAME ("Dynalist Import" by default). Existing notes are not touched.
+The script also patches NOTEGROW_DB/root.nogr (with a timestamped backup) so
+the wrapper bullet is referenced and visible in the running app.
+
+Promotion thresholds mirror `auto-promote-plan.md`:
 
     PROMOTE_MIN_DESCENDANTS = 40
-    DEMOTE_MAX_DESCENDANTS  = 15  (irrelevant for a one-shot batch import)
     MAX_DEPTH_TO_PROMOTE    = 4
     MIN_TITLE_LENGTH        = 1
 
-On-disk layout (no wrapper folder — `root.nogr` sits next to its children):
+Note: the live app currently runs with PromotionPolicy.DEBUG = true (threshold
+3). The first edit-and-save inside Notegrow will reshard the imported tree to
+those thresholds. Content is preserved; only on-disk layout shifts.
 
-    OUTPUT/
-        root.nogr
-        Bontouch/
-            Bontouch.nogr
-            Möten/
-                Möten.nogr
-            Tidigare sammanfattning/
-                Tidigare sammanfattning.nogr
-        Privat/
-            Privat.nogr
-            ...
+On-disk layout produced under the live database:
+
+    NOTEGROW_DB/
+        root.nogr                            (patched: wrapper bullet appended)
+        Dynalist Import/
+            Dynalist Import.nogr
+            Bontouch/
+                Bontouch.nogr
+                Möten/
+                    Möten.nogr
+            Privat/
+                Privat.nogr
+                ...
 
 Each promoted bullet creates a sibling `<Title>/` directory containing
 `<Title>.nogr`; further-promoted descendants nest inside, mirroring the
@@ -36,6 +43,10 @@ since Notegrow has no first-class note concept yet.
 Filenames preserve the original bullet title verbatim (case, spaces, non-ASCII)
 except where the filesystem disallows it. Collisions inside the same directory
 are resolved by appending " 2", " 3", … to the second and later occurrences.
+
+Re-running is idempotent: any existing NOTEGROW_DB/<IMPORT_NAME>/ tree is
+removed before writing fresh files, and any pre-existing wrapper ref line in
+root.nogr is stripped before the new one is appended.
 """
 from __future__ import annotations
 
@@ -43,17 +54,25 @@ import re
 import shutil
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 # --- Config -------------------------------------------------------------------
 
-SOURCE = Path("/Users/soderbjorn/Downloads/dynalist-backup-opml-2023-02-04")
-OUTPUT = Path("/Users/soderbjorn/repo/notegrow/main/dynalist-import")
+SOURCE = Path(__file__).resolve().parent / "dynalist-opml-snapshot"
+NOTEGROW_DB = Path("/Users/soderbjorn/notegrow-db")
+IMPORT_NAME = "Dynalist Import"
+IMPORT_DIR = NOTEGROW_DB / IMPORT_NAME
+ROOT_FILE = NOTEGROW_DB / "root.nogr"
 INDENT = "  "  # 2 spaces per depth level
 
 PROMOTE_MIN_DESCENDANTS = 40
 MAX_DEPTH_TO_PROMOTE = 4
 MIN_TITLE_LENGTH = 1
+
+# Must match SubtreeCodec.REF_SEPARATOR ("  ") so NoteRepository parses the ref.
+WRAPPER_REF_PATH = f"{IMPORT_NAME}/{IMPORT_NAME}.nogr"
+WRAPPER_LINE = f"* {IMPORT_NAME}  [[{WRAPPER_REF_PATH}]]"
 
 
 # --- Data ---------------------------------------------------------------------
@@ -242,16 +261,57 @@ def render(bullets: list[Bullet], refs: dict[int, str]) -> str:
 
 # --- Entry point --------------------------------------------------------------
 
+def patch_root_file() -> str:
+    """Backup and patch NOTEGROW_DB/root.nogr so the wrapper bullet is visible.
+
+    Reads the existing root.nogr (empty if missing), removes any pre-existing
+    line that ends in `[[<WRAPPER_REF_PATH>]]` (idempotency for re-runs),
+    appends a single fresh wrapper line, and writes the result back. A
+    timestamped backup is created if the file existed.
+
+    @return Description of the backup taken (or a "no prior" sentinel) so
+    main() can print it in the summary.
+    """
+    existed = ROOT_FILE.exists()
+    backup_msg: str
+    if existed:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_path = ROOT_FILE.with_name(f"root.nogr.bak-{ts}")
+        shutil.copy2(ROOT_FILE, backup_path)
+        backup_msg = str(backup_path)
+        existing = ROOT_FILE.read_text()
+    else:
+        backup_msg = "no prior root.nogr — creating fresh"
+        existing = ""
+
+    # Drop any prior wrapper-ref lines so the file stays at exactly one ref.
+    ref_suffix = f"[[{WRAPPER_REF_PATH}]]"
+    kept = [ln for ln in existing.splitlines() if not ln.rstrip().endswith(ref_suffix)]
+
+    new_text = "\n".join(kept).rstrip("\n")
+    if new_text:
+        new_text += "\n"
+    new_text += WRAPPER_LINE + "\n"
+
+    ROOT_FILE.write_text(new_text)
+    return backup_msg
+
+
 def main() -> None:
     if not SOURCE.exists():
         raise SystemExit(f"Source folder missing: {SOURCE}")
+    if not NOTEGROW_DB.exists():
+        raise SystemExit(
+            f"Notegrow database missing: {NOTEGROW_DB}\n"
+            "Refusing to auto-create the live database."
+        )
 
-    if OUTPUT.exists():
-        shutil.rmtree(OUTPUT)
-    OUTPUT.mkdir(parents=True)
+    # Wipe any prior import only — never touch the rest of NOTEGROW_DB.
+    if IMPORT_DIR.exists():
+        shutil.rmtree(IMPORT_DIR)
 
-    # Build the combined outline: root contains one heading bullet per OPML doc,
-    # each holding that doc's outline at depth+1.
+    # Build the combined outline: one heading bullet per OPML doc, each holding
+    # that doc's outline at depth+1.
     combined: list[Bullet] = []
     docs = sorted(SOURCE.glob("*.opml"))
     for opml in docs:
@@ -260,35 +320,50 @@ def main() -> None:
         for b in parse_opml(opml):
             combined.append(Bullet(b.depth + 1, b.text))
 
+    # Wrap the combined outline as one promoted child of root: it lands at
+    # NOTEGROW_DB/<IMPORT_NAME>/<IMPORT_NAME>.nogr with descendants nested
+    # underneath. depth_offset=1 mirrors how the recursion treats top-level
+    # promoted children (their content is globally one level deep).
     files_to_write: list[tuple[str, list[Bullet], dict[int, str]]] = []
     used_per_dir: dict[str, set[str]] = {}
     split_and_emit(
         combined, files_to_write,
-        current_dir_rel="", file_basename="root",
-        depth_offset=0, used_per_dir=used_per_dir,
+        current_dir_rel=IMPORT_NAME, file_basename=IMPORT_NAME,
+        depth_offset=1, used_per_dir=used_per_dir,
     )
 
+    total_bytes = 0
     for rel_path, bullets, refs in files_to_write:
-        full_path = OUTPUT / rel_path
+        full_path = NOTEGROW_DB / rel_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(render(bullets, refs))
+        text = render(bullets, refs)
+        full_path.write_text(text)
+        total_bytes += len(text.encode("utf-8"))
 
-    print(f"Wrote {OUTPUT}")
+    backup_msg = patch_root_file()
+
+    wrapper_rel = f"{IMPORT_NAME}/{IMPORT_NAME}.nogr"
+    wrapper_entry = next(f for f in files_to_write if f[0] == wrapper_rel)
+    children = [f for f in files_to_write if f[0] != wrapper_rel]
+
+    print(f"Wrote {IMPORT_DIR}")
     print(f"  source docs:    {len(docs)}")
     print(f"  combined input: {len(combined)} bullets")
-    root_entry = next(f for f in files_to_write if f[0] == "root.nogr")
-    print(f"  root.nogr:      {len(root_entry[1])} bullets, {len(root_entry[2])} promoted refs")
-    children = [f for f in files_to_write if f[0] != "root.nogr"]
+    print(f"  wrapper file:   {wrapper_rel} — "
+          f"{len(wrapper_entry[1])} bullets, {len(wrapper_entry[2])} promoted refs")
     print(f"  child files:    {len(children)}")
+    print(f"  total bytes:    {total_bytes}")
     if children:
         sizes = sorted(len(b) for _, b, _ in children)
         print(f"    child file sizes — min={sizes[0]} med={sizes[len(sizes)//2]} "
               f"p90={sizes[int(0.9*len(sizes))-1]} max={sizes[-1]} mean={sum(sizes)//len(sizes)}")
         print(f"    files with further-promoted children: "
               f"{sum(1 for _, _, r in children if r)}")
-        # Maximum directory nesting depth (number of '/' in any rel path).
         max_dirs = max(p.count("/") for p, _, _ in files_to_write)
         print(f"    deepest nesting (path separators): {max_dirs}")
+    print(f"Patched {ROOT_FILE}")
+    print(f"  backup:         {backup_msg}")
+    print(f"  appended line:  {WRAPPER_LINE}")
 
 
 if __name__ == "__main__":

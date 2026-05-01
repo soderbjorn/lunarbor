@@ -1,11 +1,15 @@
 /*
  * OutlinePaintLoop.kt (jsMain)
  * ----------------------------
- * The repaint pipeline for the editor body and the sticky header. Top-level
- * functions accept the DOM nodes, the current backing state, and a few
- * style/measurement values; they own no state themselves. The collector
- * that subscribes to the view-model's flow lives in `MainScreen` and just
- * forwards each emission to [paint] / [paintHeader].
+ * The repaint pipeline for the editor body. Top-level functions accept the
+ * DOM nodes, the current backing state, and a few style/measurement values;
+ * they own no state themselves. The collector that subscribes to the
+ * view-model's flow lives in `MainScreen` and forwards each emission to
+ * [paint].
+ *
+ * The breadcrumb header that used to live here moved into the toolkit's
+ * pane chrome title (RTL-clipped) — the editor now mounts directly into the
+ * pane content so bullets start at the very top of the pane.
  *
  * Style installation, character-width measurement, and wrap-width math
  * also live here because they're concerns of the painter rather than the
@@ -29,60 +33,6 @@ fun paintLoading(editor: HTMLElement) {
     loading.textContent = "Loading…"
     loading.style.opacity = "0.6"
     editor.appendChild(loading)
-}
-
-/**
- * Repaints the sticky header to reflect the current zoom state. Shows
- * "Root" when not zoomed, or the zoom target's text when zoomed.
- * Clicking the header while zoomed returns to root.
- *
- * @param header The sticky header element.
- * @param backing Latest backing state, or `null` during the initial
- *   loading phase (in which case the header shows a muted placeholder).
- * @param viewModel View-model used to resolve zoom info and to invoke
- *   `zoomOut` from the click handler.
- * @param onZoomOutFocus Called after `zoomOut` so the editor can
- *   re-acquire focus.
- */
-fun paintHeader(
-    header: HTMLElement,
-    backing: DocumentViewBackingViewModel.State?,
-    viewModel: MainViewModel,
-    onZoomOutFocus: () -> Unit,
-) {
-    header.innerHTML = ""
-    val zoom = backing?.let { viewModel.zoomInfo(it) }
-    val label = document.createElement("span") as HTMLElement
-    if (zoom == null) {
-        label.textContent = "Root"
-        label.style.apply {
-            color = "var(--t-text-secondary, #9aa0a6)"
-            cursor = "default"
-        }
-        header.onclick = null
-        header.style.cursor = "default"
-    } else {
-        val title = zoom.titleText.ifEmpty { "Untitled" }
-        label.textContent = title
-        label.style.apply {
-            color = "var(--t-terminal-fg, #e6e6e6)"
-            fontWeight = "600"
-        }
-        val hint = document.createElement("span") as HTMLElement
-        hint.textContent = "Root  /  "
-        hint.style.apply {
-            color = "var(--t-text-secondary, #9aa0a6)"
-            marginRight = "0"
-        }
-        header.appendChild(hint)
-        header.style.cursor = "pointer"
-        header.title = "Back to Root"
-        header.onclick = { _ ->
-            viewModel.zoomOut()
-            onZoomOutFocus()
-        }
-    }
-    header.appendChild(label)
 }
 
 /**
@@ -110,12 +60,30 @@ fun paint(
     val startRow = zoom?.startRow ?: 0
     val endRowInclusive = zoom?.endRowInclusive ?: state.lines.lastIndex
     if (endRowInclusive < startRow) return
+    // When zoomed, indents render relative to the zoom target so the
+    // closest descendants paint at their natural step (TAB_SIZE) instead
+    // of carrying the absolute leading whitespace of the document root.
+    // Every line in the zoom subtree is a bullet with indent strictly
+    // greater than `zoomIndent` (see DocumentLayout.subtreeEnd) so
+    // dropping `zoomIndent` leading characters is always safe.
+    val zoomIndent = zoom?.zoomIndent ?: 0
+    val viewSelection = if (selection != null && zoomIndent > 0) {
+        DocumentViewBackingViewModel.Selection(
+            startRow = selection.startRow,
+            startCol = (selection.startCol - zoomIndent).coerceAtLeast(0),
+            endRow = selection.endRow,
+            endCol = (selection.endCol - zoomIndent).coerceAtLeast(0),
+        )
+    } else selection
 
     for (row in startRow..endRowInclusive) {
-        val line = state.lines[row]
+        val rawLine = state.lines[row]
+        val line = if (zoomIndent > 0 && rawLine.length >= zoomIndent)
+            rawLine.substring(zoomIndent) else rawLine
         val chunks = DocumentLayout.wrapLine(line, width).toMutableList()
         val cursorInfo = if (row == state.cursorRow) {
-            DocumentLayout.cursorVisualPosition(line, state.cursorCol, width).also {
+            val cursorColRel = (state.cursorCol - zoomIndent).coerceAtLeast(0)
+            DocumentLayout.cursorVisualPosition(line, cursorColRel, width).also {
                 if (it.needsTrailingEmptyChunk) chunks.add("")
             }
         } else null
@@ -128,9 +96,9 @@ fun paint(
                 setProperty("position", "relative")
             }
 
-            if (selection != null) {
+            if (viewSelection != null) {
                 val highlight = DocumentLayout.chunkSelectionHighlight(
-                    selection, row, line, chunkIndex, chunks.size, chunk.length, width
+                    viewSelection, row, line, chunkIndex, chunks.size, chunk.length, width
                 )
                 if (highlight != null) {
                     appendSelectionHighlight(chunkDiv, highlight, charWidthPx, style.lineHeightPx)
@@ -162,7 +130,7 @@ fun paint(
             editor.appendChild(chunkDiv)
         }
     }
-    scrollCursorIntoView(editor, state, style, width, startRow, endRowInclusive)
+    scrollCursorIntoView(editor, state, style, width, startRow, endRowInclusive, zoomIndent)
 }
 
 /**
@@ -178,18 +146,50 @@ private fun appendBulletClickTarget(
     viewModel: MainViewModel,
     onAfterZoom: () -> Unit,
 ) {
+    // Comfortable click target — a circular zone centred on the bullet
+    // column's optical centre. Sized 24×24 so it's easy to hit on touch
+    // without overlapping the next character; the inner glyph paints a
+    // larger visible bullet on top of the text-layer `•` so the user
+    // always sees a chunky dot, not the tiny default glyph. Hovering
+    // grows the zone outward (CSS `::after` halo + inner-glyph scale).
+    val hitSize = 24
+    val bulletCenterX = (bulletCol + 0.5) * charWidthPx
+    val bulletCenterY = lineHeightPx / 2.0
     val target = document.createElement("div") as HTMLElement
     target.className = "notegrow-bullet"
     target.title = "Zoom into bullet"
     target.style.apply {
         setProperty("position", "absolute")
-        left = "${bulletCol * charWidthPx}px"
-        top = "0"
-        width = "${charWidthPx}px"
-        height = "${lineHeightPx}px"
+        left = "${bulletCenterX - hitSize / 2.0}px"
+        top = "${bulletCenterY - hitSize / 2.0}px"
+        width = "${hitSize}px"
+        height = "${hitSize}px"
         setProperty("z-index", "3")
         cursor = "pointer"
+        // Flex layout centers the inner glyph dot within the hit-zone.
+        display = "flex"
+        alignItems = "center"
+        justifyContent = "center"
+        // Round the hit-zone visually too — the hover halo expands from
+        // a circle, growing outward, mirroring the glyph's shape.
+        borderRadius = "50%"
     }
+    // Inner painted bullet — sits ON TOP of the text-layer `•` so the
+    // user sees a chunky dot at all times. Coloured from the text token
+    // so it inherits the active theme.
+    val glyph = document.createElement("span") as HTMLElement
+    glyph.className = "notegrow-bullet-glyph"
+    glyph.style.apply {
+        display = "block"
+        width = "10px"
+        height = "10px"
+        borderRadius = "50%"
+        backgroundColor = "var(--t-text-primary, #e6e6e6)"
+        setProperty("pointer-events", "none")
+        setProperty("transition", "transform 120ms ease-out")
+    }
+    target.appendChild(glyph)
+
     target.addEventListener("mousedown", { event ->
         val me = event as MouseEvent
         me.stopPropagation()
@@ -280,12 +280,56 @@ fun ensureStyles() {
         .notegrow-editor::-webkit-scrollbar-thumb:hover {
             background: var(--t-text-tertiary, #5e5e5e);
         }
+        /* Bullet hit-zone: circular by virtue of `border-radius: 50%`
+           inline; hover paints a translucent disc that expands outward
+           from the glyph (radial gradient → soft falloff at the edge).
+           The inner painted glyph also scales up slightly for tactile
+           feedback. */
         .notegrow-bullet:hover {
-            background: var(--t-terminal-selection, rgba(90, 176, 255, 0.25));
-            border-radius: 3px;
+            background: radial-gradient(
+                circle at center,
+                var(--t-terminal-selection, rgba(90, 176, 255, 0.30)) 0%,
+                var(--t-terminal-selection, rgba(90, 176, 255, 0.15)) 60%,
+                transparent 100%
+            );
+        }
+        .notegrow-bullet:hover .notegrow-bullet-glyph {
+            transform: scale(1.15);
+        }
+        .notegrow-bullet:active .notegrow-bullet-glyph {
+            transform: scale(0.92);
         }
         .notegrow-header:hover {
             background: var(--t-surface-overlay, #2a2a2a);
+        }
+        @keyframes notegrow-spinner-rotate {
+            to { transform: rotate(360deg); }
+        }
+        .notegrow-restructuring {
+            position: fixed;
+            bottom: 14px;
+            right: 14px;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: var(--t-surface-overlay, rgba(42, 42, 42, 0.95));
+            color: var(--t-text-secondary, #cfcfcf);
+            border: 1px solid var(--t-border-strong, #4a4a4a);
+            border-radius: 999px;
+            font-size: 12px;
+            line-height: 1;
+            z-index: 1000;
+            pointer-events: none;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+        }
+        .notegrow-restructuring-spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid var(--t-border-strong, #4a4a4a);
+            border-top-color: var(--t-accent, #5ab0ff);
+            border-radius: 50%;
+            animation: notegrow-spinner-rotate 0.8s linear infinite;
         }
     """.trimIndent()
     document.head?.appendChild(style)

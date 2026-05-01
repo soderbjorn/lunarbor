@@ -74,11 +74,18 @@ class DocumentBackingViewModel(
      * @property isLoaded `false` until [loadFromDisk] has completed once, at
      *   which point it flips to `true` and stays there. The editor view uses
      *   this to render a "Loading…" placeholder on cold start.
+     * @property isRestructuring `true` while the autosave loop is in the middle
+     *   of a save tick that promotes a fresh subtree into its own file or
+     *   demotes a previously promoted one back inline — i.e. one that fans
+     *   out into multiple file writes (and possibly directory deletes). Plain
+     *   saves where the on-disk shape is unchanged keep this `false`. The view
+     *   layer can use this to surface a "restructuring…" indicator.
      */
     data class State(
         val lines: List<String> = listOf(""),
         val lineIds: List<LineId> = listOf(LineId(0L)),
-        val isLoaded: Boolean = false
+        val isLoaded: Boolean = false,
+        val isRestructuring: Boolean = false,
     )
 
     /**
@@ -262,7 +269,18 @@ class DocumentBackingViewModel(
                 val dir = promotedSubtrees[id] ?: continue
                 rowToDir[idx] = dir
             }
-            val newRowToDir = repository.save(state.lines, rowToDir)
+            val newRowToDir = try {
+                repository.save(state.lines, rowToDir) { active ->
+                    _stateFlow.value = _stateFlow.value.copy(isRestructuring = active)
+                }
+            } finally {
+                // Defensive: if save threw between onPhaseChange(true) and
+                // the matching onPhaseChange(false), make sure the UI banner
+                // still clears.
+                if (_stateFlow.value.isRestructuring) {
+                    _stateFlow.value = _stateFlow.value.copy(isRestructuring = false)
+                }
+            }
             promotedSubtrees.clear()
             for ((row, dir) in newRowToDir) {
                 if (row in state.lineIds.indices) promotedSubtrees[state.lineIds[row]] = dir

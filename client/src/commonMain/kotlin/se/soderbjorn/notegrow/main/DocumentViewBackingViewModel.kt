@@ -82,6 +82,15 @@ class DocumentViewBackingViewModel(
         /** `true` once the document has loaded from disk at least once. */
         val isLoaded: Boolean get() = documentState?.isLoaded == true
 
+        /**
+         * `true` while the document VM is mid-save on a tick that promotes or
+         * demotes a subtree across the per-file boundary — see
+         * [DocumentBackingViewModel.State.isRestructuring]. Surfaced here so
+         * platform views can render a small status indicator without poking
+         * into the document-level state directly.
+         */
+        val isRestructuring: Boolean get() = documentState?.isRestructuring == true
+
         /** Convenience accessor — never null, falls back to a single empty line. */
         val lines: List<String> get() = documentState?.lines ?: listOf("")
     }
@@ -181,8 +190,19 @@ class DocumentViewBackingViewModel(
     /** See [ZoomNavigation.zoomOut]. */
     fun zoomOut() = zoomNavigation.zoomOut()
 
+    /** See [ZoomNavigation.zoomTo]. */
+    fun zoomTo(lineId: LineId?) = zoomNavigation.zoomTo(lineId)
+
     /** See [ZoomNavigation.zoomInfo]. */
     fun zoomInfo(state: State = _stateFlow.value): ZoomInfo? = zoomNavigation.zoomInfo(state)
+
+    /** See [ZoomNavigation.bulletAncestors]. */
+    fun bulletAncestors(state: State = _stateFlow.value): List<BreadcrumbAncestor> =
+        zoomNavigation.bulletAncestors(state)
+
+    /** See [ZoomNavigation.zoomPathSegments]. */
+    fun zoomPathSegments(state: State = _stateFlow.value): List<String> =
+        zoomNavigation.zoomPathSegments(state)
 
     // ------------------------------------------------------------------ movement
 

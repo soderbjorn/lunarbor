@@ -112,12 +112,20 @@ class NoteRepository(
      * @param promotedByRow Row→dirRel map carried over from the previous load
      *   or save. Entries here describe subtrees that are *currently* on disk
      *   as their own files; the save may rename, demote, or leave them alone.
+     * @param onPhaseChange Invoked with `true` immediately before the save
+     *   begins fanning out file writes/deletes for a *restructuring* tick —
+     *   i.e. one that promotes a fresh subtree or demotes a previously
+     *   promoted one — and with `false` once those writes complete (or fail).
+     *   Plain saves where every promotion already existed never invoke the
+     *   callback, so callers see no signal for routine ticks. The callback
+     *   runs on the calling coroutine; keep it cheap and non-suspending.
      * @return The new row→dirRel map, ready to be stashed in
      *   `DocumentBackingViewModel` for the next save.
      */
     suspend fun save(
         lines: List<String>,
         promotedByRow: Map<Int, String>,
+        onPhaseChange: (Boolean) -> Unit = {},
     ): Map<Int, String> {
         fileSystem.ensureDirectory(rootDirectory)
 
@@ -148,60 +156,73 @@ class NoteRepository(
             if (keep) promotedRowsOut += m.startRow
         }
 
-        // Step 2: walk the outline once, building per-file content lists and
-        // assigning child directory names with collision resolution.
-        val plans = mutableListOf<FilePlan>()
-        val newPromotedByRow = HashMap<Int, String>()
-        val usedByDir = HashMap<String, MutableSet<String>>()
-        usedByDir.getOrPut("") { HashSet() }.add(rootBasename)
+        // Compare against the previous map to detect whether this tick will
+        // actually reshape the on-disk tree. Pure-content saves (every
+        // already-promoted subtree still qualifies, no new ones cross the
+        // promote line) skip the phase signal entirely.
+        val willPromote = promotedRowsOut.any { it !in promotedByRow }
+        val willDemote = promotedByRow.keys.any { it !in promotedRowsOut }
+        val isRestructuring = willPromote || willDemote
 
-        decomposeIntoFiles(
-            lines = lines,
-            measurementByStartRow = measurementByStartRow,
-            promotedRowsOut = promotedRowsOut,
-            promotedByRow = promotedByRow,
-            start = 0,
-            endExclusive = lines.size,
-            indentBaseline = 0,
-            dirRel = "",
-            basename = rootBasename,
-            isRoot = true,
-            usedByDir = usedByDir,
-            plansOut = plans,
-            newPromotedByRow = newPromotedByRow,
-        )
+        if (isRestructuring) onPhaseChange(true)
+        try {
+            // Step 2: walk the outline once, building per-file content lists and
+            // assigning child directory names with collision resolution.
+            val plans = mutableListOf<FilePlan>()
+            val newPromotedByRow = HashMap<Int, String>()
+            val usedByDir = HashMap<String, MutableSet<String>>()
+            usedByDir.getOrPut("") { HashSet() }.add(rootBasename)
 
-        // Step 3: write all files. We don't bother with atomic moveDirectory
-        // here — write-everywhere + delete-orphans is simpler, equally safe
-        // for our sizes, and survives partial failure better (write succeeds
-        // even if the old dir was renamed externally).
-        for (plan in plans) {
-            val absDir = if (plan.dirRel.isEmpty()) rootDirectory
-                         else "$rootDirectory/${plan.dirRel}"
-            fileSystem.ensureDirectory(absDir)
+            decomposeIntoFiles(
+                lines = lines,
+                measurementByStartRow = measurementByStartRow,
+                promotedRowsOut = promotedRowsOut,
+                promotedByRow = promotedByRow,
+                start = 0,
+                endExclusive = lines.size,
+                indentBaseline = 0,
+                dirRel = "",
+                basename = rootBasename,
+                isRoot = true,
+                usedByDir = usedByDir,
+                plansOut = plans,
+                newPromotedByRow = newPromotedByRow,
+            )
+
+            // Step 3: write all files. We don't bother with atomic moveDirectory
+            // here — write-everywhere + delete-orphans is simpler, equally safe
+            // for our sizes, and survives partial failure better (write succeeds
+            // even if the old dir was renamed externally).
+            for (plan in plans) {
+                val absDir = if (plan.dirRel.isEmpty()) rootDirectory
+                             else "$rootDirectory/${plan.dirRel}"
+                fileSystem.ensureDirectory(absDir)
+            }
+            for (plan in plans) {
+                val absFile = if (plan.isRoot) "$rootDirectory/$rootFileName"
+                              else "$rootDirectory/${plan.dirRel}/${plan.basename}.nogr"
+                fileSystem.writeFile(absFile, plan.content.joinToString("\n"))
+            }
+
+            // Step 4: collect orphaned old paths (entries in promotedByRow whose
+            // dirRel is no longer used by any current promotion). These are
+            // either demoted subtrees or renamed-and-moved subtrees.
+            val keptDirs = newPromotedByRow.values.toHashSet()
+            val orphanedOldDirs = promotedByRow.values.filter { it !in keptDirs }.toSet()
+
+            // Delete deepest first so a dir's contents are gone before we try to
+            // remove the dir itself.
+            val sortedOrphans = orphanedOldDirs.sortedByDescending { it.count { ch -> ch == '/' } }
+            for (orphanDir in sortedOrphans) {
+                val basename = orphanDir.substringAfterLast('/')
+                fileSystem.deleteFile("$rootDirectory/$orphanDir/$basename.nogr")
+                fileSystem.deleteDirectoryIfEmpty("$rootDirectory/$orphanDir")
+            }
+
+            return newPromotedByRow
+        } finally {
+            if (isRestructuring) onPhaseChange(false)
         }
-        for (plan in plans) {
-            val absFile = if (plan.isRoot) "$rootDirectory/$rootFileName"
-                          else "$rootDirectory/${plan.dirRel}/${plan.basename}.nogr"
-            fileSystem.writeFile(absFile, plan.content.joinToString("\n"))
-        }
-
-        // Step 4: collect orphaned old paths (entries in promotedByRow whose
-        // dirRel is no longer used by any current promotion). These are
-        // either demoted subtrees or renamed-and-moved subtrees.
-        val keptDirs = newPromotedByRow.values.toHashSet()
-        val orphanedOldDirs = promotedByRow.values.filter { it !in keptDirs }.toSet()
-
-        // Delete deepest first so a dir's contents are gone before we try to
-        // remove the dir itself.
-        val sortedOrphans = orphanedOldDirs.sortedByDescending { it.count { ch -> ch == '/' } }
-        for (orphanDir in sortedOrphans) {
-            val basename = orphanDir.substringAfterLast('/')
-            fileSystem.deleteFile("$rootDirectory/$orphanDir/$basename.nogr")
-            fileSystem.deleteDirectoryIfEmpty("$rootDirectory/$orphanDir")
-        }
-
-        return newPromotedByRow
     }
 
     /**

@@ -16,8 +16,34 @@ import se.soderbjorn.notegrow.main.AppShell
  */
 fun main() {
     window.onload = {
+        tagBodyForElectronMac()
         val app = document.getElementById("app") as HTMLElement
         val graph = createJsAppGraph()
-        AppShell(graph.mainViewModel, graph.coroutineScope).render(app)
+        AppShell(
+            viewModel = graph.mainViewModel,
+            scope = graph.coroutineScope,
+            documentBackingViewModel = graph.documentBackingViewModel,
+        ).render(app)
+    }
+}
+
+/**
+ * Adds the toolkit's `dt-electron-mac` opt-in class to `<body>` when the
+ * renderer is an Electron BrowserWindow on macOS.
+ *
+ * Notegrow's Electron main process opens windows with
+ * `titleBarStyle: "hiddenInset"` so the themed titlebar bleeds through;
+ * the OS traffic-light buttons still float over the upper-left corner.
+ * The toolkit's stylesheet reserves ~80 px in the top bar's leading slot
+ * when this class is present, so the first interactive item never sits
+ * under a traffic-light. Non-mac Electron puts window controls on the
+ * right and needs no padding — the gate is intentional.
+ */
+private fun tagBodyForElectronMac() {
+    val ua = window.navigator.userAgent
+    val isElectron = ua.contains("Electron", ignoreCase = true)
+    val isMac = ua.contains("Mac OS X", ignoreCase = true)
+    if (isElectron && isMac) {
+        document.body?.classList?.add("dt-electron-mac")
     }
 }

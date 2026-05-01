@@ -40,6 +40,14 @@ internal class ZoomNavigation(
         if (indent < 0) return
         val id = docState.lineIds[row]
         val endInclusive = DocumentLayout.subtreeEnd(docState.lines, row, indent)
+        // Refuse to zoom into a bullet that has neither text of its own nor any
+        // children. Without this guard, the leaf-placeholder branch below would
+        // auto-create an empty child and zoom in, and clicking that child's
+        // handle would do the same thing again — producing an infinite chain
+        // of "(untitled)" breadcrumbs from a single empty bullet.
+        val hasChildren = endInclusive >= row + 1
+        val hasText = line.substring(minOf(indent + 2, line.length)).isNotBlank()
+        if (!hasChildren && !hasText) return
         if (endInclusive < row + 1) {
             val childIndent = indent + TAB_SIZE
             val childPrefix = " ".repeat(childIndent) + "* "
@@ -76,6 +84,45 @@ internal class ZoomNavigation(
         patch { it.copy(zoomedLineId = null, anchorRow = null, anchorCol = null) }
     }
 
+    /**
+     * Zooms directly to a specific bullet by [LineId], or clears the zoom
+     * when [lineId] is `null`. Used by the breadcrumb trail in the editor
+     * header — clicking an ancestor segment navigates exactly one level up
+     * (or any specific ancestor) without funneling through `zoomOut` first.
+     *
+     * Unlike [zoomInto], this does not insert a placeholder child or move
+     * the caret — the caller already has a valid zoom target chosen from
+     * the existing tree (an ancestor of the current zoom), so the visible
+     * subtree under it is non-empty by construction.
+     *
+     * @param lineId target bullet id, or null to clear the zoom.
+     */
+    fun zoomTo(lineId: LineId?) {
+        if (!stateProvider().isLoaded) return
+        if (lineId == null) {
+            zoomOut()
+            return
+        }
+        patch { it.copy(zoomedLineId = lineId, anchorRow = null, anchorCol = null) }
+    }
+
     fun zoomInfo(state: DocumentViewBackingViewModel.State): DocumentViewBackingViewModel.ZoomInfo? =
         zoomInfoOf(state)
+
+    /**
+     * Returns the ancestor breadcrumb chain for the currently zoomed line
+     * (outer-to-inner, excluding the zoomed line itself). See
+     * [bulletAncestorsOf] for ordering details.
+     */
+    fun bulletAncestors(state: DocumentViewBackingViewModel.State): List<BreadcrumbAncestor> =
+        bulletAncestorsOf(state)
+
+    /**
+     * Outer-to-inner breadcrumb segments for the current zoom (ancestors +
+     * current zoom target text). Empty when the document is not zoomed —
+     * callers fall back to the pane's static title in that case. Delegates
+     * to [zoomPathSegmentsOf].
+     */
+    fun zoomPathSegments(state: DocumentViewBackingViewModel.State): List<String> =
+        zoomPathSegmentsOf(state)
 }

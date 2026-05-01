@@ -25,6 +25,7 @@ kotlin {
             implementation(projects.client)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.darkness.core)
+            implementation(libs.darkness.store)
             implementation(libs.darkness.web)
         }
     }

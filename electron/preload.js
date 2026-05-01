@@ -21,6 +21,16 @@ if (darknessArg) {
   contextBridge.exposeInMainWorld("__darknessSettings", value);
 }
 
+// Hand off the per-app layout-state JSON the same way. Read at boot via
+// `globalThis.__darknessLayoutState`, parsed by `LayoutState.fromJsonString`
+// in toolkit-store. Absence of the global means "no persisted state yet"
+// and the app should fall through to `LayoutState.defaults()`.
+const layoutArg = (process.argv || []).find(a => a && a.startsWith("--darkness-layout-state="));
+if (layoutArg) {
+  const value = decodeURIComponent(layoutArg.substring("--darkness-layout-state=".length));
+  contextBridge.exposeInMainWorld("__darknessLayoutState", value);
+}
+
 contextBridge.exposeInMainWorld("darknessApi", {
   /** Persist UI settings JSON to the shared darkness location. */
   writeUiSettings: (json) => ipcRenderer.invoke("darkness:writeUiSettings", json),
@@ -40,4 +50,23 @@ contextBridge.exposeInMainWorld("darknessApi", {
     ipcRenderer.on("darkness:uiSettingsChanged", handler);
     return () => ipcRenderer.removeListener("darkness:uiSettingsChanged", handler);
   },
+
+  /**
+   * Persist the per-app layout-state JSON atomically to disk. Renderer
+   * calls this on every layout mutation (drag-resize end, tab close,
+   * pane expand/restore, etc.). Renderer-side debouncing is the renderer's
+   * concern; this bridge is fire-and-forget atomic write.
+   *
+   * @param {string} json a complete layout-state JSON document
+   */
+  writeLayoutState: (json) => ipcRenderer.invoke("darkness:writeLayoutState", json),
+  /**
+   * Read the per-app layout-state JSON, or null on first launch. Note
+   * that `globalThis.__darknessLayoutState` already carries the boot
+   * snapshot — this IPC read is for late re-loads only (e.g. an explicit
+   * "discard local changes" reset gesture).
+   *
+   * @returns {Promise<string|null>} the JSON, or null
+   */
+  readLayoutState: () => ipcRenderer.invoke("darkness:readLayoutState"),
 });
