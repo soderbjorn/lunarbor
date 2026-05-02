@@ -82,6 +82,21 @@ internal class TextEditingViewModel(
                     // the children first (deliberate action, no accidental detachment).
                     val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
                     if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return
+                    // Empty leaf bullet (line is exactly the indent + `"* "`):
+                    // collapse the whole row into the end of the previous one
+                    // so a single backspace deletes the bullet, its indent,
+                    // and the now-empty line in one step instead of three.
+                    if (line.length == bulletCol + 2 && s.cursorRow > 0) {
+                        val zoom = zoomInfoOf(s)
+                        if (zoom == null || s.cursorRow > zoom.startRow) {
+                            val previousLen = s.lines[s.cursorRow - 1].length
+                            documentBackingViewModel.delete(
+                                s.cursorRow - 1, previousLen, s.cursorRow, line.length
+                            )
+                            patch { it.copy(cursorRow = s.cursorRow - 1, cursorCol = previousLen) }
+                            return
+                        }
+                    }
                 }
                 val removed = when {
                     isAtBulletMarkerEnd(line, s.cursorCol) -> 2

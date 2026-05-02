@@ -410,9 +410,17 @@ class DocumentBackingViewModel(
             // can leave unloaded subtrees on disk untouched.
             val rowToDir = HashMap<Int, String>(promotedSubtrees.size)
             val expandedRefRows = HashSet<Int>(state.expandedRefIds.size)
+            // Snapshot the ids the save will reason about. After the save we
+            // diff against this set instead of clear()-ing the whole map, so
+            // mappings added by a concurrent [expandSubtree] (which can run
+            // while [repository.save] is suspending on disk I/O) are not
+            // wiped out — losing them would orphan loaded child files and
+            // make the user's clicks treat real refs as plain bullets.
+            val snapshotPromotedIds = HashSet<LineId>(promotedSubtrees.size)
             for ((idx, id) in state.lineIds.withIndex()) {
                 val dir = promotedSubtrees[id] ?: continue
                 rowToDir[idx] = dir
+                snapshotPromotedIds += id
                 if (id in state.expandedRefIds) expandedRefRows += idx
             }
             val newRowToDir = try {
@@ -427,9 +435,25 @@ class DocumentBackingViewModel(
                     _stateFlow.value = _stateFlow.value.copy(isRestructuring = false)
                 }
             }
-            promotedSubtrees.clear()
+            // Apply the save's row→dir result without disturbing entries that
+            // a concurrent expand/collapse may have added or removed.
+            // - currentLineIds filters out ids removed by a concurrent
+            //   [collapseSubtree]; re-adding them would resurrect a mapping
+            //   the user just dropped.
+            // - keptIds drives the snapshot diff: anything the snapshot saw
+            //   as promoted but the save didn't keep was demoted, and only
+            //   those entries are removed.
+            val currentLineIds = _stateFlow.value.lineIds.toHashSet()
+            val keptIds = HashSet<LineId>(newRowToDir.size)
             for ((row, dir) in newRowToDir) {
-                if (row in state.lineIds.indices) promotedSubtrees[state.lineIds[row]] = dir
+                if (row !in state.lineIds.indices) continue
+                val id = state.lineIds[row]
+                if (id !in currentLineIds) continue
+                promotedSubtrees[id] = dir
+                keptIds += id
+            }
+            for (id in snapshotPromotedIds) {
+                if (id !in keptIds) promotedSubtrees.remove(id)
             }
             lastSavedText = currentText
         }

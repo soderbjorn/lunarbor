@@ -1,78 +1,22 @@
+/*
+ * DocumentLayout.kt
+ * -----------------
+ * Pure, platform-agnostic helpers that describe the document's *logical*
+ * shape: which line is a bullet, where its text starts, where its
+ * subtree ends, which rows are visible under the current fold state.
+ *
+ * Visual layout (wrap, chunking, caret pixels) used to live here too,
+ * back when the web view painted text manually. Since the move to
+ * `contenteditable` (and the platform-native text surfaces planned for
+ * Android/iOS), those concerns belong to each platform — every native
+ * editor surface already knows how to wrap and place a caret. What
+ * stays in commonMain is the bullet/indent/zoom semantics, shared by
+ * every platform.
+ */
+
 package se.soderbjorn.notegrow.main
 
-/**
- * Pure, platform-agnostic helpers that translate between the logical document
- * ([lines] + cursor column) and its visual layout under a given character wrap
- * [width]. Shared by every platform's view so that wrapping, caret placement,
- * and pointer hit-testing behave identically.
- */
 object DocumentLayout {
-
-    fun wrapLine(line: String, width: Int): List<String> {
-        val w = width.coerceAtLeast(1)
-        return if (line.isEmpty()) listOf("") else line.chunked(w)
-    }
-
-    fun chunkCountOf(line: String, width: Int): Int {
-        val w = width.coerceAtLeast(1)
-        return if (line.isEmpty()) 1 else (line.length + w - 1) / w
-    }
-
-    data class CursorVisual(
-        val chunkIndex: Int,
-        val colInChunk: Int,
-        val needsTrailingEmptyChunk: Boolean
-    )
-
-    fun cursorVisualPosition(line: String, cursorCol: Int, width: Int): CursorVisual {
-        val w = width.coerceAtLeast(1)
-        if (line.isEmpty()) return CursorVisual(0, 0, false)
-        return if (cursorCol < line.length) {
-            CursorVisual(cursorCol / w, cursorCol % w, false)
-        } else if (line.length % w == 0) {
-            CursorVisual(line.length / w, 0, true)
-        } else {
-            CursorVisual(line.length / w, line.length % w, false)
-        }
-    }
-
-    fun locateLogicalPosition(
-        lines: List<String>,
-        visualRow: Int,
-        visualCol: Int,
-        width: Int
-    ): Pair<Int, Int> {
-        if (lines.isEmpty()) return 0 to 0
-        val w = width.coerceAtLeast(1)
-        var remaining = visualRow
-        for ((rowIndex, line) in lines.withIndex()) {
-            val chunkCount = chunkCountOf(line, w)
-            if (remaining < chunkCount) {
-                val chunkStart = remaining * w
-                val chunkEnd = (chunkStart + w).coerceAtMost(line.length)
-                val col = (chunkStart + visualCol).coerceIn(chunkStart, chunkEnd)
-                return rowIndex to col
-            }
-            remaining -= chunkCount
-        }
-        val lastRow = lines.lastIndex
-        return lastRow to lines[lastRow].length
-    }
-
-    fun visualRowOfCursor(
-        lines: List<String>,
-        cursorRow: Int,
-        cursorCol: Int,
-        width: Int
-    ): Int {
-        val w = width.coerceAtLeast(1)
-        var visualRow = 0
-        for (i in 0 until cursorRow) {
-            visualRow += chunkCountOf(lines[i], w)
-        }
-        visualRow += cursorCol / w
-        return visualRow
-    }
 
     /** Column of the leading bullet `*` on [line], or -1 if [line] is not a bullet line. */
     fun bulletAsteriskColumn(line: String): Int {
@@ -87,9 +31,10 @@ object DocumentLayout {
      * the position immediately after the `"* "` marker (`bulletAsteriskColumn(line) + 2`);
      * for non-bullet lines it is `0`.
      *
-     * Used by hit-testing and every cursor-movement intent to keep the caret out of the
-     * bullet/indent zone, so the user cannot place the cursor before the bullet and
-     * cannot accidentally backspace through the marker that anchors a row to its subtree.
+     * Used by the platform view layer (when mapping DOM/native selection back into the
+     * model) and every cursor-movement intent to keep the caret out of the bullet/indent
+     * zone, so the user cannot place the cursor before the bullet and cannot accidentally
+     * backspace through the marker that anchors a row to its subtree.
      */
     fun textStartCol(line: String): Int {
         val bulletCol = bulletAsteriskColumn(line)
@@ -120,34 +65,14 @@ object DocumentLayout {
      * be the bullet column of [row] (i.e. [bulletAsteriskColumn] of that line);
      * pass `-1` for non-bullet rows and the result is always `false`.
      *
-     * Used by the chevron painter and by [parentBulletIdsOf] to decide whether
-     * a bullet is foldable.
+     * Used by the chevron painter and by [DocumentViewBackingViewModel]'s
+     * default-collapse pass to decide whether a bullet is foldable.
      */
     fun hasChildren(lines: List<String>, row: Int, indent: Int): Boolean {
         if (indent < 0) return false
         if (row + 1 > lines.lastIndex) return false
         val nextCol = bulletAsteriskColumn(lines[row + 1])
         return nextCol > indent
-    }
-
-    /**
-     * Returns the [LineId]s of every bullet row that is "collapsible" — has
-     * children in [lines]. Used by [DocumentViewBackingViewModel] to populate
-     * `collapsedIds` on first load so the editor opens with every parent
-     * folded by default. Reference rows (those whose subtree lives in a
-     * separate `.nogr` file) are not handled here because they have no
-     * children in [lines] before expansion; the view-model adds them
-     * separately via the document VM's `promotedSubtrees` registry.
-     */
-    fun parentBulletIdsOf(lines: List<String>, lineIds: List<LineId>): Set<LineId> {
-        val out = HashSet<LineId>()
-        for (i in lines.indices) {
-            val indent = bulletAsteriskColumn(lines[i])
-            if (indent >= 0 && hasChildren(lines, i, indent)) {
-                if (i in lineIds.indices) out += lineIds[i]
-            }
-        }
-        return out
     }
 
     /**
@@ -158,11 +83,11 @@ object DocumentLayout {
      * [subtreeEnd].
      *
      * This helper is the single source of truth shared by the paint loop and
-     * hit-testing so they always agree on what is visible. File-boundary
-     * "collapse" (an unexpanded `[[ref]]`) does not need handling here: when
-     * a ref is collapsed its children are physically absent from [lines]
-     * (the document VM unsplices them), so `visibleRowsOf` only handles
-     * within-file folds.
+     * cursor-movement helpers so they always agree on what is visible.
+     * File-boundary "collapse" (an unexpanded `[[ref]]`) does not need
+     * handling here: when a ref is collapsed its children are physically
+     * absent from [lines] (the document VM unsplices them), so
+     * `visibleRowsOf` only handles within-file folds.
      */
     fun visibleRowsOf(
         lines: List<String>,
@@ -187,51 +112,5 @@ object DocumentLayout {
             row++
         }
         return out
-    }
-
-    data class ChunkHighlight(val leftChars: Int, val widthChars: Double)
-
-    /**
-     * For a single rendered chunk, returns the selection overlap expressed in
-     * character units from the chunk's left edge — or null if the chunk has no
-     * selection overlap. [trailingIndicatorChars] is the small extra width
-     * appended on non-terminal rows of a multi-row selection to indicate the
-     * newline is part of the selection.
-     */
-    fun chunkSelectionHighlight(
-        selection: DocumentViewBackingViewModel.Selection,
-        row: Int,
-        line: String,
-        chunkIndex: Int,
-        totalChunks: Int,
-        chunkLen: Int,
-        wrapWidth: Int,
-        trailingIndicatorChars: Double = 0.6
-    ): ChunkHighlight? {
-        if (row < selection.startRow || row > selection.endRow) return null
-        val w = wrapWidth.coerceAtLeast(1)
-        val chunkStart = chunkIndex * w
-        val chunkEndContent = chunkStart + chunkLen
-        val rowStartCol = if (row == selection.startRow) selection.startCol else 0
-        val rowEndCol = if (row == selection.endRow) selection.endCol else line.length
-        val overlapStart = maxOf(rowStartCol, chunkStart)
-        val overlapEnd = minOf(rowEndCol, chunkEndContent)
-        val isLastChunkOfLine = chunkIndex == totalChunks - 1
-        val extendsPastRow = row < selection.endRow && isLastChunkOfLine
-
-        return if (overlapStart < overlapEnd) {
-            val base = (overlapEnd - overlapStart).toDouble()
-            ChunkHighlight(
-                leftChars = overlapStart - chunkStart,
-                widthChars = if (extendsPastRow) base + trailingIndicatorChars else base
-            )
-        } else if (extendsPastRow && rowStartCol <= chunkEndContent) {
-            ChunkHighlight(
-                leftChars = (maxOf(rowStartCol, chunkStart) - chunkStart).coerceAtLeast(0),
-                widthChars = trailingIndicatorChars
-            )
-        } else {
-            null
-        }
     }
 }

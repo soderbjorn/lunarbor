@@ -401,6 +401,36 @@ class DocumentViewBackingViewModel(
     /** See [TextEditingViewModel.clearSelection]. */
     fun clearSelection() = textEditing.clearSelection()
 
+    /**
+     * Pushes a logical selection into the viewer, used by platforms whose
+     * native text surface owns the live caret (web `contenteditable`,
+     * Compose `BasicTextField`, UIKit `UITextView`). The platform reads its
+     * surface's anchor/cursor on demand and forwards them here so the
+     * commonMain layer's selection-aware intents (`backspace`,
+     * `deleteSelectionIfAny`, `onCutRequested`, …) can compose primitive
+     * edits against a freshly-synced range without the platform having to
+     * call `moveTo` twice.
+     *
+     * @param anchorRow Row of the selection anchor (the end the user pinned
+     *   first). Pass the same value as [cursorRow] for a collapsed caret.
+     * @param anchorCol Column of the anchor on [anchorRow].
+     * @param cursorRow Row of the active end of the selection.
+     * @param cursorCol Column of the active end on [cursorRow].
+     */
+    fun setSelection(anchorRow: Int, anchorCol: Int, cursorRow: Int, cursorCol: Int) {
+        val current = _stateFlow.value
+        if (!current.isLoaded) return
+        val collapsed = anchorRow == cursorRow && anchorCol == cursorCol
+        _stateFlow.value = reconcile(
+            current.copy(
+                cursorRow = cursorRow,
+                cursorCol = cursorCol,
+                anchorRow = if (collapsed) null else anchorRow,
+                anchorCol = if (collapsed) null else anchorCol,
+            )
+        )
+    }
+
     /** See [TextEditingViewModel.deleteSelectionIfAny]. */
     fun deleteSelectionIfAny(): Boolean = textEditing.deleteSelectionIfAny()
 

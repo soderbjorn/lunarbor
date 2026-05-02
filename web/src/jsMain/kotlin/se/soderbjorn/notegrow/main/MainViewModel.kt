@@ -166,6 +166,10 @@ class MainViewModel(
     /** See `DocumentViewBackingViewModel.clearSelection`. */
     fun clearSelection() = backingViewModel.clearSelection()
 
+    /** See `DocumentViewBackingViewModel.setSelection`. */
+    fun setSelection(anchorRow: Int, anchorCol: Int, cursorRow: Int, cursorCol: Int) =
+        backingViewModel.setSelection(anchorRow, anchorCol, cursorRow, cursorCol)
+
     /** See `DocumentViewBackingViewModel.deleteSelectionIfAny`. */
     fun deleteSelectionIfAny() = backingViewModel.deleteSelectionIfAny()
 
