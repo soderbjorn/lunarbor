@@ -367,17 +367,27 @@ class MainScreen(
         if (cmd && !event.altKey && !event.shiftKey) {
             // Inline-style toggles (Cmd-B / Cmd-I). Sync the DOM selection
             // first so the toggle wraps whatever the user has highlighted
-            // (or grows to the surrounding word when the caret is collapsed).
+            // — but skip the sync when an inline style is already armed
+            // and the caret is collapsed. The DOM round-trip lands at the
+            // "past the close markers" canonical column (the same hazard
+            // that `handleBeforeInput` works around), which would yank
+            // the model cursor out of the armed pair and clear
+            // [pendingInlineStyles] before [applyInlineStyle] runs — so
+            // a second Cmd-B to "stop bolding" would silently re-arm
+            // bold and wrap the next typed char in a nested pair.
+            val backing = viewModel.currentBackingState
+            val skipSync = backing.pendingInlineStyles.isNotEmpty() &&
+                backing.anchorRow == null && backing.anchorCol == null
             when (event.key.lowercase()) {
                 "b" -> {
                     event.preventDefault()
-                    syncSelectionFromDom(editor)
+                    if (!skipSync) syncSelectionFromDom(editor)
                     viewModel.applyInlineStyle(InlineStyle.BOLD)
                     return
                 }
                 "i" -> {
                     event.preventDefault()
-                    syncSelectionFromDom(editor)
+                    if (!skipSync) syncSelectionFromDom(editor)
                     viewModel.applyInlineStyle(InlineStyle.ITALIC)
                     return
                 }
