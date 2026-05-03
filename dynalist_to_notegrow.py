@@ -4,15 +4,17 @@
 Writes the imported outline as one promoted child folder under the live
 Notegrow on-disk database at NOTEGROW_DB. The wrapper folder name is
 IMPORT_NAME ("Dynalist Import" by default). Existing notes are not touched.
-The script also patches NOTEGROW_DB/root.md (with a timestamped backup) so
+The script also patches NOTEGROW_DB/Root.md (with a timestamped backup) so
 the wrapper bullet is referenced and visible in the running app.
 
-The on-disk format is plain Markdown — files end in `.md`, every Notegrow-
-managed file starts with a `notegrow: true` YAML frontmatter marker, and
-promoted-subtree bullets are standard CommonMark inline links of the form
-`* [Title](Title/Title.md)` (paths with spaces are wrapped in `<…>`).
-This means the same directory opens cleanly in Obsidian (or any other
-Markdown viewer) with working links between pages.
+The on-disk format is plain Markdown — files end in `.md` and have no
+Notegrow-specific frontmatter. Promoted-subtree bullets are standard
+CommonMark inline links whose URLs end with the `#notegrow` fragment,
+e.g. `* [Title](Title/Title.md#notegrow)` (paths with spaces are wrapped
+in `<…>`). The fragment is the marker Notegrow uses to recognize its own
+promoted refs; in any other markdown viewer (Obsidian, VS Code, GitHub)
+the fragment resolves to a non-existent heading anchor and is silently
+ignored, so the link still navigates to the file.
 
 Promotion thresholds mirror `auto-promote-plan.md`:
 
@@ -27,7 +29,7 @@ those thresholds. Content is preserved; only on-disk layout shifts.
 On-disk layout produced under the live database:
 
     NOTEGROW_DB/
-        root.md                              (patched: wrapper bullet appended)
+        Root.md                              (patched: wrapper bullet appended)
         Dynalist Import/
             Dynalist Import.md
             Bontouch/
@@ -53,7 +55,7 @@ are resolved by appending " 2", " 3", … to the second and later occurrences.
 
 Re-running is idempotent: any existing NOTEGROW_DB/<IMPORT_NAME>/ tree is
 removed before writing fresh files, and any pre-existing wrapper ref line in
-root.md is stripped before the new one is appended.
+Root.md is stripped before the new one is appended.
 """
 from __future__ import annotations
 
@@ -71,18 +73,20 @@ NOTEGROW_DB = Path("/Users/soderbjorn/notegrow-db")
 IMPORT_NAME = "Dynalist Import"
 IMPORT_DIR = NOTEGROW_DB / IMPORT_NAME
 NOTE_EXTENSION = ".md"
-ROOT_FILE = NOTEGROW_DB / f"root{NOTE_EXTENSION}"
+ROOT_FILE = NOTEGROW_DB / f"Root{NOTE_EXTENSION}"
 INDENT = "  "  # 2 spaces per depth level
 
-# Marker that NoteRepository.stripFrontmatter scans for. Files lacking this
-# block are treated as foreign markdown (not auto-spliced, not navigable).
-FRONTMATTER = "---\nnotegrow: true\n---\n"
+# URL fragment Notegrow appends to every promoted-ref link's URL so it can
+# distinguish its own subtree boundaries from hand-authored markdown links.
+# Mirrors `SubtreeCodec.NOTEGROW_FRAGMENT`. No file-level frontmatter — the
+# marker lives on each link, not on each file.
+NOTEGROW_FRAGMENT = "#notegrow"
 
 PROMOTE_MIN_DESCENDANTS = 40
 MAX_DEPTH_TO_PROMOTE = 4
 MIN_TITLE_LENGTH = 1
 
-# Path of the wrapper file relative to its parent (here: root.md's directory).
+# Path of the wrapper file relative to its parent (here: Root.md's directory).
 WRAPPER_REF_PATH = f"{IMPORT_NAME}/{IMPORT_NAME}{NOTE_EXTENSION}"
 
 
@@ -277,12 +281,15 @@ def _format_link_url(path: str) -> str:
 
 
 def _format_ref(indent: int, title: str, ref_path: str) -> str:
+    """Emit a Notegrow promoted-ref bullet. The URL always carries the
+    `#notegrow` fragment so the runtime recognizes the link as a subtree
+    boundary on the next load."""
     return (
         " " * indent
         + "* ["
         + _escape_label(title)
         + "]("
-        + _format_link_url(ref_path)
+        + _format_link_url(ref_path + NOTEGROW_FRAGMENT)
         + ")"
     )
 
@@ -295,7 +302,7 @@ def render(bullets: list[Bullet], refs: dict[int, str]) -> str:
         else:
             out.append(INDENT * b.depth + "* " + b.text)
     body = "\n".join(out) + ("\n" if out else "")
-    return FRONTMATTER + body
+    return body
 
 
 # --- Entry point --------------------------------------------------------------
@@ -303,16 +310,17 @@ def render(bullets: list[Bullet], refs: dict[int, str]) -> str:
 WRAPPER_LINE = _format_ref(0, IMPORT_NAME, WRAPPER_REF_PATH)
 
 
-def _strip_frontmatter(text: str) -> tuple[bool, str]:
-    """Mirror of `NoteRepository.stripFrontmatter`.
+def _split_frontmatter(text: str) -> tuple[str, str]:
+    """Mirror of `NoteRepository.splitFrontmatter`.
 
-    Returns `(had_marker, body)` where `body` is `text` with the leading
-    `---\\n…\\n---\\n` block removed and `had_marker` is `True` iff the
-    block contained `notegrow: true`. Files without a frontmatter block
-    are returned unchanged.
+    Returns `(frontmatter_block, body)` where `frontmatter_block` is the
+    verbatim leading `---\\n…\\n---\\n` block (or the empty string when
+    none is present) and `body` is the rest of the file. Re-prepending
+    `frontmatter_block` to a transformed `body` round-trips user-authored
+    YAML (Obsidian tags, aliases, …) byte-perfectly.
     """
     if not text.startswith("---\n"):
-        return False, text
+        return "", text
     rest = text[4:]
     # Find the next line that is exactly `---`.
     pos = 0
@@ -326,24 +334,21 @@ def _strip_frontmatter(text: str) -> tuple[bool, str]:
             break
         pos = end + 1
     if close < 0:
-        return False, text
-    body = rest[:close]
-    has_marker = any(line.strip() in ("notegrow: true", "notegrow:true")
-                     for line in body.splitlines())
+        return "", text
     after = close + 3
     if after < len(rest) and rest[after] == "\n":
         after += 1
-    return has_marker, rest[after:]
+    return text[: 4 + after], rest[after:]
 
 
 def patch_root_file() -> str:
-    """Backup and patch NOTEGROW_DB/root.md so the wrapper bullet is visible.
+    """Backup and patch NOTEGROW_DB/Root.md so the wrapper bullet is visible.
 
-    Reads the existing root.md (empty if missing), strips any leading
-    frontmatter, removes any pre-existing wrapper-ref line (idempotency
-    for re-runs), appends a single fresh wrapper line, prepends the
-    Notegrow frontmatter marker, and writes the result back. A
-    timestamped backup is created if the file existed.
+    Reads the existing Root.md (empty if missing), preserves any
+    user-authored YAML frontmatter, removes any pre-existing wrapper-ref
+    line (idempotency for re-runs), appends a single fresh wrapper line,
+    re-prepends the original frontmatter, and writes the result back.
+    A timestamped backup is created if the file existed.
 
     @return Description of the backup taken (or a "no prior" sentinel) so
     main() can print it in the summary.
@@ -352,20 +357,29 @@ def patch_root_file() -> str:
     backup_msg: str
     if existed:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = ROOT_FILE.with_name(f"root{NOTE_EXTENSION}.bak-{ts}")
+        backup_path = ROOT_FILE.with_name(f"Root{NOTE_EXTENSION}.bak-{ts}")
         shutil.copy2(ROOT_FILE, backup_path)
         backup_msg = str(backup_path)
         existing_raw = ROOT_FILE.read_text()
     else:
-        backup_msg = f"no prior root{NOTE_EXTENSION} — creating fresh"
+        backup_msg = f"no prior Root{NOTE_EXTENSION} — creating fresh"
         existing_raw = ""
 
-    _, existing = _strip_frontmatter(existing_raw)
+    frontmatter, existing = _split_frontmatter(existing_raw)
 
     # Drop any prior wrapper-ref lines so the file stays at exactly one ref.
-    bare_url = WRAPPER_REF_PATH
-    angle_url = f"<{WRAPPER_REF_PATH}>"
-    suffixes = (f"]({bare_url})", f"]({angle_url})")
+    # Match both the new `…#notegrow` form we emit and any legacy bare-URL
+    # form that may have been written by an older version of this script.
+    bare_url = WRAPPER_REF_PATH + NOTEGROW_FRAGMENT
+    angle_url = f"<{WRAPPER_REF_PATH}{NOTEGROW_FRAGMENT}>"
+    legacy_bare = WRAPPER_REF_PATH
+    legacy_angle = f"<{WRAPPER_REF_PATH}>"
+    suffixes = (
+        f"]({bare_url})",
+        f"]({angle_url})",
+        f"]({legacy_bare})",
+        f"]({legacy_angle})",
+    )
     kept = [ln for ln in existing.splitlines()
             if not any(ln.rstrip().endswith(s) for s in suffixes)]
 
@@ -374,7 +388,7 @@ def patch_root_file() -> str:
         body += "\n"
     body += WRAPPER_LINE + "\n"
 
-    ROOT_FILE.write_text(FRONTMATTER + body)
+    ROOT_FILE.write_text(frontmatter + body)
     return backup_msg
 
 

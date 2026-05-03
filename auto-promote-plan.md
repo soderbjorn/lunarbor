@@ -1,5 +1,19 @@
 # Auto-promote/demote subtrees to separate files
 
+> **Format note (post-implementation):** the on-disk format has since
+> switched from `.nogr` files with a trailing `[[<Title>/<Title>.nogr]]`
+> reference suffix to plain `.md` files with a CommonMark inline link
+> bullet `* [Title](Title/Title.md)` (paths with spaces use the
+> `<…>` form). Every Notegrow-managed file now starts with a
+> `---\nnotegrow: true\n---\n` YAML frontmatter block; files without
+> that marker are treated as foreign Markdown and never auto-spliced
+> or rewritten. The text below describes the original `.nogr` design
+> for historical context — substitute `.md`, the markdown-link bullet
+> shape, and the frontmatter marker when reading. Promotion mechanics,
+> stable-id renames, the row→dirRel map, and the resolver/composer
+> structure are unchanged. See `SubtreeCodec.kt`, `NoteRepository.kt`,
+> and `dynalist_to_notegrow.py` for the current shape.
+
 ## Context
 
 Today the entire outline is persisted as a single plain-text file (`root.nogr`), loaded whole by `NoteRepository` and edited as `lines: List<String>` in `DocumentBackingViewModel`. The user wants large subtrees automatically spun out into their own files so a) individual files stay browsable in external editors and b) the on-disk tree roughly reflects the outline's structure — without the user having to manage it manually. Demotion (inlining a shrunken subtree back) must also be automatic. **No manual user controls** — the system decides entirely on its own based on heuristics; there are no shortcuts, intents, or UI nudges to override the policy.

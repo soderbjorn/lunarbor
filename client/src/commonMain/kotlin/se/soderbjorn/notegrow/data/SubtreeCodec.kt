@@ -60,23 +60,95 @@ data class SubtreeMeasurement(
  * - `NoteRepository.save` invokes [findSubtrees], [reindentBy], [safeFilename],
  *   and [uniqueFilename] when deciding which subtrees to spin out, rename, or
  *   inline back.
+ *
+ * ### The `#notegrow` URL fragment
+ *
+ * A markdown link bullet is treated as a Notegrow promoted-ref boundary
+ * **iff** its URL ends in the literal fragment `#notegrow`. Plain markdown
+ * links (`[Foo](Foo.md)`) and links with any other fragment
+ * (`[Foo](Foo.md#section)`) render as literal link bullets — Notegrow
+ * never reads or rewrites their target files.
+ *
+ * The fragment is invisible to the human reader in every CommonMark
+ * viewer (Obsidian, VS Code, GitHub, …): the link still navigates to the
+ * file, the unresolved `#notegrow` anchor is silently ignored. This is
+ * what lets a Notegrow tree round-trip through arbitrary markdown
+ * tooling without ceremony — no per-file frontmatter, no custom syntax,
+ * just a stale heading anchor that other tools shrug off.
  */
 object SubtreeCodec {
 
+    /** URL fragment that distinguishes a Notegrow promoted-ref bullet. */
+    const val NOTEGROW_FRAGMENT: String = "#notegrow"
+
     /**
-     * Detects a `* [Title](url)` bullet and returns its parts.
+     * A markdown link bullet's parts, returned by [parseAnyLinkBullet].
+     * Distinct from [SubtreeRef] because this captures the URL verbatim
+     * (including any fragment), which the caller may want to inspect to
+     * decide whether the bullet is a Notegrow promoted ref, a hand-authored
+     * cross-reference (URL has a fragment other than `#notegrow`), or a
+     * legacy bare-URL link to a file (no fragment at all).
+     *
+     * @property indent Leading-space count of the line.
+     * @property bulletText The bullet's display form (`<indent>* <label>`)
+     *   — what the editor would show in place of the raw markdown.
+     * @property url The link's URL, **including** any `#…` fragment.
+     */
+    data class LinkBullet(
+        val indent: Int,
+        val bulletText: String,
+        val url: String,
+    )
+
+    /**
+     * Detects a `* [Title](url#notegrow)` bullet and returns its parts.
      *
      * The accepted shape is: indent, `* `, `[`, label (no unescaped `]`),
      * `]`, `(`, URL (either bare or wrapped in `<…>` to allow spaces),
-     * `)`, optional trailing whitespace. The URL is returned verbatim with
-     * any surrounding angle brackets stripped, and the label is unescaped
-     * (CommonMark backslash escapes for `[`, `]`, `(`, `)`, `\` are
-     * resolved).
+     * `)`, optional trailing whitespace, AND the URL must end with the
+     * exact `#notegrow` fragment ([NOTEGROW_FRAGMENT]). Other markdown
+     * link bullets (no fragment, or any other fragment) return `null`
+     * here — they are not promoted refs and the editor renders them as
+     * literal links. Returned [SubtreeRef.refPath] has the fragment
+     * stripped; downstream code sees only the file path.
      *
-     * @return A [SubtreeRef] when [line] is a markdown-link bullet, or
-     *   `null` otherwise (including for plain bullets without a link).
+     * The label is unescaped (CommonMark backslash escapes for `[`,
+     * `]`, `(`, `)`, `\` are resolved).
+     *
+     * @return A [SubtreeRef] when [line] is a Notegrow promoted-ref
+     *   bullet, or `null` otherwise.
      */
     fun parseRef(line: String): SubtreeRef? {
+        val bullet = parseAnyLinkBullet(line) ?: return null
+        // Only links carrying the exact `#notegrow` fragment are Notegrow
+        // promoted refs. Strip the fragment before storing the path so
+        // callers can pass `refPath` straight to the filesystem.
+        if (!bullet.url.endsWith(NOTEGROW_FRAGMENT)) return null
+        val refPath = bullet.url.substring(0, bullet.url.length - NOTEGROW_FRAGMENT.length)
+        if (refPath.isBlank()) return null
+        return SubtreeRef(
+            line = line,
+            bulletText = bullet.bulletText,
+            refPath = refPath,
+            indent = bullet.indent,
+        )
+    }
+
+    /**
+     * Parses any markdown-link bullet of the form
+     * `<indent>* [Label](url)` (URL optionally wrapped in `<…>`),
+     * regardless of whether the URL carries a `#notegrow` fragment.
+     *
+     * Returned for both promoted-ref bullets *and* hand-authored
+     * cross-references / legacy bare-URL bullets — the caller inspects
+     * [LinkBullet.url] to decide which kind it has. Use [parseRef] when
+     * you only want promoted refs.
+     *
+     * Returns `null` when the line is not a markdown-link bullet at all
+     * (plain bullets, non-bullet lines, malformed link syntax, empty
+     * label, or empty URL).
+     */
+    fun parseAnyLinkBullet(line: String): LinkBullet? {
         val indent = DocumentLayout.bulletAsteriskColumn(line)
         if (indent < 0) return null
         val afterMarker = indent + 2
@@ -110,9 +182,9 @@ object SubtreeCodec {
         if (i + 1 >= trimmedRight.length || trimmedRight[i + 1] != '(') return null
 
         val urlStart = i + 2
-        // Match the closing `)` — last `)` of the line should be it. We don't
-        // support nested parens in URLs (rare, and the CommonMark rules are
-        // permissive only for balanced parens; keep it simple here).
+        // Match the closing `)` — last `)` of the line should be it. We
+        // don't support nested parens in URLs (rare, and CommonMark's
+        // rules are permissive only for balanced parens; keep it simple).
         if (!trimmedRight.endsWith(")")) return null
         val urlEnd = trimmedRight.length - 1
         if (urlEnd <= urlStart) return null
@@ -126,26 +198,24 @@ object SubtreeCodec {
         if (label.isEmpty()) return null
 
         val bulletText = " ".repeat(indent) + "* " + label
-        return SubtreeRef(
-            line = line,
-            bulletText = bulletText,
-            refPath = url,
-            indent = indent,
-        )
+        return LinkBullet(indent = indent, bulletText = bulletText, url = url)
     }
 
     /**
-     * Renders a markdown-link bullet for [title] pointing at [refPath].
+     * Renders a Notegrow promoted-ref markdown-link bullet for [title]
+     * pointing at [refPath]. The emitted URL always carries the
+     * [NOTEGROW_FRAGMENT] suffix so [parseRef] will recognize it as a
+     * Notegrow ref on the next load.
      *
      * @param indent Leading-space count for the rendered line.
      * @param title Display label. Will be backslash-escaped per CommonMark
      *   for the `[`, `]`, `(`, `)`, and `\` characters.
-     * @param refPath URL to point at. Wrapped in `<…>` if it contains a
-     *   space, paren, `<`, or `>` (the only characters CommonMark requires
-     *   such wrapping for in unwrapped destinations).
+     * @param refPath URL to point at, **without** the `#notegrow`
+     *   fragment — this function appends it. Wrapped in `<…>` if the
+     *   resulting URL contains a space, paren, `<`, or `>`.
      */
     fun formatRef(indent: Int, title: String, refPath: String): String =
-        " ".repeat(indent) + "* [" + escapeLinkLabel(title) + "](" + formatLinkUrl(refPath) + ")"
+        " ".repeat(indent) + "* [" + escapeLinkLabel(title) + "](" + formatLinkUrl(refPath + NOTEGROW_FRAGMENT) + ")"
 
     /**
      * Computes per-bullet metrics over the whole [lines] list.

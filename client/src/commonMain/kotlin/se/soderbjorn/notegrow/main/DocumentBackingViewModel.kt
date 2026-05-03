@@ -28,8 +28,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.jvm.JvmInline
 import se.soderbjorn.notegrow.data.NoteRepository
+import se.soderbjorn.notegrow.data.PromotedRef
+import se.soderbjorn.notegrow.data.VaultEntry
 
 /**
  * The document-level ViewModel that holds the canonical note content and
@@ -82,6 +86,14 @@ class DocumentBackingViewModel(
      *   layer can use this to surface a "restructuring…" indicator.
      */
     data class State(
+        /**
+         * Vault-relative path of the file the editor is currently
+         * displaying. Defaults to the configured root (`Root.md`) at boot;
+         * changes when the user clicks a different file in the vault-tree
+         * footer (see `switchTo`). Persisted only in memory — every cold
+         * start opens the root file again.
+         */
+        val activeFileRel: String = "",
         val lines: List<String> = listOf(""),
         val lineIds: List<LineId> = listOf(LineId(0L)),
         val isLoaded: Boolean = false,
@@ -96,6 +108,23 @@ class DocumentBackingViewModel(
          * Mutated only by [expandSubtree] / [collapseSubtree].
          */
         val expandedRefIds: Set<LineId> = emptySet(),
+        /**
+         * Lazy cache of directory listings backing the editor's filesystem-tree
+         * footer. Keys are directory paths relative to the vault root (`""`
+         * for the vault root itself). Values are the direct entries returned
+         * by [NoteRepository.listVaultLevel] for that directory. Missing keys
+         * mean "not yet fetched"; the footer renders a "Loading…" placeholder
+         * while it waits for [ensureVaultListing] to populate the entry.
+         *
+         * The cache is shared across viewers (it's filesystem state, same as
+         * file content), so opening another window doesn't re-fetch every
+         * folder the user has already expanded. Per-viewer "which folders are
+         * open" state lives on the view VM as `expandedVaultPaths`.
+         *
+         * Refreshed after every successful autosave tick so newly created
+         * files (e.g. authored in another editor) surface within ~5 seconds.
+         */
+        val vaultListings: Map<String, List<VaultEntry>> = emptyMap(),
     )
 
     /**
@@ -109,7 +138,10 @@ class DocumentBackingViewModel(
      */
     data class InsertResult(val endRow: Int, val endCol: Int)
 
-    private val _stateFlow = MutableStateFlow(State())
+    /** Vault-relative path of the root file (mirrors [NoteRepository.rootFileName]). */
+    val rootFileName: String = repository.rootFileName
+
+    private val _stateFlow = MutableStateFlow(State(activeFileRel = repository.rootFileName))
 
     /**
      * Observable stream of document snapshots. Emits once with the initial
@@ -123,14 +155,23 @@ class DocumentBackingViewModel(
 
     /**
      * Persistence-only metadata: which logical lines correspond to subtrees
-     * the repository has split into their own `.nogr` files, and the relative
-     * directory each one currently lives in. Populated on load and updated
-     * on every save tick. Not part of [State] because the view layer doesn't
-     * need to see it. Every entry here is a file boundary regardless of
-     * whether its children are currently spliced in (see
-     * [State.expandedRefIds]).
+     * the repository has split into their own `.md` files, and the
+     * [PromotedRef] (file path + safety flags) each one currently has.
+     * Populated on load and updated on every save tick. Not part of [State]
+     * because the view layer doesn't need to see it. Every entry here is a
+     * file boundary regardless of whether its children are currently
+     * spliced in (see [State.expandedRefIds]).
      */
-    private val promotedSubtrees: MutableMap<LineId, String> = mutableMapOf()
+    private val promotedSubtrees: MutableMap<LineId, PromotedRef> = mutableMapOf()
+
+    /**
+     * Single-flight lock that serializes the autosave loop's saves with
+     * any [switchTo] file swap. switchTo flushes the current file
+     * synchronously before loading the new one; without this lock the
+     * autosave tick could race with the swap and write half-loaded
+     * content back to the wrong file.
+     */
+    private val saveLock = Mutex()
 
     /**
      * Guard against concurrent [expandSubtree] calls for the same id. The
@@ -141,7 +182,7 @@ class DocumentBackingViewModel(
     private val inflightExpandIds: MutableSet<LineId> = mutableSetOf()
 
     init {
-        scope.launch { loadFromDisk() }
+        scope.launch { loadActive() }
         scope.launch { runAutoSaveLoop() }
     }
 
@@ -257,13 +298,19 @@ class DocumentBackingViewModel(
      *
      * Called exactly once from [init]; no caller should invoke it directly.
      */
-    private suspend fun loadFromDisk() {
-        val loaded = repository.loadRoot()
+    /**
+     * Loads the file currently at [State.activeFileRel] from disk and
+     * publishes a fresh state that reflects it. Called once at boot and
+     * again from [switchTo] whenever the user opens a different file.
+     */
+    private suspend fun loadActive() {
+        val fileRel = _stateFlow.value.activeFileRel
+        val loaded = repository.loadFile(fileRel)
         val lines = loaded.lines.ifEmpty { listOf("") }
         val ids = List(lines.size) { allocateId() }
         promotedSubtrees.clear()
-        for ((row, dir) in loaded.promotedByRow) {
-            if (row in ids.indices) promotedSubtrees[ids[row]] = dir
+        for ((row, ref) in loaded.promotedByRow) {
+            if (row in ids.indices) promotedSubtrees[ids[row]] = ref
         }
         lastSavedText = lines.joinToString("\n")
         _stateFlow.value = _stateFlow.value.copy(
@@ -271,6 +318,87 @@ class DocumentBackingViewModel(
             lineIds = ids,
             isLoaded = true,
             expandedRefIds = emptySet(),
+        )
+        // Eagerly populate the vault root listing so the footer's first
+        // level paints without a flash of "Loading…" right after boot.
+        ensureVaultListing("")
+    }
+
+    /**
+     * Switches the editor's active document to the file at [fileRel].
+     * Synchronously flushes any pending changes for the current file
+     * (under [saveLock] so the autosave loop can't race) and then loads
+     * the new file. After this returns, [State.activeFileRel] is
+     * [fileRel] and [State.lines] is its content.
+     *
+     * No-op when the requested file is already active and loaded.
+     *
+     * Used by the view VM's `navigateToVaultFile` intent: every footer
+     * click in the filesystem-tree footer goes through here.
+     */
+    suspend fun switchTo(fileRel: String) {
+        saveLock.withLock {
+            val current = _stateFlow.value
+            if (current.activeFileRel == fileRel && current.isLoaded) return@withLock
+            // Flush pending changes for the OUTGOING file before swapping —
+            // otherwise edits made in the previous file would be discarded.
+            if (current.isLoaded) {
+                val currentText = current.lines.joinToString("\n")
+                if (currentText != lastSavedText) {
+                    runOneSave(current)
+                }
+            }
+            promotedSubtrees.clear()
+            // Mark unloaded and swap the active path; `loadActive` reads it.
+            _stateFlow.value = current.copy(
+                activeFileRel = fileRel,
+                isLoaded = false,
+                expandedRefIds = emptySet(),
+            )
+            loadActive()
+        }
+    }
+
+    /**
+     * Loads the direct entries under `<vaultRoot>/<dirRel>` if they are not
+     * already cached, and merges them into [State.vaultListings]. No-op when
+     * the entry is already present — the user is free to call this on every
+     * folder click without worrying about redundant fetches.
+     *
+     * Called by the view VM when the user expands a folder in the
+     * filesystem-tree footer. Empty string means the vault root.
+     */
+    suspend fun ensureVaultListing(dirRel: String) {
+        if (_stateFlow.value.vaultListings[dirRel] != null) return
+        val entries = repository.listVaultLevel(dirRel)
+        val current = _stateFlow.value
+        // A concurrent caller may have populated the same key while we awaited;
+        // prefer the existing entry over a stale re-fetch.
+        if (current.vaultListings[dirRel] != null) return
+        _stateFlow.value = current.copy(
+            vaultListings = current.vaultListings + (dirRel to entries),
+        )
+    }
+
+    /**
+     * Re-fetches every directory currently in [State.vaultListings] and
+     * replaces each entry with the fresh result. Called after each autosave
+     * tick so files created or removed by another editor (Obsidian, the
+     * shell, …) surface in the footer within one autosave cycle.
+     *
+     * Folders the user has never expanded are not in the cache and therefore
+     * not refreshed — they'll be fetched fresh on the first expand.
+     */
+    private suspend fun refreshLoadedVaultListings() {
+        val keys = _stateFlow.value.vaultListings.keys.toList()
+        if (keys.isEmpty()) return
+        val updates = HashMap<String, List<VaultEntry>>()
+        for (k in keys) {
+            updates[k] = repository.listVaultLevel(k)
+        }
+        val current = _stateFlow.value
+        _stateFlow.value = current.copy(
+            vaultListings = current.vaultListings + updates,
         )
     }
 
@@ -297,7 +425,7 @@ class DocumentBackingViewModel(
      * when the user attempts to zoom into a folded ref.
      */
     suspend fun expandSubtree(lineId: LineId) {
-        val dir = promotedSubtrees[lineId] ?: return
+        val ref = promotedSubtrees[lineId] ?: return
         val state = _stateFlow.value
         if (lineId in state.expandedRefIds) return
         if (!inflightExpandIds.add(lineId)) return
@@ -306,7 +434,7 @@ class DocumentBackingViewModel(
             if (row < 0) return
             val parentIndent = DocumentLayout.bulletAsteriskColumn(state.lines[row])
             if (parentIndent < 0) return
-            val loaded = repository.loadSubtree(dir, parentIndent)
+            val loaded = repository.loadSubtree(ref.fileRel, parentIndent)
             // Re-read state in case it changed during the suspend; resolve row
             // again by id and bail if the row is gone.
             val current = _stateFlow.value
@@ -330,10 +458,10 @@ class DocumentBackingViewModel(
             mergedIdList.addAll(currentRow + 1, newIds)
             // Register nested refs (rows are local to the loaded slice; offset
             // them by currentRow + 1 to get absolute document rows).
-            for ((localRow, nestedDir) in loaded.promotedByRow) {
+            for ((localRow, nestedRef) in loaded.promotedByRow) {
                 val absRow = currentRow + 1 + localRow
                 if (absRow in mergedIdList.indices) {
-                    promotedSubtrees[mergedIdList[absRow]] = nestedDir
+                    promotedSubtrees[mergedIdList[absRow]] = nestedRef
                 }
             }
             _stateFlow.value = current.copy(
@@ -390,86 +518,85 @@ class DocumentBackingViewModel(
     }
 
     /**
-     * Periodically serializes the current document back to disk via
-     * [repository] if — and only if — the composed text has changed since
-     * the last save. After each save, [promotedSubtrees] is rebuilt from
-     * the row→dirRel map the repository returns, keeping it consistent with
-     * disk regardless of any renames or demotions the policy decided.
+     * Periodically serializes the active document back to disk if — and
+     * only if — its text has changed since the last save. Each tick takes
+     * [saveLock] so a concurrent [switchTo] cannot interleave with a save.
      *
      * Called exactly once from [init] and runs for the lifetime of [scope].
      */
     private suspend fun runAutoSaveLoop() {
         while (true) {
             delay(autoSaveIntervalMillis)
-            val state = _stateFlow.value
-            if (!state.isLoaded) {
-                println("[autosave] tick: not loaded, skipping")
-                continue
-            }
-            val currentText = state.lines.joinToString("\n")
-            if (currentText == lastSavedText) {
-                println("[autosave] tick: no change (lines=${state.lines.size}, len=${currentText.length})")
-                continue
-            }
-            println("[autosave] tick: saving (lines=${state.lines.size}, len=${currentText.length}, prevLen=${lastSavedText.length})")
-            println("[autosave] promotedSubtrees size=${promotedSubtrees.size}, expandedRefIds size=${state.expandedRefIds.size}")
-            for ((id, dir) in promotedSubtrees) {
-                val row = state.lineIds.indexOf(id)
-                val expanded = id in state.expandedRefIds
-                println("[autosave]   ref id=$id row=$row dir=$dir expanded=$expanded")
-            }
-            // Translate the LineId→dir map into row→dir for the repository,
-            // and project expandedRefIds onto current row indices so the save
-            // can leave unloaded subtrees on disk untouched.
-            val rowToDir = HashMap<Int, String>(promotedSubtrees.size)
-            val expandedRefRows = HashSet<Int>(state.expandedRefIds.size)
-            // Snapshot the ids the save will reason about. After the save we
-            // diff against this set instead of clear()-ing the whole map, so
-            // mappings added by a concurrent [expandSubtree] (which can run
-            // while [repository.save] is suspending on disk I/O) are not
-            // wiped out — losing them would orphan loaded child files and
-            // make the user's clicks treat real refs as plain bullets.
-            val snapshotPromotedIds = HashSet<LineId>(promotedSubtrees.size)
-            for ((idx, id) in state.lineIds.withIndex()) {
-                val dir = promotedSubtrees[id] ?: continue
-                rowToDir[idx] = dir
-                snapshotPromotedIds += id
-                if (id in state.expandedRefIds) expandedRefRows += idx
-            }
-            val newRowToDir = try {
-                repository.save(state.lines, rowToDir, expandedRefRows) { active ->
-                    _stateFlow.value = _stateFlow.value.copy(isRestructuring = active)
+            saveLock.withLock {
+                val state = _stateFlow.value
+                if (!state.isLoaded) {
+                    println("[autosave] tick: not loaded, skipping")
+                    return@withLock
                 }
-            } finally {
-                // Defensive: if save threw between onPhaseChange(true) and
-                // the matching onPhaseChange(false), make sure the UI banner
-                // still clears.
-                if (_stateFlow.value.isRestructuring) {
-                    _stateFlow.value = _stateFlow.value.copy(isRestructuring = false)
+                val currentText = state.lines.joinToString("\n")
+                if (currentText == lastSavedText) {
+                    println("[autosave] tick: no change (lines=${state.lines.size}, len=${currentText.length})")
+                    return@withLock
                 }
+                runOneSave(state)
             }
-            // Apply the save's row→dir result without disturbing entries that
-            // a concurrent expand/collapse may have added or removed.
-            // - currentLineIds filters out ids removed by a concurrent
-            //   [collapseSubtree]; re-adding them would resurrect a mapping
-            //   the user just dropped.
-            // - keptIds drives the snapshot diff: anything the snapshot saw
-            //   as promoted but the save didn't keep was demoted, and only
-            //   those entries are removed.
-            val currentLineIds = _stateFlow.value.lineIds.toHashSet()
-            val keptIds = HashSet<LineId>(newRowToDir.size)
-            for ((row, dir) in newRowToDir) {
-                if (row !in state.lineIds.indices) continue
-                val id = state.lineIds[row]
-                if (id !in currentLineIds) continue
-                promotedSubtrees[id] = dir
-                keptIds += id
-            }
-            for (id in snapshotPromotedIds) {
-                if (id !in keptIds) promotedSubtrees.remove(id)
-            }
-            lastSavedText = currentText
         }
+    }
+
+    /**
+     * Performs one save tick for [state] (assumed to be the latest
+     * loaded state). Caller must hold [saveLock]. Used by both the
+     * autosave loop and [switchTo] (to flush pending changes before a
+     * file swap).
+     */
+    private suspend fun runOneSave(state: State) {
+        val currentText = state.lines.joinToString("\n")
+        println("[autosave] tick: saving file=${state.activeFileRel} " +
+            "(lines=${state.lines.size}, len=${currentText.length}, prevLen=${lastSavedText.length})")
+        println("[autosave] promotedSubtrees size=${promotedSubtrees.size}, expandedRefIds size=${state.expandedRefIds.size}")
+        for ((id, ref) in promotedSubtrees) {
+            val row = state.lineIds.indexOf(id)
+            val expanded = id in state.expandedRefIds
+            println("[autosave]   ref id=$id row=$row file=${ref.fileRel} pinned=${ref.noAutoPromote} expanded=$expanded")
+        }
+        // Translate the LineId→PromotedRef map into row→PromotedRef for
+        // the repository, and project expandedRefIds onto current row
+        // indices so the save can leave unloaded subtrees untouched.
+        val rowToRef = HashMap<Int, PromotedRef>(promotedSubtrees.size)
+        val expandedRefRows = HashSet<Int>(state.expandedRefIds.size)
+        val snapshotPromotedIds = HashSet<LineId>(promotedSubtrees.size)
+        for ((idx, id) in state.lineIds.withIndex()) {
+            val ref = promotedSubtrees[id] ?: continue
+            rowToRef[idx] = ref
+            snapshotPromotedIds += id
+            if (id in state.expandedRefIds) expandedRefRows += idx
+        }
+        val newRowToRef = try {
+            repository.save(state.activeFileRel, state.lines, rowToRef, expandedRefRows) { active ->
+                _stateFlow.value = _stateFlow.value.copy(isRestructuring = active)
+            }
+        } finally {
+            if (_stateFlow.value.isRestructuring) {
+                _stateFlow.value = _stateFlow.value.copy(isRestructuring = false)
+            }
+        }
+        // Apply the save's row→ref result without disturbing entries that
+        // a concurrent expand/collapse may have added or removed.
+        val currentLineIds = _stateFlow.value.lineIds.toHashSet()
+        val keptIds = HashSet<LineId>(newRowToRef.size)
+        for ((row, ref) in newRowToRef) {
+            if (row !in state.lineIds.indices) continue
+            val id = state.lineIds[row]
+            if (id !in currentLineIds) continue
+            promotedSubtrees[id] = ref
+            keptIds += id
+        }
+        for (id in snapshotPromotedIds) {
+            if (id !in keptIds) promotedSubtrees.remove(id)
+        }
+        lastSavedText = currentText
+        // Refresh the footer's directory cache after every save.
+        try { refreshLoadedVaultListings() } catch (_: Throwable) {}
     }
 
     /**

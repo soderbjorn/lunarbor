@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("noteApi", {
   moveFile: (from, to) => ipcRenderer.invoke("notegrow:moveFile", from, to),
   moveDirectory: (from, to) => ipcRenderer.invoke("notegrow:moveDirectory", from, to),
   listDirectory: (path) => ipcRenderer.invoke("notegrow:listDirectory", path),
+  listDirectoryEntries: (path) => ipcRenderer.invoke("notegrow:listDirectoryEntries", path),
 });
 
 // Hand off the shared darkness ui-settings JSON, parsed out of the

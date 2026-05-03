@@ -12,4 +12,5 @@ actual class FileSystem actual constructor() {
     actual suspend fun moveFile(from: String, to: String) = notImplemented()
     actual suspend fun moveDirectory(from: String, to: String) = notImplemented()
     actual suspend fun listDirectory(path: String): List<String> = notImplemented()
+    actual suspend fun listDirectoryEntries(path: String): List<VaultDirectoryEntry> = notImplemented()
 }

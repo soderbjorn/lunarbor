@@ -127,6 +127,13 @@ class AppShell(
     private val paneEditors: MutableMap<String, MainScreen> = mutableMapOf()
 
     /**
+     * Per-pane Style dropdown popovers, keyed by leaf pane id. Lazily
+     * created on first click of the pane's Style toolbar button and
+     * reused across opens (the popover rebuilds its body each time).
+     */
+    private val styleDropdowns: MutableMap<String, StyleDropdown> = mutableMapOf()
+
+    /**
      * Per-pane [MainViewModel] handles, keyed by leaf pane id. Maintained
      * alongside [paneEditors] so the toolkit-rendered pane header (built by
      * [buildPaneHeaderSpec], where the [MainScreen] is not directly
@@ -198,6 +205,7 @@ class AppShell(
     /** Boots the shell into [root]. Safe to call once. */
     fun render(root: HTMLElement) {
         injectDarknessToolkitStyles()
+        ensureNotegrowChromeStyles()
         rootEl = root
 
         // Load persisted state. Both globals are populated by the Electron
@@ -351,20 +359,21 @@ class AppShell(
         val container = document.createElement("div") as HTMLElement
         for (tab in layoutState.tabs) {
             if (tab.isHidden) continue
+            // `isHiddenFromSidebar` is independent of `isHidden`: a tab can
+            // stay in the strip while being hidden from this tree so the
+            // sidebar can be decluttered without losing tab access.
+            if (tab.isHiddenFromSidebar) continue
             val isActiveTab = tab.id == layoutState.activeTabId
             val layout = tabLayouts[tab.id]
 
             val rows = mutableListOf<HTMLElement>()
             if (layout != null) {
                 fun sidebarLabelFor(paneId: String, fallback: String?): String {
+                    val fileLabel = activeFileDisplayName(paneId)
                     val path = zoomPathStringForPane(paneId)
                     val own = fallback?.ifBlank { null }?.takeUnless { it == "Untitled" }
-                    return when {
-                        own != null && path != null -> "$own / $path"
-                        own != null -> own
-                        path != null -> path
-                        else -> "Root"
-                    }
+                    val combined = if (path != null) "$fileLabel / $path" else fileLabel
+                    return if (own != null) "$own / $combined" else combined
                 }
                 for (float in layout.floatingPanes) {
                     rows.add(buildPaneSidebarRow(
@@ -541,7 +550,11 @@ class AppShell(
             onFloatingFocused = { id -> bringFloatingPaneToFront(activeId, id) },
             onFloatingClosed = { id -> closeFloatingPane(activeId, id) },
             onFloatingMaximizeToggled = { id -> toggleFloatingPaneMaximized(activeId, id) },
-            onFloatingMinimized = { id -> setFloatingPaneMinimized(activeId, id, true) },
+            // Intentionally no `onFloatingMinimized` wiring — the maximise
+            // button doubles as a restore toggle, so a separate minimise
+            // affordance in the pane chrome would only confuse the user.
+            // [setFloatingPaneMinimized] still exists to un-minimise legacy
+            // panes whose persisted layout has `isMinimized = true`.
         )
         renderer = LayoutRenderer(host, callbacks).also { it.render(layout) }
     }
@@ -666,6 +679,7 @@ class AppShell(
                     isDraggable = true,
                     isRenamable = true,
                     isHidden = t.isHidden,
+                    isHiddenFromSidebar = t.isHiddenFromSidebar,
                 )
             },
             activeTabId = layoutState.activeTabId,
@@ -674,12 +688,28 @@ class AppShell(
             showAddButton = false,
             showOverflowMenu = true,
             callbacks = TabBarCallbacks(
-                onSelect = { id -> softSwitchTab(id) },
+                onSelect = { id ->
+                    // Activating a hidden tab (only reachable via the
+                    // overflow menu's "Unlisted tabs" section) goes through
+                    // the full rebuild so the freshly-active tab's panes
+                    // mount cleanly even though no `.dt-selected` strip
+                    // entry exists for it. Visible tabs keep the soft path
+                    // so the sidebar slide-in / theme editor stay intact.
+                    val target = layoutState.tabs.firstOrNull { it.id == id }
+                    if (target?.isHidden == true) {
+                        layoutState = layoutState.copy(activeTabId = id)
+                        persistLayoutState()
+                        rebuildShell()
+                    } else {
+                        softSwitchTab(id)
+                    }
+                },
                 onClose = { id -> closeTab(id) },
                 onAdd = { addTab() },
                 onReorder = { sourceId, targetId, before -> reorderTab(sourceId, targetId, before) },
                 onRename = { id, newLabel -> renameTab(id, newLabel) },
                 onSetHidden = { id, hidden -> setTabHidden(id, hidden) },
+                onSetHiddenFromSidebar = { id, hidden -> setTabHiddenFromSidebar(id, hidden) },
                 onPaneDroppedOnTab = { sourcePaneId, destTabId ->
                     movePaneToTab(sourcePaneId, destTabId)
                 },
@@ -735,6 +765,28 @@ class AppShell(
             newTabs.firstOrNull { !it.isHidden }?.id ?: layoutState.activeTabId
         }
         layoutState = layoutState.copy(tabs = newTabs, activeTabId = newActive)
+        persistLayoutState()
+        rebuildShell()
+    }
+
+    /**
+     * Toggle a tab's `isHiddenFromSidebar` flag. Unlike [setTabHidden], the
+     * tab stays in the strip and remains the active tab if it was — only
+     * the left sidebar tree skips it on its next render. Mirrors the
+     * "Hide / Show in side bar" affordance in termtastic's tab-bar overflow
+     * menu.
+     *
+     * Calls [rebuildShell] (not just [refreshLeftSidebarSections]) so the
+     * tab-bar overflow menu is rebuilt with the new label — its row
+     * captures `activeIsHiddenFromSidebar` at build time, so without a
+     * tab-bar re-render the next click would re-fire the same boolean and
+     * the user could never toggle back.
+     */
+    private fun setTabHiddenFromSidebar(id: String, hidden: Boolean) {
+        val newTabs = layoutState.tabs.map { t ->
+            if (t.id == id) t.copy(isHiddenFromSidebar = hidden) else t
+        }
+        layoutState = layoutState.copy(tabs = newTabs)
         persistLayoutState()
         rebuildShell()
     }
@@ -847,8 +899,11 @@ class AppShell(
         val ancestors = vm.bulletAncestors(backing)
         if (ancestors.isEmpty() && zoom.titleText.isBlank()) return emptyList()
         val segments = mutableListOf<PaneTitleSegment>()
+        // Leading segment is the active file's display name. Click clears
+        // the zoom (back to the file's top), matching the old "Root"
+        // behaviour on Root.md but generalising to any file.
         segments += PaneTitleSegment(
-            label = "Root",
+            label = activeFileDisplayName(paneId),
             onClick = { vm.zoomTo(null) },
         )
         for (ancestor in ancestors) {
@@ -892,8 +947,13 @@ class AppShell(
             paneVm.stateFlow
                 .map { state ->
                     val backing = state.backingState
-                    Triple(
-                        backing?.let { paneVm.zoomPathSegments(it) } ?: emptyList(),
+                    // Tuple of everything the pane chrome cares about:
+                    // active file path (so file switches re-render the
+                    // breadcrumb), zoom path, and back/forward stack
+                    // availability for the toolbar buttons.
+                    listOf<Any?>(
+                        backing?.documentState?.activeFileRel,
+                        backing?.let { paneVm.zoomPathSegments(it) } ?: emptyList<String>(),
                         backing != null && paneVm.canZoomBack(backing),
                         backing != null && paneVm.canZoomForward(backing),
                     )
@@ -923,13 +983,21 @@ class AppShell(
         // baked into pane creation; treat it as null so the path label
         // wins on persisted layouts that still carry it.
         val ownTitle = paneTitle?.ifBlank { null }?.takeUnless { it == "Untitled" }
+        val fileLabel = activeFileDisplayName(paneId)
         val path = zoomPathStringForPane(paneId)
-        return when {
-            ownTitle != null && path != null -> "$ownTitle / $path"
-            ownTitle != null -> ownTitle
-            path != null -> path
-            else -> "Root"
-        }
+        val combined = if (path != null) "$fileLabel / $path" else fileLabel
+        return if (ownTitle != null) "$ownTitle / $combined" else combined
+    }
+
+    /**
+     * Display name of the file currently loaded in [paneId] — basename
+     * minus `.md`, with the directory path stripped. Falls back to
+     * "Root" when the pane's view model hasn't booted yet.
+     */
+    private fun activeFileDisplayName(paneId: String): String {
+        val backing = paneViewModels[paneId]?.stateFlow?.value?.backingState ?: return "Root"
+        val fileRel = backing.documentState?.activeFileRel ?: return "Root"
+        return fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Root" }
     }
 
     /**
@@ -955,20 +1023,77 @@ class AppShell(
      */
     private fun zoomPaneUpOneLevel(paneId: String) {
         val paneVm = paneViewModels[paneId] ?: return
-        val backing = paneVm.stateFlow.value.backingState
-        val parentId = backing
-            ?.let { paneVm.bulletAncestors(it) }
-            ?.lastOrNull()
-            ?.lineId
-        paneVm.zoomTo(parentId)
+        val backing = paneVm.stateFlow.value.backingState ?: return
+        val ancestors = paneVm.bulletAncestors(backing)
+        when {
+            // Inside a bullet zoom: walk one ancestor up (or clear the
+            // zoom if we were already at a root-level zoomed bullet).
+            backing.zoomedLineId != null -> paneVm.zoomTo(ancestors.lastOrNull()?.lineId)
+            // No bullet zoom — interpret "up" as "go to the parent file".
+            else -> {
+                val fileRel = backing.documentState?.activeFileRel ?: return
+                val parentRel = parentFileOf(fileRel, paneVm.rootFileName) ?: return
+                paneVm.navigateToVaultFile(parentRel)
+            }
+        }
+    }
+
+    /**
+     * "Home" handler for the pane toolbar. Clears any active bullet zoom
+     * and, when the pane is on a non-root file, also switches to the
+     * configured root file. Both operations push onto the unified
+     * back-stack so the user can return via the back button.
+     */
+    private fun goPaneHome(paneId: String) {
+        val paneVm = paneViewModels[paneId] ?: return
+        val backing = paneVm.stateFlow.value.backingState ?: return
+        if (backing.zoomedLineId != null) paneVm.zoomTo(null)
+        val fileRel = backing.documentState?.activeFileRel
+        if (fileRel != null && fileRel != paneVm.rootFileName) {
+            paneVm.navigateToVaultFile(paneVm.rootFileName)
+        }
+    }
+
+    /**
+     * Resolves the vault-relative parent file for [fileRel] using the
+     * Notegrow on-disk convention that promoted subtrees live in
+     * `<Name>/<Name>.md` files. The parent file is one folder shallower:
+     *
+     *  - `Recipes/Quick Granola/Quick Granola.md` → `Recipes/Recipes.md`
+     *  - `Recipes/Recipes.md`                     → [rootFileName]
+     *  - `links.md` (already root-level)          → `null`
+     *
+     * Path-based heuristic — does not verify the parent file actually
+     * exists or contains a ref to [fileRel]. By Notegrow convention this
+     * holds for every promoted file.
+     *
+     * @param fileRel      vault-relative path of the current file (with `.md`).
+     * @param rootFileName vault-relative path of the configured root file.
+     * @return the parent file's vault-relative path, or `null` when the
+     *   file is already at root level (or is the root file itself).
+     */
+    private fun parentFileOf(fileRel: String, rootFileName: String): String? {
+        if (fileRel == rootFileName) return null
+        val withoutFile = fileRel.substringBeforeLast('/', "")
+        if (withoutFile.isEmpty()) return null
+        val parentFolder = withoutFile.substringBeforeLast('/', "")
+        if (parentFolder.isEmpty()) return rootFileName
+        val parentName = parentFolder.substringAfterLast('/')
+        return "$parentFolder/$parentName.md"
     }
 
     /**
      * Builds the trailing-action strip for [paneId]'s pane header:
-     * back/forward navigation buttons (only enabled when the
-     * corresponding zoom history/forward stack is non-empty), then the
-     * "up one level" + "home (root)" buttons, then a separator before
-     * the toolkit's window-control strip.
+     * back/forward navigation buttons (always shown — dimmed via the
+     * [DISABLED_CLASS] modifier when the corresponding stack is empty so
+     * their position stays stable for muscle memory), then the "up one
+     * level" + "home (root)" buttons, then a separator before the
+     * toolkit's window-control strip.
+     *
+     * Since the toolkit's [PaneAction] has no native `disabled` flag, we
+     * wrap each handler in a no-op when the action would be inert and
+     * tag the button with [DISABLED_CLASS]; the matching CSS rule
+     * injected by [ensureNotegrowChromeStyles] paints it grayed-out.
      *
      * The back/forward buttons use custom-arrow SVG glyphs constructed
      * inline because [PaneActions] only ships the `up` and `home`
@@ -979,27 +1104,117 @@ class AppShell(
         val backing = paneVm?.stateFlow?.value?.backingState
         val canBack = backing != null && paneVm.canZoomBack(backing)
         val canForward = backing != null && paneVm.canZoomForward(backing)
+        val canUp = backing != null && canNavigateUp(paneVm, backing)
+        val canHome = backing != null && !isAtRootFileWithNoZoom(paneVm, backing)
         val out = mutableListOf<PaneAction>()
-        if (canBack) {
-            out += PaneAction(
-                iconHtml = ICON_BACK,
-                tooltip = "Back",
-                handler = { paneViewModels[paneId]?.zoomBack() },
-                extraClass = "dt-pane-action-back",
-            )
-        }
-        if (canForward) {
-            out += PaneAction(
-                iconHtml = ICON_FORWARD,
-                tooltip = "Forward",
-                handler = { paneViewModels[paneId]?.zoomForward() },
-                extraClass = "dt-pane-action-forward",
-            )
-        }
-        out += PaneActions.up { zoomPaneUpOneLevel(paneId) }
-        out += PaneActions.home { paneViewModels[paneId]?.zoomTo(null) }
+        out += PaneAction(
+            iconHtml = ICON_BACK,
+            tooltip = "Back",
+            handler = if (canBack) ({ paneViewModels[paneId]?.zoomBack() }) else ({}),
+            extraClass = "dt-pane-action-back" + if (!canBack) " $DISABLED_CLASS" else "",
+        )
+        out += PaneAction(
+            iconHtml = ICON_FORWARD,
+            tooltip = "Forward",
+            handler = if (canForward) ({ paneViewModels[paneId]?.zoomForward() }) else ({}),
+            extraClass = "dt-pane-action-forward" + if (!canForward) " $DISABLED_CLASS" else "",
+        )
+        out += PaneAction(
+            iconHtml = PaneActions.ICON_UP,
+            tooltip = "Up one level",
+            handler = if (canUp) ({ zoomPaneUpOneLevel(paneId) }) else ({}),
+            extraClass = "dt-pane-action-up" + if (!canUp) " $DISABLED_CLASS" else "",
+        )
+        out += PaneAction(
+            iconHtml = PaneActions.ICON_HOME,
+            tooltip = "Go to root",
+            handler = if (canHome) ({ goPaneHome(paneId) }) else ({}),
+            extraClass = "dt-pane-action-home" + if (!canHome) " $DISABLED_CLASS" else "",
+        )
+        // Style is enabled whenever the pane has a VM. We intentionally do
+        // NOT gate on `backing.isLoaded` here — the chrome's distinct-by
+        // tuple in [ensurePaneViewModel] doesn't watch `isLoaded`, so a
+        // first-render-while-loading would otherwise leave the button stuck
+        // disabled until a navigation event happens. The underlying
+        // intents are themselves guarded against unloaded state.
+        val canStyle = paneVm != null
+        out += PaneAction(
+            iconHtml = StyleDropdownIcons.TOOLBAR_STYLE,
+            tooltip = "Style",
+            handler = if (canStyle) ({ openStyleMenu(paneId) }) else ({}),
+            extraClass = "notegrow-pane-action-style" + if (!canStyle) " $DISABLED_CLASS" else "",
+        )
         out += PaneActions.separator()
         return out
+    }
+
+    /**
+     * Toggles the style dropdown for [paneId]. Looks up the rendered
+     * Style toolbar button by class within the pane's chrome and anchors
+     * the popover under it. Lazily creates a [StyleDropdown] per pane.
+     */
+    private fun openStyleMenu(paneId: String) {
+        val paneVm = paneViewModels[paneId] ?: return
+        val button = document.querySelector(
+            "[data-pane-id='$paneId'] .dt-pane-action.notegrow-pane-action-style"
+        ) as? HTMLElement ?: return
+        val dropdown = styleDropdowns.getOrPut(paneId) { StyleDropdown(paneVm) }
+        dropdown.open(button)
+    }
+
+    /**
+     * Injects notegrow-only chrome styles that aren't part of the toolkit
+     * stylesheet: the disabled state for nav buttons (back/forward/up/
+     * home stay in place when inert, dimmed instead of removed) and the
+     * one-shot fade-in animation that plays on a navigation transition
+     * (file switch or zoom change). Idempotent via the element id guard.
+     */
+    private fun ensureNotegrowChromeStyles() {
+        if (document.getElementById("notegrow-chrome-style") != null) return
+        val style = document.createElement("style") as HTMLElement
+        style.id = "notegrow-chrome-style"
+        style.textContent = """
+            .dt-pane-action.$DISABLED_CLASS {
+                opacity: 0.32;
+                pointer-events: none;
+                cursor: default;
+            }
+            @keyframes notegrow-nav-fade-in {
+                from { opacity: 0; transform: translateY(2px); }
+                to   { opacity: 1; transform: translateY(0); }
+            }
+            .notegrow-editor.notegrow-nav-fade,
+            .notegrow-title.notegrow-nav-fade {
+                animation: notegrow-nav-fade-in 500ms ease-out;
+            }
+        """.trimIndent()
+        document.head?.appendChild(style)
+    }
+
+    /**
+     * `true` when the up-one-level action has somewhere to go: either the
+     * pane is currently zoomed (so up walks the bullet tree) or the active
+     * file is a non-root file (so up navigates to the parent file).
+     */
+    private fun canNavigateUp(
+        paneVm: MainViewModel,
+        backing: se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.State,
+    ): Boolean {
+        if (backing.zoomedLineId != null) return true
+        val fileRel = backing.documentState?.activeFileRel ?: return false
+        return parentFileOf(fileRel, paneVm.rootFileName) != null
+    }
+
+    /**
+     * `true` when the pane is already showing the configured root file
+     * with no zoom — i.e. there's nowhere to go via "home".
+     */
+    private fun isAtRootFileWithNoZoom(
+        paneVm: MainViewModel,
+        backing: se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.State,
+    ): Boolean {
+        if (backing.zoomedLineId != null) return false
+        return backing.documentState?.activeFileRel == paneVm.rootFileName
     }
 
     /**
@@ -1734,6 +1949,18 @@ class AppShell(
                 "stroke-linejoin=\"round\">" +
                 "<path d=\"M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z\"/>" +
                 "<polyline points=\"14 3 14 9 20 9\"/></svg>"
+
+        /**
+         * CSS class added to a [PaneAction]'s extra classes when the
+         * action should render as visually-inert. The toolkit's
+         * [PaneAction] has no native `disabled` flag, so notegrow tags
+         * the rendered button itself and the stylesheet (injected by
+         * [ensureNotegrowChromeStyles]) dims it and disables pointer
+         * events. Used by [buildPaneNavActions] to keep back/forward
+         * (and up/home) in fixed positions for muscle memory while
+         * showing whether they're currently actionable.
+         */
+        private const val DISABLED_CLASS: String = "notegrow-pane-action-disabled"
 
         /** Left-arrow glyph for the zoom-history "back" button. */
         private const val ICON_BACK: String =

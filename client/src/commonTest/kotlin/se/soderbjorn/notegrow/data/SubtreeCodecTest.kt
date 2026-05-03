@@ -14,7 +14,7 @@ class SubtreeCodecTest {
     fun parseRef_returns_null_for_non_bullet_line() {
         assertNull(SubtreeCodec.parseRef(""))
         assertNull(SubtreeCodec.parseRef("plain text"))
-        assertNull(SubtreeCodec.parseRef("  not a bullet [X](X/X.md)"))
+        assertNull(SubtreeCodec.parseRef("  not a bullet [X](X/X.md#notegrow)"))
     }
 
     @Test
@@ -32,8 +32,18 @@ class SubtreeCodecTest {
     }
 
     @Test
+    fun parseRef_returns_null_for_link_without_notegrow_fragment() {
+        // Plain markdown links and links with arbitrary fragments are NOT
+        // Notegrow promoted refs — they render as literal link bullets and
+        // Notegrow never reads or rewrites their target files.
+        assertNull(SubtreeCodec.parseRef("* [Foo](Foo.md)"))
+        assertNull(SubtreeCodec.parseRef("* [Section](Foo.md#section)"))
+        assertNull(SubtreeCodec.parseRef("* [Mixed](Foo.md#notegrowish)"))
+    }
+
+    @Test
     fun parseRef_extracts_indent_label_and_path() {
-        val ref = SubtreeCodec.parseRef("  * [Recipes](Recipes/Recipes.md)")
+        val ref = SubtreeCodec.parseRef("  * [Recipes](Recipes/Recipes.md#notegrow)")
         assertEquals(2, ref?.indent)
         assertEquals("  * Recipes", ref?.bulletText)
         assertEquals("Recipes/Recipes.md", ref?.refPath)
@@ -41,30 +51,32 @@ class SubtreeCodecTest {
 
     @Test
     fun parseRef_handles_unicode_titles_and_paths() {
-        val ref = SubtreeCodec.parseRef("* [Möten](Bontouch/Möten/Möten.md)")
+        val ref = SubtreeCodec.parseRef("* [Möten](Bontouch/Möten/Möten.md#notegrow)")
         assertEquals("* Möten", ref?.bulletText)
         assertEquals("Bontouch/Möten/Möten.md", ref?.refPath)
     }
 
     @Test
     fun parseRef_accepts_angle_bracket_url_for_paths_with_spaces() {
-        val ref = SubtreeCodec.parseRef("* [Shopping list](<Shopping list/Shopping list.md>)")
+        val ref = SubtreeCodec.parseRef("* [Shopping list](<Shopping list/Shopping list.md#notegrow>)")
         assertEquals("* Shopping list", ref?.bulletText)
         assertEquals("Shopping list/Shopping list.md", ref?.refPath)
     }
 
     @Test
     fun parseRef_unescapes_label_brackets() {
-        val ref = SubtreeCodec.parseRef("* [a\\[b\\]c](X/X.md)")
+        val ref = SubtreeCodec.parseRef("* [a\\[b\\]c](X/X.md#notegrow)")
         assertEquals("* a[b]c", ref?.bulletText)
         assertEquals("X/X.md", ref?.refPath)
     }
 
     @Test
     fun parseRef_returns_null_for_empty_label_or_url() {
-        assertNull(SubtreeCodec.parseRef("* [](X/X.md)"))
+        assertNull(SubtreeCodec.parseRef("* [](X/X.md#notegrow)"))
         assertNull(SubtreeCodec.parseRef("* [Title]()"))
         assertNull(SubtreeCodec.parseRef("* [Title](<>)"))
+        // URL with only the fragment has empty refPath after stripping.
+        assertNull(SubtreeCodec.parseRef("* [Title](#notegrow)"))
     }
 
     // ---- formatRef + round-trip --------------------------------------------
@@ -72,19 +84,19 @@ class SubtreeCodecTest {
     @Test
     fun formatRef_emits_bare_url_for_simple_paths() {
         val line = SubtreeCodec.formatRef(0, "Recipes", "Recipes/Recipes.md")
-        assertEquals("* [Recipes](Recipes/Recipes.md)", line)
+        assertEquals("* [Recipes](Recipes/Recipes.md#notegrow)", line)
     }
 
     @Test
     fun formatRef_wraps_url_in_angle_brackets_when_path_contains_spaces() {
         val line = SubtreeCodec.formatRef(2, "Shopping list", "Shopping list/Shopping list.md")
-        assertEquals("  * [Shopping list](<Shopping list/Shopping list.md>)", line)
+        assertEquals("  * [Shopping list](<Shopping list/Shopping list.md#notegrow>)", line)
     }
 
     @Test
     fun formatRef_escapes_label_specials() {
         val line = SubtreeCodec.formatRef(0, "a[b]c", "ab/ab.md")
-        assertEquals("* [a\\[b\\]c](ab/ab.md)", line)
+        assertEquals("* [a\\[b\\]c](ab/ab.md#notegrow)", line)
     }
 
     @Test
@@ -172,10 +184,10 @@ class SubtreeCodecTest {
 
     @Test
     fun titleOf_extracts_label_from_markdown_link() {
-        assertEquals("Recipes", SubtreeCodec.titleOf("* [Recipes](Recipes/Recipes.md)"))
+        assertEquals("Recipes", SubtreeCodec.titleOf("* [Recipes](Recipes/Recipes.md#notegrow)"))
         assertEquals(
             "Shopping list",
-            SubtreeCodec.titleOf("* [Shopping list](<Shopping list/Shopping list.md>)"),
+            SubtreeCodec.titleOf("* [Shopping list](<Shopping list/Shopping list.md#notegrow>)"),
         )
     }
 

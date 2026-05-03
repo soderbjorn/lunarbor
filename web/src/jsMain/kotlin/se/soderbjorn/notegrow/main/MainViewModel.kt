@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import se.soderbjorn.notegrow.data.InlineStyle
+import se.soderbjorn.notegrow.data.LineStyle
 
 /**
  * Thin web-platform ViewModel that `MainScreen` collects from. Receives the
@@ -192,4 +194,32 @@ class MainViewModel(
 
     /** See `DocumentViewBackingViewModel.onCutRequested`. */
     fun onCutRequested(): String? = backingViewModel.onCutRequested()
+
+    // ---- markdown style intents -----------------------------------------
+
+    /** See `DocumentViewBackingViewModel.applyInlineStyle`. */
+    fun applyInlineStyle(style: InlineStyle) = backingViewModel.applyInlineStyle(style)
+
+    /** See `DocumentViewBackingViewModel.applyLineStyle`. */
+    fun applyLineStyle(style: LineStyle) = backingViewModel.applyLineStyle(style)
+
+    /** See `DocumentViewBackingViewModel.activeInlineStyles`. */
+    fun activeInlineStyles(): Set<InlineStyle> = backingViewModel.activeInlineStyles()
+
+    /** See `DocumentViewBackingViewModel.activeLineStyle`. */
+    fun activeLineStyle(): LineStyle? = backingViewModel.activeLineStyle()
+
+    // ---- vault-footer intents -------------------------------------------
+
+    /** Vault-relative path of the root file. Forwarded from the document VM. */
+    val rootFileName: String get() = backingViewModel.rootFileName
+
+    /** See `DocumentViewBackingViewModel.toggleVaultFooter`. */
+    fun toggleVaultFooter() = backingViewModel.toggleVaultFooter()
+
+    /** See `DocumentViewBackingViewModel.toggleVaultFolder`. */
+    fun toggleVaultFolder(dirRel: String) = backingViewModel.toggleVaultFolder(dirRel)
+
+    /** See `DocumentViewBackingViewModel.navigateToVaultFile`. */
+    fun navigateToVaultFile(pathRel: String) = backingViewModel.navigateToVaultFile(pathRel)
 }

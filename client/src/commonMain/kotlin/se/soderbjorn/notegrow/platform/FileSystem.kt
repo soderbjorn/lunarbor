@@ -19,6 +19,16 @@ package se.soderbjorn.notegrow.platform
  * All paths are absolute and use `/` as separator on every platform; the JS
  * actual normalises to host conventions internally if needed.
  */
+/**
+ * One direct entry in a directory listing produced by [FileSystem.listDirectoryEntries].
+ * Used by the filesystem-tree footer in the editor view to lazy-load each
+ * folder's contents without recursing.
+ *
+ * @property name Basename of the entry (no leading path).
+ * @property isDirectory `true` for subdirectories, `false` for regular files.
+ */
+data class VaultDirectoryEntry(val name: String, val isDirectory: Boolean)
+
 expect class FileSystem() {
     /** Creates [path] (and any missing ancestors); no-op if it already exists. */
     suspend fun ensureDirectory(path: String)
@@ -46,4 +56,12 @@ expect class FileSystem() {
      * [path], or an empty list if the directory does not exist. Does not recurse.
      */
     suspend fun listDirectory(path: String): List<String>
+
+    /**
+     * Like [listDirectory] but returns each entry tagged with whether it is a
+     * directory. Used by the vault-tree footer to lazy-load one folder at a
+     * time without having to probe each child with a follow-up call. Returns
+     * an empty list if the directory does not exist. Does not recurse.
+     */
+    suspend fun listDirectoryEntries(path: String): List<VaultDirectoryEntry>
 }

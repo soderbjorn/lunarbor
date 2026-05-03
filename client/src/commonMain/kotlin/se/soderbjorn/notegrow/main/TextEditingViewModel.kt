@@ -15,6 +15,8 @@
 
 package se.soderbjorn.notegrow.main
 
+import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
+import se.soderbjorn.notegrow.data.LineMarkdownPrefix
 import se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.Companion.TAB_SIZE
 
 /**
@@ -82,21 +84,11 @@ internal class TextEditingViewModel(
                     // the children first (deliberate action, no accidental detachment).
                     val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
                     if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return
-                    // Empty leaf bullet (line is exactly the indent + `"* "`):
-                    // collapse the whole row into the end of the previous one
-                    // so a single backspace deletes the bullet, its indent,
-                    // and the now-empty line in one step instead of three.
-                    if (line.length == bulletCol + 2 && s.cursorRow > 0) {
-                        val zoom = zoomInfoOf(s)
-                        if (zoom == null || s.cursorRow > zoom.startRow) {
-                            val previousLen = s.lines[s.cursorRow - 1].length
-                            documentBackingViewModel.delete(
-                                s.cursorRow - 1, previousLen, s.cursorRow, line.length
-                            )
-                            patch { it.copy(cursorRow = s.cursorRow - 1, cursorCol = previousLen) }
-                            return
-                        }
-                    }
+                    // Leaf bullet (empty or not): fall through to remove just the `"* "`
+                    // marker, leaving any indent and trailing content intact and the cursor
+                    // at the indent column. This gives the user a way to "exit" a bullet
+                    // list by pressing backspace on an empty bullet — the row stays put as
+                    // a plain (possibly indented) line instead of collapsing upward.
                 }
                 val removed = when {
                     isAtBulletMarkerEnd(line, s.cursorCol) -> 2
@@ -172,7 +164,7 @@ internal class TextEditingViewModel(
         val curLine = st.lines[st.cursorRow]
         val curMin = DocumentLayout.textStartCol(curLine)
         val (r, c) = when {
-            st.cursorCol > curMin -> st.cursorRow to (st.cursorCol - 1)
+            st.cursorCol > curMin -> st.cursorRow to skipMarkersLeft(st.lines[st.cursorRow], st.cursorCol - 1)
             else -> {
                 val prev = prevVisibleRow(st, st.cursorRow)
                 if (prev != null) prev to st.lines[prev].length
@@ -192,7 +184,7 @@ internal class TextEditingViewModel(
         }
         val line = st.lines[st.cursorRow]
         val (r, c) = when {
-            st.cursorCol < line.length -> st.cursorRow to (st.cursorCol + 1)
+            st.cursorCol < line.length -> st.cursorRow to skipMarkersRight(line, st.cursorCol + 1)
             else -> {
                 val next = nextVisibleRow(st, st.cursorRow)
                 if (next != null) next to DocumentLayout.textStartCol(st.lines[next])
@@ -364,5 +356,63 @@ internal class TextEditingViewModel(
         val text = getSelectedText() ?: return null
         deleteSelectionIfAny()
         return text
+    }
+
+    /**
+     * Returns the set of editable-relative model columns occupied by
+     * markdown marker characters (line-level prefix + inline markers) on
+     * [line]. Empty when the line has no markers.
+     */
+    private fun markerSet(line: String): Set<Int> {
+        val tStart = DocumentLayout.textStartCol(line)
+        val editable = if (tStart >= line.length) "" else line.substring(tStart)
+        val linePrefix = LineMarkdownPrefix.detect(editable, 0)
+        val lineMarkerLen = if (linePrefix.style != null) linePrefix.markerEnd else 0
+        val inlineText = if (lineMarkerLen >= editable.length) "" else editable.substring(lineMarkerLen)
+        val tokenized = InlineMarkdownTokenizer.tokenize(inlineText)
+        if (lineMarkerLen == 0 && tokenized.markerCols.isEmpty()) return emptySet()
+        val out = HashSet<Int>(tokenized.markerCols.size + lineMarkerLen)
+        for (i in 0 until lineMarkerLen) out += (tStart + i)
+        for (m in tokenized.markerCols) out += (tStart + lineMarkerLen + m)
+        return out
+    }
+
+    /**
+     * `true` when [col] is strictly inside a marker run on [line] — i.e.
+     * both the char at [col]-1 and the char at [col] are markers, so the
+     * cursor would sit invisibly between two collapsed marker chars. The
+     * boundaries (col immediately before / after a marker run) are not
+     * "bad" — those are valid caret positions.
+     */
+    private fun isInsideMarker(line: String, col: Int, markers: Set<Int>): Boolean {
+        if (col <= 0 || col >= line.length) return false
+        if (markers.isEmpty()) return false
+        return (col - 1) in markers && col in markers
+    }
+
+    /**
+     * From candidate column [from], advance leftward (decreasing col) until
+     * the cursor sits outside any marker run. Used by [moveLeft] so a
+     * single arrow press jumps past hidden markers in one visual step.
+     */
+    private fun skipMarkersLeft(line: String, from: Int): Int {
+        val markers = markerSet(line)
+        if (markers.isEmpty()) return from
+        var c = from
+        val tStart = DocumentLayout.textStartCol(line)
+        while (c > tStart && isInsideMarker(line, c, markers)) c--
+        return c
+    }
+
+    /**
+     * Mirror of [skipMarkersLeft]: advance rightward (increasing col)
+     * until the cursor sits outside any marker run.
+     */
+    private fun skipMarkersRight(line: String, from: Int): Int {
+        val markers = markerSet(line)
+        if (markers.isEmpty()) return from
+        var c = from
+        while (c < line.length && isInsideMarker(line, c, markers)) c++
+        return c
     }
 }

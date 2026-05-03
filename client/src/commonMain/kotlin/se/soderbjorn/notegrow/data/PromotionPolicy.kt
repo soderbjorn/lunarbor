@@ -101,6 +101,10 @@ object PromotionPolicy {
      * Decides whether an already-promoted subtree has shrunk enough that it
      * should be inlined back into its parent.
      *
+     * Adopted-foreign files carry [PromotedRef.noAutoPromote] = `true` so
+     * the caller short-circuits this check entirely; the policy itself
+     * remains a pure predicate over the descendant count.
+     *
      * @param descendantCount Current descendant count of the subtree.
      */
     fun shouldDemote(descendantCount: Int): Boolean =

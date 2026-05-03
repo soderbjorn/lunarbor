@@ -331,6 +331,16 @@ ipcMain.handle("notegrow:listDirectory", async (_event, dirPath) => {
   }
 });
 
+ipcMain.handle("notegrow:listDirectoryEntries", async (_event, dirPath) => {
+  try {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true });
+    return entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
+  } catch (err) {
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
+});
+
 app.on("second-instance", () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();

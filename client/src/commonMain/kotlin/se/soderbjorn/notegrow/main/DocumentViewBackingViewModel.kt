@@ -31,6 +31,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import se.soderbjorn.notegrow.data.InlineStyle
+import se.soderbjorn.notegrow.data.LineStyle
 
 /**
  * The view-layer ViewModel for a single viewer (one window / pane / device)
@@ -53,6 +55,9 @@ class DocumentViewBackingViewModel(
     private val documentBackingViewModel: DocumentBackingViewModel,
     private val scope: CoroutineScope,
 ) {
+    /** Mirrors [DocumentBackingViewModel.rootFileName] for the view layer. */
+    val rootFileName: String get() = documentBackingViewModel.rootFileName
+
     /**
      * Immutable snapshot of one viewer's state.
      *
@@ -90,6 +95,21 @@ class DocumentViewBackingViewModel(
         val zoomHistory: List<LineId?> = emptyList(),
         val zoomForward: List<LineId?> = emptyList(),
         /**
+         * Browser-style back stack of *files* the user has switched away
+         * from (vault-relative paths). Pushed by [navigateToVaultFile]
+         * when it swaps the active document; popped by [zoomBack] after
+         * the per-file zoom history is exhausted, so a single Back chord
+         * walks zoom-back first, then file-back.
+         */
+        val fileHistory: List<String> = emptyList(),
+        /**
+         * Mirror of [fileHistory] populated by [zoomBack] when it pops a
+         * file entry, and consumed by [zoomForward]. Cleared whenever
+         * the user navigates to a new file directly (so forward never
+         * leads somewhere they didn't arrive at via back).
+         */
+        val fileForward: List<String> = emptyList(),
+        /**
          * Within-file fold state. A bullet whose [LineId] is in this set is
          * rendered with its chevron rotated and its descendants hidden by
          * the paint loop and skipped by hit-testing. File-boundary refs
@@ -111,6 +131,25 @@ class DocumentViewBackingViewModel(
          * — not meaningful to consumers.
          */
         internal val seenLineIds: Set<LineId> = emptySet(),
+        /**
+         * Master toggle for the editor's filesystem-tree footer. When `true`,
+         * the footer renders below the document at zoom-root with whatever
+         * folders the user has opened in [expandedVaultPaths]. When `false`,
+         * the footer collapses to its single header row. Per-viewer (each
+         * window/pane can show or hide the footer independently).
+         */
+        val isVaultFooterExpanded: Boolean = true,
+        /**
+         * Paths (relative to the vault root) of folders the user has opened
+         * in the filesystem-tree footer. Folders not in this set render
+         * collapsed; folders in it render their children one indent deeper.
+         * Same shape and spirit as [collapsedIds] but indexed by path string
+         * because vault entries don't have stable [LineId]s — they aren't
+         * part of the document model. Lazy: adding a path here triggers
+         * `DocumentBackingViewModel.ensureVaultListing(path)` so the listing
+         * is fetched on first expand.
+         */
+        val expandedVaultPaths: Set<String> = emptySet(),
     ) {
         /** `true` once the document has loaded from disk at least once. */
         val isLoaded: Boolean get() = documentState?.isLoaded == true
@@ -126,6 +165,13 @@ class DocumentViewBackingViewModel(
 
         /** Convenience accessor — never null, falls back to a single empty line. */
         val lines: List<String> get() = documentState?.lines ?: listOf("")
+
+        /**
+         * `true` when the editor is currently displaying the configured
+         * root file (so the vault-tree footer should render).
+         */
+        fun isAtRootFile(rootFileName: String): Boolean =
+            documentState?.activeFileRel == rootFileName
     }
 
     /**
@@ -183,6 +229,13 @@ class DocumentViewBackingViewModel(
         stateProvider = { _stateFlow.value },
         patch = { transform -> patch(transform) },
         scope = scope,
+    )
+
+    private val markdownStyle = MarkdownStyleViewModel(
+        documentBackingViewModel = documentBackingViewModel,
+        stateProvider = { _stateFlow.value },
+        patch = { transform -> patch(transform) },
+        selectWord = { row, col -> textEditing.selectWord(row, col) },
     )
 
     init {
@@ -352,17 +405,81 @@ class DocumentViewBackingViewModel(
     /** See [ZoomNavigation.zoomTo]. */
     fun zoomTo(lineId: LineId?) = zoomNavigation.zoomTo(lineId)
 
-    /** See [ZoomNavigation.zoomBack]. */
-    fun zoomBack() = zoomNavigation.zoomBack()
+    /**
+     * Walk one step back in the unified navigation history. Pops the
+     * per-file zoom-history stack first; when that's empty, falls
+     * through to the cross-file [State.fileHistory] stack and switches
+     * to the previous document. The pane back button and the
+     * Cmd-Opt-Left chord both call this.
+     */
+    fun zoomBack() {
+        val s = _stateFlow.value
+        if (s.zoomHistory.isNotEmpty()) {
+            zoomNavigation.zoomBack()
+            return
+        }
+        if (s.fileHistory.isNotEmpty()) {
+            scope.launch { fileBack() }
+        }
+    }
 
-    /** See [ZoomNavigation.zoomForward]. */
-    fun zoomForward() = zoomNavigation.zoomForward()
+    /** Mirror of [zoomBack] for the forward direction. */
+    fun zoomForward() {
+        val s = _stateFlow.value
+        if (s.zoomForward.isNotEmpty()) {
+            zoomNavigation.zoomForward()
+            return
+        }
+        if (s.fileForward.isNotEmpty()) {
+            scope.launch { fileForward() }
+        }
+    }
 
-    /** `true` when [State.zoomHistory] is non-empty (back is meaningful). */
-    fun canZoomBack(state: State = _stateFlow.value): Boolean = state.zoomHistory.isNotEmpty()
+    /** `true` when there's somewhere to go back to (zoom or file). */
+    fun canZoomBack(state: State = _stateFlow.value): Boolean =
+        state.zoomHistory.isNotEmpty() || state.fileHistory.isNotEmpty()
 
-    /** `true` when [State.zoomForward] is non-empty (forward is meaningful). */
-    fun canZoomForward(state: State = _stateFlow.value): Boolean = state.zoomForward.isNotEmpty()
+    /** `true` when there's somewhere to go forward to (zoom or file). */
+    fun canZoomForward(state: State = _stateFlow.value): Boolean =
+        state.zoomForward.isNotEmpty() || state.fileForward.isNotEmpty()
+
+    private suspend fun fileBack() {
+        val previous = _stateFlow.value.fileHistory.lastOrNull() ?: return
+        val currentFile = documentBackingViewModel.stateFlow.value.activeFileRel
+        documentBackingViewModel.switchTo(previous)
+        patch {
+            it.copy(
+                cursorRow = 0, cursorCol = 0,
+                anchorRow = null, anchorCol = null,
+                zoomedLineId = null,
+                zoomHistory = emptyList(),
+                zoomForward = emptyList(),
+                collapsedIds = emptySet(),
+                seenLineIds = emptySet(),
+                fileHistory = it.fileHistory.dropLast(1),
+                fileForward = (it.fileForward + currentFile).takeLast(NAV_HISTORY_CAP),
+            )
+        }
+    }
+
+    private suspend fun fileForward() {
+        val next = _stateFlow.value.fileForward.lastOrNull() ?: return
+        val currentFile = documentBackingViewModel.stateFlow.value.activeFileRel
+        documentBackingViewModel.switchTo(next)
+        patch {
+            it.copy(
+                cursorRow = 0, cursorCol = 0,
+                anchorRow = null, anchorCol = null,
+                zoomedLineId = null,
+                zoomHistory = emptyList(),
+                zoomForward = emptyList(),
+                collapsedIds = emptySet(),
+                seenLineIds = emptySet(),
+                fileHistory = (it.fileHistory + currentFile).takeLast(NAV_HISTORY_CAP),
+                fileForward = it.fileForward.dropLast(1),
+            )
+        }
+    }
 
     /** See [ZoomNavigation.zoomInfo]. */
     fun zoomInfo(state: State = _stateFlow.value): ZoomInfo? = zoomNavigation.zoomInfo(state)
@@ -462,6 +579,95 @@ class DocumentViewBackingViewModel(
 
     /** See [TextEditingViewModel.onCutRequested]. */
     fun onCutRequested(): String? = textEditing.onCutRequested()
+
+    // ------------------------------------------------------- markdown styles
+
+    /** See [MarkdownStyleViewModel.applyInlineStyle]. */
+    fun applyInlineStyle(style: InlineStyle) = markdownStyle.applyInlineStyle(style)
+
+    /** See [MarkdownStyleViewModel.applyLineStyle]. */
+    fun applyLineStyle(style: LineStyle) = markdownStyle.applyLineStyle(style)
+
+    /** See [MarkdownStyleViewModel.activeInlineStyles]. */
+    fun activeInlineStyles(): Set<InlineStyle> = markdownStyle.activeInlineStyles()
+
+    /** See [MarkdownStyleViewModel.activeLineStyle]. */
+    fun activeLineStyle(): LineStyle? = markdownStyle.activeLineStyle()
+
+    // ----------------------------------------------------------- vault footer
+
+    /**
+     * Flips [State.isVaultFooterExpanded]. Invoked by the master chevron
+     * next to the footer's "Files" header.
+     */
+    fun toggleVaultFooter() {
+        patch { it.copy(isVaultFooterExpanded = !it.isVaultFooterExpanded) }
+    }
+
+    /**
+     * Toggles whether the folder at [dirRel] is open in the filesystem-tree
+     * footer. Adding a path also kicks off
+     * `DocumentBackingViewModel.ensureVaultListing(dirRel)` so the folder's
+     * direct children are fetched on first expand. Removing a path keeps the
+     * cached listing — same cheap behaviour as collapsing a within-file
+     * parent (no memory benefit to clearing it, and instant re-open).
+     */
+    fun toggleVaultFolder(dirRel: String) {
+        val current = _stateFlow.value
+        val isOpening = dirRel !in current.expandedVaultPaths
+        patch {
+            val next = if (dirRel in it.expandedVaultPaths) {
+                it.expandedVaultPaths - dirRel
+            } else {
+                it.expandedVaultPaths + dirRel
+            }
+            it.copy(expandedVaultPaths = next)
+        }
+        if (isOpening) {
+            scope.launch { documentBackingViewModel.ensureVaultListing(dirRel) }
+        }
+    }
+
+    /**
+     * Switches the editor to the markdown file at [pathRel]. The clicked
+     * file becomes the active document — its content replaces the
+     * editor's lines, its `#notegrow` link bullets become the new outline,
+     * and autosave writes back to it. The previously-active file's
+     * pending changes (if any) are flushed first.
+     *
+     * Resets per-viewer state (cursor, anchor, selection, zoom history,
+     * collapse state) since none of it is meaningful in the new file.
+     *
+     * Runs on [scope]; callers fire and forget.
+     *
+     * @param pathRel Vault-relative path to the file, including the `.md`
+     *   extension (e.g. `Recipes/Recipes.md`, `links.md`,
+     *   `Recipes/Quick Granola.md`).
+     */
+    fun navigateToVaultFile(pathRel: String) {
+        if (!_stateFlow.value.isLoaded) return
+        val currentFile = documentBackingViewModel.stateFlow.value.activeFileRel
+        if (currentFile == pathRel) return
+        scope.launch {
+            documentBackingViewModel.switchTo(pathRel)
+            patch {
+                it.copy(
+                    cursorRow = 0,
+                    cursorCol = 0,
+                    anchorRow = null,
+                    anchorCol = null,
+                    zoomedLineId = null,
+                    zoomHistory = emptyList(),
+                    zoomForward = emptyList(),
+                    collapsedIds = emptySet(),
+                    seenLineIds = emptySet(),
+                    // Browser-style: pushing to history kills forward.
+                    fileHistory = (it.fileHistory + currentFile).takeLast(NAV_HISTORY_CAP),
+                    fileForward = emptyList(),
+                )
+            }
+        }
+    }
 
     // ------------------------------------------------------------------ helpers
 
@@ -577,6 +783,9 @@ class DocumentViewBackingViewModel(
     companion object {
         /** Standard indent step across the app (two spaces). */
         const val TAB_SIZE: Int = 2
+
+        /** Cap on entries in [State.fileHistory] / [State.fileForward]. */
+        const val NAV_HISTORY_CAP: Int = 50
 
         /**
          * Normalizes an anchor + cursor pair into a [Selection]. Returns

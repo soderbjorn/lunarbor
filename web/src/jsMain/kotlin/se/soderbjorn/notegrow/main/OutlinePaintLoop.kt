@@ -39,6 +39,42 @@ package se.soderbjorn.notegrow.main
 import kotlinx.browser.document
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.MouseEvent
+import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
+import se.soderbjorn.notegrow.data.InlineStyle
+import se.soderbjorn.notegrow.data.LineMarkdownPrefix
+import se.soderbjorn.notegrow.data.LineStyle
+
+/**
+ * Per-row mapping between displayed (markers-stripped) text and the
+ * underlying model line, scoped to the editable region (the
+ * `.notegrow-text` wrapper inside the row's div).
+ *
+ * Both arrays are 0-indexed against the editable region; callers must
+ * add `data-prefix-len` to translate to absolute model columns.
+ *
+ * @property modelToDom Editable-relative model column → display column.
+ *   Length is `editableLen + 1`. Marker columns (line-level prefix and
+ *   inline `**`/`*`/etc.) collapse to neighbouring display columns.
+ * @property domToModel Display column → editable-relative model column.
+ *   Length is `displayLen + 1`.
+ * @property markerCols Editable-relative model columns occupied by
+ *   marker characters. The caret-snap logic skips these.
+ */
+internal class RowColumnMap(
+    val modelToDom: IntArray,
+    val domToModel: IntArray,
+    val markerCols: Set<Int>,
+)
+
+/**
+ * Module-level map from row div → its column-translation. Cleared at the
+ * start of every `paint`. Holding strong references is fine because the
+ * old row divs are released when `editor.innerHTML = ""` runs first.
+ */
+private val rowColumnMaps: MutableMap<HTMLElement, RowColumnMap> = HashMap()
+
+/** Look up the column map for [rowDiv], if it has one. */
+internal fun rowColumnMapOf(rowDiv: HTMLElement): RowColumnMap? = rowColumnMaps[rowDiv]
 
 /**
  * Renders the "Loading…" placeholder into [editor]. Used on cold start
@@ -70,6 +106,7 @@ fun paint(
     style: EditorStyle,
 ) {
     editor.innerHTML = ""
+    rowColumnMaps.clear()
     if (!state.isLoaded) {
         paintLoading(editor)
         return
@@ -160,40 +197,126 @@ private fun buildRowElement(
             val isCollapsedNow = rowId in state.collapsedIds
             if (isCollapsibleParent) {
                 val isRef = viewModel.isPromotedRef(rowId)
-                val chevron = buildChevron(rowId, isCollapsedNow, isRef, viewModel)
+                val chevron = buildChevron(rowId, isCollapsedNow, viewModel)
                 // Position the chevron just to the left of THIS row's bullet
                 // glyph, not the editor's left margin. The row's bullet sits
                 // at `padding-left = depth * indentStepPx` from the row's
                 // box; the chevron's 22px slot lands immediately before it.
                 chevron.style.left = "${depth * style.indentStepPx - 22}px"
                 rowDiv.appendChild(chevron)
+                if (isRef) {
+                    // Discrete file-icon adornment to the left of the
+                    // chevron, signalling that expanding leads into a
+                    // separate Markdown file rather than child bullets.
+                    val refIcon = buildPromotedRefIcon()
+                    refIcon.style.left = "${depth * style.indentStepPx - 36}px"
+                    rowDiv.appendChild(refIcon)
+                }
             }
         }
 
         rowDiv.appendChild(buildBulletPrefix(absoluteRow, viewModel))
-        rowDiv.appendChild(buildTextSpan(line.substring(bulletCol + 2)))
+        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2)))
     } else {
         // Non-bullet line: editable text starts at column 0 of the raw line,
         // unless we stripped a zoom indent — in that case the displayed text
         // begins at `viewOriginCol` in raw model columns.
         rowDiv.setAttribute("data-prefix-len", viewOriginCol.toString())
-        rowDiv.appendChild(buildTextSpan(line))
+        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line))
     }
 
     return rowDiv
 }
 
 /**
- * Editable text region of one row. Always exactly one child of its parent
- * row (so caret offsets within it map cleanly to model columns via
- * `data-prefix-len + offset`). Empty rows still get an empty span so the
- * caret has a stable target.
+ * Builds the `.notegrow-text` editable region for one row. Splits the
+ * inline markdown into one `<span class="notegrow-text-run …">` per
+ * styled run; marker characters are *not* in the DOM at all so the user
+ * sees a pure WYSIWYG view. Also detects a leading line-level prefix
+ * (`# `, `> `, etc.), strips it from the rendering, and adds the
+ * matching styling class to the wrapper.
+ *
+ * Stashes a [RowColumnMap] in [rowColumnMaps] so caret-mapping code can
+ * translate between the DOM (markers-stripped) and the underlying model
+ * line.
+ *
+ * @param rowDiv The enclosing row div — used as the column-map key.
+ * @param editable The editable inline text (the line with any bullet
+ *   prefix already removed). May be empty.
  */
-private fun buildTextSpan(text: String): HTMLElement {
-    val span = document.createElement("span") as HTMLElement
-    span.className = "notegrow-text"
-    span.textContent = text
-    return span
+private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLElement {
+    val wrapper = document.createElement("span") as HTMLElement
+    wrapper.className = "notegrow-text"
+
+    // Detect line-level prefix at the start of the editable text.
+    val linePrefix = LineMarkdownPrefix.detect(editable, 0)
+    val lineMarkerLen = if (linePrefix.style != null) linePrefix.markerEnd else 0
+    val lineClass = when (linePrefix.style) {
+        LineStyle.HEADING_1 -> "notegrow-md-h1"
+        LineStyle.HEADING_2 -> "notegrow-md-h2"
+        LineStyle.HEADING_3 -> "notegrow-md-h3"
+        LineStyle.QUOTE -> "notegrow-md-quote"
+        null -> null
+    }
+    if (lineClass != null) wrapper.className = "notegrow-text $lineClass"
+
+    val inlineText = if (lineMarkerLen > 0) editable.substring(lineMarkerLen) else editable
+    val tokenized = InlineMarkdownTokenizer.tokenize(inlineText)
+
+    // Compose the row's full column map: cols inside the line marker
+    // collapse to display 0; inline cols use the tokenizer's map.
+    val editableLen = editable.length
+    val rowModelToDom = IntArray(editableLen + 1)
+    for (i in 0..lineMarkerLen) rowModelToDom[i] = 0
+    for (i in 0..(editableLen - lineMarkerLen)) {
+        rowModelToDom[lineMarkerLen + i] = tokenized.modelToDom[i]
+    }
+    val displayLen = tokenized.displayText.length
+    val rowDomToModel = IntArray(displayLen + 1)
+    for (d in 0..displayLen) {
+        rowDomToModel[d] = lineMarkerLen + tokenized.domToModel[d]
+    }
+    val markerCols = HashSet<Int>(tokenized.markerCols.size + lineMarkerLen)
+    for (i in 0 until lineMarkerLen) markerCols += i
+    for (m in tokenized.markerCols) markerCols += (m + lineMarkerLen)
+    rowColumnMaps[rowDiv] = RowColumnMap(rowModelToDom, rowDomToModel, markerCols)
+
+    if (tokenized.runs.isEmpty()) {
+        // Empty editable region (or whole region was markers like `****`).
+        // Still emit one empty run-span so the caret has a stable target.
+        val empty = document.createElement("span") as HTMLElement
+        empty.className = "notegrow-text-run"
+        wrapper.appendChild(empty)
+    } else {
+        for (run in tokenized.runs) {
+            val span = document.createElement("span") as HTMLElement
+            span.className = runClassName(run.styles)
+            span.textContent = run.text
+            wrapper.appendChild(span)
+        }
+    }
+    return wrapper
+}
+
+/**
+ * Build the CSS class string for a styled run from its [styles] set.
+ * Always includes the base `notegrow-text-run` class so global
+ * editable-region styles still apply.
+ */
+private fun runClassName(styles: Set<InlineStyle>): String {
+    if (styles.isEmpty()) return "notegrow-text-run"
+    val parts = StringBuilder("notegrow-text-run")
+    for (s in styles) {
+        parts.append(' ')
+        parts.append(when (s) {
+            InlineStyle.BOLD -> "notegrow-md-bold"
+            InlineStyle.ITALIC -> "notegrow-md-italic"
+            InlineStyle.UNDERLINE -> "notegrow-md-underline"
+            InlineStyle.STRIKETHROUGH -> "notegrow-md-strike"
+            InlineStyle.INLINE_CODE -> "notegrow-md-code"
+        })
+    }
+    return parts.toString()
 }
 
 /**
@@ -248,14 +371,14 @@ private fun buildBulletPrefix(
  * [MainViewModel.toggleCollapse]. Marked `contenteditable="false"` so it
  * never participates in caret placement.
  *
- * When [isPromotedRef] is true the chevron is drawn with a heavier stroke
- * so the user can tell at a glance that expanding it leads into a
- * separate document, not just child bullets within the current file.
+ * Promoted-ref bullets get a separate file-icon adornment via
+ * [buildPromotedRefIcon] rather than restyling the chevron itself, so the
+ * chevron stays visually identical regardless of whether it leads into a
+ * separate document or in-file children.
  */
 private fun buildChevron(
     rowId: LineId,
     isCollapsed: Boolean,
-    isPromotedRef: Boolean,
     viewModel: MainViewModel,
 ): HTMLElement {
     val target = document.createElement("div") as HTMLElement
@@ -279,10 +402,8 @@ private fun buildChevron(
         setProperty("user-select", "none")
     }
     val rotation = if (isCollapsed) "rotate(-90deg)" else "none"
-    val strokeWidth = if (isPromotedRef) "4.5" else "1.6"
-    val size = if (isPromotedRef) "12" else "10"
-    target.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"$size\" height=\"$size\" stroke=\"currentColor\" " +
-        "stroke-width=\"$strokeWidth\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
+    target.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\" stroke=\"currentColor\" " +
+        "stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
         "style=\"transform: $rotation; transition: transform 120ms ease; pointer-events: none;\">" +
         "<polyline points=\"4,6 8,10 12,6\"></polyline></svg>"
     target.addEventListener("mousedown", { event ->
@@ -300,6 +421,42 @@ private fun buildChevron(
 }
 
 /**
+ * Small file-icon adornment shown to the left of the chevron when the row
+ * is a promoted-subtree reference (i.e. expanding it loads a separate
+ * Markdown file). Purely decorative — non-interactive and
+ * `contenteditable="false"` so it doesn't capture clicks intended for the
+ * chevron or row body. Absolute positioning of the `left` offset is the
+ * caller's responsibility.
+ */
+private fun buildPromotedRefIcon(): HTMLElement {
+    val icon = document.createElement("div") as HTMLElement
+    icon.className = "notegrow-promoted-ref-icon"
+    icon.title = "Linked file"
+    icon.setAttribute("contenteditable", "false")
+    icon.style.apply {
+        setProperty("position", "absolute")
+        top = "0"
+        width = "14px"
+        height = "100%"
+        display = "flex"
+        alignItems = "center"
+        justifyContent = "center"
+        color = "var(--t-text-tertiary, #7a7a7a)"
+        setProperty("user-select", "none")
+        setProperty("pointer-events", "none")
+        opacity = "0.6"
+    }
+    // Page-with-folded-corner glyph at 10×10. Stroke-only matches the
+    // chevron's visual weight.
+    icon.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"12\" stroke=\"currentColor\" " +
+        "stroke-width=\"1.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
+        "style=\"pointer-events: none;\">" +
+        "<path d=\"M4 2 H10 L13 5 V14 H4 Z\"></path>" +
+        "<polyline points=\"10,2 10,5 13,5\"></polyline></svg>"
+    return icon
+}
+
+/**
  * Injects the stylesheet that drives bullet/chevron hover, scrollbars,
  * and the restructuring banner. Runs once — the guard on the `id` makes
  * repeat calls cheap.
@@ -310,16 +467,16 @@ fun ensureStyles() {
     val style = document.createElement("style") as HTMLElement
     style.id = "notegrow-cursor-style"
     style.textContent = """
-        .notegrow-editor::-webkit-scrollbar { width: 12px; }
-        .notegrow-editor::-webkit-scrollbar-track {
+        .notegrow-scroll::-webkit-scrollbar { width: 12px; }
+        .notegrow-scroll::-webkit-scrollbar-track {
             background: var(--t-terminal-bg, #1e1e1e);
         }
-        .notegrow-editor::-webkit-scrollbar-thumb {
+        .notegrow-scroll::-webkit-scrollbar-thumb {
             background: var(--t-border-strong, #4a4a4a);
             border-radius: 6px;
             border: 2px solid var(--t-terminal-bg, #1e1e1e);
         }
-        .notegrow-editor::-webkit-scrollbar-thumb:hover {
+        .notegrow-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--t-text-tertiary, #5e5e5e);
         }
         .notegrow-editor ::selection {
@@ -388,6 +545,59 @@ fun ensureStyles() {
             border-radius: 50%;
             animation: notegrow-spinner-rotate 0.8s linear infinite;
         }
+        /* Filesystem-tree footer: rendered in a sibling block under the
+           contenteditable editor host so it scrolls with the document but
+           can never receive caret/selection. Styled to look like another
+           outline. */
+        .notegrow-vault-footer {
+            border-top: 1px solid var(--t-border-strong, #4a4a4a);
+            margin-top: 32px;
+        }
+        .notegrow-vault-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding-top: 8px;
+            padding-bottom: 6px;
+            opacity: 0.65;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            cursor: pointer;
+            user-select: none;
+        }
+        .notegrow-vault-header:hover {
+            opacity: 0.85;
+        }
+        .notegrow-vault-header-chevron {
+            position: relative;
+            width: 16px;
+            height: 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--t-text-tertiary, #7a7a7a);
+        }
+        .notegrow-vault-row {
+            position: relative;
+            cursor: pointer;
+            user-select: none;
+        }
+        .notegrow-vault-row:hover .notegrow-vault-text {
+            color: var(--t-text-primary, #e6e6e6);
+        }
+        .notegrow-vault-text {
+            color: var(--t-text-secondary, #cfcfcf);
+        }
+        .notegrow-vault-folder {
+            opacity: 0.85;
+        }
+        .notegrow-vault-loading {
+            opacity: 0.5;
+            font-style: italic;
+            color: var(--t-text-tertiary, #7a7a7a);
+        }
         /* Notegrow-only: bump the navigation (left) sidebar rows so pane
            labels read at a comfortable size. Scoped via the toolkit's
            left-sidebar wrapper class so this stylesheet (loaded only by
@@ -398,6 +608,98 @@ fun ensureStyles() {
         }
         .dt-app-frame-sidebar-left .dt-sidebar-section-header {
             font-size: 13px;
+        }
+        /* WYSIWYG markdown styles: the marker characters (**, *, <u>, ~~,
+           `) are not in the DOM at all, so styling here only affects the
+           rendered text. The underlying model line still contains the
+           markdown so files round-trip cleanly through other tools. */
+        .notegrow-md-bold { font-weight: 700; }
+        .notegrow-md-italic { font-style: italic; }
+        .notegrow-md-underline { text-decoration: underline; }
+        .notegrow-md-strike { text-decoration: line-through; }
+        .notegrow-md-strike.notegrow-md-underline { text-decoration: underline line-through; }
+        .notegrow-md-code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.95em;
+            background: var(--t-border-strong, rgba(255, 255, 255, 0.10));
+            padding: 0 4px;
+            border-radius: 3px;
+        }
+        .notegrow-text.notegrow-md-h1 {
+            font-size: 1.6em;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+        .notegrow-text.notegrow-md-h2 {
+            font-size: 1.35em;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+        .notegrow-text.notegrow-md-h3 {
+            font-size: 1.15em;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+        .notegrow-text.notegrow-md-quote {
+            display: inline-block;
+            border-left: 3px solid var(--t-border-strong, #4a4a4a);
+            padding-left: 8px;
+            color: var(--t-text-secondary, #cfcfcf);
+            font-style: italic;
+        }
+        /* Style dropdown menu (anchored to the Style toolbar button). */
+        .notegrow-style-menu {
+            position: fixed;
+            z-index: 2000;
+            min-width: 220px;
+            background: var(--t-surface-overlay, #2a2a2a);
+            border: 1px solid var(--t-border-strong, #4a4a4a);
+            border-radius: 6px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+            padding: 4px;
+            font-size: 13px;
+            color: var(--t-text-primary, #e6e6e6);
+        }
+        .notegrow-style-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 6px 10px;
+            background: transparent;
+            border: 0;
+            color: inherit;
+            text-align: left;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: inherit;
+            font-family: inherit;
+        }
+        .notegrow-style-item:hover {
+            background: var(--t-border-strong, rgba(255, 255, 255, 0.10));
+        }
+        .notegrow-style-item.is-active {
+            background: var(--t-accent-soft, rgba(90, 176, 255, 0.18));
+        }
+        .notegrow-style-icon {
+            width: 16px;
+            height: 16px;
+            flex: 0 0 16px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--t-text-secondary, #cfcfcf);
+        }
+        .notegrow-style-label { flex: 1 1 auto; }
+        .notegrow-style-check {
+            margin-left: auto;
+            opacity: 0.9;
+            color: var(--t-accent, #5ab0ff);
+        }
+        .notegrow-style-divider {
+            border: 0;
+            border-top: 1px solid var(--t-border-strong, #3a3a3a);
+            margin: 4px 0;
         }
     """.trimIndent()
     document.head?.appendChild(style)

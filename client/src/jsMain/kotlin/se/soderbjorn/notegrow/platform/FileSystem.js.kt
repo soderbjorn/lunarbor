@@ -47,4 +47,15 @@ actual class FileSystem actual constructor() {
         val result = (api.listDirectory(path) as Promise<Array<String>>).await()
         return result.toList()
     }
+
+    actual suspend fun listDirectoryEntries(path: String): List<VaultDirectoryEntry> {
+        val result = (api.listDirectoryEntries(path) as Promise<Array<dynamic>>).await()
+        val out = ArrayList<VaultDirectoryEntry>(result.size)
+        for (raw in result) {
+            val name = raw.name as String
+            val isDir = raw.isDirectory as Boolean
+            out += VaultDirectoryEntry(name = name, isDirectory = isDir)
+        }
+        return out
+    }
 }
