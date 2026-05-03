@@ -264,8 +264,17 @@ class MainScreen(
         // when that row sits inside the active selection, begins a row-range
         // drag. Bullet-dot drags are wired separately by `OutlinePaintLoop`
         // via the `onBulletMouseDown` callback we pass to `paint`.
+        //
+        // External-link follow is wired into the same `mousedown` slot so
+        // the browser opens before the default contenteditable caret-place
+        // runs — handling this on `click` was unreliable because the
+        // intervening `mouseup` triggers `syncSelectionFromDom`, which can
+        // emit state and rebuild the DOM; by the time `click` fires the
+        // original target span is detached and the event is lost.
         editor.addEventListener("mousedown", { event ->
-            maybeBeginGutterDrag(editor, event as MouseEvent)
+            val me = event as MouseEvent
+            if (handleExternalLinkMouseDown(me)) return@addEventListener
+            maybeBeginGutterDrag(editor, me)
         })
         editor.addEventListener("copy", { event ->
             handleCopy(editor, event.unsafeCast<dynamic>())
@@ -342,11 +351,8 @@ class MainScreen(
                 val data = event.data?.unsafeCast<String?>()
                 if (!data.isNullOrEmpty()) viewModel.insertText(data)
             }
-            "historyUndo", "historyRedo" -> {
-                // Native contenteditable history is unreliable on a model
-                // we rebuild from state; ignore for now. A future custom
-                // undo stack plugs in here.
-            }
+            "historyUndo" -> viewModel.undo()
+            "historyRedo" -> viewModel.redo()
             else -> {
                 // Unknown input type — fall back to data insertion if any.
                 val data = event.data?.unsafeCast<String?>()
@@ -371,6 +377,24 @@ class MainScreen(
             event.preventDefault()
             syncSelectionFromDom(editor)
             viewModel.selectAll()
+            return
+        }
+        if (cmd && !event.altKey && event.key.lowercase() == "z") {
+            // Cmd-Z / Shift-Cmd-Z. Most browsers also fire `beforeinput`
+            // with `historyUndo` / `historyRedo` for these chords inside
+            // contenteditable, but routing here too ensures the shortcut
+            // works even if the focused element doesn't dispatch
+            // beforeinput (e.g. while a non-editable bullet glyph holds
+            // focus during a drag handoff).
+            event.preventDefault()
+            if (event.shiftKey) viewModel.redo() else viewModel.undo()
+            return
+        }
+        if (cmd && !event.altKey && !event.shiftKey && event.key.lowercase() == "y") {
+            // Windows/Linux convention: Cmd/Ctrl-Y as redo. Mac users
+            // typically use Shift-Cmd-Z (handled above).
+            event.preventDefault()
+            viewModel.redo()
             return
         }
         if (cmd && !event.altKey && !event.shiftKey) {
@@ -444,9 +468,12 @@ class MainScreen(
         if (event.key == "Tab") {
             event.preventDefault()
             syncSelectionFromDom(editor)
+            val backing = viewModel.stateFlow.value.backingState
+            val sel = backing?.let { DocumentViewBackingViewModel.selectionOf(it) }
+            val multiRow = sel != null && sel.startRow != sel.endRow
             if (event.shiftKey) {
                 viewModel.outdentLine()
-            } else if (viewModel.isBulletLine()) {
+            } else if (multiRow || viewModel.isBulletLine()) {
                 viewModel.indentLine()
             } else {
                 viewModel.insertText("  ")
@@ -607,6 +634,62 @@ class MainScreen(
             n = n.parentNode
         }
         return null
+    }
+
+    /**
+     * If [ev] hit a span carrying a `data-href` attribute (set by
+     * [OutlinePaintLoop] for inline markdown links) whose href has an
+     * external URL scheme, open it in the OS default browser, suppress
+     * the default caret placement, and return `true` so the caller skips
+     * its remaining mousedown handling.
+     *
+     * Returns `false` (and does nothing) when the press did not land on
+     * an external link, so internal `.md` refs and plain text still get
+     * their default contenteditable caret behavior.
+     */
+    private fun handleExternalLinkMouseDown(ev: MouseEvent): Boolean {
+        // Only act on the primary button; let middle/right clicks fall
+        // through to the browser so context menus and "open in tab"
+        // gestures still work.
+        if (ev.button.toInt() != 0) return false
+        val target = ev.target as? Node ?: return false
+        val href = ancestorHref(target) ?: return false
+        if (!isExternalUrl(href)) return false
+        // preventDefault stops contenteditable from placing the caret in
+        // the link span; without it the first press would just move the
+        // cursor and the URL would not open until the second press.
+        ev.preventDefault()
+        ev.stopPropagation()
+        // `noopener,noreferrer` makes the new context independent of this
+        // window — required by Electron's `setWindowOpenHandler` contract
+        // (so main.js can route to `shell.openExternal`) and best practice
+        // on the plain web build too.
+        window.open(href, "_blank", "noopener,noreferrer")
+        return true
+    }
+
+    private fun ancestorHref(node: Node): String? {
+        var n: Node? = node
+        while (n != null) {
+            if (n is Element && n.hasAttribute("data-href")) {
+                return n.getAttribute("data-href")
+            }
+            n = n.parentNode
+        }
+        return null
+    }
+
+    private fun isExternalUrl(href: String): Boolean {
+        // Match the small set of URL schemes that mean "leave the app" —
+        // anything else (including bare relative paths to other notes) is
+        // treated as an internal reference and left for native handling.
+        val lower = href.lowercase()
+        return lower.startsWith("http://") ||
+            lower.startsWith("https://") ||
+            lower.startsWith("mailto:") ||
+            lower.startsWith("tel:") ||
+            lower.startsWith("ftp://") ||
+            lower.startsWith("ftps://")
     }
 
     // -------------------------------------------------------- reconcile/paint
@@ -1138,14 +1221,30 @@ class MainScreen(
 
     /**
      * Begins a drag session anchored on the bullet glyph at [absoluteRow].
-     * Resolves the bullet's subtree range now via
-     * [MainViewModel.subtreeRange] so a concurrent edit cannot shift the
-     * range mid-drag. A no-op if [absoluteRow] is not a bullet line.
+     *
+     * Two cases:
+     * - If there is an active multi-row selection and [absoluteRow] is
+     *   inside it, the drag moves the whole selected row range. Grabbing
+     *   any bullet within a multi-row selection feels like "drag the thing
+     *   I selected", and matches the gutter-drag affordance.
+     * - Otherwise resolves the bullet's subtree via
+     *   [MainViewModel.subtreeRange] and drags that — the standard
+     *   bullet-and-children move.
+     *
+     * The chosen range is resolved now so a concurrent edit cannot shift
+     * it mid-drag. A no-op if [absoluteRow] is not a bullet line and the
+     * selection branch does not apply.
      *
      * Called by [OutlinePaintLoop.buildBulletPrefix] through the
      * `onBulletMouseDown` callback we pass to `paint(...)`.
      */
     private fun beginDragFromBullet(absoluteRow: Int, ev: MouseEvent) {
+        val backing = viewModel.currentBackingState
+        val sel = DocumentViewBackingViewModel.selectionOf(backing)
+        if (sel != null && sel.startRow != sel.endRow && absoluteRow in sel.startRow..sel.endRow) {
+            startDragSession(sel.startRow, sel.endRow, ev, DragSession.Origin.Selection)
+            return
+        }
         val range = viewModel.subtreeRange(absoluteRow) ?: return
         startDragSession(range.first, range.last, ev, DragSession.Origin.Bullet)
     }

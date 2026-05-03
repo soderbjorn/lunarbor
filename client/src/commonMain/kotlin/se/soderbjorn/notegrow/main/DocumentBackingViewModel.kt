@@ -289,6 +289,44 @@ class DocumentBackingViewModel(
     }
 
     /**
+     * Wholesale-replaces the document's text content and stable ids in a
+     * single state emission. Used by `DocumentViewBackingViewModel`'s
+     * undo/redo path to restore a full snapshot — the alternative would be
+     * to replay inverse operations through [insertText] / [delete], which
+     * would emit one state per step and risk transient invalid states (e.g.
+     * a half-restored selection straddling rows that don't yet exist).
+     *
+     * No-op when the document has not yet finished its initial load — the
+     * undo stack is empty in that window so this is purely defensive.
+     *
+     * Does not touch [State.activeFileRel] / [State.isLoaded] / autosave
+     * bookkeeping. The next autosave tick simply observes the new content
+     * and persists it; saved-on-disk state catches up to the in-memory
+     * state on the normal cadence.
+     *
+     * @param lines New document content. Must be non-empty (use `listOf("")`
+     *   for an empty document to preserve the invariant).
+     * @param lineIds Parallel id list. Must be the same size as [lines]; ids
+     *   come from a previously-captured snapshot so all values are within
+     *   the range previously allocated by this VM.
+     * @param expandedRefIds The set of file-boundary refs that were
+     *   expanded at the time the snapshot was captured. Restored verbatim.
+     */
+    fun replaceContent(
+        lines: List<String>,
+        lineIds: List<LineId>,
+        expandedRefIds: Set<LineId>,
+    ) {
+        val state = _stateFlow.value
+        if (!state.isLoaded) return
+        _stateFlow.value = state.copy(
+            lines = lines,
+            lineIds = lineIds,
+            expandedRefIds = expandedRefIds,
+        )
+    }
+
+    /**
      * One-shot initial load from [repository]. Reads only `root.nogr` (no
      * recursion into `[[…]]` references), assigns a fresh [LineId] to every
      * loaded line, and stashes the row→dirRel map by [LineId] in

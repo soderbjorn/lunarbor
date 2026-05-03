@@ -89,6 +89,18 @@ class MainViewModel(
     /** See `DocumentViewBackingViewModel.backspace`. */
     fun backspace() = backingViewModel.backspace()
 
+    /** See `DocumentViewBackingViewModel.undo`. */
+    fun undo() = backingViewModel.undo()
+
+    /** See `DocumentViewBackingViewModel.redo`. */
+    fun redo() = backingViewModel.redo()
+
+    /** See `DocumentViewBackingViewModel.canUndo`. */
+    fun canUndo(): Boolean = backingViewModel.canUndo()
+
+    /** See `DocumentViewBackingViewModel.canRedo`. */
+    fun canRedo(): Boolean = backingViewModel.canRedo()
+
     // ---- movement intents -----------------------------------------------
 
     /** See `DocumentViewBackingViewModel.moveLeft`. */

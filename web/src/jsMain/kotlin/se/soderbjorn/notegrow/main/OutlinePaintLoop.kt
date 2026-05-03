@@ -466,7 +466,7 @@ private fun buildPromotedRefIcon(): HTMLElement {
     icon.style.apply {
         setProperty("position", "absolute")
         top = "0"
-        width = "14px"
+        width = "22px"
         height = "100%"
         display = "flex"
         alignItems = "center"
@@ -474,15 +474,15 @@ private fun buildPromotedRefIcon(): HTMLElement {
         color = "var(--t-text-tertiary, #7a7a7a)"
         setProperty("user-select", "none")
         setProperty("pointer-events", "none")
-        opacity = "0.6"
     }
-    // Page-with-folded-corner glyph at 10×10. Stroke-only matches the
-    // chevron's visual weight.
-    icon.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"12\" stroke=\"currentColor\" " +
-        "stroke-width=\"1.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
-        "style=\"pointer-events: none;\">" +
-        "<path d=\"M4 2 H10 L13 5 V14 H4 Z\"></path>" +
-        "<polyline points=\"10,2 10,5 13,5\"></polyline></svg>"
+    // Page-with-folded-corner glyph. Sized + weighted to match
+    // `VaultFooter.buildVaultFileIcon` so promoted-ref rows and tree-row
+    // file rows read with the same prominence.
+    icon.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"11\" height=\"11\" fill=\"none\" " +
+        "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
+        "stroke-linejoin=\"round\" style=\"pointer-events: none;\">" +
+        "<path d=\"M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z\"/>" +
+        "<polyline points=\"14 3 14 9 20 9\"/></svg>"
     return icon
 }
 
@@ -627,11 +627,8 @@ fun ensureStyles() {
             cursor: pointer;
             user-select: none;
         }
-        .notegrow-vault-row:hover .notegrow-vault-text {
-            color: var(--t-text-primary, #e6e6e6);
-        }
         .notegrow-vault-text {
-            color: var(--t-text-secondary, #cfcfcf);
+            color: var(--t-text-primary, #e6e6e6);
         }
         .notegrow-vault-folder {
             opacity: 0.85;

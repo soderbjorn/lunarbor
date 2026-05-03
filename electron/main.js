@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const fs = require("fs/promises");
 const fsSync = require("fs");
 const os = require("os");
@@ -119,6 +119,30 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       additionalArguments,
     },
+  });
+
+  // Renderer-initiated `window.open(url, "_blank", ...)` calls reach here.
+  // We deny opening a new BrowserWindow and hand the URL to the OS default
+  // browser via `shell.openExternal`. This is what makes inline markdown
+  // links in the editor follow into Safari/Chrome/etc. instead of either
+  // silently failing or replacing the app's own window.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^(https?|mailto|tel|ftps?):/i.test(url)) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
+  // Defense in depth: if a navigation event slips through (e.g. a stray
+  // `<a href>` activation we haven't intercepted on the renderer side),
+  // intercept it here and route to the OS browser instead of replacing
+  // the app's own page.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const current = mainWindow.webContents.getURL();
+    if (url !== current && /^(https?|mailto|tel|ftps?):/i.test(url)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
   });
 
   mainWindow.loadFile(path.join(__dirname, "resources", "web", "index.html"));

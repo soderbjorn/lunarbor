@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.time.TimeSource
 import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineStyle
 
@@ -252,6 +253,16 @@ class DocumentViewBackingViewModel(
     init {
         scope.launch {
             documentBackingViewModel.stateFlow.collect { docState ->
+                // Clear undo/redo when the editor swaps to a different file:
+                // the captured snapshots reference content from the
+                // previous document and would silently corrupt the new one
+                // if applied. Detected on the first emission whose
+                // activeFileRel differs from what we last saw loaded.
+                if (docState.isLoaded && docState.activeFileRel != lastObservedActiveFile) {
+                    undoStack.clear()
+                    redoStack.clear()
+                    lastObservedActiveFile = docState.activeFileRel
+                }
                 val merged = _stateFlow.value.copy(documentState = docState)
                 val withDefaults = applyDefaultCollapseIfNeeded(merged)
                 _stateFlow.value = reconcile(withDefaults)
@@ -374,33 +385,50 @@ class DocumentViewBackingViewModel(
     // ------------------------------------------------------------------ edits
 
     /** See [TextEditingViewModel.insertChar]. */
-    fun insertChar(char: Char) = textEditing.insertChar(char)
+    fun insertChar(char: Char) {
+        // Classify as TYPING so consecutive single-char inserts of word
+        // characters fold into one undo step. The coalescing predicate in
+        // [shouldCoalesce] still rejects whitespace and selection-replace
+        // boundaries, so this kind is safe even when the inner intent
+        // happens to delete a selection first.
+        recordEdit(FrameKind.TYPING) { textEditing.insertChar(char) }
+    }
 
     /** See [TextEditingViewModel.insertNewline]. */
     fun insertNewline() {
-        textEditing.insertNewline()
-        revealAncestors(_stateFlow.value.cursorRow)
+        recordEdit(FrameKind.OTHER) {
+            textEditing.insertNewline()
+            revealAncestors(_stateFlow.value.cursorRow)
+        }
     }
 
     /** See [TextEditingViewModel.insertText]. */
     fun insertText(text: String) {
-        textEditing.insertText(text)
-        if ('\n' in text || '\r' in text) revealAncestors(_stateFlow.value.cursorRow)
+        recordEdit(FrameKind.OTHER) {
+            textEditing.insertText(text)
+            if ('\n' in text || '\r' in text) revealAncestors(_stateFlow.value.cursorRow)
+        }
     }
 
     /** See [TextEditingViewModel.backspace]. */
-    fun backspace() = textEditing.backspace()
+    fun backspace() {
+        recordEdit(FrameKind.BACKSPACE) { textEditing.backspace() }
+    }
 
     /** See [TextEditingViewModel.indentLine]. */
     fun indentLine(amount: Int = TAB_SIZE) {
-        textEditing.indentLine(amount)
-        // Tab on a bullet line slots it under the previous bullet as a child;
-        // if that parent was folded, reveal it so the new child stays visible.
-        revealAncestors(_stateFlow.value.cursorRow)
+        recordEdit(FrameKind.OTHER) {
+            textEditing.indentLine(amount)
+            // Tab on a bullet line slots it under the previous bullet as a child;
+            // if that parent was folded, reveal it so the new child stays visible.
+            revealAncestors(_stateFlow.value.cursorRow)
+        }
     }
 
     /** See [TextEditingViewModel.outdentLine]. */
-    fun outdentLine(amount: Int = TAB_SIZE) = textEditing.outdentLine(amount)
+    fun outdentLine(amount: Int = TAB_SIZE) {
+        recordEdit(FrameKind.OTHER) { textEditing.outdentLine(amount) }
+    }
 
     /** See [TextEditingViewModel.isBulletLine]. */
     fun isBulletLine(): Boolean = textEditing.isBulletLine()
@@ -479,11 +507,11 @@ class DocumentViewBackingViewModel(
         fromEndRow: Int,
         insertBeforeRow: Int,
         targetIndent: Int,
-    ) {
+    ) = recordEdit(FrameKind.OTHER) {
         val docStart = documentBackingViewModel.stateFlow.value
-        if (!docStart.isLoaded) return
+        if (!docStart.isLoaded) return@recordEdit
         val lines0 = docStart.lines
-        if (lines0.isEmpty()) return
+        if (lines0.isEmpty()) return@recordEdit
 
         val src0 = fromStartRow.coerceIn(0, lines0.lastIndex)
         val src1 = fromEndRow.coerceIn(src0, lines0.lastIndex)
@@ -491,9 +519,9 @@ class DocumentViewBackingViewModel(
 
         // Disallowed cases: drop strictly inside the source, or drop adjacent
         // to source on either side (no-op moves), or moving the entire doc.
-        if (drop in (src0 + 1)..src1) return
-        if (drop == src0 || drop == src1 + 1) return
-        if (src0 == 0 && src1 == lines0.lastIndex) return
+        if (drop in (src0 + 1)..src1) return@recordEdit
+        if (drop == src0 || drop == src1 + 1) return@recordEdit
+        if (src0 == 0 && src1 == lines0.lastIndex) return@recordEdit
 
         val deletedRowCount = src1 - src0 + 1
         val sourceTopIndent = leadingSpaceCount(lines0[src0])
@@ -764,21 +792,33 @@ class DocumentViewBackingViewModel(
     }
 
     /** See [TextEditingViewModel.deleteSelectionIfAny]. */
-    fun deleteSelectionIfAny(): Boolean = textEditing.deleteSelectionIfAny()
+    fun deleteSelectionIfAny(): Boolean {
+        var result = false
+        recordEdit(FrameKind.OTHER) { result = textEditing.deleteSelectionIfAny() }
+        return result
+    }
 
     /** See [TextEditingViewModel.getSelectedText]. */
     fun getSelectedText(): String? = textEditing.getSelectedText()
 
     /** See [TextEditingViewModel.onCutRequested]. */
-    fun onCutRequested(): String? = textEditing.onCutRequested()
+    fun onCutRequested(): String? {
+        var text: String? = null
+        recordEdit(FrameKind.OTHER) { text = textEditing.onCutRequested() }
+        return text
+    }
 
     // ------------------------------------------------------- markdown styles
 
     /** See [MarkdownStyleViewModel.applyInlineStyle]. */
-    fun applyInlineStyle(style: InlineStyle) = markdownStyle.applyInlineStyle(style)
+    fun applyInlineStyle(style: InlineStyle) {
+        recordEdit(FrameKind.OTHER) { markdownStyle.applyInlineStyle(style) }
+    }
 
     /** See [MarkdownStyleViewModel.applyLineStyle]. */
-    fun applyLineStyle(style: LineStyle) = markdownStyle.applyLineStyle(style)
+    fun applyLineStyle(style: LineStyle) {
+        recordEdit(FrameKind.OTHER) { markdownStyle.applyLineStyle(style) }
+    }
 
     /** See [MarkdownStyleViewModel.activeInlineStyles]. */
     fun activeInlineStyles(): Set<InlineStyle> = markdownStyle.activeInlineStyles()
@@ -972,9 +1012,239 @@ class DocumentViewBackingViewModel(
         )
     }
 
+    // ------------------------------------------------------------------ undo / redo
+
+    /**
+     * Frozen view of the document content + caret + selection at one point
+     * in time. Each [UndoFrame] holds two of these — the state right before
+     * a recorded edit ran (used by undo) and the state right after (used by
+     * redo). Stored by reference: [lines] / [lineIds] are immutable list
+     * snapshots from `DocumentBackingViewModel.State`, which is replaced
+     * wholesale on every edit, so capturing the reference is a true
+     * snapshot — no defensive copy needed.
+     */
+    private data class Snapshot(
+        val lines: List<String>,
+        val lineIds: List<LineId>,
+        val expandedRefIds: Set<LineId>,
+        val cursorRow: Int,
+        val cursorCol: Int,
+        val anchorRow: Int?,
+        val anchorCol: Int?,
+    )
+
+    /**
+     * Classification of a recorded edit, used to decide whether two
+     * consecutive frames may merge into one undo step.
+     *
+     * Only [TYPING] (single-character non-whitespace insertion at a
+     * collapsed caret) and [BACKSPACE] (single-character deletion at a
+     * collapsed caret) are considered for coalescing — see
+     * [shouldCoalesce]. Everything else uses [OTHER] and never merges.
+     */
+    private enum class FrameKind { TYPING, BACKSPACE, OTHER }
+
+    /**
+     * One undo step. [before] is what undo restores, [after] is what redo
+     * restores. [kind] and [timestampMs] feed the coalescing decision; if a
+     * new frame coalesces into this one, [after] and [timestampMs] are
+     * updated to the new edit's tail while [before] is preserved.
+     */
+    private data class UndoFrame(
+        val before: Snapshot,
+        val after: Snapshot,
+        val kind: FrameKind,
+        val timestampMs: Long,
+    )
+
+    private val undoStack: ArrayDeque<UndoFrame> = ArrayDeque()
+    private val redoStack: ArrayDeque<UndoFrame> = ArrayDeque()
+
+    /**
+     * Tracks the most recent [DocumentBackingViewModel.State.activeFileRel]
+     * the collector has seen loaded. When it changes (e.g. the user clicked
+     * a different file in the vault footer), [undoStack] / [redoStack] are
+     * cleared because their snapshots refer to the previous document.
+     */
+    private var lastObservedActiveFile: String? = null
+
+    /** Monotonic time origin for [nowMs]. Set once at construction. */
+    private val timeOrigin = TimeSource.Monotonic.markNow()
+
+    /** Reentrancy depth for [recordEdit]; non-zero means a recording is in progress. */
+    private var recordingDepth: Int = 0
+
+    /**
+     * Snapshot the current document + caret. Cheap — captures references to
+     * the immutable list inside `DocumentBackingViewModel.State`, plus a few
+     * scalars from the view state.
+     */
+    private fun snapshotNow(): Snapshot {
+        val view = _stateFlow.value
+        val doc = view.documentState ?: documentBackingViewModel.stateFlow.value
+        return Snapshot(
+            lines = doc.lines,
+            lineIds = doc.lineIds,
+            expandedRefIds = doc.expandedRefIds,
+            cursorRow = view.cursorRow,
+            cursorCol = view.cursorCol,
+            anchorRow = view.anchorRow,
+            anchorCol = view.anchorCol,
+        )
+    }
+
+    private fun nowMs(): Long = timeOrigin.elapsedNow().inWholeMilliseconds
+
+    /**
+     * Wraps a document-mutating intent so its before / after snapshots are
+     * captured and pushed onto [undoStack]. No-op edits (where the captured
+     * snapshots are equal) are not recorded — this lets call sites stay
+     * simple without having to decide whether their work actually touched
+     * content.
+     *
+     * Reentrant calls (one wrapped intent invoking another) are flattened:
+     * only the outermost call records, so a composite intent produces one
+     * undo frame regardless of how many primitives it composes internally.
+     *
+     * @param kind Classification used by [shouldCoalesce]; pass
+     *   [FrameKind.OTHER] for anything that isn't strict character-by-
+     *   character typing or backspace.
+     */
+    private inline fun recordEdit(kind: FrameKind, block: () -> Unit) {
+        if (recordingDepth > 0) {
+            block()
+            return
+        }
+        val before = snapshotNow()
+        recordingDepth++
+        try {
+            block()
+        } finally {
+            recordingDepth--
+        }
+        val after = snapshotNow()
+        if (before == after) return
+        pushUndoFrame(UndoFrame(before, after, kind, nowMs()))
+        redoStack.clear()
+    }
+
+    /**
+     * Add [frame] to [undoStack], coalescing into the previous frame when
+     * [shouldCoalesce] permits. Caps the stack at [MAX_UNDO_FRAMES] by
+     * dropping the oldest entries.
+     */
+    private fun pushUndoFrame(frame: UndoFrame) {
+        val top = undoStack.lastOrNull()
+        if (top != null && shouldCoalesce(top, frame)) {
+            undoStack.removeLast()
+            undoStack.addLast(top.copy(after = frame.after, timestampMs = frame.timestampMs))
+        } else {
+            undoStack.addLast(frame)
+        }
+        while (undoStack.size > MAX_UNDO_FRAMES) undoStack.removeFirst()
+    }
+
+    /**
+     * Coalescing rule. Returns `true` when [next] should merge into [prev]
+     * so the user observes them as one undo step.
+     *
+     * Coalesces only when both frames are the same coalescing-eligible
+     * kind ([FrameKind.TYPING] or [FrameKind.BACKSPACE]), no selection was
+     * involved at either end, the time gap is under [COALESCE_WINDOW_MS],
+     * and the caret was contiguous (the previous frame ended where the
+     * next one begins). For [TYPING], also requires the inserted character
+     * to be non-whitespace — typing a space is the conventional word
+     * boundary that breaks a typing run.
+     */
+    private fun shouldCoalesce(prev: UndoFrame, next: UndoFrame): Boolean {
+        if (prev.kind != next.kind) return false
+        if (prev.kind != FrameKind.TYPING && prev.kind != FrameKind.BACKSPACE) return false
+        if (prev.before.anchorRow != null || next.before.anchorRow != null) return false
+        if (prev.after.anchorRow != null || next.after.anchorRow != null) return false
+        if (next.timestampMs - prev.timestampMs > COALESCE_WINDOW_MS) return false
+        if (prev.after.cursorRow != next.before.cursorRow) return false
+        if (prev.after.cursorCol != next.before.cursorCol) return false
+        if (prev.kind == FrameKind.TYPING) {
+            // Inspect the line that was edited to identify the inserted
+            // character. Only coalesce when it's a single non-whitespace
+            // char appended at the caret (the common typing case); pasted
+            // text or selection-replace produces different shapes that
+            // fall through to a fresh frame.
+            val r = next.before.cursorRow
+            if (r !in next.before.lines.indices || r !in next.after.lines.indices) return false
+            val beforeLine = next.before.lines[r]
+            val afterLine = next.after.lines[r]
+            if (afterLine.length != beforeLine.length + 1) return false
+            val col = next.before.cursorCol
+            if (col !in afterLine.indices) return false
+            val inserted = afterLine[col]
+            if (inserted.isWhitespace()) return false
+        }
+        return true
+    }
+
+    /**
+     * Pop one frame from [undoStack], move it to [redoStack], and restore
+     * its [UndoFrame.before] snapshot. No-op when there's nothing to undo
+     * or the document has not finished loading.
+     */
+    fun undo() {
+        if (!_stateFlow.value.isLoaded) return
+        val frame = undoStack.removeLastOrNull() ?: return
+        redoStack.addLast(frame)
+        while (redoStack.size > MAX_UNDO_FRAMES) redoStack.removeFirst()
+        restoreSnapshot(frame.before)
+    }
+
+    /**
+     * Mirror of [undo]: pop one frame from [redoStack], move it back to
+     * [undoStack], and restore its [UndoFrame.after] snapshot. No-op when
+     * there's nothing to redo.
+     */
+    fun redo() {
+        if (!_stateFlow.value.isLoaded) return
+        val frame = redoStack.removeLastOrNull() ?: return
+        undoStack.addLast(frame)
+        while (undoStack.size > MAX_UNDO_FRAMES) undoStack.removeFirst()
+        restoreSnapshot(frame.after)
+    }
+
+    /** `true` when there is at least one frame on the undo stack. */
+    fun canUndo(): Boolean = undoStack.isNotEmpty()
+
+    /** `true` when there is at least one frame on the redo stack. */
+    fun canRedo(): Boolean = redoStack.isNotEmpty()
+
+    /**
+     * Apply [snap] to the document VM and view state in a single emission
+     * pair. The document VM's [DocumentBackingViewModel.replaceContent]
+     * publishes the new content; [patch] then restores cursor + selection
+     * over the freshly-published documentState. Pending inline styles are
+     * cleared — they're transient arming state that would be confusing to
+     * resurrect mid-undo.
+     */
+    private fun restoreSnapshot(snap: Snapshot) {
+        documentBackingViewModel.replaceContent(snap.lines, snap.lineIds, snap.expandedRefIds)
+        patch {
+            it.copy(
+                cursorRow = snap.cursorRow,
+                cursorCol = snap.cursorCol,
+                anchorRow = snap.anchorRow,
+                anchorCol = snap.anchorCol,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+    }
+
     companion object {
         /** Standard indent step across the app (two spaces). */
         const val TAB_SIZE: Int = 2
+
+        /** Maximum number of frames retained on either undo stack. */
+        private const val MAX_UNDO_FRAMES: Int = 500
+
+        /** Maximum gap between two coalescing-eligible frames, in milliseconds. */
+        private const val COALESCE_WINDOW_MS: Long = 1_000L
 
         /** Cap on entries in [State.fileHistory] / [State.fileForward]. */
         const val NAV_HISTORY_CAP: Int = 50

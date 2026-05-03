@@ -305,15 +305,15 @@ internal class TextEditingViewModel(
     fun indentLine(amount: Int = TAB_SIZE) {
         val s = state
         if (!s.isLoaded) return
+        val sel = selectionOf(s)
+        if (sel != null && sel.startRow != sel.endRow) {
+            indentRange(s, sel, amount)
+            return
+        }
         val line = s.lines[s.cursorRow]
         val currentIndent = line.takeWhile { it == ' ' }.length
-        if (s.cursorRow > 0) {
-            val prev = s.lines[s.cursorRow - 1]
-            if (DocumentLayout.bulletAsteriskColumn(prev) >= 0) {
-                val prevIndent = prev.takeWhile { it == ' ' }.length
-                if (currentIndent >= prevIndent + amount) return
-            }
-        }
+        val ancestorIndent = precedingBulletIndent(s.lines, s.cursorRow) ?: return
+        if (currentIndent >= ancestorIndent + amount) return
         documentBackingViewModel.insertText(s.cursorRow, 0, " ".repeat(amount))
         patch { it.copy(cursorCol = s.cursorCol + amount, anchorRow = null, anchorCol = null) }
     }
@@ -321,6 +321,11 @@ internal class TextEditingViewModel(
     fun outdentLine(amount: Int = TAB_SIZE) {
         val s = state
         if (!s.isLoaded) return
+        val sel = selectionOf(s)
+        if (sel != null && sel.startRow != sel.endRow) {
+            outdentRange(s, sel, amount)
+            return
+        }
         val line = s.lines[s.cursorRow]
         val leading = line.takeWhile { it == ' ' }.length
         val zoom = zoomInfoOf(s)
@@ -332,6 +337,82 @@ internal class TextEditingViewModel(
             it.copy(
                 cursorCol = (s.cursorCol - remove).coerceAtLeast(0),
                 anchorRow = null, anchorCol = null
+            )
+        }
+    }
+
+    /**
+     * Multi-row indent. Inserts [amount] leading spaces at column 0 of every
+     * row in the selection range, preserving the selection (anchor + cursor
+     * columns shift by [amount] on rows that were indented). The constraint
+     * "first row may not jump more than one level past the bullet above the
+     * selection" mirrors the single-row rule. A selection that ends at
+     * column 0 of its last row excludes that row, matching standard editor
+     * behavior.
+     */
+    private fun indentRange(
+        s0: DocumentViewBackingViewModel.State,
+        sel: DocumentViewBackingViewModel.Selection,
+        amount: Int,
+    ) {
+        val effEnd = if (sel.endCol == 0) sel.endRow - 1 else sel.endRow
+        if (effEnd < sel.startRow) return
+        val ancestorIndent = precedingBulletIndent(s0.lines, sel.startRow) ?: return
+        val firstIndent = s0.lines[sel.startRow].takeWhile { it == ' ' }.length
+        if (firstIndent >= ancestorIndent + amount) return
+        val pad = " ".repeat(amount)
+        for (row in sel.startRow..effEnd) {
+            documentBackingViewModel.insertText(row, 0, pad)
+        }
+        val cursorShift = if (s0.cursorRow in sel.startRow..effEnd) amount else 0
+        val anchorShift = if (s0.anchorRow != null && s0.anchorRow in sel.startRow..effEnd) amount else 0
+        patch {
+            it.copy(
+                cursorCol = it.cursorCol + cursorShift,
+                anchorCol = it.anchorCol?.let { c -> c + anchorShift },
+            )
+        }
+    }
+
+    /**
+     * Multi-row outdent. Removes up to [amount] leading spaces from each row
+     * in the selection range, clamped per-row so no line drops below the
+     * minimum indent allowed by the current zoom. Selection is preserved;
+     * anchor and cursor columns shift by the actual removal on their
+     * respective rows. No-op when no row can be outdented.
+     */
+    private fun outdentRange(
+        s0: DocumentViewBackingViewModel.State,
+        sel: DocumentViewBackingViewModel.Selection,
+        amount: Int,
+    ) {
+        val effEnd = if (sel.endCol == 0) sel.endRow - 1 else sel.endRow
+        if (effEnd < sel.startRow) return
+        val zoom = zoomInfoOf(s0)
+        val minAllowed = if (zoom != null) zoom.zoomIndent + TAB_SIZE else 0
+        val removals = IntArray(effEnd - sel.startRow + 1) { i ->
+            val line = s0.lines[sel.startRow + i]
+            val leading = line.takeWhile { it == ' ' }.length
+            minOf(amount, leading - minAllowed).coerceAtLeast(0)
+        }
+        if (removals.all { it == 0 }) return
+        for (i in removals.indices) {
+            val remove = removals[i]
+            if (remove > 0) {
+                val row = sel.startRow + i
+                documentBackingViewModel.delete(row, 0, row, remove)
+            }
+        }
+        val cursorRemoval = if (s0.cursorRow in sel.startRow..effEnd) {
+            removals[s0.cursorRow - sel.startRow]
+        } else 0
+        val anchorRemoval = if (s0.anchorRow != null && s0.anchorRow in sel.startRow..effEnd) {
+            removals[s0.anchorRow - sel.startRow]
+        } else 0
+        patch {
+            it.copy(
+                cursorCol = (it.cursorCol - cursorRemoval).coerceAtLeast(0),
+                anchorCol = it.anchorCol?.let { c -> (c - anchorRemoval).coerceAtLeast(0) },
             )
         }
     }
@@ -547,6 +628,24 @@ internal class TextEditingViewModel(
         val text = getSelectedText() ?: return null
         deleteSelectionIfAny()
         return text
+    }
+
+    /**
+     * Indent (leading-space count) of the nearest bullet line strictly
+     * before [row], or `null` when no preceding bullet exists. Used by
+     * [indentLine] / [indentRange] as the structural ceiling: a row may
+     * never be indented more than one tab past its nearest preceding
+     * bullet, and the very first bullet in the document (or zoom region)
+     * has no ancestor and so cannot be indented at all.
+     */
+    private fun precedingBulletIndent(lines: List<String>, row: Int): Int? {
+        var r = row - 1
+        while (r >= 0) {
+            val col = DocumentLayout.bulletAsteriskColumn(lines[r])
+            if (col >= 0) return col
+            r--
+        }
+        return null
     }
 
     /**

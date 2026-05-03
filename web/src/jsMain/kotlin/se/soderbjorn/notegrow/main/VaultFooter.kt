@@ -195,6 +195,10 @@ private fun buildEntryRow(
         })
         rowDiv.addEventListener("click", toggle)
     } else {
+        val fileIcon = buildVaultFileIcon()
+        fileIcon.style.left = "${depth * style.indentStepPx - 22}px"
+        rowDiv.appendChild(fileIcon)
+
         rowDiv.appendChild(buildBulletGlyph(isFolder = false))
         rowDiv.appendChild(buildEntryLabel(entry.name))
 
@@ -280,6 +284,37 @@ private fun buildVaultChevron(isExpanded: Boolean): HTMLElement {
         "stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
         "style=\"transform: $rotation; transition: transform 120ms ease; pointer-events: none;\">" +
         "<polyline points=\"4,6 8,10 12,6\"></polyline></svg>"
+    return target
+}
+
+/**
+ * Leading document-icon for a standalone-file row. Positioned in the same
+ * 22px-wide slot used by [buildVaultChevron] on folder rows, so file rows
+ * line up horizontally with folder rows in the tree. Inert: the icon does
+ * not handle clicks itself — the parent row's listener navigates to the
+ * file. The page-with-fold glyph mirrors `AppShell.ICON_NOTE`.
+ */
+private fun buildVaultFileIcon(): HTMLElement {
+    val target = document.createElement("div") as HTMLElement
+    target.className = "notegrow-vault-file-icon"
+    target.setAttribute("contenteditable", "false")
+    target.style.apply {
+        setProperty("position", "absolute")
+        top = "0"
+        width = "22px"
+        height = "100%"
+        display = "flex"
+        alignItems = "center"
+        justifyContent = "center"
+        color = "var(--t-text-tertiary, #7a7a7a)"
+        setProperty("user-select", "none")
+        setProperty("pointer-events", "none")
+    }
+    target.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"11\" height=\"11\" fill=\"none\" " +
+        "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
+        "stroke-linejoin=\"round\" style=\"pointer-events: none;\">" +
+        "<path d=\"M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z\"/>" +
+        "<polyline points=\"14 3 14 9 20 9\"/></svg>"
     return target
 }
 
