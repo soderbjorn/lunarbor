@@ -47,27 +47,114 @@ internal class TextEditingViewModel(
     fun insertChar(char: Char) {
         if (!state.isLoaded) return
         deleteSelectionIfAny()
-        val s = state
-        val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, char.toString())
-        patch { it.copy(cursorRow = result.endRow, cursorCol = result.endCol, anchorRow = null, anchorCol = null) }
+        insertWithPendingStyles(char.toString())
     }
 
     fun insertNewline() {
         if (!state.isLoaded) return
         deleteSelectionIfAny()
+        // If we were typing inside an armed inline-style pair (e.g. Cmd-B
+        // → "fetstil"), the caret sits between the content and the
+        // closing markers (`**fetstil|**`). A naive newline at this
+        // position would push the closer to the next line, leaving the
+        // opener on row N with no closer (rendered as literal `**`) and
+        // the closer on row N+1 with no opener. Hop past the closers
+        // first so the styled span stays whole on the previous row.
+        skipPastPendingClosers()
         val s = state
         val line = s.lines[s.cursorRow]
         val bulletPrefix = continuationBulletPrefix(line, s.cursorCol)
         val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, "\n" + bulletPrefix)
-        patch { it.copy(cursorRow = result.endRow, cursorCol = result.endCol, anchorRow = null, anchorCol = null) }
+        // Newline cancels any armed inline styles — bold doesn't carry across rows.
+        patch {
+            it.copy(
+                cursorRow = result.endRow, cursorCol = result.endCol,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+    }
+
+    /**
+     * If [DocumentViewBackingViewModel.State.pendingInlineStyles] is
+     * non-empty and the closer markers for those armed styles sit
+     * immediately at the caret, advance the caret past them. Used by
+     * intents that finalize the styled span (newline, disarm via Cmd-B)
+     * to ensure subsequent edits land outside the markers instead of
+     * splitting the span.
+     */
+    private fun skipPastPendingClosers() {
+        val s = state
+        val pending = s.pendingInlineStyles
+        if (pending.isEmpty()) return
+        val ordered = se.soderbjorn.notegrow.data.InlineStyle.entries.filter { it in pending }
+        val closers = ordered.reversed().joinToString("") { it.closeMarker }
+        val line = s.lines[s.cursorRow]
+        if (s.cursorCol + closers.length <= line.length &&
+            line.regionMatches(s.cursorCol, closers, 0, closers.length)
+        ) {
+            patch { it.copy(cursorCol = s.cursorCol + closers.length) }
+        }
     }
 
     fun insertText(text: String) {
         if (!state.isLoaded) return
         deleteSelectionIfAny()
+        insertWithPendingStyles(text)
+    }
+
+    /**
+     * Inserts [text] at the caret, honoring any [DocumentViewBackingViewModel.State.pendingInlineStyles]
+     * by wrapping the inserted text with the matching markers. Keeps the
+     * pending set armed across consecutive insertions so continuous typing
+     * extends the styled span — the second character lands inside the
+     * already-open markers (the caret sits between text and closer) so we
+     * just insert plainly and the existing closers shift right.
+     *
+     * The pending set is cleared on cursor movement, on selection
+     * changes, and on Enter — see [moved], [setSelection], and
+     * [insertNewline].
+     */
+    private fun insertWithPendingStyles(text: String) {
         val s = state
-        val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, text)
-        patch { it.copy(cursorRow = result.endRow, cursorCol = result.endCol, anchorRow = null, anchorCol = null) }
+        val pending = s.pendingInlineStyles
+        if (pending.isEmpty()) {
+            val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, text)
+            patch { it.copy(cursorRow = result.endRow, cursorCol = result.endCol, anchorRow = null, anchorCol = null) }
+            return
+        }
+        val ordered = se.soderbjorn.notegrow.data.InlineStyle.entries.filter { it in pending }
+        val closers = ordered.reversed().joinToString("") { it.closeMarker }
+        val line = s.lines[s.cursorRow]
+        val alreadyInsideOpenSpan = s.cursorCol + closers.length <= line.length &&
+            line.regionMatches(s.cursorCol, closers, 0, closers.length)
+        if (alreadyInsideOpenSpan) {
+            // Continuing to type inside the markers we just opened: the
+            // closers already sit at the caret, so a plain insert grows
+            // the styled span and the close markers shift right naturally.
+            val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, text)
+            patch {
+                it.copy(
+                    cursorRow = result.endRow, cursorCol = result.endCol,
+                    anchorRow = null, anchorCol = null,
+                    // Keep the pending set armed so the *next* keystroke
+                    // also extends instead of opening a fresh pair.
+                )
+            }
+            return
+        }
+        // Fresh start: wrap the inserted text with the markers. Outer-most
+        // marker = first entry in InlineStyle.entries.
+        val openers = ordered.joinToString("") { it.openMarker }
+        val wrapped = openers + text + closers
+        val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, wrapped)
+        patch {
+            it.copy(
+                cursorRow = result.endRow,
+                cursorCol = result.endCol - closers.length,
+                anchorRow = null, anchorCol = null,
+            )
+        }
     }
 
     fun backspace() {
@@ -78,6 +165,19 @@ internal class TextEditingViewModel(
             s.cursorCol > 0 -> {
                 val line = s.lines[s.cursorRow]
                 val leadingSpaces = line.takeWhile { it == ' ' }.length
+                val textStart = DocumentLayout.textStartCol(line)
+                val caretStart = DocumentLayout.caretStartCol(line)
+                if (s.cursorCol == caretStart && caretStart > textStart) {
+                    // Caret sits just after a hidden line-level markdown prefix
+                    // (`# `, `## `, `### `, `> `). The prefix is invisible to
+                    // the user, so deleting one character would silently strip
+                    // the trailing space and surface the marker — surprising the
+                    // user. Remove the entire prefix in a single keystroke so
+                    // the line "demotes" cleanly back to plain text.
+                    documentBackingViewModel.delete(s.cursorRow, textStart, s.cursorRow, caretStart)
+                    patch { it.copy(cursorCol = textStart) }
+                    return
+                }
                 if (isAtBulletMarkerEnd(line, s.cursorCol)) {
                     // Removing the `"* "` marker would orphan any subtree this bullet anchors.
                     // Only allow it when the bullet is a leaf — otherwise the user must remove
@@ -162,7 +262,7 @@ internal class TextEditingViewModel(
             )
         }
         val curLine = st.lines[st.cursorRow]
-        val curMin = DocumentLayout.textStartCol(curLine)
+        val curMin = DocumentLayout.caretStartCol(curLine)
         val (r, c) = when {
             st.cursorCol > curMin -> st.cursorRow to skipMarkersLeft(st.lines[st.cursorRow], st.cursorCol - 1)
             else -> {
@@ -187,7 +287,7 @@ internal class TextEditingViewModel(
             st.cursorCol < line.length -> st.cursorRow to skipMarkersRight(line, st.cursorCol + 1)
             else -> {
                 val next = nextVisibleRow(st, st.cursorRow)
-                if (next != null) next to DocumentLayout.textStartCol(st.lines[next])
+                if (next != null) next to DocumentLayout.caretStartCol(st.lines[next])
                 else st.cursorRow to st.cursorCol
             }
         }
@@ -201,7 +301,7 @@ internal class TextEditingViewModel(
         } else {
             val targetLine = st.lines[targetRow]
             val targetCol = st.cursorCol.coerceIn(
-                DocumentLayout.textStartCol(targetLine), targetLine.length
+                DocumentLayout.caretStartCol(targetLine), targetLine.length
             )
             moved(st, targetRow, targetCol, extend)
         }
@@ -214,7 +314,7 @@ internal class TextEditingViewModel(
         } else {
             val targetLine = st.lines[targetRow]
             val targetCol = st.cursorCol.coerceIn(
-                DocumentLayout.textStartCol(targetLine), targetLine.length
+                DocumentLayout.caretStartCol(targetLine), targetLine.length
             )
             moved(st, targetRow, targetCol, extend)
         }
@@ -223,12 +323,12 @@ internal class TextEditingViewModel(
     fun moveTo(row: Int, col: Int, extend: Boolean = false) = mutate { st ->
         val clampedRow = row.coerceIn(0, st.lines.lastIndex)
         val line = st.lines[clampedRow]
-        val clampedCol = col.coerceIn(DocumentLayout.textStartCol(line), line.length)
+        val clampedCol = col.coerceIn(DocumentLayout.caretStartCol(line), line.length)
         moved(st, clampedRow, clampedCol, extend)
     }
 
     fun moveLineStart(extend: Boolean = false) = mutate {
-        moved(it, it.cursorRow, DocumentLayout.textStartCol(it.lines[it.cursorRow]), extend)
+        moved(it, it.cursorRow, DocumentLayout.caretStartCol(it.lines[it.cursorRow]), extend)
     }
 
     fun moveLineEnd(extend: Boolean = false) = mutate {
@@ -236,7 +336,7 @@ internal class TextEditingViewModel(
     }
 
     fun moveDocStart(extend: Boolean = false) = mutate {
-        moved(it, 0, DocumentLayout.textStartCol(it.lines[0]), extend)
+        moved(it, 0, DocumentLayout.caretStartCol(it.lines[0]), extend)
     }
 
     fun moveDocEnd(extend: Boolean = false) = mutate {
@@ -247,11 +347,11 @@ internal class TextEditingViewModel(
     fun moveWordLeft(extend: Boolean = false) = mutate { st ->
         var row = st.cursorRow
         var col = st.cursorCol
-        var minCol = DocumentLayout.textStartCol(st.lines[row])
+        var minCol = DocumentLayout.caretStartCol(st.lines[row])
         if (col <= minCol && row > 0) {
             row--
             col = st.lines[row].length
-            minCol = DocumentLayout.textStartCol(st.lines[row])
+            minCol = DocumentLayout.caretStartCol(st.lines[row])
         } else {
             val line = st.lines[row]
             while (col > minCol && !isWordChar(line[col - 1])) col--
@@ -266,7 +366,7 @@ internal class TextEditingViewModel(
         val line = st.lines[row]
         if (col == line.length && row < st.lines.lastIndex) {
             row++
-            col = DocumentLayout.textStartCol(st.lines[row])
+            col = DocumentLayout.caretStartCol(st.lines[row])
         } else {
             while (col < line.length && !isWordChar(line[col])) col++
             while (col < line.length && isWordChar(line[col])) col++
@@ -290,7 +390,7 @@ internal class TextEditingViewModel(
     fun selectWord(row: Int, col: Int) = mutate { st ->
         val clampedRow = row.coerceIn(0, st.lines.lastIndex)
         val line = st.lines[clampedRow]
-        val minCol = DocumentLayout.textStartCol(line)
+        val minCol = DocumentLayout.caretStartCol(line)
         if (line.isEmpty() || minCol >= line.length) {
             st.copy(cursorRow = clampedRow, cursorCol = minCol, anchorRow = clampedRow, anchorCol = minCol)
         } else {
@@ -399,8 +499,8 @@ internal class TextEditingViewModel(
         val markers = markerSet(line)
         if (markers.isEmpty()) return from
         var c = from
-        val tStart = DocumentLayout.textStartCol(line)
-        while (c > tStart && isInsideMarker(line, c, markers)) c--
+        val floor = DocumentLayout.caretStartCol(line)
+        while (c > floor && isInsideMarker(line, c, markers)) c--
         return c
     }
 

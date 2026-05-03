@@ -5,7 +5,7 @@
  * Composed by `DocumentViewBackingViewModel`, this class implements:
  *
  *   - [applyInlineStyle]  — wrap or unwrap a selection / word with one of
- *     the inline markers (bold, italic, underline, strike, inline code).
+ *     the inline markers (bold, italic, strike, inline code).
  *   - [applyLineStyle]    — set / replace / remove a line-level prefix
  *     (heading 1–3, quote) on the cursor row or every row in a multi-row
  *     selection.
@@ -64,29 +64,46 @@ internal class MarkdownStyleViewModel(
         val s = state
         if (!s.isLoaded) return
 
-        var sel = selectionOf(s)
+        val sel = selectionOf(s)
         if (sel == null) {
-            // Empty caret — try to grow it to the surrounding word first.
-            selectWord(s.cursorRow, s.cursorCol)
-            sel = selectionOf(state)
-        }
-
-        if (sel == null) {
-            // Still nothing (caret on whitespace / empty line) — insert empty marker pair
-            // and place the caret between the markers.
-            val cur = state
-            val open = style.openMarker
-            val close = style.closeMarker
-            val result = documentBackingViewModel.insertText(
-                cur.cursorRow, cur.cursorCol, open + close
-            )
-            // Caret should land between open and close.
+            // Collapsed caret. Three cases:
+            //   1. [style] is currently armed (in pendingInlineStyles).
+            //      Disarm it. If the caret sits just before the matching
+            //      closer (we just typed inside the armed pair), also hop
+            //      past the closer so the next keystroke isn't reabsorbed
+            //      by the still-styled run.
+            //   2. [style] is not armed but the caret is inside an
+            //      existing tokenized span of this style (the user
+            //      clicked into `**foo|bar**`). Hop past that span's
+            //      closer — "stop bolding from here onward".
+            //   3. Neither — arm [style] so the next inserted text is
+            //      wrapped with the markers.
+            // This matches every other editor's Cmd-B / Cmd-I behavior:
+            // pressing the shortcut toggles styled typing from the caret
+            // onward, regardless of whether the caret was already inside
+            // a styled run or not.
+            if (style in s.pendingInlineStyles) {
+                val line = s.lines[s.cursorRow]
+                val closer = style.closeMarker
+                val advance = if (
+                    s.cursorCol + closer.length <= line.length &&
+                    line.regionMatches(s.cursorCol, closer, 0, closer.length)
+                ) closer.length else 0
+                patch {
+                    it.copy(
+                        pendingInlineStyles = it.pendingInlineStyles - style,
+                        cursorCol = it.cursorCol + advance,
+                    )
+                }
+                return
+            }
+            val exitCol = exitColumnForSurroundingStyle(s, style)
+            if (exitCol != null) {
+                patch { it.copy(cursorCol = exitCol) }
+                return
+            }
             patch {
-                it.copy(
-                    cursorRow = result.endRow,
-                    cursorCol = result.endCol - close.length,
-                    anchorRow = null, anchorCol = null,
-                )
+                it.copy(pendingInlineStyles = it.pendingInlineStyles + style)
             }
             return
         }
@@ -188,15 +205,19 @@ internal class MarkdownStyleViewModel(
         val tStart = DocumentLayout.textStartCol(line)
         val linePrefix = LineMarkdownPrefix.detect(line, tStart)
         val inlineStart = linePrefix.markerEnd
-        if (sel != null) {
+        val tokenized = InlineMarkdownTokenizer.tokenize(line.substring(inlineStart))
+        val fromTokens = if (sel != null) {
             val from = (sel.startCol - inlineStart).coerceAtLeast(0)
             val to = (sel.endCol - inlineStart).coerceAtLeast(from)
-            val tokenized = InlineMarkdownTokenizer.tokenize(line.substring(inlineStart))
-            return tokenized.stylesAcross(from, to)
+            tokenized.stylesAcross(from, to)
+        } else {
+            val col = (s.cursorCol - inlineStart).coerceAtLeast(0)
+            tokenized.stylesAt(col)
         }
-        val col = (s.cursorCol - inlineStart).coerceAtLeast(0)
-        val tokenized = InlineMarkdownTokenizer.tokenize(line.substring(inlineStart))
-        return tokenized.stylesAt(col)
+        // A collapsed caret with armed styles should report them as active
+        // too, so the dropdown's check-marks match what the next keystroke
+        // will produce.
+        return if (sel == null) fromTokens + s.pendingInlineStyles else fromTokens
     }
 
     /**
@@ -224,5 +245,33 @@ internal class MarkdownStyleViewModel(
     private fun rowSpan(s: DocumentViewBackingViewModel.State): Pair<Int, Int> {
         val sel = selectionOf(s)
         return if (sel == null) s.cursorRow to s.cursorRow else sel.startRow to sel.endRow
+    }
+
+    /**
+     * If the collapsed caret in [s] sits inside a tokenized run that has
+     * [style] active, returns the absolute model column just past that
+     * run's closing marker for [style] — i.e. the column the caret should
+     * jump to in order to "exit" the span. Returns `null` when the caret
+     * is not inside such a run.
+     *
+     * Only a single layer of style is unwrapped; if [style] is nested
+     * inside another active style on the same run, the caret jumps just
+     * past [style]'s closer regardless. The simpler one-layer behavior is
+     * what users expect when toggling a single shortcut.
+     */
+    private fun exitColumnForSurroundingStyle(
+        s: DocumentViewBackingViewModel.State,
+        style: InlineStyle,
+    ): Int? {
+        val line = s.lines[s.cursorRow]
+        val tStart = DocumentLayout.textStartCol(line)
+        val linePrefix = se.soderbjorn.notegrow.data.LineMarkdownPrefix.detect(line, tStart)
+        val inlineStart = linePrefix.markerEnd
+        if (s.cursorCol < inlineStart) return null
+        val tokens = InlineMarkdownTokenizer.tokenize(line.substring(inlineStart))
+        val rel = s.cursorCol - inlineStart
+        val run = tokens.runs.firstOrNull { rel >= it.modelStart && rel <= it.modelEnd } ?: return null
+        if (style !in run.styles) return null
+        return inlineStart + run.modelEnd + style.closeMarker.length
     }
 }

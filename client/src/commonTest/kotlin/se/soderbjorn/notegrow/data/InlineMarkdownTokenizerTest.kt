@@ -3,6 +3,7 @@ package se.soderbjorn.notegrow.data
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
 
@@ -125,25 +126,6 @@ class InlineMarkdownTokenizerTest {
         assertEquals(setOf(InlineStyle.INLINE_CODE), t.runs[0].styles)
     }
 
-    // ---- underline -----------------------------------------------------
-
-    @Test
-    fun underline_html_tag_strips_markers() {
-        val t = tokenize("<u>foo</u>")
-        assertEquals("foo", t.displayText)
-        assertEquals(1, t.runs.size)
-        assertEquals(setOf(InlineStyle.UNDERLINE), t.runs[0].styles)
-        // Open marker is 3 chars (cols 0,1,2), close is 4 chars (cols 6,7,8,9).
-        assertEquals(setOf(0, 1, 2, 6, 7, 8, 9), t.markerCols)
-    }
-
-    @Test
-    fun unmatched_underline_open_is_literal() {
-        val t = tokenize("<u>foo")
-        assertEquals("<u>foo", t.displayText)
-        assertEquals(emptySet(), t.runs[0].styles)
-    }
-
     // ---- strikethrough -------------------------------------------------
 
     @Test
@@ -249,5 +231,85 @@ class InlineMarkdownTokenizerTest {
     fun text_with_no_markers_has_no_marker_cols() {
         val t = tokenize("Just plain text.")
         assertFalse(t.markerCols.isNotEmpty())
+    }
+
+    // ---- inline markdown links -----------------------------------------
+
+    @Test
+    fun plain_link_strips_syntax_and_carries_href() {
+        val t = tokenize("[Title](Root.md)")
+        assertEquals("Title", t.displayText)
+        assertEquals(1, t.runs.size)
+        val run = t.runs[0]
+        assertEquals("Title", run.text)
+        assertEquals("Root.md", run.linkHref)
+        assertEquals(emptySet(), run.styles)
+        // The label runs over model cols 1..6; everything else is markers.
+        assertEquals(1, run.modelStart)
+        assertEquals(6, run.modelEnd)
+        // `[` at 0, `]` at 6, `(` at 7, `R o o t . m d` at 8..14, `)` at 15.
+        for (i in listOf(0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)) {
+            assertTrue(i in t.markerCols, "expected marker at $i")
+        }
+    }
+
+    @Test
+    fun angle_bracketed_link_href_strips_brackets() {
+        val t = tokenize("[A](<file with space.md>)")
+        assertEquals("A", t.displayText)
+        assertEquals("file with space.md", t.runs[0].linkHref)
+    }
+
+    @Test
+    fun link_with_row_anchor_keeps_full_href() {
+        val t = tokenize("[X](Notes.md#r=4)")
+        assertEquals("X", t.displayText)
+        assertEquals("Notes.md#r=4", t.runs[0].linkHref)
+    }
+
+    @Test
+    fun link_inside_bold_inherits_styles() {
+        val t = tokenize("**[X](u)**")
+        assertEquals("X", t.displayText)
+        assertEquals(1, t.runs.size)
+        val run = t.runs[0]
+        assertEquals("X", run.text)
+        assertEquals("u", run.linkHref)
+        assertTrue(InlineStyle.BOLD in run.styles)
+    }
+
+    @Test
+    fun unmatched_link_falls_back_to_literal_brackets() {
+        // No `(` after `]` — must NOT be consumed as a link.
+        val t = tokenize("[oops]")
+        assertEquals("[oops]", t.displayText)
+        assertEquals(0, t.runs[0].linkHref?.length ?: 0)
+        assertTrue(t.markerCols.isEmpty())
+    }
+
+    @Test
+    fun unclosed_link_paren_falls_back_to_literal() {
+        val t = tokenize("[oops](no-close")
+        assertEquals("[oops](no-close", t.displayText)
+        assertNull(t.runs[0].linkHref)
+    }
+
+    @Test
+    fun text_around_link_splits_into_three_runs() {
+        val t = tokenize("see [docs](d.md) here")
+        assertEquals("see docs here", t.displayText)
+        assertEquals(3, t.runs.size)
+        assertEquals(null, t.runs[0].linkHref)
+        assertEquals("d.md", t.runs[1].linkHref)
+        assertEquals(null, t.runs[2].linkHref)
+    }
+
+    @Test
+    fun link_column_maps_round_trip() {
+        val t = tokenize("[Title](Root.md)")
+        for (displayCol in 0..t.displayText.length) {
+            val modelCol = t.domToModel[displayCol]
+            assertEquals(displayCol, t.modelToDom[modelCol])
+        }
     }
 }

@@ -3,11 +3,10 @@
  * --------------------------
  * Pure inline-markdown tokenizer used by the WYSIWYG editor renderer to
  * split a single line of markdown into styled runs whose marker characters
- * are *not* part of the visible text. The five inline styles supported are
- * bold (`**`), italic (`*`), underline (`<u>...</u>`), strikethrough
- * (`~~`), and inline code (`` ` ``). Underline is HTML-in-markdown
- * (CommonMark allows raw HTML); strikethrough is GFM. Inline code takes
- * absolute precedence — no other tokenization happens inside a code span.
+ * are *not* part of the visible text. The four inline styles supported are
+ * bold (`**`), italic (`*`), strikethrough (`~~`), and inline code
+ * (`` ` ``). Strikethrough is GFM. Inline code takes absolute precedence
+ * — no other tokenization happens inside a code span.
  *
  * The tokenizer also produces the column maps the editor needs to keep the
  * cursor consistent between the rendered (markers stripped) text and the
@@ -33,13 +32,12 @@
 package se.soderbjorn.notegrow.data
 
 /**
- * One of the five inline markdown styles understood by the WYSIWYG editor.
+ * One of the four inline markdown styles understood by the WYSIWYG editor.
  *
  * The `entries` order encodes the precedence used when more than one
  * style could open at a given position: inline code beats everything,
- * bold (longer marker) beats italic (shorter marker), and underline /
- * strikethrough have unique markers so they slot in between without
- * ambiguity.
+ * bold (longer marker) beats italic (shorter marker), and strikethrough
+ * has a unique marker so it slots in between without ambiguity.
  *
  * @property openMarker Literal characters that open a span of this style.
  * @property closeMarker Literal characters that close a span of this style.
@@ -50,9 +48,6 @@ enum class InlineStyle(val openMarker: String, val closeMarker: String) {
 
     /** Bold (`**…**`). Checked before italic so `**` is not parsed as `*`+`*`. */
     BOLD("**", "**"),
-
-    /** Underline (`<u>…</u>`). Raw HTML — not in CommonMark, but valid markdown. */
-    UNDERLINE("<u>", "</u>"),
 
     /** Strikethrough (`~~…~~`). GFM extension. */
     STRIKETHROUGH("~~", "~~"),
@@ -79,6 +74,18 @@ data class StyledRun(
     val styles: Set<InlineStyle>,
     val modelStart: Int,
     val modelEnd: Int,
+    /**
+     * When non-null, this run is the visible label of a markdown inline
+     * link `[label](href)`. The label characters live in [text]; the
+     * surrounding `[`, `]`, `(`, href, and `)` columns are folded into
+     * [TokenizedLine.markerCols] so the rendered text shows just the
+     * label and the cursor skips past the link's syntax.
+     *
+     * Renderers should style link runs distinctively (color/underline)
+     * and may use [linkHref] as a click target — for read-only viewers
+     * (the Starred bookmarks modal) clicking can navigate to the URL.
+     */
+    val linkHref: String? = null,
 )
 
 /**
@@ -188,6 +195,12 @@ private class Parser(val text: String) {
                 continue
             }
 
+            // 0. Markdown inline link `[label](href)` — checked before
+            //    style openers so a `[` that begins a link is consumed by
+            //    the link path instead of becoming a literal `[`. Plain
+            //    `[`/`]` characters that don't form a link fall through.
+            if (text[pos] == '[' && tryConsumeLink()) continue
+
             // 1. Try to open a new style first — opening takes precedence over
             //    closing so that e.g. `*it **bo** it*` opens BOLD inside ITALIC
             //    instead of mistakenly treating the first `*` of `**` as the
@@ -282,6 +295,92 @@ private class Parser(val text: String) {
             if (hasMatchingCloser(pos + opener.length, style)) return style
         }
         return null
+    }
+
+    /**
+     * Try to consume a markdown inline link starting at [pos]. Returns
+     * `true` and advances [pos] past the closing `)` when the syntax
+     * matches `[label](href)` — with optional `<…>` wrapping for [href];
+     * returns `false` and leaves [pos] alone otherwise (so the `[` falls
+     * through to literal handling).
+     *
+     * On success:
+     * - the `[`, `]`, `(`, every char of href, and `)` are added to
+     *   [markerCols] (and their [modelToDom] entries collapse to the
+     *   surrounding display column);
+     * - the label characters are appended to [displayBuilder] and a single
+     *   [StyledRun] is emitted with the current [activeStyles] plus a
+     *   non-null [StyledRun.linkHref].
+     *
+     * Backslash escapes inside the label (`\]`, `\[`) are honored. The
+     * label may contain arbitrary inline characters but is NOT recursively
+     * tokenized — nested formatting inside link labels is intentionally
+     * out of scope to keep column-map invariants simple.
+     */
+    private fun tryConsumeLink(): Boolean {
+        if (pos >= text.length || text[pos] != '[') return false
+        // 1. Walk to the matching `]`. Honor `\]`/`\[`. CommonMark forbids
+        //    nested unescaped `[…]` in link labels.
+        var i = pos + 1
+        while (i < text.length) {
+            val c = text[i]
+            if (c == '\\' && i + 1 < text.length) { i += 2; continue }
+            if (c == ']') break
+            if (c == '[') return false
+            i++
+        }
+        if (i >= text.length || text[i] != ']') return false
+        val labelEnd = i  // index of `]`
+        // 2. Require an immediate `(` to start the destination.
+        if (labelEnd + 1 >= text.length || text[labelEnd + 1] != '(') return false
+        val urlOpen = labelEnd + 2
+        // 3. Parse destination — either `<…>` or bare run up to `)`.
+        val urlContentStart: Int
+        val urlContentEnd: Int   // exclusive
+        val closingParen: Int
+        if (urlOpen < text.length && text[urlOpen] == '<') {
+            val angleEnd = text.indexOf('>', urlOpen + 1)
+            if (angleEnd < 0) return false
+            if (angleEnd + 1 >= text.length || text[angleEnd + 1] != ')') return false
+            urlContentStart = urlOpen + 1
+            urlContentEnd = angleEnd
+            closingParen = angleEnd + 1
+        } else {
+            val parenEnd = text.indexOf(')', urlOpen)
+            if (parenEnd < 0) return false
+            urlContentStart = urlOpen
+            urlContentEnd = parenEnd
+            closingParen = parenEnd
+        }
+        val href = text.substring(urlContentStart, urlContentEnd)
+        // 4. Commit. Close out any pending plain run first.
+        flushRun()
+        // Mark `[` as marker.
+        markMarker(pos, 1)
+        // Emit each label char as a visible character.
+        val labelStart = pos + 1
+        runStart = labelStart
+        val styles = activeStyles.toSet()
+        pos = labelStart
+        while (pos < labelEnd) {
+            appendLiteralChar()
+        }
+        // Emit the link run with the captured href.
+        if (pos > runStart) {
+            runs += StyledRun(
+                text = text.substring(runStart, pos),
+                styles = styles,
+                modelStart = runStart,
+                modelEnd = pos,
+                linkHref = href,
+            )
+        }
+        runStart = pos
+        // Mark `]`, `(`, optional `<`, href chars, optional `>`, `)` as markers.
+        markMarker(labelEnd, closingParen + 1 - labelEnd)
+        pos = closingParen + 1
+        runStart = pos
+        return true
     }
 
     /**

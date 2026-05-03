@@ -150,6 +150,17 @@ class DocumentViewBackingViewModel(
          * is fetched on first expand.
          */
         val expandedVaultPaths: Set<String> = emptySet(),
+        /**
+         * Inline styles the user has armed via Cmd-B / Cmd-I / the dropdown
+         * while the caret was collapsed (no selection). The very next
+         * character or text inserted at the caret is wrapped with the
+         * markers for these styles, then the set clears. Cleared on any
+         * cursor movement (so an arrow key cancels the pending style) and
+         * on any non-typing edit.
+         *
+         * Empty when no style is pending — the common case.
+         */
+        val pendingInlineStyles: Set<InlineStyle> = emptySet(),
     ) {
         /** `true` once the document has loaded from disk at least once. */
         val isLoaded: Boolean get() = documentState?.isLoaded == true
@@ -561,12 +572,22 @@ class DocumentViewBackingViewModel(
         val current = _stateFlow.value
         if (!current.isLoaded) return
         val collapsed = anchorRow == cursorRow && anchorCol == cursorCol
+        // A new caret position from the platform (mouse click, native arrow
+        // sync) cancels any armed inline styles for the same reason as
+        // [moved]. Skip the clear when nothing actually moved (the
+        // platform re-pushes selection on every keystroke and we don't
+        // want a no-op sync to wipe a freshly-armed style).
+        val moved = current.cursorRow != cursorRow || current.cursorCol != cursorCol ||
+            current.anchorRow != (if (collapsed) null else anchorRow) ||
+            current.anchorCol != (if (collapsed) null else anchorCol)
+        val pending = if (moved) emptySet() else current.pendingInlineStyles
         _stateFlow.value = reconcile(
             current.copy(
                 cursorRow = cursorRow,
                 cursorCol = cursorCol,
                 anchorRow = if (collapsed) null else anchorRow,
                 anchorCol = if (collapsed) null else anchorCol,
+                pendingInlineStyles = pending,
             )
         )
     }
@@ -718,7 +739,7 @@ class DocumentViewBackingViewModel(
         // `"* "` marker. Anchors are *not* clamped — explicit `selectLine` / `selectAll`
         // intentionally anchor at column 0, and we don't want this safety net to
         // alter their semantics.
-        val baseLineMin = DocumentLayout.textStartCol(lines[baseRow])
+        val baseLineMin = DocumentLayout.caretStartCol(lines[baseRow])
         val baseCol = state.cursorCol.coerceIn(baseLineMin, lines[baseRow].length)
         val baseAr = state.anchorRow?.coerceIn(0, lastRow)
         val baseAc = if (baseAr != null) state.anchorCol?.coerceIn(0, lines[baseAr].length) else null
@@ -732,7 +753,7 @@ class DocumentViewBackingViewModel(
                 clamped = clamped.copy(zoomedLineId = null)
             } else {
                 val zRow = clamped.cursorRow.coerceIn(zoom.startRow, zoom.endRowInclusive)
-                val zLineMin = DocumentLayout.textStartCol(lines[zRow])
+                val zLineMin = DocumentLayout.caretStartCol(lines[zRow])
                 val zCol = clamped.cursorCol.coerceIn(zLineMin, lines[zRow].length)
                 val zAr = clamped.anchorRow?.coerceIn(zoom.startRow, zoom.endRowInclusive)
                 val zAc = if (zAr != null) clamped.anchorCol?.coerceIn(0, lines[zAr].length) else null
@@ -770,7 +791,7 @@ class DocumentViewBackingViewModel(
         if (target !in visibleSet) target = visible.first()
         val targetLine = docState.lines[target]
         val safeCol = state.cursorCol.coerceIn(
-            DocumentLayout.textStartCol(targetLine), targetLine.length
+            DocumentLayout.caretStartCol(targetLine), targetLine.length
         )
         return state.copy(
             cursorRow = target,

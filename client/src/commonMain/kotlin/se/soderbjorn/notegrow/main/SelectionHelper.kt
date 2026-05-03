@@ -59,12 +59,16 @@ internal fun moved(
     newCol: Int,
     extend: Boolean
 ): DocumentViewBackingViewModel.State {
+    // Any cursor movement cancels armed inline styles — Cmd-B followed
+    // by an arrow key should not silently style the next typed character.
+    val noPending = if (state.pendingInlineStyles.isEmpty()) state
+        else state.copy(pendingInlineStyles = emptySet())
     return if (extend) {
-        val ar = state.anchorRow ?: state.cursorRow
-        val ac = state.anchorCol ?: state.cursorCol
-        state.copy(cursorRow = newRow, cursorCol = newCol, anchorRow = ar, anchorCol = ac)
+        val ar = noPending.anchorRow ?: noPending.cursorRow
+        val ac = noPending.anchorCol ?: noPending.cursorCol
+        noPending.copy(cursorRow = newRow, cursorCol = newCol, anchorRow = ar, anchorCol = ac)
     } else {
-        state.copy(cursorRow = newRow, cursorCol = newCol, anchorRow = null, anchorCol = null)
+        noPending.copy(cursorRow = newRow, cursorCol = newCol, anchorRow = null, anchorCol = null)
     }
 }
 

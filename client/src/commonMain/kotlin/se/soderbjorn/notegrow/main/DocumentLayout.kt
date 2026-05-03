@@ -16,6 +16,8 @@
 
 package se.soderbjorn.notegrow.main
 
+import se.soderbjorn.notegrow.data.LineMarkdownPrefix
+
 object DocumentLayout {
 
     /** Column of the leading bullet `*` on [line], or -1 if [line] is not a bullet line. */
@@ -39,6 +41,27 @@ object DocumentLayout {
     fun textStartCol(line: String): Int {
         val bulletCol = bulletAsteriskColumn(line)
         return if (bulletCol >= 0) bulletCol + 2 else 0
+    }
+
+    /**
+     * Smallest column the caret is allowed to occupy on [line] for the
+     * WYSIWYG editor. Equals [textStartCol] plus the length of any
+     * recognised line-level markdown prefix (`# `, `## `, `### `, `> `).
+     *
+     * The renderer hides those prefix characters entirely, so allowing the
+     * caret to land before them would desync the model from the visible
+     * caret: the user would press a key and either nothing appears to
+     * happen (movement collapses back to display 0 on the next paint) or
+     * subsequent typing would land *inside* the hidden prefix, breaking
+     * the prefix's recognition pattern and revealing the markers.
+     *
+     * Used by every cursor-movement intent and by reconcile-time clamping
+     * so the caret can never sit inside a hidden line-level prefix.
+     */
+    fun caretStartCol(line: String): Int {
+        val textStart = textStartCol(line)
+        val prefix = LineMarkdownPrefix.detect(line, textStart)
+        return if (prefix.style != null) prefix.markerEnd else textStart
     }
 
     /**

@@ -218,6 +218,24 @@ object SubtreeCodec {
         " ".repeat(indent) + "* [" + escapeLinkLabel(title) + "](" + formatLinkUrl(refPath + NOTEGROW_FRAGMENT) + ")"
 
     /**
+     * Renders a plain markdown-link bullet (no `#notegrow` fragment) so the
+     * link is treated as foreign by [parseRef] and never auto-spliced.
+     *
+     * Used for the Starred bookmarks file, where the link's purpose is
+     * navigation rather than subtree promotion. The caller may include a
+     * non-Notegrow fragment in [href] (e.g. `#L=42`) to encode an
+     * intra-document anchor.
+     *
+     * @param indent Leading-space count for the rendered line.
+     * @param label Display label. Backslash-escaped per CommonMark for
+     *   `[`, `]`, `(`, `)`, and `\`.
+     * @param href URL to point at, verbatim. Wrapped in `<…>` when it
+     *   contains a space, paren, `<`, or `>`.
+     */
+    fun formatPlainLinkBullet(indent: Int, label: String, href: String): String =
+        " ".repeat(indent) + "* [" + escapeLinkLabel(label) + "](" + formatLinkUrl(href) + ")"
+
+    /**
      * Computes per-bullet metrics over the whole [lines] list.
      *
      * Each entry corresponds to a bullet line in [lines]; non-bullet lines are

@@ -293,6 +293,10 @@ class NoteRepository(
                     // shrinks below the demote line OR loses its title.
                     title.isNotEmpty() && !PromotionPolicy.shouldDemote(m.descendantCount)
                 else ->
+                    // Starred.md is exempt from new auto-promotion: its bullet
+                    // tree is a hand-curated bookmark list that must never
+                    // fragment into subfiles regardless of size.
+                    activeFileRel != STARRED_FILE_NAME &&
                     PromotionPolicy.shouldPromote(span, alreadyPromoted = false)
             }
             if (keep) promotedRowsOut += m.startRow
@@ -653,10 +657,114 @@ class NoteRepository(
         )
     }
 
+    /**
+     * Appends a single bookmark entry to the vault's [STARRED_FILE_NAME]
+     * file (creating it with no frontmatter if it does not exist yet).
+     *
+     * The entry is rendered as a plain markdown-link bullet via
+     * [SubtreeCodec.formatPlainLinkBullet] — explicitly *not* a Notegrow
+     * promoted ref, so the autosave loop never tries to splice the target
+     * file's contents into Starred.md.
+     *
+     * @param title Human-readable label shown in the bookmark list.
+     * @param targetPathRel Vault-relative path of the file the bookmark
+     *   points at, including `.md`. Pass exactly what
+     *   [se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.navigateToVaultFile]
+     *   would accept.
+     * @param targetRow Optional 0-indexed row within [targetPathRel];
+     *   when non-null the link's URL fragment becomes `#r=<row>` so the
+     *   click handler can re-zoom precisely after the file loads. Row
+     *   indices are used (rather than `LineId`s) because they survive
+     *   cold reloads — `LineId`s are reassigned every time a file is
+     *   loaded from disk. Pass `null` to bookmark the whole file.
+     */
+    suspend fun appendStarredEntry(
+        title: String,
+        targetPathRel: String,
+        targetRow: Int?,
+    ) {
+        fileSystem.ensureDirectory(rootDirectory)
+        val absPath = "$rootDirectory/$STARRED_FILE_NAME"
+        val existing = fileSystem.readFileIfExists(absPath) ?: ""
+        val href = if (targetRow != null) "$targetPathRel#r=$targetRow" else targetPathRel
+        val newBullet = SubtreeCodec.formatPlainLinkBullet(indent = 0, label = title, href = href)
+        val nextContent = when {
+            existing.isEmpty() -> newBullet + "\n"
+            existing.endsWith("\n") -> existing + newBullet + "\n"
+            else -> existing + "\n" + newBullet + "\n"
+        }
+        fileSystem.writeFile(absPath, nextContent)
+    }
+
+    /**
+     * Removes every bookmark line in [STARRED_FILE_NAME] whose markdown
+     * link points at the same `(targetPathRel, targetRow)` tuple as the
+     * arguments. Used by the Starred modal's "Remove from starred" toggle
+     * to undo a prior [appendStarredEntry] without leaving duplicates
+     * behind.
+     *
+     * Matching mirrors the logic the Starred modal uses to decide whether
+     * a target is "currently starred":
+     *
+     * - If the bookmark URL ends with `#r=<n>`, the path part and the row
+     *   must both match.
+     * - Otherwise the URL is matched against [targetPathRel] verbatim, and
+     *   only when [targetRow] is `null`.
+     *
+     * Lines that are not markdown-link bullets are preserved as-is so any
+     * hand-authored content the user added to `Starred.md` (headings,
+     * notes, plain bullets) survives the rewrite.
+     *
+     * @param targetPathRel Vault-relative path of the file the bookmark
+     *   points at, including `.md`.
+     * @param targetRow Optional 0-indexed row within [targetPathRel].
+     *   Pass `null` to remove a whole-file bookmark.
+     */
+    suspend fun removeStarredEntry(
+        targetPathRel: String,
+        targetRow: Int?,
+    ) {
+        val absPath = "$rootDirectory/$STARRED_FILE_NAME"
+        val existing = fileSystem.readFileIfExists(absPath) ?: return
+        val rowMarker = "#r="
+        val lines = existing.split("\n")
+        val kept = ArrayList<String>(lines.size)
+        for (line in lines) {
+            val link = SubtreeCodec.parseAnyLinkBullet(line)
+            if (link == null) {
+                kept += line
+                continue
+            }
+            val url = link.url
+            val hashIdx = url.indexOf(rowMarker)
+            val (path, row) = if (hashIdx >= 0) {
+                val tail = url.substring(hashIdx + rowMarker.length)
+                val n = tail.toIntOrNull()
+                if (n != null) url.substring(0, hashIdx) to n
+                else url to null
+            } else {
+                url to null
+            }
+            if (path == targetPathRel && row == targetRow) continue
+            kept += line
+        }
+        val nextContent = kept.joinToString("\n")
+        fileSystem.writeFile(absPath, nextContent)
+    }
+
     companion object {
         const val DEFAULT_DIRECTORY: String = "/Users/soderbjorn/notegrow-db"
         const val NOTE_EXTENSION: String = ".md"
         const val DEFAULT_FILE_NAME: String = "Root$NOTE_EXTENSION"
+        /**
+         * Vault-relative filename for the Starred bookmarks list. Has two
+         * roles:
+         * 1. The Starred-modal in the web UI loads/displays/appends to it.
+         * 2. [save] suppresses **new** auto-promotion when this file is the
+         *    active document, so the bookmark list never spontaneously
+         *    fragments into subfiles even if it grows large.
+         */
+        const val STARRED_FILE_NAME: String = "Starred$NOTE_EXTENSION"
         private const val TAB_SIZE: Int = 2
     }
 }
