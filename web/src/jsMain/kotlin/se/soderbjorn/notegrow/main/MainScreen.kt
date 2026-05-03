@@ -793,6 +793,29 @@ class MainScreen(
     }
 
     /**
+     * Snapshots the pane's outgoing DOM into [pendingCrossfadeOverlay]
+     * **before** the toolkit's `LayoutRenderer.render()` wipes the
+     * floating-pane container. Called by `AppShell` from its per-pane
+     * navigation observer right before `rerenderActivePane()`.
+     *
+     * The overlay is appended to `document.body`, which the toolkit
+     * rebuild does not touch, so it survives the wipe — covering the
+     * empty pane area in the brief window between the rebuild's
+     * container wipe and the moment `screen.render` re-attaches the
+     * MainScreen elements into the freshly-built `.dt-pane`. Without
+     * this pre-snapshot, a single-frame paint can slip through that
+     * window and leak the page background (a visible "blink" before
+     * the fade starts).
+     *
+     * Idempotent: a second call while a snapshot is already pending
+     * is a no-op so back-to-back nav events don't stack overlays.
+     */
+    fun prepareNavigationCrossfade() {
+        if (pendingCrossfadeOverlay != null) return
+        pendingCrossfadeOverlay = snapshotForCrossfade()
+    }
+
+    /**
      * Captures the pane's currently-rendered content as an absolutely-
      * positioned overlay clone of [rootElement]'s children. Returns the
      * overlay (already attached to the DOM, layered over the new content

@@ -962,7 +962,21 @@ class AppShell(
                 .collect {
                     val active = layoutState.activeTabId
                     val activeIds = tabLayouts[active]?.floatingPanes?.map { it.id }.orEmpty()
-                    if (paneId in activeIds) rerenderActivePane()
+                    if (paneId in activeIds) {
+                        // Snapshot the pane's outgoing DOM into a body-level
+                        // overlay BEFORE the toolkit rebuild wipes the
+                        // floating-pane layout container. The overlay lives on
+                        // `document.body`, which the rebuild doesn't touch,
+                        // so it survives the wipe and covers the otherwise-
+                        // empty pane while `screen.render` re-attaches the
+                        // existing MainScreen elements into the freshly-built
+                        // `.dt-pane`. Without this pre-snapshot a single-
+                        // frame paint can slip through that window and leak
+                        // the page background as a visible blink before the
+                        // crossfade starts.
+                        paneEditors[paneId]?.prepareNavigationCrossfade()
+                        rerenderActivePane()
+                    }
                     refreshLeftSidebarSections()
                 }
         }
