@@ -135,6 +135,19 @@ class MainViewModel(
     /** See `DocumentViewBackingViewModel.isBulletLine`. */
     fun isBulletLine(): Boolean = backingViewModel.isBulletLine()
 
+    // ---- drag intents ---------------------------------------------------
+
+    /** See `DocumentViewBackingViewModel.subtreeRange`. */
+    fun subtreeRange(row: Int): IntRange? = backingViewModel.subtreeRange(row)
+
+    /** See `DocumentViewBackingViewModel.moveLineRange`. */
+    fun moveLineRange(
+        fromStartRow: Int,
+        fromEndRow: Int,
+        insertBeforeRow: Int,
+        targetIndent: Int,
+    ) = backingViewModel.moveLineRange(fromStartRow, fromEndRow, insertBeforeRow, targetIndent)
+
     // ---- zoom intents ---------------------------------------------------
 
     /** See `DocumentViewBackingViewModel.zoomInto`. */

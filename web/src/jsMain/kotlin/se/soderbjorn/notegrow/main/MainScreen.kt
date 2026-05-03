@@ -28,7 +28,9 @@ import org.w3c.dom.HTMLElement
 import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
+import org.w3c.dom.events.MouseEvent
 import se.soderbjorn.notegrow.data.InlineStyle
+import kotlin.math.sqrt
 
 /**
  * The note editor's web view.
@@ -257,6 +259,13 @@ class MainScreen(
         })
         editor.addEventListener("keydown", { event ->
             handleKey(editor, event as KeyboardEvent)
+        })
+        // Drag-from-gutter init: a mousedown in a row's left padding zone,
+        // when that row sits inside the active selection, begins a row-range
+        // drag. Bullet-dot drags are wired separately by `OutlinePaintLoop`
+        // via the `onBulletMouseDown` callback we pass to `paint`.
+        editor.addEventListener("mousedown", { event ->
+            maybeBeginGutterDrag(editor, event as MouseEvent)
         })
         editor.addEventListener("copy", { event ->
             handleCopy(editor, event.unsafeCast<dynamic>())
@@ -617,7 +626,9 @@ class MainScreen(
     private fun reconcile(editor: HTMLElement, state: DocumentViewBackingViewModel.State) {
         val scroller = scrollWrapperElement ?: editor
         val savedScrollTop = scroller.scrollTop
-        paint(editor, state, viewModel, style)
+        paint(editor, state, viewModel, style, onBulletMouseDown = { row, ev ->
+            beginDragFromBullet(row, ev)
+        })
         scroller.scrollTop = savedScrollTop
 
         if (!state.isLoaded) return
@@ -1075,4 +1086,231 @@ class MainScreen(
             clipboard.writeText(text)
         }
     }
+
+    // ----------------------------------------------------------------- drag
+
+    /**
+     * In-flight drag state. A press on a bullet glyph (`originMode = Bullet`)
+     * or in a selected row's left gutter (`originMode = Selection`) creates
+     * a session; window-level mousemove/mouseup listeners drive the rest of
+     * the gesture and the session is cleared on release. `null` when no
+     * drag is in progress.
+     *
+     * @property sourceStart First absolute row of the moveable block
+     *   (resolved at session start, so subsequent edits cannot shift it
+     *   under us).
+     * @property sourceEnd Last absolute row of the moveable block
+     *   (inclusive).
+     * @property originX Initial mousedown clientX, used to detect the
+     *   movement threshold that promotes a press into an armed drag.
+     * @property originY Initial mousedown clientY.
+     * @property originMode Whether the gesture began on a bullet glyph or
+     *   in a selected row's gutter.
+     * @property armed `true` once the pointer has moved more than
+     *   [DRAG_THRESHOLD_PX] from the origin. Until armed, the gesture is
+     *   indistinguishable from a click and we leave the click handler to
+     *   run on release.
+     * @property lastTargetRow Last row the pointer was hovering, in
+     *   absolute document coordinates. `null` when the pointer is over
+     *   editor chrome with no `data-row` ancestor (the drop is then a
+     *   no-op on release).
+     * @property insertAbove Half of [lastTargetRow] the pointer is in:
+     *   `true` for the top half (drop above the row), `false` for the
+     *   bottom half (drop below).
+     */
+    private data class DragSession(
+        val sourceStart: Int,
+        val sourceEnd: Int,
+        val originX: Double,
+        val originY: Double,
+        val originMode: Origin,
+        var armed: Boolean = false,
+        var lastTargetRow: Int? = null,
+        var insertAbove: Boolean = true,
+    ) {
+        enum class Origin { Bullet, Selection }
+    }
+
+    private var dragSession: DragSession? = null
+    private var dropIndicator: HTMLElement? = null
+    private var dragMoveListener: ((Event) -> Unit)? = null
+    private var dragUpListener: ((Event) -> Unit)? = null
+
+    /**
+     * Begins a drag session anchored on the bullet glyph at [absoluteRow].
+     * Resolves the bullet's subtree range now via
+     * [MainViewModel.subtreeRange] so a concurrent edit cannot shift the
+     * range mid-drag. A no-op if [absoluteRow] is not a bullet line.
+     *
+     * Called by [OutlinePaintLoop.buildBulletPrefix] through the
+     * `onBulletMouseDown` callback we pass to `paint(...)`.
+     */
+    private fun beginDragFromBullet(absoluteRow: Int, ev: MouseEvent) {
+        val range = viewModel.subtreeRange(absoluteRow) ?: return
+        startDragSession(range.first, range.last, ev, DragSession.Origin.Bullet)
+    }
+
+    /**
+     * If [ev] is a mousedown inside a selected row's left gutter, begins a
+     * row-range drag covering the whole active selection. Otherwise leaves
+     * the event alone so the browser handles it as caret/selection input.
+     *
+     * "Gutter" is operationalized as `clientX < rowRect.left + paddingLeft
+     * - 4`, i.e. left of the row's content area with a small tolerance.
+     * This is the only zone where a press should be unambiguously
+     * interpreted as "grab this whole block" rather than "place caret".
+     */
+    private fun maybeBeginGutterDrag(editor: HTMLElement, ev: MouseEvent) {
+        val backing = viewModel.currentBackingState
+        val sel = DocumentViewBackingViewModel.selectionOf(backing) ?: return
+        val target = ev.target as? Node ?: return
+        val rowDiv = ancestorRowDiv(target) ?: return
+        val rowIdx = rowDiv.getAttribute("data-row")?.toIntOrNull() ?: return
+        if (rowIdx !in sel.startRow..sel.endRow) return
+        val rect = rowDiv.getBoundingClientRect()
+        val paddingLeft = window.asDynamic().getComputedStyle(rowDiv)
+            .getPropertyValue("padding-left").unsafeCast<String?>()
+            ?.removeSuffix("px")?.toDoubleOrNull() ?: 0.0
+        if (ev.clientX.toDouble() > rect.left + paddingLeft - 4.0) return
+        ev.preventDefault()
+        startDragSession(sel.startRow, sel.endRow, ev, DragSession.Origin.Selection)
+    }
+
+    private fun startDragSession(
+        startRow: Int,
+        endRow: Int,
+        ev: MouseEvent,
+        origin: DragSession.Origin,
+    ) {
+        // Tear down any leftover session — paranoia guard. Real life:
+        // mouseup always fires and clears the previous one.
+        if (dragSession != null) endDragSession()
+        dragSession = DragSession(
+            sourceStart = startRow,
+            sourceEnd = endRow,
+            originX = ev.clientX.toDouble(),
+            originY = ev.clientY.toDouble(),
+            originMode = origin,
+        )
+        val moveListener: (Event) -> Unit = { e -> handleDragMove(e as MouseEvent) }
+        val upListener: (Event) -> Unit = { e -> handleDragUp(e as MouseEvent) }
+        dragMoveListener = moveListener
+        dragUpListener = upListener
+        window.addEventListener("mousemove", moveListener)
+        window.addEventListener("mouseup", upListener)
+    }
+
+    private fun endDragSession() {
+        dragMoveListener?.let { window.removeEventListener("mousemove", it) }
+        dragUpListener?.let { window.removeEventListener("mouseup", it) }
+        dragMoveListener = null
+        dragUpListener = null
+        dragSession = null
+        dropIndicator?.let { it.parentNode?.removeChild(it) }
+        dropIndicator = null
+    }
+
+    private fun handleDragMove(ev: MouseEvent) {
+        val s = dragSession ?: return
+        if (!s.armed) {
+            val dx = ev.clientX.toDouble() - s.originX
+            val dy = ev.clientY.toDouble() - s.originY
+            if (sqrt(dx * dx + dy * dy) < DRAG_THRESHOLD_PX) return
+            s.armed = true
+            ensureDropIndicator()
+            // Suppress the browser's native text selection that would
+            // otherwise grow as the pointer moves; we own the gesture now.
+            window.asDynamic().getSelection()?.removeAllRanges()
+        }
+        val editor = editorElement ?: return
+        val target = document.elementFromPoint(ev.clientX.toDouble(), ev.clientY.toDouble())
+        val rowDiv = if (target != null) ancestorRowDiv(target as Node) else null
+        if (rowDiv == null || !editor.contains(rowDiv)) {
+            hideDropIndicator()
+            s.lastTargetRow = null
+            return
+        }
+        val targetRow = rowDiv.getAttribute("data-row")?.toIntOrNull()
+        if (targetRow == null) {
+            hideDropIndicator()
+            s.lastTargetRow = null
+            return
+        }
+        val rect = rowDiv.getBoundingClientRect()
+        val insertAbove = (ev.clientY.toDouble() - rect.top) < rect.height / 2.0
+        val insertBeforeRow = if (insertAbove) targetRow else targetRow + 1
+        // Forbid drops strictly inside the source range. (Drops *adjacent*
+        // to source — same position the block already occupies — are
+        // allowed visually, then no-op'd inside `moveLineRange`.)
+        if (insertBeforeRow > s.sourceStart && insertBeforeRow <= s.sourceEnd) {
+            hideDropIndicator()
+            s.lastTargetRow = null
+            return
+        }
+        s.lastTargetRow = targetRow
+        s.insertAbove = insertAbove
+        showDropIndicator(rect, insertAbove)
+    }
+
+    private fun handleDragUp(@Suppress("UNUSED_PARAMETER") ev: MouseEvent) {
+        val s = dragSession ?: return
+        // A press without movement is a click; let the click handler run
+        // (bullet → zoom, gutter → nothing, by design).
+        if (!s.armed) {
+            endDragSession()
+            return
+        }
+        val targetRow = s.lastTargetRow
+        if (targetRow == null) {
+            endDragSession()
+            return
+        }
+        val insertBeforeRow = if (s.insertAbove) targetRow else targetRow + 1
+        val targetIndent = computeTargetIndent(targetRow, s.insertAbove)
+        endDragSession()
+        viewModel.moveLineRange(s.sourceStart, s.sourceEnd, insertBeforeRow, targetIndent)
+    }
+
+    /**
+     * Indent the moved block should adopt: the leading-whitespace count of
+     * the row immediately above the drop point. Falls back to 0 above the
+     * first row.
+     */
+    private fun computeTargetIndent(targetRow: Int, insertAbove: Boolean): Int {
+        val backing = viewModel.currentBackingState
+        val lines = backing.lines
+        val aboveRow = if (insertAbove) targetRow - 1 else targetRow
+        if (aboveRow < 0 || aboveRow > lines.lastIndex) return 0
+        val line = lines[aboveRow]
+        val nonWs = line.indexOfFirst { !it.isWhitespace() }
+        return if (nonWs < 0) 0 else nonWs
+    }
+
+    private fun ensureDropIndicator() {
+        if (dropIndicator != null) return
+        val ind = document.createElement("div") as HTMLElement
+        ind.className = "notegrow-drop-indicator"
+        ind.style.display = "none"
+        document.body?.appendChild(ind)
+        dropIndicator = ind
+    }
+
+    private fun showDropIndicator(rect: dynamic, insertAbove: Boolean) {
+        val ind = dropIndicator ?: return
+        ind.style.display = "block"
+        val left: Double = rect.left.unsafeCast<Double>()
+        val width: Double = rect.width.unsafeCast<Double>()
+        val top: Double = rect.top.unsafeCast<Double>()
+        val height: Double = rect.height.unsafeCast<Double>()
+        ind.style.left = "${left}px"
+        ind.style.width = "${width}px"
+        val y = if (insertAbove) top - 1.0 else top + height - 1.0
+        ind.style.top = "${y}px"
+    }
+
+    private fun hideDropIndicator() {
+        dropIndicator?.style?.display = "none"
+    }
 }
+
+private const val DRAG_THRESHOLD_PX: Double = 4.0

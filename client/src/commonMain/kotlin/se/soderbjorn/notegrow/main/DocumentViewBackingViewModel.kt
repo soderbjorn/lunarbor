@@ -405,6 +405,177 @@ class DocumentViewBackingViewModel(
     /** See [TextEditingViewModel.isBulletLine]. */
     fun isBulletLine(): Boolean = textEditing.isBulletLine()
 
+    /**
+     * Resolves the absolute row range owned by the bullet at [row]: the bullet
+     * itself plus its descendants up to (but not including) the next sibling-
+     * or-shallower row. Returns `null` if [row] is out of range or its line is
+     * not a bullet.
+     *
+     * ### Callers
+     * - The web `MainScreen` drag-handler when the user mousedowns on a bullet
+     *   glyph, to know which rows form the moveable block.
+     */
+    fun subtreeRange(row: Int): IntRange? {
+        val docState = documentBackingViewModel.stateFlow.value
+        if (!docState.isLoaded) return null
+        val lines = docState.lines
+        if (row !in lines.indices) return null
+        val indent = DocumentLayout.bulletAsteriskColumn(lines[row])
+        if (indent < 0) return null
+        return row..DocumentLayout.subtreeEnd(lines, row, indent)
+    }
+
+    /**
+     * Move the contiguous row range `[fromStartRow..fromEndRow]` (both
+     * inclusive, absolute document coordinates) so that, after the move, the
+     * first moved row sits immediately above the row that was originally at
+     * [insertBeforeRow]. Pass `lines.size` as [insertBeforeRow] to drop at
+     * the very end of the document.
+     *
+     * Pure view-layer composition: the document VM's `delete(...)` and
+     * `insertText(...)` primitives are called in sequence, then a single
+     * trailing `patch { }` restores cursor + selection so observers see one
+     * consistent post-move emission.
+     *
+     * **Indent rewriting (v1).** Every moved line is reindented by
+     * `targetIndent - sourceTopIndent`, clamped per-line so no line goes
+     * below indent 0. The top of the moved block ends up with indent
+     * [targetIndent]; deeper descendants keep their relative offset.
+     *
+     * **Disallowed cases.** Drop *inside* the moved range, drop immediately
+     * above or below the unchanged source, and "move the whole document" all
+     * silently no-op.
+     *
+     * **Id semantics.** The moved block lands with freshly-allocated line
+     * ids (since the rows are re-inserted via `insertText`). The
+     * default-collapse pass in [applyDefaultCollapseIfNeeded] will re-fold
+     * any parent bullets among the new ids on the next emission, so a
+     * folded parent stays visually folded after the move. Per-id zoom or
+     * collapse state targeting the moved rows is discarded — these are
+     * transient view affordances and the cost of preserving them across a
+     * move would require a new `DocumentBackingViewModel` primitive.
+     *
+     * **Cursor.** After the move, the caret is collapsed at the start of
+     * the moved block's first line (after any bullet prefix). No selection
+     * is restored — typing immediately after a drop must not destroy the
+     * just-moved content.
+     *
+     * ### Callers
+     * - The web `MainScreen` drag-and-drop handler, on `mouseup` after a
+     *   successful drag (both bullet-dot drags and gutter selection drags).
+     *
+     * @param fromStartRow First row of the source block (inclusive).
+     * @param fromEndRow Last row of the source block (inclusive). Must be
+     *   ≥ [fromStartRow]; values are coerced into the legal range.
+     * @param insertBeforeRow Pre-move row index that the moved block should
+     *   land above. Coerced to `[0..lines.size]`. Treated as "drop at end of
+     *   document" when it equals `lines.size`.
+     * @param targetIndent New indent (leading-space count) for the top of
+     *   the moved block. Pass the indent of the row immediately above the
+     *   drop point (the simple v1 rule).
+     */
+    fun moveLineRange(
+        fromStartRow: Int,
+        fromEndRow: Int,
+        insertBeforeRow: Int,
+        targetIndent: Int,
+    ) {
+        val docStart = documentBackingViewModel.stateFlow.value
+        if (!docStart.isLoaded) return
+        val lines0 = docStart.lines
+        if (lines0.isEmpty()) return
+
+        val src0 = fromStartRow.coerceIn(0, lines0.lastIndex)
+        val src1 = fromEndRow.coerceIn(src0, lines0.lastIndex)
+        val drop = insertBeforeRow.coerceIn(0, lines0.size)
+
+        // Disallowed cases: drop strictly inside the source, or drop adjacent
+        // to source on either side (no-op moves), or moving the entire doc.
+        if (drop in (src0 + 1)..src1) return
+        if (drop == src0 || drop == src1 + 1) return
+        if (src0 == 0 && src1 == lines0.lastIndex) return
+
+        val deletedRowCount = src1 - src0 + 1
+        val sourceTopIndent = leadingSpaceCount(lines0[src0])
+        val shift = targetIndent - sourceTopIndent
+        val movedText = (src0..src1).joinToString("\n") { reindentLine(lines0[it], shift) }
+
+        // 1. Delete the source rows as whole rows. Two cases avoid clobbering
+        //    surviving ids by keeping `startRow` outside the moved block where
+        //    possible. When the source includes row 0, we have no row above
+        //    to anchor on; row 0's id is preserved but takes the content of
+        //    the row that previously followed the source. The default-
+        //    collapse pass will re-fold parent bullets among the new ids on
+        //    the next emission.
+        if (src0 > 0) {
+            val above = lines0[src0 - 1]
+            val tailRow = src1
+            documentBackingViewModel.delete(src0 - 1, above.length, tailRow, lines0[tailRow].length)
+        } else {
+            // src0 == 0 and src1 < lines0.lastIndex (the all-doc case is
+            // already filtered above). Remove rows [0..src1] by collapsing
+            // them with row src1+1 as the survivor's content source.
+            documentBackingViewModel.delete(0, 0, src1 + 1, 0)
+        }
+
+        // 2. Translate the pre-delete drop index into post-delete coordinates.
+        val postDeleteInsertRow = if (drop <= src0) drop else drop - deletedRowCount
+
+        // 3. Insert. Either prepend at row[postDeleteInsertRow] with a trailing
+        //    newline, or append at end-of-doc when the drop went past the new
+        //    last row.
+        val newLines = documentBackingViewModel.stateFlow.value.lines
+        val landedFirst: Int
+        val landedLast: Int
+        if (postDeleteInsertRow > newLines.lastIndex) {
+            val lastIdx = newLines.lastIndex
+            documentBackingViewModel.insertText(lastIdx, newLines[lastIdx].length, "\n" + movedText)
+            landedFirst = lastIdx + 1
+            landedLast = landedFirst + deletedRowCount - 1
+        } else {
+            documentBackingViewModel.insertText(postDeleteInsertRow, 0, movedText + "\n")
+            landedFirst = postDeleteInsertRow
+            landedLast = landedFirst + deletedRowCount - 1
+        }
+
+        // 4. Place a collapsed caret at the start of the moved block's
+        //    first line (after any bullet prefix). Restoring a selection
+        //    would let an accidental keystroke delete the just-moved
+        //    content. A single trailing `patch { }` so observers see one
+        //    emission with the new doc + cursor.
+        val finalLines = documentBackingViewModel.stateFlow.value.lines
+        val safeFirst = landedFirst.coerceIn(0, finalLines.lastIndex)
+        val caretCol = DocumentLayout.caretStartCol(finalLines[safeFirst])
+        patch {
+            it.copy(
+                anchorRow = null,
+                anchorCol = null,
+                cursorRow = safeFirst,
+                cursorCol = caretCol,
+            )
+        }
+    }
+
+    /**
+     * Returns the count of leading whitespace characters on [line]; equal to
+     * [line]'s length when the line is entirely whitespace.
+     */
+    private fun leadingSpaceCount(line: String): Int {
+        val nonWs = line.indexOfFirst { !it.isWhitespace() }
+        return if (nonWs < 0) line.length else nonWs
+    }
+
+    /**
+     * Shifts [line]'s leading whitespace by [delta], clamped so the resulting
+     * indent is never negative. Non-whitespace content (including any `"* "`
+     * bullet marker) is preserved verbatim.
+     */
+    private fun reindentLine(line: String, delta: Int): String {
+        val nonWs = leadingSpaceCount(line)
+        val newIndent = (nonWs + delta).coerceAtLeast(0)
+        return " ".repeat(newIndent) + line.substring(nonWs)
+    }
+
     // ------------------------------------------------------------------ zoom
 
     /** See [ZoomNavigation.zoomInto]. */

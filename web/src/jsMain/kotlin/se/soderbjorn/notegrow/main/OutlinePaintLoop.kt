@@ -104,6 +104,7 @@ fun paint(
     state: DocumentViewBackingViewModel.State,
     viewModel: MainViewModel,
     style: EditorStyle,
+    onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ) {
     editor.innerHTML = ""
     rowColumnMaps.clear()
@@ -133,7 +134,9 @@ fun paint(
         val rawLine = state.lines[row]
         val line = if (viewOriginCol > 0 && rawLine.length >= viewOriginCol)
             rawLine.substring(viewOriginCol) else rawLine
-        editor.appendChild(buildRowElement(row, line, viewOriginCol, state, docState, viewModel, style))
+        editor.appendChild(
+            buildRowElement(row, line, viewOriginCol, state, docState, viewModel, style, onBulletMouseDown)
+        )
     }
 }
 
@@ -159,6 +162,7 @@ private fun buildRowElement(
     docState: DocumentBackingViewModel.State,
     viewModel: MainViewModel,
     style: EditorStyle,
+    onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ): HTMLElement {
     val rowDiv = document.createElement("div") as HTMLElement
     rowDiv.setAttribute("data-row", absoluteRow.toString())
@@ -215,7 +219,7 @@ private fun buildRowElement(
             }
         }
 
-        rowDiv.appendChild(buildBulletPrefix(absoluteRow, viewModel))
+        rowDiv.appendChild(buildBulletPrefix(absoluteRow, viewModel, onBulletMouseDown))
         rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2)))
     } else {
         // Non-bullet line: editable text starts at column 0 of the raw line,
@@ -334,12 +338,24 @@ private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false): Str
 
 /**
  * Non-editable bullet glyph + trailing space. Sized as a single inline
- * unit so wrap behaviour treats it as the start of the line. Click on
- * this element zooms into the bullet's subtree.
+ * unit so wrap behaviour treats it as the start of the line.
+ *
+ * Two gestures are wired here:
+ * - **mousedown**: forwarded to [onBulletMouseDown] (when supplied) so the
+ *   caller can begin tracking a potential drag-to-move gesture. The handler
+ *   already calls `preventDefault()` to keep the browser from starting its
+ *   own native drag, so the caller doesn't need to.
+ * - **click**: zooms into the bullet's subtree via
+ *   [MainViewModel.zoomInto]. A click only fires when no drag started; the
+ *   caller is responsible for using a small movement threshold to
+ *   distinguish drag from click. Re-using the browser's native click event
+ *   means a stationary press → release still navigates without any
+ *   coordination with the drag handler.
  */
 private fun buildBulletPrefix(
     absoluteRow: Int,
     viewModel: MainViewModel,
+    onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ): HTMLElement {
     val prefix = document.createElement("span") as HTMLElement
     prefix.className = "notegrow-bullet-prefix"
@@ -373,6 +389,7 @@ private fun buildBulletPrefix(
         val me = event as MouseEvent
         me.stopPropagation()
         me.preventDefault()
+        onBulletMouseDown?.invoke(absoluteRow, me)
     })
     prefix.addEventListener("click", zoomHandler)
     return prefix
@@ -497,6 +514,19 @@ fun ensureStyles() {
         }
         .notegrow-bullet-prefix {
             display: inline;
+            cursor: grab;
+        }
+        .notegrow-bullet-prefix:active {
+            cursor: grabbing;
+        }
+        .notegrow-drop-indicator {
+            position: fixed;
+            height: 2px;
+            background: var(--t-accent, #5ab0ff);
+            box-shadow: 0 0 0 2px rgba(90, 176, 255, 0.18);
+            pointer-events: none;
+            z-index: 2000;
+            border-radius: 2px;
         }
         .notegrow-bullet {
             display: inline-block;
