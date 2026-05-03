@@ -284,8 +284,15 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
     if (tokenized.runs.isEmpty()) {
         // Empty editable region (or whole region was markers like `****`).
         // Still emit one empty run-span so the caret has a stable target.
+        // The `<br>` inside is a layout placeholder: without it, the browser
+        // can't find a caret position on this row during ArrowUp/ArrowDown
+        // navigation (the inline span has zero width and no text node, so
+        // the visual-line search treats the row as having no caret slot and
+        // skips over it to the next non-empty row). The `<br>` carries no
+        // text content, so column math (`textContent.length`) is unaffected.
         val empty = document.createElement("span") as HTMLElement
         empty.className = "notegrow-text-run"
+        empty.appendChild(document.createElement("br"))
         wrapper.appendChild(empty)
     } else {
         for (run in tokenized.runs) {

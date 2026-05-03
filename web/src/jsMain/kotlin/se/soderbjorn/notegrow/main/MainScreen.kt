@@ -651,7 +651,11 @@ class MainScreen(
             val child = children.item(i) as? HTMLElement ?: continue
             val len = child.textContent?.length ?: 0
             if (displayCol <= consumed + len) {
-                val textNode = child.firstChild
+                // Empty run spans (blank rows) carry a `<br>` placeholder so
+                // the browser can find them during ArrowUp/ArrowDown — but
+                // anchoring the selection on the `<br>` itself is fragile.
+                // Anchor on the run span instead at offset 0.
+                val textNode = child.firstChild?.takeIf { it.nodeType.toInt() == 3 }
                 return if (textNode != null) {
                     textNode to (displayCol - consumed).coerceAtLeast(0)
                 } else {
@@ -662,7 +666,7 @@ class MainScreen(
         }
         // Past the end — drop to the last text node, or the wrapper if there are no children.
         val lastChild = textSpan.lastElementChild
-        val lastTextNode = lastChild?.firstChild
+        val lastTextNode = lastChild?.firstChild?.takeIf { it.nodeType.toInt() == 3 }
         return if (lastTextNode != null) {
             lastTextNode to (lastTextNode.nodeValue?.length ?: 0)
         } else if (lastChild != null) {
