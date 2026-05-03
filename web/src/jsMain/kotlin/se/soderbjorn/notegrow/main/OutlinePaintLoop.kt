@@ -297,7 +297,10 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
     } else {
         for (run in tokenized.runs) {
             val span = document.createElement("span") as HTMLElement
-            span.className = runClassName(run.styles)
+            span.className = runClassName(run.styles, isLink = run.linkHref != null)
+            if (run.linkHref != null) {
+                span.setAttribute("data-href", run.linkHref!!)
+            }
             span.textContent = run.text
             wrapper.appendChild(span)
         }
@@ -310,19 +313,19 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
  * Always includes the base `notegrow-text-run` class so global
  * editable-region styles still apply.
  */
-private fun runClassName(styles: Set<InlineStyle>): String {
-    if (styles.isEmpty()) return "notegrow-text-run"
+private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false): String {
+    if (styles.isEmpty() && !isLink) return "notegrow-text-run"
     val parts = StringBuilder("notegrow-text-run")
     for (s in styles) {
         parts.append(' ')
         parts.append(when (s) {
             InlineStyle.BOLD -> "notegrow-md-bold"
             InlineStyle.ITALIC -> "notegrow-md-italic"
-            InlineStyle.UNDERLINE -> "notegrow-md-underline"
             InlineStyle.STRIKETHROUGH -> "notegrow-md-strike"
             InlineStyle.INLINE_CODE -> "notegrow-md-code"
         })
     }
+    if (isLink) parts.append(" notegrow-md-link")
     return parts.toString()
 }
 
@@ -622,15 +625,19 @@ fun ensureStyles() {
            markdown so files round-trip cleanly through other tools. */
         .notegrow-md-bold { font-weight: 700; }
         .notegrow-md-italic { font-style: italic; }
-        .notegrow-md-underline { text-decoration: underline; }
         .notegrow-md-strike { text-decoration: line-through; }
-        .notegrow-md-strike.notegrow-md-underline { text-decoration: underline line-through; }
         .notegrow-md-code {
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-size: 0.95em;
             background: var(--t-border-strong, rgba(255, 255, 255, 0.10));
             padding: 0 4px;
             border-radius: 3px;
+        }
+        .notegrow-md-link {
+            color: var(--t-accent, #5ab0ff);
+            text-decoration: underline;
+            text-underline-offset: 2px;
+            cursor: pointer;
         }
         .notegrow-text.notegrow-md-h1 {
             font-size: 1.6em;

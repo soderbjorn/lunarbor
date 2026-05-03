@@ -51,12 +51,6 @@ internal object StyleDropdownIcons {
         "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"currentColor\">" +
             "<text x=\"4\" y=\"12\" font-size=\"11\" font-style=\"italic\" font-family=\"serif\">I</text></svg>"
 
-    /** Underline — "U" with a baseline rule. */
-    const val UNDERLINE: String =
-        "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\">" +
-            "<path d=\"M5 3v6a3 3 0 0 0 6 0V3\" fill=\"none\"/>" +
-            "<line x1=\"4\" y1=\"13\" x2=\"12\" y2=\"13\"/></svg>"
-
     /** Strikethrough — "S" with a centred line. */
     const val STRIKETHROUGH: String =
         "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\">" +

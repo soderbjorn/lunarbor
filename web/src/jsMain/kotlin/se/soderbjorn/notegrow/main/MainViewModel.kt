@@ -56,6 +56,17 @@ class MainViewModel(
     /** Observable stream of envelope states consumed by `MainScreen`. */
     val stateFlow: StateFlow<State> = _stateFlow.asStateFlow()
 
+    /**
+     * Synchronous accessor for the latest backing state. Use this from
+     * input handlers (`beforeinput`, `keydown`) where the envelope flow
+     * may still be one coroutine hop behind a freshly-applied edit —
+     * stale envelope reads have caused caret-snap bugs where a sync
+     * pass right after an insert reports the pre-insert cursor and
+     * silently drops state like `pendingInlineStyles`.
+     */
+    val currentBackingState: DocumentViewBackingViewModel.State
+        get() = backingViewModel.stateFlow.value
+
     init {
         scope.launch {
             backingViewModel.stateFlow.collect { backing ->

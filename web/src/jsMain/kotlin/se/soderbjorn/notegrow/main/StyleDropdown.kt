@@ -3,9 +3,9 @@
  * -------------------------
  * Click-to-open popover invoked by the Style toolbar button. Lists the
  * line-level styles (heading 1–3, quote) above a divider and the
- * selection-level inline styles (bold, italic, underline, strikethrough,
- * inline code) below. Each item shows an icon, a label, and a checkmark
- * when the style is currently active for the selection.
+ * selection-level inline styles (bold, italic, strikethrough, inline
+ * code) below. Each item shows an icon, a label, and a checkmark when
+ * the style is currently active for the selection.
  *
  * The popover is appended to `document.body` with `position: fixed`,
  * anchored under the trigger button via `getBoundingClientRect`.
@@ -117,11 +117,6 @@ internal class StyleDropdown(private val viewModel: MainViewModel) {
             iconSvg = StyleDropdownIcons.ITALIC,
             isActive = InlineStyle.ITALIC in activeInline,
         ) { viewModel.applyInlineStyle(InlineStyle.ITALIC) })
-        menu.appendChild(buildItem(
-            label = "Underline",
-            iconSvg = StyleDropdownIcons.UNDERLINE,
-            isActive = InlineStyle.UNDERLINE in activeInline,
-        ) { viewModel.applyInlineStyle(InlineStyle.UNDERLINE) })
         menu.appendChild(buildItem(
             label = "Strikethrough",
             iconSvg = StyleDropdownIcons.STRIKETHROUGH,

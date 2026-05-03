@@ -134,6 +134,15 @@ class AppShell(
     private val styleDropdowns: MutableMap<String, StyleDropdown> = mutableMapOf()
 
     /**
+     * Per-pane Starred bookmarks modals, keyed by leaf pane id. Lazily
+     * created on first click of the pane's Starred toolbar button. Each
+     * modal is bound to its owning pane so "Add to starred" captures
+     * *that* pane's current navigation target. Cleared when a pane is
+     * removed in [closePane].
+     */
+    private val starredModals: MutableMap<String, StarredModal> = mutableMapOf()
+
+    /**
      * Per-pane [MainViewModel] handles, keyed by leaf pane id. Maintained
      * alongside [paneEditors] so the toolkit-rendered pane header (built by
      * [buildPaneHeaderSpec], where the [MainScreen] is not directly
@@ -1145,11 +1154,12 @@ class AppShell(
             handler = if (canHome) ({ goPaneHome(paneId) }) else ({}),
             extraClass = "dt-pane-action-home" + if (!canHome) " $DISABLED_CLASS" else "",
         )
-        // Style is enabled whenever the pane has a VM. We intentionally do
-        // NOT gate on `backing.isLoaded` here — the chrome's distinct-by
-        // tuple in [ensurePaneViewModel] doesn't watch `isLoaded`, so a
-        // first-render-while-loading would otherwise leave the button stuck
-        // disabled until a navigation event happens. The underlying
+        // Style + starred share the same enable rule as the nav buttons:
+        // available whenever the pane has a VM. We intentionally do NOT
+        // gate on `backing.isLoaded` here — the chrome's distinct-by tuple
+        // in [ensurePaneViewModel] doesn't watch `isLoaded`, so a
+        // first-render-while-loading would otherwise leave the button
+        // stuck disabled until a navigation event happens. The underlying
         // intents are themselves guarded against unloaded state.
         val canStyle = paneVm != null
         out += PaneAction(
@@ -1157,6 +1167,13 @@ class AppShell(
             tooltip = "Style",
             handler = if (canStyle) ({ openStyleMenu(paneId) }) else ({}),
             extraClass = "notegrow-pane-action-style" + if (!canStyle) " $DISABLED_CLASS" else "",
+        )
+        val canStar = paneVm != null
+        out += PaneAction(
+            iconHtml = ICON_STAR,
+            tooltip = "Starred",
+            handler = if (canStar) ({ openStarredModal(paneId) }) else ({}),
+            extraClass = "notegrow-pane-action-starred" + if (!canStar) " $DISABLED_CLASS" else "",
         )
         out += PaneActions.separator()
         return out
@@ -1174,6 +1191,28 @@ class AppShell(
         ) as? HTMLElement ?: return
         val dropdown = styleDropdowns.getOrPut(paneId) { StyleDropdown(paneVm) }
         dropdown.open(button)
+    }
+
+    /**
+     * Opens (or replaces, on subsequent clicks) [paneId]'s Starred
+     * bookmarks modal. The modal reads `Starred.md` via its own private
+     * read-only document VM, paints it through the same outline renderer
+     * the live editor uses, and routes "Add to starred" + click-to-open
+     * back at *this* pane's [MainViewModel].
+     *
+     * Lazily created and reused across opens; only the modal's internal
+     * document VM is rebuilt on each open so a fresh disk snapshot is
+     * always shown.
+     */
+    private fun openStarredModal(paneId: String) {
+        if (paneViewModels[paneId] == null) return
+        val modal = starredModals.getOrPut(paneId) {
+            StarredModal(
+                parentScope = scope,
+                activePaneVmProvider = { paneViewModels[paneId] },
+            )
+        }
+        modal.open()
     }
 
     /**
@@ -1200,6 +1239,81 @@ class AppShell(
             .notegrow-editor.notegrow-nav-fade,
             .notegrow-title.notegrow-nav-fade {
                 animation: notegrow-nav-fade-in 500ms ease-out;
+            }
+            .notegrow-starred-backdrop {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.45);
+                z-index: 2147483640;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .notegrow-starred-panel {
+                width: min(640px, 92vw);
+                height: min(720px, 85vh);
+                display: flex;
+                flex-direction: column;
+                background: var(--t-terminal-bg, #1e1e1e);
+                color: var(--t-terminal-fg, #e6e6e6);
+                border: 1px solid var(--t-border, rgba(255, 255, 255, 0.12));
+                border-radius: 8px;
+                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+                overflow: hidden;
+            }
+            .notegrow-starred-header {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 10px 12px;
+                border-bottom: 1px solid var(--t-border, rgba(255, 255, 255, 0.08));
+            }
+            .notegrow-starred-title {
+                font-size: 14px;
+                font-weight: 600;
+                opacity: 0.85;
+                margin-right: auto;
+            }
+            .notegrow-starred-add {
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                background: transparent;
+                border: 1px solid var(--t-border, rgba(255, 255, 255, 0.18));
+                border-radius: 6px;
+                color: inherit;
+                padding: 4px 10px;
+                font-size: 12px;
+                cursor: pointer;
+            }
+            .notegrow-starred-add:hover {
+                background: rgba(255, 255, 255, 0.06);
+            }
+            .notegrow-starred-add.is-active {
+                background: rgba(255, 200, 60, 0.18);
+                border-color: rgba(255, 200, 60, 0.55);
+                color: rgb(255, 210, 90);
+            }
+            .notegrow-starred-add-icon {
+                display: inline-flex;
+                width: 14px;
+                height: 14px;
+            }
+            .notegrow-starred-close {
+                background: transparent;
+                border: none;
+                color: inherit;
+                font-size: 22px;
+                line-height: 1;
+                padding: 0 4px;
+                cursor: pointer;
+                opacity: 0.7;
+            }
+            .notegrow-starred-close:hover { opacity: 1; }
+            .notegrow-starred-body {
+                flex: 1 1 auto;
+                min-height: 0;
+                overflow-y: auto;
             }
         """.trimIndent()
         document.head?.appendChild(style)
@@ -1414,6 +1528,7 @@ class AppShell(
         // collectors don't outlive their pane.
         paneViewModels.remove(paneId)
         paneEditors.remove(paneId)
+        starredModals.remove(paneId)?.dispose()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
             // Last pane in a non-last tab: cascade to closing the tab.
             closeTab(tabId)
@@ -1991,5 +2106,21 @@ class AppShell(
                 "stroke-linejoin=\"round\">" +
                 "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>" +
                 "<polyline points=\"12 5 19 12 12 19\"/></svg>"
+
+        /** Five-point outline-star glyph for the Starred toolbar button. */
+        internal const val ICON_STAR: String =
+            "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" " +
+                "stroke-linejoin=\"round\">" +
+                "<polygon points=\"12 2 15 9 22 9.5 17 14.5 18.5 21.5 12 18 5.5 21.5 7 14.5 2 9.5 9 9\"/>" +
+                "</svg>"
+
+        /** Filled star variant — shown when "Add to starred" is active. */
+        internal const val ICON_STAR_FILLED: String =
+            "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"currentColor\" " +
+                "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" " +
+                "stroke-linejoin=\"round\">" +
+                "<polygon points=\"12 2 15 9 22 9.5 17 14.5 18.5 21.5 12 18 5.5 21.5 7 14.5 2 9.5 9 9\"/>" +
+                "</svg>"
     }
 }

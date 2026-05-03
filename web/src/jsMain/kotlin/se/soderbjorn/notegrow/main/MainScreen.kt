@@ -28,6 +28,7 @@ import org.w3c.dom.HTMLElement
 import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
+import se.soderbjorn.notegrow.data.InlineStyle
 
 /**
  * The note editor's web view.
@@ -292,7 +293,21 @@ class MainScreen(
         // preventDefault first so a typo in our routing never lets the
         // browser silently mutate our DOM behind the model's back.
         event.preventDefault()
-        if (!syncSelectionFromDom(editor)) return
+        // Skip the DOM→model selection sync when an inline style is armed
+        // and the caret is collapsed: hidden marker runs (`**`, `~~`, …)
+        // create multiple model positions that map to the same display
+        // position, and the DOM round-trip lands on the position past
+        // the closers — which would shift the cursor out of the styled
+        // span we just opened, clear `pendingInlineStyles`, and break
+        // continuous bold/italic typing. The model's cursor is already
+        // correct (we set it via `applyDomSelection` after the prior
+        // edit); trust it.
+        val backing = viewModel.currentBackingState
+        val skipSync = backing.pendingInlineStyles.isNotEmpty() &&
+            backing.anchorRow == null && backing.anchorCol == null
+        if (!skipSync) {
+            if (!syncSelectionFromDom(editor)) return
+        }
         when (event.inputType.unsafeCast<String>()) {
             "insertText", "insertReplacementText", "insertCompositionText" -> {
                 val data = event.data?.unsafeCast<String?>()
@@ -349,6 +364,25 @@ class MainScreen(
             viewModel.selectAll()
             return
         }
+        if (cmd && !event.altKey && !event.shiftKey) {
+            // Inline-style toggles (Cmd-B / Cmd-I). Sync the DOM selection
+            // first so the toggle wraps whatever the user has highlighted
+            // (or grows to the surrounding word when the caret is collapsed).
+            when (event.key.lowercase()) {
+                "b" -> {
+                    event.preventDefault()
+                    syncSelectionFromDom(editor)
+                    viewModel.applyInlineStyle(InlineStyle.BOLD)
+                    return
+                }
+                "i" -> {
+                    event.preventDefault()
+                    syncSelectionFromDom(editor)
+                    viewModel.applyInlineStyle(InlineStyle.ITALIC)
+                    return
+                }
+            }
+        }
         if (event.altKey && (event.metaKey || event.ctrlKey)) {
             when (event.key) {
                 "ArrowLeft" -> {
@@ -380,7 +414,7 @@ class MainScreen(
                 val backing = viewModel.stateFlow.value.backingState
                 if (backing != null) {
                     val line = backing.lines.getOrNull(backing.cursorRow)
-                    if (line != null && backing.cursorCol <= DocumentLayout.textStartCol(line)) {
+                    if (line != null && backing.cursorCol <= DocumentLayout.caretStartCol(line)) {
                         event.preventDefault()
                         viewModel.moveLeft(extend = event.shiftKey)
                         return
@@ -469,6 +503,13 @@ class MainScreen(
         if (!editor.contains(anchorNode) || !editor.contains(focusNode)) return false
         val anchor = domNodeToRowCol(anchorNode, (sel.anchorOffset as Number).toInt()) ?: return false
         val focus = domNodeToRowCol(focusNode, (sel.focusOffset as Number).toInt()) ?: return false
+        // Multiple model cols can map to the same display position when
+        // they sit on either side of a hidden marker run (open `**`,
+        // close `**`, line-prefix `# `, …). The DOM round-trip lands on
+        // a canonical representative — usually past the close markers —
+        // so a no-op DOM sync would silently jump the caret out of any
+        // styled span we just opened. Keep the current model position
+        // when it's visually identical to the DOM-derived one.
         viewModel.setSelection(anchor.first, anchor.second, focus.first, focus.second)
         return true
     }
