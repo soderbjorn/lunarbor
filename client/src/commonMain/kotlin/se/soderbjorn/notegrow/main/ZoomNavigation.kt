@@ -2,10 +2,21 @@
  * ZoomNavigation.kt
  * -----------------
  * Owns the "zoom into a bullet" intents — making one bullet the logical
- * root of the editor view, returning to root, and resolving the current
- * zoom id into concrete row geometry. The reconciliation step that
- * clamps a zoomed cursor inside the visible subtree lives in
+ * root of the editor view, returning to root, navigating back/forward
+ * through past zoom targets, and resolving the current zoom id into
+ * concrete row geometry. The reconciliation step that clamps a zoomed
+ * cursor inside the visible subtree lives in
  * `DocumentViewBackingViewModel.reconcile`.
+ *
+ * Browser-style back/forward semantics:
+ * - Every zoom-changing intent ([zoomInto], [zoomTo], [zoomOut]) pushes
+ *   the current `zoomedLineId` onto `zoomHistory` and clears
+ *   `zoomForward` — moving to a new target severs the redo path, just
+ *   like a web browser.
+ * - [zoomBack] pops `zoomHistory` into the current target and pushes the
+ *   previous target onto `zoomForward`.
+ * - [zoomForward] is the mirror — pops `zoomForward`, pushes onto
+ *   `zoomHistory`. Calling either when its stack is empty is a no-op.
  *
  * commonMain only — this slice does not touch the DOM or any platform UI.
  */
@@ -33,6 +44,10 @@ internal class ZoomNavigation(
     private val patch: ((DocumentViewBackingViewModel.State) -> DocumentViewBackingViewModel.State) -> Unit,
     private val scope: CoroutineScope,
 ) {
+
+    /** Cap on how many zoom transitions we remember per direction. */
+    private val historyCap: Int = 50
+
     fun zoomInto(row: Int) {
         val s = stateProvider()
         if (!s.isLoaded) return
@@ -66,7 +81,7 @@ internal class ZoomNavigation(
             documentBackingViewModel.insertText(row, docState.lines[row].length, "\n" + childPrefix)
             val newChildRow = row + 1
             patch {
-                it.copy(
+                pushHistory(it).copy(
                     zoomedLineId = id,
                     cursorRow = newChildRow,
                     cursorCol = childPrefix.length,
@@ -81,7 +96,7 @@ internal class ZoomNavigation(
             val bulletCol = DocumentLayout.bulletAsteriskColumn(firstChildLine)
             val targetCol = if (bulletCol >= 0) bulletCol + 2 else 0
             patch {
-                it.copy(
+                pushHistory(it).copy(
                     zoomedLineId = id,
                     cursorRow = firstChildRow,
                     cursorCol = targetCol,
@@ -95,7 +110,13 @@ internal class ZoomNavigation(
 
     fun zoomOut() {
         if (!stateProvider().isLoaded) return
-        patch { it.copy(zoomedLineId = null, anchorRow = null, anchorCol = null) }
+        patch {
+            pushHistory(it).copy(
+                zoomedLineId = null,
+                anchorRow = null,
+                anchorCol = null,
+            )
+        }
     }
 
     /**
@@ -118,11 +139,65 @@ internal class ZoomNavigation(
             return
         }
         patch {
-            it.copy(
+            pushHistory(it).copy(
                 zoomedLineId = lineId,
                 anchorRow = null,
                 anchorCol = null,
                 collapsedIds = it.collapsedIds - lineId,
+            )
+        }
+    }
+
+    /**
+     * Pops the most recent entry off [DocumentViewBackingViewModel.State.zoomHistory]
+     * and applies it as the new zoom target, pushing the *current* target
+     * onto [DocumentViewBackingViewModel.State.zoomForward] so [zoomForward]
+     * can replay the move. No-op when the history stack is empty.
+     *
+     * Skips entries whose `LineId` is no longer present in the document
+     * (the target row was deleted by an edit since the entry was pushed)
+     * — those are silently dropped and the next entry is tried.
+     */
+    fun zoomBack() {
+        val s = stateProvider()
+        if (!s.isLoaded) return
+        if (s.zoomHistory.isEmpty()) return
+        val previous = popValid(s.zoomHistory, s) ?: return
+        val (target, remaining) = previous
+        val current = s.zoomedLineId
+        patch {
+            it.copy(
+                zoomedLineId = target,
+                zoomHistory = remaining,
+                zoomForward = (it.zoomForward + current).takeLast(historyCap),
+                anchorRow = null,
+                anchorCol = null,
+                collapsedIds = if (target != null) it.collapsedIds - target else it.collapsedIds,
+            )
+        }
+    }
+
+    /**
+     * Mirror of [zoomBack]: pops [DocumentViewBackingViewModel.State.zoomForward]
+     * and pushes the current target onto
+     * [DocumentViewBackingViewModel.State.zoomHistory]. No-op when the
+     * forward stack is empty.
+     */
+    fun zoomForward() {
+        val s = stateProvider()
+        if (!s.isLoaded) return
+        if (s.zoomForward.isEmpty()) return
+        val next = popValid(s.zoomForward, s) ?: return
+        val (target, remaining) = next
+        val current = s.zoomedLineId
+        patch {
+            it.copy(
+                zoomedLineId = target,
+                zoomForward = remaining,
+                zoomHistory = (it.zoomHistory + current).takeLast(historyCap),
+                anchorRow = null,
+                anchorCol = null,
+                collapsedIds = if (target != null) it.collapsedIds - target else it.collapsedIds,
             )
         }
     }
@@ -146,4 +221,41 @@ internal class ZoomNavigation(
      */
     fun zoomPathSegments(state: DocumentViewBackingViewModel.State): List<String> =
         zoomPathSegmentsOf(state)
+
+    // ---------------------------------------------------------------- private
+
+    /**
+     * Returns [state] with the current `zoomedLineId` appended to
+     * [DocumentViewBackingViewModel.State.zoomHistory] and the forward
+     * stack cleared. Used by every "go somewhere new" intent so back can
+     * find it later. Capped at [historyCap] to avoid unbounded growth on
+     * navigation-heavy sessions.
+     */
+    private fun pushHistory(state: DocumentViewBackingViewModel.State): DocumentViewBackingViewModel.State =
+        state.copy(
+            zoomHistory = (state.zoomHistory + state.zoomedLineId).takeLast(historyCap),
+            zoomForward = emptyList(),
+        )
+
+    /**
+     * Pops the most recent entry off [stack] that points at a still-valid
+     * zoom target. Returns the popped value plus the trimmed stack, or
+     * `null` if no valid entry exists. A `null` entry (root) is always
+     * valid; a non-null id is valid only when its row is still in the
+     * document.
+     */
+    private fun popValid(
+        stack: List<LineId?>,
+        state: DocumentViewBackingViewModel.State,
+    ): Pair<LineId?, List<LineId?>>? {
+        val docState = state.documentState ?: return null
+        var idx = stack.lastIndex
+        while (idx >= 0) {
+            val candidate = stack[idx]
+            val ok = candidate == null || docState.lineIds.contains(candidate)
+            if (ok) return Pair(candidate, stack.subList(0, idx))
+            idx--
+        }
+        return null
+    }
 }

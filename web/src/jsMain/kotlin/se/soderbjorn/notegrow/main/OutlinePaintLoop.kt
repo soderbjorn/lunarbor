@@ -23,9 +23,12 @@
  *                </div>
  *
  * `data-prefix-len` is the column the editable text span starts at in the
- * model — `MainScreen` uses it to translate DOM offsets to/from logical
- * `(row, col)` pairs. The bullet prefix is `contenteditable="false"` so
- * the browser refuses to put the caret inside it.
+ * **raw** model line — `MainScreen` uses it to translate DOM offsets
+ * to/from logical `(row, col)` pairs. When the editor is zoomed, the
+ * display strips a leading `viewOriginCol` chars off each line, but the
+ * stored prefix-len still includes those stripped chars so model columns
+ * stay in absolute coordinates. The bullet prefix is `contenteditable="false"`
+ * so the browser refuses to put the caret inside it.
  *
  * Style installation lives here too, alongside the painter that consumes
  * the styles.
@@ -93,7 +96,7 @@ fun paint(
         val rawLine = state.lines[row]
         val line = if (viewOriginCol > 0 && rawLine.length >= viewOriginCol)
             rawLine.substring(viewOriginCol) else rawLine
-        editor.appendChild(buildRowElement(row, line, state, docState, viewModel, style))
+        editor.appendChild(buildRowElement(row, line, viewOriginCol, state, docState, viewModel, style))
     }
 }
 
@@ -114,6 +117,7 @@ fun paint(
 private fun buildRowElement(
     absoluteRow: Int,
     line: String,
+    viewOriginCol: Int,
     state: DocumentViewBackingViewModel.State,
     docState: DocumentBackingViewModel.State,
     viewModel: MainViewModel,
@@ -136,7 +140,12 @@ private fun buildRowElement(
         // requiring monospace alignment.
         val depth = bulletCol / DocumentViewBackingViewModel.TAB_SIZE
         rowDiv.style.paddingLeft = "${depth * style.indentStepPx}px"
-        rowDiv.setAttribute("data-prefix-len", (bulletCol + 2).toString())
+        // `data-prefix-len` must be in raw (absolute) model columns so caret
+        // mapping in MainScreen translates DOM offsets to model `(row, col)`
+        // correctly when zoomed — `viewOriginCol` characters of indent were
+        // stripped from the displayed line above, but the model's columns
+        // still count them.
+        rowDiv.setAttribute("data-prefix-len", (viewOriginCol + bulletCol + 2).toString())
 
         // The `hasChildren` check needs the row's absolute bullet column,
         // not the zoom-relative one — child rows in `docState.lines` have
@@ -150,7 +159,8 @@ private fun buildRowElement(
                     isFoldedPromotedRef
             val isCollapsedNow = rowId in state.collapsedIds
             if (isCollapsibleParent) {
-                val chevron = buildChevron(rowId, isCollapsedNow, viewModel)
+                val isRef = viewModel.isPromotedRef(rowId)
+                val chevron = buildChevron(rowId, isCollapsedNow, isRef, viewModel)
                 // Position the chevron just to the left of THIS row's bullet
                 // glyph, not the editor's left margin. The row's bullet sits
                 // at `padding-left = depth * indentStepPx` from the row's
@@ -163,7 +173,10 @@ private fun buildRowElement(
         rowDiv.appendChild(buildBulletPrefix(absoluteRow, viewModel))
         rowDiv.appendChild(buildTextSpan(line.substring(bulletCol + 2)))
     } else {
-        rowDiv.setAttribute("data-prefix-len", "0")
+        // Non-bullet line: editable text starts at column 0 of the raw line,
+        // unless we stripped a zoom indent — in that case the displayed text
+        // begins at `viewOriginCol` in raw model columns.
+        rowDiv.setAttribute("data-prefix-len", viewOriginCol.toString())
         rowDiv.appendChild(buildTextSpan(line))
     }
 
@@ -234,10 +247,15 @@ private fun buildBulletPrefix(
  * row's bullet glyph. Clicking toggles fold state via
  * [MainViewModel.toggleCollapse]. Marked `contenteditable="false"` so it
  * never participates in caret placement.
+ *
+ * When [isPromotedRef] is true the chevron is drawn with a heavier stroke
+ * so the user can tell at a glance that expanding it leads into a
+ * separate document, not just child bullets within the current file.
  */
 private fun buildChevron(
     rowId: LineId,
     isCollapsed: Boolean,
+    isPromotedRef: Boolean,
     viewModel: MainViewModel,
 ): HTMLElement {
     val target = document.createElement("div") as HTMLElement
@@ -261,8 +279,10 @@ private fun buildChevron(
         setProperty("user-select", "none")
     }
     val rotation = if (isCollapsed) "rotate(-90deg)" else "none"
-    target.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\" stroke=\"currentColor\" " +
-        "stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
+    val strokeWidth = if (isPromotedRef) "4.5" else "1.6"
+    val size = if (isPromotedRef) "12" else "10"
+    target.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"$size\" height=\"$size\" stroke=\"currentColor\" " +
+        "stroke-width=\"$strokeWidth\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
         "style=\"transform: $rotation; transition: transform 120ms ease; pointer-events: none;\">" +
         "<polyline points=\"4,6 8,10 12,6\"></polyline></svg>"
     target.addEventListener("mousedown", { event ->

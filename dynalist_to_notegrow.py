@@ -4,8 +4,15 @@
 Writes the imported outline as one promoted child folder under the live
 Notegrow on-disk database at NOTEGROW_DB. The wrapper folder name is
 IMPORT_NAME ("Dynalist Import" by default). Existing notes are not touched.
-The script also patches NOTEGROW_DB/root.nogr (with a timestamped backup) so
+The script also patches NOTEGROW_DB/root.md (with a timestamped backup) so
 the wrapper bullet is referenced and visible in the running app.
+
+The on-disk format is plain Markdown — files end in `.md`, every Notegrow-
+managed file starts with a `notegrow: true` YAML frontmatter marker, and
+promoted-subtree bullets are standard CommonMark inline links of the form
+`* [Title](Title/Title.md)` (paths with spaces are wrapped in `<…>`).
+This means the same directory opens cleanly in Obsidian (or any other
+Markdown viewer) with working links between pages.
 
 Promotion thresholds mirror `auto-promote-plan.md`:
 
@@ -20,21 +27,21 @@ those thresholds. Content is preserved; only on-disk layout shifts.
 On-disk layout produced under the live database:
 
     NOTEGROW_DB/
-        root.nogr                            (patched: wrapper bullet appended)
+        root.md                              (patched: wrapper bullet appended)
         Dynalist Import/
-            Dynalist Import.nogr
+            Dynalist Import.md
             Bontouch/
-                Bontouch.nogr
+                Bontouch.md
                 Möten/
-                    Möten.nogr
+                    Möten.md
             Privat/
-                Privat.nogr
+                Privat.md
                 ...
 
 Each promoted bullet creates a sibling `<Title>/` directory containing
-`<Title>.nogr`; further-promoted descendants nest inside, mirroring the
+`<Title>.md`; further-promoted descendants nest inside, mirroring the
 outline. References inside a file are always relative to that file's own
-directory and follow the form `<Title>/<Title>.nogr`.
+directory and follow the form `<Title>/<Title>.md`.
 
 Each bullet is one line: leading "  " * depth + "* " + title.
 Dynalist `_note` text is preserved as additional sub-bullets (one per line),
@@ -46,7 +53,7 @@ are resolved by appending " 2", " 3", … to the second and later occurrences.
 
 Re-running is idempotent: any existing NOTEGROW_DB/<IMPORT_NAME>/ tree is
 removed before writing fresh files, and any pre-existing wrapper ref line in
-root.nogr is stripped before the new one is appended.
+root.md is stripped before the new one is appended.
 """
 from __future__ import annotations
 
@@ -63,16 +70,20 @@ SOURCE = Path(__file__).resolve().parent / "dynalist-opml-snapshot"
 NOTEGROW_DB = Path("/Users/soderbjorn/notegrow-db")
 IMPORT_NAME = "Dynalist Import"
 IMPORT_DIR = NOTEGROW_DB / IMPORT_NAME
-ROOT_FILE = NOTEGROW_DB / "root.nogr"
+NOTE_EXTENSION = ".md"
+ROOT_FILE = NOTEGROW_DB / f"root{NOTE_EXTENSION}"
 INDENT = "  "  # 2 spaces per depth level
+
+# Marker that NoteRepository.stripFrontmatter scans for. Files lacking this
+# block are treated as foreign markdown (not auto-spliced, not navigable).
+FRONTMATTER = "---\nnotegrow: true\n---\n"
 
 PROMOTE_MIN_DESCENDANTS = 40
 MAX_DEPTH_TO_PROMOTE = 4
 MIN_TITLE_LENGTH = 1
 
-# Must match SubtreeCodec.REF_SEPARATOR ("  ") so NoteRepository parses the ref.
-WRAPPER_REF_PATH = f"{IMPORT_NAME}/{IMPORT_NAME}.nogr"
-WRAPPER_LINE = f"* {IMPORT_NAME}  [[{WRAPPER_REF_PATH}]]"
+# Path of the wrapper file relative to its parent (here: root.md's directory).
+WRAPPER_REF_PATH = f"{IMPORT_NAME}/{IMPORT_NAME}{NOTE_EXTENSION}"
 
 
 # --- Data ---------------------------------------------------------------------
@@ -183,7 +194,7 @@ def split_and_emit(
     used_per_dir: dict[str, set[str]],
 ) -> None:
     """Process `bullets`, schedule writing this file at
-    `current_dir_rel/<file_basename>.nogr`, and recurse into each promoted
+    `current_dir_rel/<file_basename>.md`, and recurse into each promoted
     subtree (which becomes its own file under `current_dir_rel/<unique>/`).
 
     Names are unique-resolved per-directory: two files would collide only if
@@ -223,7 +234,7 @@ def split_and_emit(
         unique = unique_in(safe_filename(title), used)
 
         # Ref is always relative to this file's directory; symmetric for every file.
-        ref_path = f"{unique}/{unique}.nogr"
+        ref_path = f"{unique}/{unique}{NOTE_EXTENSION}"
         refs[len(new_bullets)] = ref_path
         new_bullets.append(head)
 
@@ -241,32 +252,97 @@ def split_and_emit(
     new_bullets.extend(bullets[cursor:])
 
     file_rel = (
-        f"{current_dir_rel}/{file_basename}.nogr"
-        if current_dir_rel else f"{file_basename}.nogr"
+        f"{current_dir_rel}/{file_basename}{NOTE_EXTENSION}"
+        if current_dir_rel else f"{file_basename}{NOTE_EXTENSION}"
     )
     files_to_write.append((file_rel, new_bullets, refs))
 
 
 # --- Rendering ----------------------------------------------------------------
 
+# CommonMark requires `[`, `]`, `(`, `)`, `\` in link labels to be backslash-
+# escaped. Most note titles need no escaping, but it's cheap to be safe.
+_LABEL_ESCAPES = {ord(c): "\\" + c for c in "\\[]()"}
+
+
+def _escape_label(text: str) -> str:
+    return text.translate(_LABEL_ESCAPES)
+
+
+def _format_link_url(path: str) -> str:
+    """Wrap [path] in `<…>` when CommonMark requires it, otherwise return bare."""
+    if any(c in path for c in (" ", "(", ")", "<", ">")):
+        return f"<{path}>"
+    return path
+
+
+def _format_ref(indent: int, title: str, ref_path: str) -> str:
+    return (
+        " " * indent
+        + "* ["
+        + _escape_label(title)
+        + "]("
+        + _format_link_url(ref_path)
+        + ")"
+    )
+
+
 def render(bullets: list[Bullet], refs: dict[int, str]) -> str:
     out = []
     for idx, b in enumerate(bullets):
-        line = INDENT * b.depth + "* " + b.text
         if idx in refs:
-            line += f"  [[{refs[idx]}]]"
-        out.append(line)
-    return "\n".join(out) + ("\n" if out else "")
+            out.append(_format_ref(b.depth * len(INDENT), b.text, refs[idx]))
+        else:
+            out.append(INDENT * b.depth + "* " + b.text)
+    body = "\n".join(out) + ("\n" if out else "")
+    return FRONTMATTER + body
 
 
 # --- Entry point --------------------------------------------------------------
 
-def patch_root_file() -> str:
-    """Backup and patch NOTEGROW_DB/root.nogr so the wrapper bullet is visible.
+WRAPPER_LINE = _format_ref(0, IMPORT_NAME, WRAPPER_REF_PATH)
 
-    Reads the existing root.nogr (empty if missing), removes any pre-existing
-    line that ends in `[[<WRAPPER_REF_PATH>]]` (idempotency for re-runs),
-    appends a single fresh wrapper line, and writes the result back. A
+
+def _strip_frontmatter(text: str) -> tuple[bool, str]:
+    """Mirror of `NoteRepository.stripFrontmatter`.
+
+    Returns `(had_marker, body)` where `body` is `text` with the leading
+    `---\\n…\\n---\\n` block removed and `had_marker` is `True` iff the
+    block contained `notegrow: true`. Files without a frontmatter block
+    are returned unchanged.
+    """
+    if not text.startswith("---\n"):
+        return False, text
+    rest = text[4:]
+    # Find the next line that is exactly `---`.
+    pos = 0
+    close = -1
+    while pos < len(rest):
+        end = rest.find("\n", pos)
+        if end < 0:
+            end = len(rest)
+        if rest[pos:end] == "---":
+            close = pos
+            break
+        pos = end + 1
+    if close < 0:
+        return False, text
+    body = rest[:close]
+    has_marker = any(line.strip() in ("notegrow: true", "notegrow:true")
+                     for line in body.splitlines())
+    after = close + 3
+    if after < len(rest) and rest[after] == "\n":
+        after += 1
+    return has_marker, rest[after:]
+
+
+def patch_root_file() -> str:
+    """Backup and patch NOTEGROW_DB/root.md so the wrapper bullet is visible.
+
+    Reads the existing root.md (empty if missing), strips any leading
+    frontmatter, removes any pre-existing wrapper-ref line (idempotency
+    for re-runs), appends a single fresh wrapper line, prepends the
+    Notegrow frontmatter marker, and writes the result back. A
     timestamped backup is created if the file existed.
 
     @return Description of the backup taken (or a "no prior" sentinel) so
@@ -276,24 +352,29 @@ def patch_root_file() -> str:
     backup_msg: str
     if existed:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = ROOT_FILE.with_name(f"root.nogr.bak-{ts}")
+        backup_path = ROOT_FILE.with_name(f"root{NOTE_EXTENSION}.bak-{ts}")
         shutil.copy2(ROOT_FILE, backup_path)
         backup_msg = str(backup_path)
-        existing = ROOT_FILE.read_text()
+        existing_raw = ROOT_FILE.read_text()
     else:
-        backup_msg = "no prior root.nogr — creating fresh"
-        existing = ""
+        backup_msg = f"no prior root{NOTE_EXTENSION} — creating fresh"
+        existing_raw = ""
+
+    _, existing = _strip_frontmatter(existing_raw)
 
     # Drop any prior wrapper-ref lines so the file stays at exactly one ref.
-    ref_suffix = f"[[{WRAPPER_REF_PATH}]]"
-    kept = [ln for ln in existing.splitlines() if not ln.rstrip().endswith(ref_suffix)]
+    bare_url = WRAPPER_REF_PATH
+    angle_url = f"<{WRAPPER_REF_PATH}>"
+    suffixes = (f"]({bare_url})", f"]({angle_url})")
+    kept = [ln for ln in existing.splitlines()
+            if not any(ln.rstrip().endswith(s) for s in suffixes)]
 
-    new_text = "\n".join(kept).rstrip("\n")
-    if new_text:
-        new_text += "\n"
-    new_text += WRAPPER_LINE + "\n"
+    body = "\n".join(kept).rstrip("\n")
+    if body:
+        body += "\n"
+    body += WRAPPER_LINE + "\n"
 
-    ROOT_FILE.write_text(new_text)
+    ROOT_FILE.write_text(FRONTMATTER + body)
     return backup_msg
 
 
@@ -317,7 +398,7 @@ def main() -> None:
             combined.append(Bullet(b.depth + 1, b.text))
 
     # Wrap the combined outline as one promoted child of root: it lands at
-    # NOTEGROW_DB/<IMPORT_NAME>/<IMPORT_NAME>.nogr with descendants nested
+    # NOTEGROW_DB/<IMPORT_NAME>/<IMPORT_NAME>.md with descendants nested
     # underneath. depth_offset=1 mirrors how the recursion treats top-level
     # promoted children (their content is globally one level deep).
     files_to_write: list[tuple[str, list[Bullet], dict[int, str]]] = []
@@ -338,7 +419,7 @@ def main() -> None:
 
     backup_msg = patch_root_file()
 
-    wrapper_rel = f"{IMPORT_NAME}/{IMPORT_NAME}.nogr"
+    wrapper_rel = f"{IMPORT_NAME}/{IMPORT_NAME}{NOTE_EXTENSION}"
     wrapper_entry = next(f for f in files_to_write if f[0] == wrapper_rel)
     children = [f for f in files_to_write if f[0] != wrapper_rel]
 

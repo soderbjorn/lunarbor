@@ -133,6 +133,20 @@ class MainViewModel(
     /** See `DocumentViewBackingViewModel.zoomTo`. */
     fun zoomTo(lineId: LineId?) = backingViewModel.zoomTo(lineId)
 
+    /** See `DocumentViewBackingViewModel.zoomBack`. */
+    fun zoomBack() = backingViewModel.zoomBack()
+
+    /** See `DocumentViewBackingViewModel.zoomForward`. */
+    fun zoomForward() = backingViewModel.zoomForward()
+
+    /** See `DocumentViewBackingViewModel.canZoomBack`. */
+    fun canZoomBack(state: DocumentViewBackingViewModel.State): Boolean =
+        backingViewModel.canZoomBack(state)
+
+    /** See `DocumentViewBackingViewModel.canZoomForward`. */
+    fun canZoomForward(state: DocumentViewBackingViewModel.State): Boolean =
+        backingViewModel.canZoomForward(state)
+
     /** See `DocumentViewBackingViewModel.zoomInfo`. */
     fun zoomInfo(state: DocumentViewBackingViewModel.State) = backingViewModel.zoomInfo(state)
 

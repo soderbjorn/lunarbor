@@ -792,12 +792,8 @@ class AppShell(
         // Floats-only model: every pane is a float. The toolkit's
         // `buildFloatingPane` appends its own min/max/close window-control
         // strip, so the host only contributes navigation actions
-        // (up/home + separator).
-        val actions = listOf<PaneAction>(
-            PaneActions.up { zoomPaneUpOneLevel(paneId) },
-            PaneActions.home { paneViewModels[paneId]?.zoomTo(null) },
-            PaneActions.separator(),
-        )
+        // (back/forward + up/home + separator).
+        val actions = buildPaneNavActions(paneId)
 
         // When the pane is zoomed, surface the breadcrumb as clickable
         // segments so each ancestor jumps directly to that depth. Leaf
@@ -886,12 +882,22 @@ class AppShell(
         )
         val paneVm = se.soderbjorn.notegrow.main.MainViewModel(scope, docView)
         paneViewModels[paneId] = paneVm
-        // Refresh chrome + sidebar whenever this pane's zoom path changes.
-        // Distinct-by-segments keeps every keystroke from triggering a
-        // full chrome rebuild — only true path transitions re-render.
+        // Refresh chrome + sidebar whenever this pane's zoom path or
+        // back/forward stack availability changes. Path changes drive the
+        // breadcrumb; stack-availability changes drive whether the
+        // back/forward toolbar buttons appear. Distinct-by-tuple keeps
+        // every keystroke from triggering a full chrome rebuild — only
+        // true navigation transitions re-render.
         scope.launch {
             paneVm.stateFlow
-                .map { state -> state.backingState?.let { paneVm.zoomPathSegments(it) } ?: emptyList() }
+                .map { state ->
+                    val backing = state.backingState
+                    Triple(
+                        backing?.let { paneVm.zoomPathSegments(it) } ?: emptyList(),
+                        backing != null && paneVm.canZoomBack(backing),
+                        backing != null && paneVm.canZoomForward(backing),
+                    )
+                }
                 .distinctUntilChanged()
                 .collect {
                     val active = layoutState.activeTabId
@@ -955,6 +961,45 @@ class AppShell(
             ?.lastOrNull()
             ?.lineId
         paneVm.zoomTo(parentId)
+    }
+
+    /**
+     * Builds the trailing-action strip for [paneId]'s pane header:
+     * back/forward navigation buttons (only enabled when the
+     * corresponding zoom history/forward stack is non-empty), then the
+     * "up one level" + "home (root)" buttons, then a separator before
+     * the toolkit's window-control strip.
+     *
+     * The back/forward buttons use custom-arrow SVG glyphs constructed
+     * inline because [PaneActions] only ships the `up` and `home`
+     * factories — see toolkit-web's `PaneActions.kt`.
+     */
+    private fun buildPaneNavActions(paneId: String): List<PaneAction> {
+        val paneVm = paneViewModels[paneId]
+        val backing = paneVm?.stateFlow?.value?.backingState
+        val canBack = backing != null && paneVm.canZoomBack(backing)
+        val canForward = backing != null && paneVm.canZoomForward(backing)
+        val out = mutableListOf<PaneAction>()
+        if (canBack) {
+            out += PaneAction(
+                iconHtml = ICON_BACK,
+                tooltip = "Back",
+                handler = { paneViewModels[paneId]?.zoomBack() },
+                extraClass = "dt-pane-action-back",
+            )
+        }
+        if (canForward) {
+            out += PaneAction(
+                iconHtml = ICON_FORWARD,
+                tooltip = "Forward",
+                handler = { paneViewModels[paneId]?.zoomForward() },
+                extraClass = "dt-pane-action-forward",
+            )
+        }
+        out += PaneActions.up { zoomPaneUpOneLevel(paneId) }
+        out += PaneActions.home { paneViewModels[paneId]?.zoomTo(null) }
+        out += PaneActions.separator()
+        return out
     }
 
     /**
@@ -1689,5 +1734,21 @@ class AppShell(
                 "stroke-linejoin=\"round\">" +
                 "<path d=\"M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z\"/>" +
                 "<polyline points=\"14 3 14 9 20 9\"/></svg>"
+
+        /** Left-arrow glyph for the zoom-history "back" button. */
+        private const val ICON_BACK: String =
+            "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" " +
+                "stroke-linejoin=\"round\">" +
+                "<line x1=\"19\" y1=\"12\" x2=\"5\" y2=\"12\"/>" +
+                "<polyline points=\"12 19 5 12 12 5\"/></svg>"
+
+        /** Right-arrow glyph for the zoom-history "forward" button. */
+        private const val ICON_FORWARD: String =
+            "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" " +
+                "stroke-linejoin=\"round\">" +
+                "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>" +
+                "<polyline points=\"12 5 19 12 12 19\"/></svg>"
     }
 }

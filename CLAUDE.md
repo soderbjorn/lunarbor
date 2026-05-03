@@ -109,6 +109,34 @@ Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppSc
 - **Cursor and selection are view state, not document state.** They live in `DocumentViewBackingViewModel`. `DocumentBackingViewModel` knows nothing about them.
 - **Selection-aware writes compose in the view VM.** Typing first deletes the selection, then inserts. The view VM owns this composition; the document VM only exposes the primitives.
 
+## On-disk format
+
+Notes are persisted as plain CommonMark `.md` files. A Notegrow-managed file always starts with a YAML frontmatter marker:
+
+```
+---
+notegrow: true
+---
+* A bullet
+* [Recipes](Recipes/Recipes.md)
+* [Shopping list](<Shopping list/Shopping list.md>)
+```
+
+- **Bullets**: `* ` followed by the title; nested bullets indent by 2 spaces per level (CommonMark-compatible).
+- **Promoted-subtree refs**: a bullet whose entire content is a CommonMark inline link `* [Title](Title/Title.md)`. The link target is always relative to the parent file's directory and follows the doubled-name `<Name>/<Name>.md` shape so root, child, and grandchild files all use the same resolution rule. Paths containing spaces (or `(`, `)`, `<`, `>`) are wrapped in angle brackets — `* [Shopping list](<Shopping list/Shopping list.md>)` — per CommonMark.
+- **Frontmatter as Notegrow marker**: `NoteRepository` only treats a markdown link as a promoted-subtree ref when the link's target file exists *and* has the `notegrow: true` marker. Files without it are treated as opaque foreign Markdown — Notegrow displays the bullet's link text verbatim, never auto-splices the file's content, and never rewrites the file. This is what makes it safe to drop a Notegrow tree into an Obsidian vault that already contains hand-authored notes.
+- **Parser/codec**: `client/src/commonMain/.../data/SubtreeCodec.kt` is the single place that parses and emits the link form; `NoteRepository.kt` owns the frontmatter and is the only thing that touches `FileSystem`.
+
+## Zoom navigation
+
+`DocumentViewBackingViewModel` keeps three zoom-related fields:
+
+- `zoomedLineId: LineId?` — the bullet whose subtree is currently shown, or `null` for the root view. Stored as a stable id so it survives edits above the target.
+- `zoomHistory: List<LineId?>` — browser-style back stack. Every zoom-changing intent (`zoomInto`, `zoomTo`, `zoomOut`) pushes the current target before changing, and clears the forward stack.
+- `zoomForward: List<LineId?>` — populated by `zoomBack` and consumed by `zoomForward`. Capped at 50 entries per direction.
+
+User-facing affordances on the web: the pane toolbar shows a back-arrow and forward-arrow whenever the corresponding stack is non-empty, plus the existing `up` (zoom one level out) and `home` (clear zoom) buttons. Keyboard shortcuts are `Option-Cmd-Left` (back), `Option-Cmd-Right` (forward), `Option-Cmd-Up` (zoom out one level), and `Escape` (clear zoom). Clicking the bullet dot of a promoted-ref bullet navigates into its file via the existing `zoomInto` intent — the lazy-load on a folded ref + history push gives a "click to open this page" UX without any link-specific click handling.
+
 ## Where things live
 
 ```
@@ -118,7 +146,9 @@ client/src/commonMain/.../main/
   DocumentLayout.kt                   ← pure layout helpers (wrap, hit-test)
 
 client/src/commonMain/.../data/
-  NoteRepository.kt                   ← plain-text I/O
+  NoteRepository.kt                   ← Markdown I/O + frontmatter
+  SubtreeCodec.kt                     ← markdown-link bullet codec
+  PromotionPolicy.kt                  ← when to spin a subtree out
 
 client/src/*Main/.../platform/
   FileSystem.kt                       ← expect/actual

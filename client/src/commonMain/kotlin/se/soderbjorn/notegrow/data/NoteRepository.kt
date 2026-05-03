@@ -3,15 +3,22 @@
  * -----------------
  * Persistence boundary for Notegrow. The in-memory model is a single flat
  * outline (`lines: List<String>`), but on disk that outline is split across
- * a tree of `.nogr` files connected by `[[<Title>/<Title>.nogr]]` references
- * — see `auto-promote-plan.md` for the full layout. This class owns the
- * splitting/composition: `load()` reads the disk tree and returns one flat
- * outline plus a row→dirRel map; `save()` accepts the flat outline plus the
- * map and writes the disk tree, applying [PromotionPolicy] to decide which
- * subtrees should be promoted, demoted, or live-renamed.
+ * a tree of `.md` files connected by `[Title](Title/Title.md)` markdown
+ * links — see `auto-promote-plan.md` for the full layout. This class owns
+ * the splitting/composition: `load()` reads the disk tree and returns one
+ * flat outline plus a row→dirRel map; `save()` accepts the flat outline
+ * plus the map and writes the disk tree, applying [PromotionPolicy] to
+ * decide which subtrees should be promoted, demoted, or live-renamed.
  *
- * Pure split/compose helpers live in [SubtreeCodec]. The repository is the
- * only place that touches [FileSystem].
+ * Every Notegrow-managed file starts with a YAML frontmatter block
+ * containing `notegrow: true`. Files without that marker are read but not
+ * treated as promoted children — clicking their chevron expands to empty
+ * and zoom-to-file no-ops. This makes mixing Notegrow trees with
+ * hand-authored Markdown notes safe: Notegrow only auto-splices files
+ * it knows it owns.
+ *
+ * Pure split/compose helpers live in [SubtreeCodec]. The repository is
+ * the only place that touches [FileSystem].
  */
 
 package se.soderbjorn.notegrow.data
@@ -21,17 +28,17 @@ import se.soderbjorn.notegrow.platform.FileSystem
 
 /**
  * @property fileSystem Platform filesystem used for all I/O.
- * @property rootDirectory Absolute directory under which `root.nogr` and the
- *   nested `<Title>/<Title>.nogr` tree live.
+ * @property rootDirectory Absolute directory under which `root.md` and the
+ *   nested `<Title>/<Title>.md` tree live.
  * @property rootFileName Filename of the top-level outline. Defaults to
- *   `root.nogr`.
+ *   `root.md`.
  */
 class NoteRepository(
     private val fileSystem: FileSystem,
     private val rootDirectory: String = DEFAULT_DIRECTORY,
     private val rootFileName: String = DEFAULT_FILE_NAME,
 ) {
-    private val rootBasename: String = rootFileName.removeSuffix(".nogr").ifEmpty { "root" }
+    private val rootBasename: String = rootFileName.removeSuffix(NOTE_EXTENSION).ifEmpty { "root" }
 
     /**
      * Result of [load]: the composed flat outline plus the row→dirRel map
@@ -41,58 +48,74 @@ class NoteRepository(
      *   Always non-empty — an empty document is `listOf("")`.
      * @property promotedByRow Maps row index in [lines] to the directory
      *   (relative to [rootDirectory]) that holds the promoted subtree's child
-     *   file. The file itself lives at `<rootDirectory>/<dirRel>/<basename>.nogr`
+     *   file. The file itself lives at `<rootDirectory>/<dirRel>/<basename>.md`
      *   where `basename` is the last segment of `dirRel`.
      */
     data class Loaded(val lines: List<String>, val promotedByRow: Map<Int, String>)
 
     /**
-     * Reads only `root.nogr` and returns its content with every `[[…]]`
-     * reference left verbatim. Children files are not followed; the document
-     * VM lazy-loads each subtree via [loadSubtree] when the user expands the
-     * corresponding bullet.
+     * Reads only `root.md` and returns its content with every promoted-ref
+     * link's URL stripped. Children files are not followed; the document
+     * VM lazy-loads each subtree via [loadSubtree] when the user expands
+     * the corresponding bullet.
      *
      * Missing referenced files are tolerated and not registered in
-     * [Loaded.promotedByRow] — they appear to the user as plain `[[ref]]`
-     * lines and the chevron click will simply produce an empty subtree.
-     *
-     * @return [Loaded] where every entry in [Loaded.promotedByRow] is a row
-     *   whose bullet line still contains the verbatim `[[ref]]` token. The
-     *   document VM uses these to recognise file boundaries on expand.
+     * [Loaded.promotedByRow] — they appear to the user as plain bullets
+     * and the chevron click will simply produce an empty subtree.
      */
     suspend fun loadRoot(): Loaded {
         fileSystem.ensureDirectory(rootDirectory)
         val rootText = fileSystem.readFileIfExists("$rootDirectory/$rootFileName")
         if (rootText.isNullOrEmpty()) return Loaded(listOf(""), emptyMap())
-        return parseFileShallow(directoryRel = "", fileText = rootText)
+        val (_, body) = stripFrontmatter(rootText)
+        return parseFileShallow(directoryRel = "", fileText = body)
     }
 
     /**
-     * Loads the file at `<rootDirectory>/<directoryRel>/<basename>.nogr`
+     * Returns `true` if `<rootDirectory>/<fileRel>` exists on disk and
+     * starts with the `notegrow: true` frontmatter marker. Used by
+     * [parseFileShallow] to decide whether a markdown link is a Notegrow
+     * promoted-subtree ref (auto-spliced, chevron-folded, navigable) or
+     * an opaque cross-reference left as visible link text.
+     */
+    private suspend fun isNotegrowFile(fileRel: String): Boolean {
+        val text = fileSystem.readFileIfExists("$rootDirectory/$fileRel") ?: return false
+        return stripFrontmatter(text).first
+    }
+
+    /**
+     * Loads the file at `<rootDirectory>/<directoryRel>/<basename>.md`
      * (where `basename` is the last segment of [directoryRel]) without
-     * recursing into nested `[[…]]` references. The returned [Loaded.lines]
-     * are reindented by [parentIndent] + [TAB_SIZE] so they slot under the
+     * recursing into nested links. The returned [Loaded.lines] are
+     * reindented by [parentIndent] + [TAB_SIZE] so they slot under the
      * parent bullet at the correct depth in the composed outline.
      *
      * Used by [se.soderbjorn.notegrow.main.DocumentBackingViewModel] when
      * the user expands a previously-collapsed reference bullet.
      *
+     * Files lacking the `notegrow: true` frontmatter marker are treated
+     * as opaque (not Notegrow-managed) and produce an empty splice — the
+     * chevron flips open with no children, the same as a missing file.
+     *
      * @param directoryRel Directory of the child file, relative to
      *   [rootDirectory]. `"foo/bar"` resolves to
-     *   `<rootDirectory>/foo/bar/bar.nogr`.
+     *   `<rootDirectory>/foo/bar/bar.md`.
      * @param parentIndent The bullet column of the parent reference row in
      *   the composed outline. The child file's lines are deepened by
      *   `parentIndent + TAB_SIZE` so the topmost child sits one indent step
      *   below its parent.
-     * @return Empty [Loaded] (`listOf("")`, no promoted rows) when the file
-     *   is absent — broken refs degrade to a no-op expand.
+     * @return Empty [Loaded] (`emptyList`, no promoted rows) when the file
+     *   is absent or non-Notegrow — broken/foreign refs degrade to a
+     *   no-op expand.
      */
     suspend fun loadSubtree(directoryRel: String, parentIndent: Int): Loaded {
         if (directoryRel.isEmpty()) return Loaded(listOf(""), emptyMap())
         val basename = directoryRel.substringAfterLast('/')
-        val absChildPath = "$rootDirectory/$directoryRel/$basename.nogr"
+        val absChildPath = "$rootDirectory/$directoryRel/$basename$NOTE_EXTENSION"
         val childText = fileSystem.readFileIfExists(absChildPath) ?: return Loaded(emptyList(), emptyMap())
-        val shallow = parseFileShallow(directoryRel = directoryRel, fileText = childText)
+        val (isNotegrow, body) = stripFrontmatter(childText)
+        if (!isNotegrow) return Loaded(emptyList(), emptyMap())
+        val shallow = parseFileShallow(directoryRel = directoryRel, fileText = body)
         if (shallow.lines.isEmpty()) return shallow
         // A file ending in `\n` produces a trailing empty line under `split("\n")`.
         // That empty would splice into the parent right after the subtree's last
@@ -106,21 +129,30 @@ class NoteRepository(
     }
 
     /**
-     * Parses one file into lines without following any nested references.
-     * Each `[[ref]]` token is stripped from its bullet line (matching the
-     * shape the editor sees — a plain bullet without the reference suffix)
-     * and the row is recorded in [Loaded.promotedByRow] keyed by its index.
-     * The caller (or the document VM) restores the `[[ref]]` on save via
+     * Parses one file's body (frontmatter already stripped) into lines
+     * without following any nested references. Each markdown-link bullet
+     * whose target is a Notegrow-managed file is rewritten to its plain
+     * `* Title` form (matching the shape the editor sees) and the row is
+     * recorded in [Loaded.promotedByRow] keyed by its index. The caller
+     * (or the document VM) restores the link on save via
      * [SubtreeCodec.formatRef]; in the meantime, expand/collapse decides
      * whether the child file's content is spliced under that row.
+     *
+     * Markdown-link bullets whose target file is missing or lacks the
+     * `notegrow: true` frontmatter marker are passed through verbatim —
+     * the bullet renders the raw `[Title](path.md)` text, no chevron, no
+     * splice, no autosave touches the foreign file. This is what makes it
+     * safe to drop a Notegrow tree into an Obsidian vault that already
+     * contains hand-authored notes with their own cross-reference links.
      *
      * @param directoryRel Directory of the file being parsed, relative to
      *   [rootDirectory]. References inside the file resolve relative to this
      *   directory; the result records the child's directory relative to
      *   [rootDirectory] (i.e. with [directoryRel] prepended).
-     * @param fileText Verbatim text of the file.
+     * @param fileText Verbatim file body with any leading frontmatter
+     *   already removed.
      */
-    private fun parseFileShallow(directoryRel: String, fileText: String): Loaded {
+    private suspend fun parseFileShallow(directoryRel: String, fileText: String): Loaded {
         val rawLines = if (fileText.isEmpty()) listOf("") else fileText.split("\n")
         val out = ArrayList<String>(rawLines.size)
         val promoted = HashMap<Int, String>()
@@ -133,8 +165,15 @@ class NoteRepository(
             val childFileRel =
                 if (directoryRel.isEmpty()) ref.refPath else "$directoryRel/${ref.refPath}"
             val childDirRel = childFileRel.substringBeforeLast('/')
-            promoted[out.size] = childDirRel
-            out += ref.bulletText
+            if (isNotegrowFile(childFileRel)) {
+                promoted[out.size] = childDirRel
+                out += ref.bulletText
+            } else {
+                // Foreign / missing target — leave the link visible so the user
+                // can read it as plain markdown and the autosave loop never
+                // tries to write to a file Notegrow doesn't own.
+                out += line
+            }
         }
         return Loaded(out, promoted)
     }
@@ -250,8 +289,10 @@ class NoteRepository(
             }
             for (plan in plans) {
                 val absFile = if (plan.isRoot) "$rootDirectory/$rootFileName"
-                              else "$rootDirectory/${plan.dirRel}/${plan.basename}.nogr"
-                fileSystem.writeFile(absFile, plan.content.joinToString("\n"))
+                              else "$rootDirectory/${plan.dirRel}/${plan.basename}$NOTE_EXTENSION"
+                val body = plan.content.joinToString("\n")
+                println("[autosave]   write $absFile (${plan.content.size} lines)")
+                fileSystem.writeFile(absFile, FRONTMATTER + body)
             }
 
             // Step 4: collect orphaned old paths (entries in promotedByRow whose
@@ -265,7 +306,7 @@ class NoteRepository(
             val sortedOrphans = orphanedOldDirs.sortedByDescending { it.count { ch -> ch == '/' } }
             for (orphanDir in sortedOrphans) {
                 val basename = orphanDir.substringAfterLast('/')
-                fileSystem.deleteFile("$rootDirectory/$orphanDir/$basename.nogr")
+                fileSystem.deleteFile("$rootDirectory/$orphanDir/$basename$NOTE_EXTENSION")
                 fileSystem.deleteDirectoryIfEmpty("$rootDirectory/$orphanDir")
             }
 
@@ -282,7 +323,7 @@ class NoteRepository(
      *
      * @param expandedRefRows Rows in [promotedByRow] whose children are
      *   currently in [lines]. Rows in [promotedByRow] but NOT in this set
-     *   are unloaded — we emit their `[[ref]]` in the parent file but skip
+     *   are unloaded — we emit their link in the parent file but skip
      *   recursion (no FilePlan, child file untouched on disk) and pin the
      *   directory name to its previous basename so a title edit while
      *   collapsed doesn't accidentally rename the file.
@@ -351,7 +392,9 @@ class NoteRepository(
                 newPromotedByRow[i] = childDirRel
 
                 val rebasedHead = rebase(lines[i], indentBaseline)
-                content += SubtreeCodec.formatRef(rebasedHead, "$name/$name.nogr")
+                val headIndent = DocumentLayout.bulletAsteriskColumn(rebasedHead).coerceAtLeast(0)
+                val title = SubtreeCodec.titleOf(rebasedHead)
+                content += SubtreeCodec.formatRef(headIndent, title, "$name/$name$NOTE_EXTENSION")
 
                 // The child file's directory entry is reserved by its own
                 // basename, so deeper promotions can't collide with it.
@@ -433,9 +476,51 @@ class NoteRepository(
         val isRoot: Boolean,
     )
 
+    // ----------------------------------------------------------- frontmatter
+
+    /**
+     * Strips a leading YAML frontmatter block (`---\n…\n---\n`) from [text]
+     * if present. Returns whether the block contained the `notegrow: true`
+     * marker, paired with the remaining file body.
+     *
+     * Files without a frontmatter block return `(false, text)` unchanged.
+     * Malformed frontmatter (opening `---` without a closing one) is left
+     * unstripped — better to show the user weird text than silently delete
+     * content.
+     */
+    internal fun stripFrontmatter(text: String): Pair<Boolean, String> {
+        if (!text.startsWith("---\n")) return Pair(false, text)
+        val close = findFenceLine(text, startAt = 4)
+        if (close < 0) return Pair(false, text)
+        val body = text.substring(4, close)
+        val isNotegrow = body.lineSequence().any { isNotegrowMarker(it) }
+        val after = (close + 3).let { if (it < text.length && text[it] == '\n') it + 1 else it }
+        return Pair(isNotegrow, text.substring(after))
+    }
+
+    /** Returns the byte offset of the next line that is exactly `---`, or -1. */
+    private fun findFenceLine(text: String, startAt: Int): Int {
+        var pos = startAt
+        while (pos < text.length) {
+            val end = text.indexOf('\n', pos).let { if (it < 0) text.length else it }
+            if (end - pos == 3 &&
+                text[pos] == '-' && text[pos + 1] == '-' && text[pos + 2] == '-'
+            ) return pos
+            pos = end + 1
+        }
+        return -1
+    }
+
+    private fun isNotegrowMarker(line: String): Boolean {
+        val trimmed = line.trim()
+        return trimmed == "notegrow: true" || trimmed == "notegrow:true"
+    }
+
     companion object {
         const val DEFAULT_DIRECTORY: String = "/Users/soderbjorn/notegrow-db"
-        const val DEFAULT_FILE_NAME: String = "root.nogr"
+        const val NOTE_EXTENSION: String = ".md"
+        const val DEFAULT_FILE_NAME: String = "root$NOTE_EXTENSION"
+        const val FRONTMATTER: String = "---\nnotegrow: true\n---\n"
         private const val TAB_SIZE: Int = 2
     }
 }

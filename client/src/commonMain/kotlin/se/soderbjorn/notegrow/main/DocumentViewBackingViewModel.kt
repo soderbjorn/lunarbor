@@ -70,6 +70,15 @@ class DocumentViewBackingViewModel(
      *   subtree is being shown. `null` means "at root — show everything".
      *   Stored as an id (not a row) so the reference survives edits that
      *   shift rows above the zoom target.
+     * @property zoomHistory Browser-style back stack of previous zoom
+     *   targets. The most recent prior zoom is at the *end* of the list.
+     *   `null` entries represent the root (un-zoomed) view. Pushed by
+     *   every zoom-changing intent ([zoomInto], [zoomTo], [zoomOut],
+     *   [zoomToParent]); popped by [zoomBack].
+     * @property zoomForward Browser-style forward stack populated by
+     *   [zoomBack] and consumed by [zoomForward]. Cleared whenever the
+     *   user navigates to a new (non-history) target so forward only ever
+     *   points along the path you arrived at via back.
      */
     data class State(
         val documentState: DocumentBackingViewModel.State? = null,
@@ -78,6 +87,8 @@ class DocumentViewBackingViewModel(
         val anchorRow: Int? = null,
         val anchorCol: Int? = null,
         val zoomedLineId: LineId? = null,
+        val zoomHistory: List<LineId?> = emptyList(),
+        val zoomForward: List<LineId?> = emptyList(),
         /**
          * Within-file fold state. A bullet whose [LineId] is in this set is
          * rendered with its chevron rotated and its descendants hidden by
@@ -340,6 +351,18 @@ class DocumentViewBackingViewModel(
 
     /** See [ZoomNavigation.zoomTo]. */
     fun zoomTo(lineId: LineId?) = zoomNavigation.zoomTo(lineId)
+
+    /** See [ZoomNavigation.zoomBack]. */
+    fun zoomBack() = zoomNavigation.zoomBack()
+
+    /** See [ZoomNavigation.zoomForward]. */
+    fun zoomForward() = zoomNavigation.zoomForward()
+
+    /** `true` when [State.zoomHistory] is non-empty (back is meaningful). */
+    fun canZoomBack(state: State = _stateFlow.value): Boolean = state.zoomHistory.isNotEmpty()
+
+    /** `true` when [State.zoomForward] is non-empty (forward is meaningful). */
+    fun canZoomForward(state: State = _stateFlow.value): Boolean = state.zoomForward.isNotEmpty()
 
     /** See [ZoomNavigation.zoomInfo]. */
     fun zoomInfo(state: State = _stateFlow.value): ZoomInfo? = zoomNavigation.zoomInfo(state)

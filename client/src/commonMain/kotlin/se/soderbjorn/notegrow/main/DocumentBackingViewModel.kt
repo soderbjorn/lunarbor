@@ -402,9 +402,22 @@ class DocumentBackingViewModel(
         while (true) {
             delay(autoSaveIntervalMillis)
             val state = _stateFlow.value
-            if (!state.isLoaded) continue
+            if (!state.isLoaded) {
+                println("[autosave] tick: not loaded, skipping")
+                continue
+            }
             val currentText = state.lines.joinToString("\n")
-            if (currentText == lastSavedText) continue
+            if (currentText == lastSavedText) {
+                println("[autosave] tick: no change (lines=${state.lines.size}, len=${currentText.length})")
+                continue
+            }
+            println("[autosave] tick: saving (lines=${state.lines.size}, len=${currentText.length}, prevLen=${lastSavedText.length})")
+            println("[autosave] promotedSubtrees size=${promotedSubtrees.size}, expandedRefIds size=${state.expandedRefIds.size}")
+            for ((id, dir) in promotedSubtrees) {
+                val row = state.lineIds.indexOf(id)
+                val expanded = id in state.expandedRefIds
+                println("[autosave]   ref id=$id row=$row dir=$dir expanded=$expanded")
+            }
             // Translate the LineId→dir map into row→dir for the repository,
             // and project expandedRefIds onto current row indices so the save
             // can leave unloaded subtrees on disk untouched.

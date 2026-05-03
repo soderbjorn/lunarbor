@@ -3,11 +3,18 @@ package se.soderbjorn.notegrow.platform
 /**
  * Platform abstraction over the local filesystem operations Notegrow needs.
  *
- * The auto-promotion feature splits one outline across many `.nogr` files in a
+ * The auto-promotion feature splits one outline across many `.md` files in a
  * directory tree that mirrors the outline shape, so the surface goes beyond
  * "read/write a single file" — directories must be created and listed,
  * promoted subtrees may be renamed when the user edits the parent bullet's
  * title, and demoted subtrees must be cleaned up.
+ *
+ * Each Notegrow-managed file starts with a `notegrow: true` YAML
+ * frontmatter marker; `NoteRepository` adds it on every write and strips
+ * it on every read. Files without the marker are treated as opaque
+ * markdown — Notegrow displays the link to them but never auto-splices
+ * or rewrites them, so it's safe to share a directory with hand-authored
+ * notes (e.g. an Obsidian vault).
  *
  * All paths are absolute and use `/` as separator on every platform; the JS
  * actual normalises to host conventions internally if needed.

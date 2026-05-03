@@ -202,9 +202,11 @@ class MainScreen(
 
     /**
      * Handles keyboard shortcuts that don't fit the `beforeinput` model:
-     * Tab (indent/outdent), Escape (zoom out), and Cmd/Ctrl+A (select
-     * all routed through the model so subsequent edits see the right
-     * range).
+     * Tab (indent/outdent), Escape (zoom out), Cmd/Ctrl+A (select all
+     * routed through the model so subsequent edits see the right range),
+     * and the Option-Cmd navigation triplet —
+     * Left = back through zoom history, Right = forward,
+     * Up = zoom one level out (parent ancestor).
      */
     private fun handleKey(editor: HTMLElement, event: KeyboardEvent) {
         val cmd = event.ctrlKey || event.metaKey
@@ -215,6 +217,25 @@ class MainScreen(
             syncSelectionFromDom(editor)
             viewModel.selectAll()
             return
+        }
+        if (event.altKey && (event.metaKey || event.ctrlKey)) {
+            when (event.key) {
+                "ArrowLeft" -> {
+                    event.preventDefault()
+                    viewModel.zoomBack()
+                    return
+                }
+                "ArrowRight" -> {
+                    event.preventDefault()
+                    viewModel.zoomForward()
+                    return
+                }
+                "ArrowUp" -> {
+                    event.preventDefault()
+                    onZoomUpRequested()
+                    return
+                }
+            }
         }
         if (event.key == "Tab") {
             event.preventDefault()
@@ -236,6 +257,21 @@ class MainScreen(
             }
             return
         }
+    }
+
+    /**
+     * Zoom one level out — to the immediate parent ancestor of the
+     * current zoom target. Falls back to clearing the zoom (back to root)
+     * when the zoom is already at the top level. Mirrors the behavior
+     * wired to the toolbar `up` icon in `AppShell.zoomPaneUpOneLevel`,
+     * but lives here because the keyboard handler doesn't have a
+     * `paneId` — it operates on whichever pane currently owns the editor.
+     */
+    private fun onZoomUpRequested() {
+        val backing = viewModel.stateFlow.value.backingState ?: return
+        if (viewModel.zoomInfo(backing) == null) return
+        val ancestors = viewModel.bulletAncestors(backing)
+        viewModel.zoomTo(ancestors.lastOrNull()?.lineId)
     }
 
     /** Cmd-C: write the model's selected text to the clipboard. */
