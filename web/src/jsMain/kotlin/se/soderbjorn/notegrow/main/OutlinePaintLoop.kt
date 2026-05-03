@@ -255,6 +255,9 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
         LineStyle.HEADING_1 -> "notegrow-md-h1"
         LineStyle.HEADING_2 -> "notegrow-md-h2"
         LineStyle.HEADING_3 -> "notegrow-md-h3"
+        LineStyle.HEADING_4 -> "notegrow-md-h4"
+        LineStyle.HEADING_5 -> "notegrow-md-h5"
+        LineStyle.HEADING_6 -> "notegrow-md-h6"
         LineStyle.QUOTE -> "notegrow-md-quote"
         null -> null
     }
@@ -653,6 +656,22 @@ fun ensureStyles() {
             font-size: 1.15em;
             font-weight: 600;
             line-height: 1.3;
+        }
+        .notegrow-text.notegrow-md-h4 {
+            font-size: 1.05em;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+        .notegrow-text.notegrow-md-h5 {
+            font-size: 1.0em;
+            font-weight: 600;
+            line-height: 1.35;
+        }
+        .notegrow-text.notegrow-md-h6 {
+            font-size: 0.95em;
+            font-weight: 600;
+            line-height: 1.4;
+            color: var(--t-text-secondary, #cfcfcf);
         }
         .notegrow-text.notegrow-md-quote {
             display: inline-block;

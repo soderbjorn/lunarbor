@@ -96,6 +96,21 @@ internal class StyleDropdown(private val viewModel: MainViewModel) {
             isActive = activeLine == LineStyle.HEADING_3,
         ) { viewModel.applyLineStyle(LineStyle.HEADING_3) })
         menu.appendChild(buildItem(
+            label = "Heading 4",
+            iconSvg = StyleDropdownIcons.H4,
+            isActive = activeLine == LineStyle.HEADING_4,
+        ) { viewModel.applyLineStyle(LineStyle.HEADING_4) })
+        menu.appendChild(buildItem(
+            label = "Heading 5",
+            iconSvg = StyleDropdownIcons.H5,
+            isActive = activeLine == LineStyle.HEADING_5,
+        ) { viewModel.applyLineStyle(LineStyle.HEADING_5) })
+        menu.appendChild(buildItem(
+            label = "Heading 6",
+            iconSvg = StyleDropdownIcons.H6,
+            isActive = activeLine == LineStyle.HEADING_6,
+        ) { viewModel.applyLineStyle(LineStyle.HEADING_6) })
+        menu.appendChild(buildItem(
             label = "Quote",
             iconSvg = StyleDropdownIcons.QUOTE,
             isActive = activeLine == LineStyle.QUOTE,

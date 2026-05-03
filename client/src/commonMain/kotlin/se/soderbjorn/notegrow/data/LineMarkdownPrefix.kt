@@ -34,6 +34,15 @@ enum class LineStyle(val marker: String) {
     /** Heading 3 — `### `. */
     HEADING_3("### "),
 
+    /** Heading 4 — `#### `. */
+    HEADING_4("#### "),
+
+    /** Heading 5 — `##### `. */
+    HEADING_5("##### "),
+
+    /** Heading 6 — `###### `. Smallest heading level (matches Obsidian/CommonMark). */
+    HEADING_6("###### "),
+
     /** Block quote — `> `. Rendered with a left rule and italic body. */
     QUOTE("> "),
 }
@@ -70,9 +79,12 @@ object LineMarkdownPrefix {
      * Heading 1 on a `### Foo` line.
      */
     fun detect(line: String, textStart: Int = 0): LinePrefix {
-        // Order matters: longer headings before shorter so `### ` doesn't
+        // Order matters: longer headings before shorter so `###### ` doesn't
         // match HEADING_1 on the leading `# `.
         val ordered = listOf(
+            LineStyle.HEADING_6,
+            LineStyle.HEADING_5,
+            LineStyle.HEADING_4,
             LineStyle.HEADING_3,
             LineStyle.HEADING_2,
             LineStyle.HEADING_1,

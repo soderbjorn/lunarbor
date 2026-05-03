@@ -16,6 +16,7 @@
 package se.soderbjorn.notegrow.main
 
 import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
+import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineMarkdownPrefix
 import se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.Companion.TAB_SIZE
 
@@ -53,19 +54,114 @@ internal class TextEditingViewModel(
     fun insertNewline() {
         if (!state.isLoaded) return
         deleteSelectionIfAny()
-        // If we were typing inside an armed inline-style pair (e.g. Cmd-B
-        // → "fetstil"), the caret sits between the content and the
-        // closing markers (`**fetstil|**`). A naive newline at this
-        // position would push the closer to the next line, leaving the
-        // opener on row N with no closer (rendered as literal `**`) and
-        // the closer on row N+1 with no opener. Hop past the closers
-        // first so the styled span stays whole on the previous row.
-        skipPastPendingClosers()
-        val s = state
-        val line = s.lines[s.cursorRow]
-        val bulletPrefix = continuationBulletPrefix(line, s.cursorCol)
-        val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, "\n" + bulletPrefix)
-        // Newline cancels any armed inline styles — bold doesn't carry across rows.
+
+        // Three cases for inline-style preservation across the line break:
+        //
+        //   (1) Caret strictly inside an existing tokenized span — e.g.
+        //       user clicked between `f|oo` of saved `**foo**bar**`. The
+        //       split would orphan the original closers on row N+1; fix by
+        //       sealing the span on row N (insert closers at caret) and
+        //       balancing row N+1 with a fresh opener at its start.
+        //   (2) Pending styles armed (Cmd-B then typing or empty caret).
+        //       Carry the armed set across the break and let the user's
+        //       next keystroke wrap via [insertWithPendingStyles] — no
+        //       markers inserted on row N+1 (avoids stray empty `****`
+        //       spans).
+        //   (3) No styles. Plain newline.
+        val s0 = state
+        val tokenizedAtCaret = tokenizedStylesAtCaret(s0)
+
+        if (tokenizedAtCaret.isNotEmpty()) {
+            insertNewlineSplittingSpan(s0, tokenizedAtCaret)
+            return
+        }
+        if (s0.pendingInlineStyles.isNotEmpty()) {
+            insertNewlineCarryingPending(s0, s0.pendingInlineStyles)
+            return
+        }
+        insertNewlinePlain(s0)
+    }
+
+    /**
+     * Case (1): caret strictly inside a saved styled span. Close the span
+     * on row N by inserting the closer markers at the caret, insert the
+     * newline + bullet prefix, then insert the opener markers at the start
+     * of row N+1's inline content so the original closers (now dangling on
+     * row N+1) are re-balanced by a fresh opener. `pendingInlineStyles`
+     * stays empty — the on-line markers handle styling, no need to arm.
+     */
+    private fun insertNewlineSplittingSpan(s0: DocumentViewBackingViewModel.State, styles: Set<InlineStyle>) {
+        val ordered = InlineStyle.entries.filter { it in styles }
+        val openers = ordered.joinToString("") { it.openMarker }
+        val closers = ordered.reversed().joinToString("") { it.closeMarker }
+
+        documentBackingViewModel.insertText(s0.cursorRow, s0.cursorCol, closers)
+        patch { it.copy(cursorCol = it.cursorCol + closers.length) }
+
+        val s1 = state
+        val line1 = s1.lines[s1.cursorRow]
+        val bulletPrefix = continuationBulletPrefix(line1, s1.cursorCol)
+        val nlResult = documentBackingViewModel.insertText(
+            s1.cursorRow, s1.cursorCol, "\n" + bulletPrefix
+        )
+        val openResult = documentBackingViewModel.insertText(
+            nlResult.endRow, nlResult.endCol, openers
+        )
+        patch {
+            it.copy(
+                cursorRow = openResult.endRow, cursorCol = openResult.endCol,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+    }
+
+    /**
+     * Case (2): pending inline styles are armed. Two sub-cases by whether
+     * close markers already sit at the caret:
+     *   - "armed-typing" (`**foo|**`): the user typed inside the armed pair
+     *     so `**` follows the caret. Step over the closers so they stay on
+     *     row N attached to `**foo`.
+     *   - "armed-empty" or "armed-mid-text": no markers near the caret yet
+     *     (Cmd-B with empty selection, or armed with no content typed). No
+     *     closers to step over.
+     * In both sub-cases, insert the newline + bullet prefix and arm
+     * `pendingInlineStyles = pending`. We do NOT insert opener/closer
+     * markers on row N+1 — the next keystroke is wrapped by
+     * [insertWithPendingStyles], which keeps row N+1 free of stray empty
+     * spans.
+     */
+    private fun insertNewlineCarryingPending(s0: DocumentViewBackingViewModel.State, pending: Set<InlineStyle>) {
+        val ordered = InlineStyle.entries.filter { it in pending }
+        val closers = ordered.reversed().joinToString("") { it.closeMarker }
+        val line0 = s0.lines[s0.cursorRow]
+        val closersAlreadyAtCaret = closers.isNotEmpty() &&
+            s0.cursorCol + closers.length <= line0.length &&
+            line0.regionMatches(s0.cursorCol, closers, 0, closers.length)
+        if (closersAlreadyAtCaret) {
+            patch { it.copy(cursorCol = it.cursorCol + closers.length) }
+        }
+
+        val s1 = state
+        val line1 = s1.lines[s1.cursorRow]
+        val bulletPrefix = continuationBulletPrefix(line1, s1.cursorCol)
+        val nlResult = documentBackingViewModel.insertText(
+            s1.cursorRow, s1.cursorCol, "\n" + bulletPrefix
+        )
+        patch {
+            it.copy(
+                cursorRow = nlResult.endRow, cursorCol = nlResult.endCol,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = pending,
+            )
+        }
+    }
+
+    /** Case (3): no inline styles at the caret. Plain newline + bullet continuation. */
+    private fun insertNewlinePlain(s0: DocumentViewBackingViewModel.State) {
+        val line = s0.lines[s0.cursorRow]
+        val bulletPrefix = continuationBulletPrefix(line, s0.cursorCol)
+        val result = documentBackingViewModel.insertText(s0.cursorRow, s0.cursorCol, "\n" + bulletPrefix)
         patch {
             it.copy(
                 cursorRow = result.endRow, cursorCol = result.endCol,
@@ -76,25 +172,20 @@ internal class TextEditingViewModel(
     }
 
     /**
-     * If [DocumentViewBackingViewModel.State.pendingInlineStyles] is
-     * non-empty and the closer markers for those armed styles sit
-     * immediately at the caret, advance the caret past them. Used by
-     * intents that finalize the styled span (newline, disarm via Cmd-B)
-     * to ensure subsequent edits land outside the markers instead of
-     * splitting the span.
+     * Inline styles of the tokenized run that strictly encloses the caret
+     * on its current row. Boundary positions (caret on a marker edge or
+     * between two runs) report empty — see
+     * [se.soderbjorn.notegrow.data.TokenizedLine.stylesAt].
      */
-    private fun skipPastPendingClosers() {
-        val s = state
-        val pending = s.pendingInlineStyles
-        if (pending.isEmpty()) return
-        val ordered = se.soderbjorn.notegrow.data.InlineStyle.entries.filter { it in pending }
-        val closers = ordered.reversed().joinToString("") { it.closeMarker }
+    private fun tokenizedStylesAtCaret(s: DocumentViewBackingViewModel.State): Set<InlineStyle> {
         val line = s.lines[s.cursorRow]
-        if (s.cursorCol + closers.length <= line.length &&
-            line.regionMatches(s.cursorCol, closers, 0, closers.length)
-        ) {
-            patch { it.copy(cursorCol = s.cursorCol + closers.length) }
-        }
+        val tStart = DocumentLayout.textStartCol(line)
+        val linePrefix = LineMarkdownPrefix.detect(line, tStart)
+        val inlineStart = linePrefix.markerEnd
+        val inlineText = if (inlineStart >= line.length) "" else line.substring(inlineStart)
+        val tokenized = InlineMarkdownTokenizer.tokenize(inlineText)
+        val col = (s.cursorCol - inlineStart).coerceAtLeast(0)
+        return tokenized.stylesAt(col)
     }
 
     fun insertText(text: String) {

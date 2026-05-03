@@ -30,6 +30,27 @@ class LineMarkdownPrefixTest {
     }
 
     @Test
+    fun detect_h4() {
+        val p = LineMarkdownPrefix.detect("#### Title")
+        assertEquals(LineStyle.HEADING_4, p.style)
+        assertEquals(5, p.markerEnd)
+    }
+
+    @Test
+    fun detect_h5() {
+        val p = LineMarkdownPrefix.detect("##### Title")
+        assertEquals(LineStyle.HEADING_5, p.style)
+        assertEquals(6, p.markerEnd)
+    }
+
+    @Test
+    fun detect_h6_prefers_longest_match() {
+        val p = LineMarkdownPrefix.detect("###### Title")
+        assertEquals(LineStyle.HEADING_6, p.style)
+        assertEquals(7, p.markerEnd)
+    }
+
+    @Test
     fun detect_quote_at_text_start_of_bullet() {
         // Bullet "* " then quote "> ": textStart = 2 in "* > Quoted"
         val p = LineMarkdownPrefix.detect("* > Quoted", textStart = 2)
@@ -56,6 +77,16 @@ class LineMarkdownPrefixTest {
     fun apply_replaces_existing_prefix() {
         // H1 → H2 on "# Hello" ⇒ "## Hello"
         assertEquals("## Hello", LineMarkdownPrefix.apply("# Hello", LineStyle.HEADING_2))
+    }
+
+    @Test
+    fun apply_h6_to_plain_line() {
+        assertEquals("###### Hello", LineMarkdownPrefix.apply("Hello", LineStyle.HEADING_6))
+    }
+
+    @Test
+    fun apply_replaces_h2_with_h5() {
+        assertEquals("##### Hello", LineMarkdownPrefix.apply("## Hello", LineStyle.HEADING_5))
     }
 
     @Test
@@ -98,6 +129,13 @@ class LineMarkdownPrefixTest {
         )
     }
 
+    @Test
+    fun toggle_h4_on_off_round_trip() {
+        val applied = LineMarkdownPrefix.toggle("Notes", LineStyle.HEADING_4)
+        assertEquals("#### Notes", applied)
+        assertEquals("Notes", LineMarkdownPrefix.toggle(applied, LineStyle.HEADING_4))
+    }
+
     // ---- remove ---------------------------------------------------------
 
     @Test
@@ -113,5 +151,10 @@ class LineMarkdownPrefixTest {
     @Test
     fun remove_on_bullet_line_keeps_bullet() {
         assertEquals("* Hello", LineMarkdownPrefix.remove("* > Hello", textStart = 2))
+    }
+
+    @Test
+    fun remove_strips_h6() {
+        assertEquals("Hello", LineMarkdownPrefix.remove("###### Hello"))
     }
 }

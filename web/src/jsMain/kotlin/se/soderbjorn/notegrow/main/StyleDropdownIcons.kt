@@ -36,6 +36,21 @@ internal object StyleDropdownIcons {
         "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"currentColor\">" +
             "<text x=\"1\" y=\"12\" font-size=\"11\" font-weight=\"700\" font-family=\"sans-serif\">H3</text></svg>"
 
+    /** Heading 4. */
+    const val H4: String =
+        "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"currentColor\">" +
+            "<text x=\"1\" y=\"12\" font-size=\"11\" font-weight=\"700\" font-family=\"sans-serif\">H4</text></svg>"
+
+    /** Heading 5. */
+    const val H5: String =
+        "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"currentColor\">" +
+            "<text x=\"1\" y=\"12\" font-size=\"11\" font-weight=\"700\" font-family=\"sans-serif\">H5</text></svg>"
+
+    /** Heading 6. */
+    const val H6: String =
+        "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"currentColor\">" +
+            "<text x=\"1\" y=\"12\" font-size=\"11\" font-weight=\"700\" font-family=\"sans-serif\">H6</text></svg>"
+
     /** Block quote. */
     const val QUOTE: String =
         "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"currentColor\">" +
