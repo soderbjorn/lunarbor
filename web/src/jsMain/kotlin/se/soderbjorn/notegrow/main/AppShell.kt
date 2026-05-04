@@ -60,7 +60,6 @@ import se.soderbjorn.darkness.web.shell.TabBarCallbacks
 import se.soderbjorn.darkness.web.shell.TabBarSpec
 import se.soderbjorn.darkness.web.shell.TabSpec
 import se.soderbjorn.darkness.web.shell.TopBarSpec
-import se.soderbjorn.darkness.web.shell.buildLayoutPresetButton
 import se.soderbjorn.darkness.web.shell.buildNewWindowButton
 import se.soderbjorn.darkness.web.shell.buildThemeManagerButton
 import se.soderbjorn.darkness.web.shell.mountAppFrame
@@ -211,6 +210,36 @@ class AppShell(
     /** Trailing toolbar reference — re-rendered when appearance cycles. */
     private var appearanceButton: HTMLElement? = null
 
+    /**
+     * Singleton command palette (Cmd-P). Lazily constructed so the
+     * `provideCommands` lambda captures `this` at first open rather than
+     * during shell construction (some fields it reads, like
+     * `paneViewModels`, may not have entries yet at construction time).
+     */
+    private val commandPalette: CommandPalette by lazy {
+        CommandPalette(provideCommands = { buildPaletteCommands() })
+    }
+
+    /**
+     * Singleton keyboard-navigable layout-preset dropdown. Owns its own
+     * trigger button (mounted in [buildTrailingActions]) and is also
+     * driven from the "Layout" command in the palette.
+     */
+    private val layoutDropdown: LayoutDropdown by lazy {
+        LayoutDropdown(
+            paneCount = { activeTabPaneCount() },
+            onSelect = { preset ->
+                val activeId = layoutState.activeTabId ?: return@LayoutDropdown
+                applyLayoutPreset(activeId, preset)
+            },
+        )
+    }
+
+    /** Document-level Cmd/Ctrl+P listener installed in [render]. Tracked so
+     *  the listener can be torn down on a hypothetical re-render of the
+     *  shell host (idempotency guard). */
+    private var paletteShortcutHandler: ((Event) -> Unit)? = null
+
     /** Boots the shell into [root]. Safe to call once. */
     fun render(root: HTMLElement) {
         injectDarknessToolkitStyles()
@@ -252,7 +281,141 @@ class AppShell(
         root.style.height = "100vh"
         root.style.margin = "0"
 
+        installPaletteShortcut()
+
         rebuildShell()
+    }
+
+    /**
+     * Installs the document-level Cmd/Ctrl+P listener that opens the
+     * command palette. Capture phase so the editor's own keydown handler
+     * (which intercepts most keystrokes when the contenteditable has
+     * focus) doesn't swallow the shortcut. Idempotent — a second call is
+     * a no-op so [render] can stay re-entrant if we ever need to remount
+     * the host element.
+     */
+    private fun installPaletteShortcut() {
+        if (paletteShortcutHandler != null) return
+        val handler: (Event) -> Unit = lambda@{ e ->
+            val ke = e as? org.w3c.dom.events.KeyboardEvent ?: return@lambda
+            val isCmdP = (ke.metaKey || ke.ctrlKey) &&
+                !ke.altKey && !ke.shiftKey &&
+                ke.key.equals("p", ignoreCase = true)
+            if (!isCmdP) return@lambda
+            ke.preventDefault()
+            ke.stopPropagation()
+            commandPalette.open()
+        }
+        paletteShortcutHandler = handler
+        document.addEventListener("keydown", handler, /* capture = */ true)
+    }
+
+    /**
+     * Builds the palette command list. Re-evaluated each open by the
+     * palette's `provideCommands` lambda so commands always target the
+     * currently-focused pane / active tab.
+     *
+     * Commands fall back gracefully when no pane is focused: the style /
+     * starred / close commands no-op rather than throwing, since the
+     * palette is also openable on a freshly-launched app where focus
+     * hasn't yet been recorded.
+     */
+    private fun buildPaletteCommands(): List<CommandPalette.Command> {
+        val out = mutableListOf<CommandPalette.Command>()
+
+        fun addStyleCmd(id: String, title: String, action: (MainViewModel) -> Unit) {
+            out += CommandPalette.Command(
+                id = id,
+                title = title,
+                run = { focusedPaneViewModel()?.let(action) },
+            )
+        }
+
+        // Line-level styles
+        addStyleCmd("heading-1", "Heading 1") { it.applyLineStyle(se.soderbjorn.notegrow.data.LineStyle.HEADING_1) }
+        addStyleCmd("heading-2", "Heading 2") { it.applyLineStyle(se.soderbjorn.notegrow.data.LineStyle.HEADING_2) }
+        addStyleCmd("heading-3", "Heading 3") { it.applyLineStyle(se.soderbjorn.notegrow.data.LineStyle.HEADING_3) }
+        addStyleCmd("heading-4", "Heading 4") { it.applyLineStyle(se.soderbjorn.notegrow.data.LineStyle.HEADING_4) }
+        addStyleCmd("heading-5", "Heading 5") { it.applyLineStyle(se.soderbjorn.notegrow.data.LineStyle.HEADING_5) }
+        addStyleCmd("heading-6", "Heading 6") { it.applyLineStyle(se.soderbjorn.notegrow.data.LineStyle.HEADING_6) }
+        addStyleCmd("quote", "Quote") { it.applyLineStyle(se.soderbjorn.notegrow.data.LineStyle.QUOTE) }
+
+        // Inline styles
+        addStyleCmd("bold", "Bold") { it.applyInlineStyle(se.soderbjorn.notegrow.data.InlineStyle.BOLD) }
+        addStyleCmd("italic", "Italic") { it.applyInlineStyle(se.soderbjorn.notegrow.data.InlineStyle.ITALIC) }
+        addStyleCmd("strikethrough", "Strikethrough") {
+            it.applyInlineStyle(se.soderbjorn.notegrow.data.InlineStyle.STRIKETHROUGH)
+        }
+        addStyleCmd("inline-code", "Inline code") {
+            it.applyInlineStyle(se.soderbjorn.notegrow.data.InlineStyle.INLINE_CODE)
+        }
+
+        // Pane / app actions
+        out += CommandPalette.Command(
+            id = "starred",
+            title = "Starred",
+            run = {
+                val paneId = focusedPaneId()
+                if (paneId != null) openStarredModal(paneId)
+            },
+        )
+        out += CommandPalette.Command(
+            id = "open-new-pane",
+            title = "Open new pane",
+            run = {
+                val tabId = layoutState.activeTabId
+                if (tabId != null) addFloatingPane(tabId)
+            },
+        )
+        out += CommandPalette.Command(
+            id = "close-current-pane",
+            title = "Close current pane",
+            run = {
+                val tabId = layoutState.activeTabId
+                val paneId = focusedPaneId()
+                if (tabId != null && paneId != null) closeFloatingPane(tabId, paneId)
+            },
+        )
+        out += CommandPalette.Command(
+            id = "layout",
+            title = "Layout",
+            // Anchor the dropdown to its own trigger button so the popover
+            // appears in the same place mouse users would expect, and so
+            // outside-click dismissal treats the trigger as part of the
+            // popover (clicking the trigger after we open from the palette
+            // toggles closed instead of immediately re-opening).
+            run = { layoutDropdown.openAnchoredTo(layoutDropdown.triggerButton) },
+        )
+
+        return out
+    }
+
+    /**
+     * Pane id of the pane the user most recently interacted with on the
+     * active tab, or — as a fallback when no focus has been recorded yet
+     * — the first non-minimised pane. Returns `null` only when the active
+     * tab has no panes at all, which the rest of the shell already
+     * defends against.
+     */
+    private fun focusedPaneId(): String? {
+        val activeId = layoutState.activeTabId ?: return null
+        val recorded = lastFocusedPaneIdByTab[activeId]
+        if (recorded != null) {
+            // Validate that the recorded id is still in the layout —
+            // closing a pane doesn't always wipe the entry, so a stale
+            // id can outlive its pane.
+            val layout = tabLayouts[activeId]
+            if (layout?.floatingPanes?.any { it.id == recorded } == true) return recorded
+        }
+        val layout = tabLayouts[activeId] ?: return null
+        return layout.floatingPanes.firstOrNull { !it.isMinimized }?.id
+            ?: layout.floatingPanes.firstOrNull()?.id
+    }
+
+    /** Convenience: the [MainViewModel] for [focusedPaneId], or `null`. */
+    private fun focusedPaneViewModel(): MainViewModel? {
+        val id = focusedPaneId() ?: return null
+        return paneViewModels[id]
     }
 
     // ── Mount / re-mount ────────────────────────────────────────────
@@ -272,16 +435,12 @@ class AppShell(
                 trailingContent = buildTrailingActions(),
                 isResizable = true,
                 minHeightPx = 0,
-                maxHeightPx = 80,
-                onResize = { newHeight ->
-                    // Drag to 0 effectively hides the topbar; we don't
-                    // persist height yet (no schema field), but the live
-                    // drag still feels right.
-                    if (newHeight == 0) {
-                        // Re-render so topbar comes back via toggle button
-                        // path next time the user wants it.
-                    }
-                },
+                // Cap at the natural CSS min-height; bar is allowed to
+                // shrink below this on drag, but not grow above it. The
+                // toolkit's snap rule decides 0-vs-default on release.
+                maxHeightPx = 48,
+                defaultHeightPx = 48,
+                allowGrowBeyondDefault = false,
             )
         )
 
@@ -350,13 +509,27 @@ class AppShell(
                 content = contentWrap,
                 visible = true,
                 isResizable = true,
-                minWidthPx = 160,
+                minWidthPx = 0,
                 maxWidthPx = 480,
+                defaultWidthPx = 240,
+                allowGrowBeyondDefault = true,
                 onResize = { newWidth ->
-                    layoutState = layoutState.copy(
-                        leftSidebar = layoutState.leftSidebar.copy(widthPx = newWidth),
-                    )
-                    persistLayoutState()
+                    if (newWidth == 0) {
+                        // Drag-to-collapse: flip the controller closed
+                        // so the toggle button restores the sidebar to
+                        // its persisted (non-zero) width on next click.
+                        layoutState = layoutState.copy(
+                            leftSidebar = layoutState.leftSidebar.copy(visible = false),
+                        )
+                        persistLayoutState()
+                        se.soderbjorn.darkness.web.shell.leftSidebarController
+                            .toggle(requestRebuild = { rebuildShell() })
+                    } else {
+                        layoutState = layoutState.copy(
+                            leftSidebar = layoutState.leftSidebar.copy(widthPx = newWidth),
+                        )
+                        persistLayoutState()
+                    }
                 },
             ),
             onLeft = true,
@@ -403,7 +576,12 @@ class AppShell(
                         tabId = tab.id,
                         paneId = float.id,
                         label = sidebarLabelFor(float.id, float.title),
-                        isFocused = isActiveTab && rendererFocusedPaneId() == float.id,
+                        // `focusedPaneId()` already falls back to the first
+                        // non-minimised pane when nothing is recorded yet
+                        // (e.g. right after the app loads or a tab switch
+                        // before the user has clicked into a pane), so the
+                        // active tab's pane is always highlighted.
+                        isFocused = isActiveTab && focusedPaneId() == float.id,
                         isMinimised = float.isMinimized,
                     ))
                 }
@@ -515,7 +693,9 @@ class AppShell(
                 trailingContent = trailing,
                 isResizable = true,
                 minHeightPx = 0,
-                maxHeightPx = 80,
+                maxHeightPx = 30,
+                defaultHeightPx = 30,
+                allowGrowBeyondDefault = false,
             )
         )
     }
@@ -551,6 +731,12 @@ class AppShell(
             onPaneFocused = { paneId ->
                 lastFocusedPaneIdByTab[activeId] = paneId
                 refreshLeftSidebarSections()
+                // The toolkit fires onPaneFocused for any change in active
+                // pane (mouse click on a different pane OR hotkey-driven
+                // cycling). On every such switch, drop the caret to the
+                // top of the newly active pane's document and give the
+                // editor DOM focus so the user can start typing.
+                paneEditors[paneId]?.focusAndResetCursor()
             },
             onFloatingMoved = { id, xPct, yPct ->
                 val cur = tabLayouts[activeId] ?: return@PaneCallbacks
@@ -1332,6 +1518,91 @@ class AppShell(
                 min-height: 0;
                 overflow-y: auto;
             }
+            /* Command palette (Cmd-P). Surface colors match the toolkit
+               variables so the palette inherits the active theme. */
+            .notegrow-palette-backdrop {
+                position: fixed;
+                inset: 0;
+                background: rgba(0, 0, 0, 0.45);
+                z-index: 2147483641;
+                display: flex;
+                align-items: flex-start;
+                justify-content: center;
+                padding-top: 12vh;
+            }
+            .notegrow-palette-panel {
+                width: min(620px, 92vw);
+                max-height: 64vh;
+                display: flex;
+                flex-direction: column;
+                background: var(--t-terminal-bg, #1e1e1e);
+                color: var(--t-terminal-fg, #e6e6e6);
+                border: 3px solid var(--t-accent-primary, #5ab0ff);
+                border-radius: 14px;
+                box-shadow:
+                    0 0 0 1px rgba(0, 0, 0, 0.65),
+                    0 0 0 6px color-mix(in srgb, var(--t-accent-primary, #5ab0ff) 22%, transparent),
+                    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+                    0 28px 72px rgba(0, 0, 0, 0.65),
+                    0 10px 24px rgba(0, 0, 0, 0.45);
+                overflow: hidden;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            }
+            .notegrow-palette-input {
+                appearance: none;
+                background: transparent;
+                color: inherit;
+                border: 0;
+                border-bottom: 1px solid var(--t-border, rgba(255, 255, 255, 0.10));
+                outline: none;
+                padding: 14px 18px;
+                font-size: 17px;
+                font-family: inherit;
+            }
+            .notegrow-palette-input::placeholder {
+                color: var(--t-text-secondary, rgba(255, 255, 255, 0.45));
+            }
+            .notegrow-palette-list {
+                flex: 1 1 auto;
+                min-height: 0;
+                overflow-y: auto;
+                padding: 4px;
+            }
+            .notegrow-palette-item {
+                display: block;
+                width: 100%;
+                appearance: none;
+                background: transparent;
+                color: inherit;
+                border: 0;
+                text-align: left;
+                padding: 9px 14px;
+                font-size: 15px;
+                font-family: inherit;
+                letter-spacing: 0.01em;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+            .notegrow-palette-item.is-active {
+                background: color-mix(in srgb, var(--t-accent-primary, #5ab0ff) 22%, transparent);
+                color: var(--t-text-primary, inherit);
+            }
+            .notegrow-palette-empty {
+                padding: 16px;
+                font-size: 12px;
+                color: var(--t-text-secondary, rgba(255, 255, 255, 0.55));
+                text-align: center;
+            }
+            /* Keyboard-focus highlight on the layout-preset tiles — same
+               surface as :hover so mouse + keyboard agree. */
+            .dt-layout-preset-tile.is-focused,
+            .dt-layout-preset-tile.is-focused:focus,
+            .dt-layout-preset-tile.is-focused:focus-visible {
+                background: var(--t-surface-overlay, rgba(255, 255, 255, 0.08));
+                border-color: var(--t-accent-primary, rgba(255, 255, 255, 0.20));
+                color: var(--t-text-primary, #e6e6e6);
+                outline: none;
+            }
         """.trimIndent()
         document.head?.appendChild(style)
     }
@@ -1591,15 +1862,10 @@ class AppShell(
         // Layout-preset dropdown comes first; the "new pane" button (which
         // spawns a floating overlay) sits to its right so the trailing-area
         // ordering reads layout → new pane → appearance → palette.
-        wrap.appendChild(
-            buildLayoutPresetButton(
-                paneCount = { activeTabPaneCount() },
-                onSelect = { preset ->
-                    val activeId = layoutState.activeTabId ?: return@buildLayoutPresetButton
-                    applyLayoutPreset(activeId, preset)
-                },
-            )
-        )
+        // Notegrow uses its own `LayoutDropdown` (rather than the toolkit's
+        // `buildLayoutPresetButton`) so the popover responds to the
+        // keyboard and the command palette's "Layout" command can drive it.
+        wrap.appendChild(layoutDropdown.triggerButton)
         // The "new pane" button spawns a FLOATING overlay pane (high
         // z-index, randomised position) on top of the existing layout —
         // matches termtastic's window-style spawn behaviour rather than

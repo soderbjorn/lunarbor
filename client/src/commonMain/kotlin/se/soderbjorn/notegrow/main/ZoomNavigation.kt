@@ -53,17 +53,30 @@ internal class ZoomNavigation(
     fun zoomInto(row: Int) {
         val s = stateProvider()
         if (!s.isLoaded) return
-        val docState = s.documentState ?: return
+        // Read the freshest doc state directly. The pane mirror in
+        // [State.documentState] may lag by one collector tick when this
+        // runs in the re-entry continuation after `acquireExpansion`.
+        val docState = document.stateFlow.value
         if (row !in docState.lines.indices) return
         val line = docState.lines[row]
         val indent = DocumentLayout.bulletAsteriskColumn(line)
         if (indent < 0) return
         val id = docState.lineIds[row]
-        // If the zoom target is a folded ref, lazy-load its file first then
-        // re-enter zoomInto with the now-loaded subtree.
-        if (document.isPromotedRef(id) && id !in docState.expandedRefIds) {
+        // If the zoom target is a folded ref FOR THIS PANE, lazy-load its
+        // file first then re-enter zoomInto with the now-loaded subtree.
+        // We consult per-pane intent (not the shared `expandedRefIds`)
+        // because another pane may already have the ref open — but this
+        // pane still needs to record its own intent and bump the
+        // refcount so a later collapse here actually evicts.
+        if (document.isPromotedRef(id) && id !in s.expandedRefIdsLocal) {
+            patch {
+                it.copy(
+                    expandedRefIdsLocal = it.expandedRefIdsLocal + id,
+                    collapsedIds = it.collapsedIds - id,
+                )
+            }
             scope.launch {
-                document.expandSubtree(id)
+                document.acquireExpansion(id)
                 zoomInto(row)
             }
             return
@@ -78,18 +91,22 @@ internal class ZoomNavigation(
         val hasText = line.substring(minOf(indent + 2, line.length)).isNotBlank()
         if (!hasChildren && !hasText) return
         if (endInclusive < row + 1) {
-            val childIndent = indent + TAB_SIZE
-            val childPrefix = " ".repeat(childIndent) + "* "
-            document.insertText(row, docState.lines[row].length, "\n" + childPrefix)
-            val newChildRow = row + 1
+            // Childless leaf with text: don't write a placeholder bullet
+            // into the shared document yet — that would surface to other
+            // panes viewing the same file (and the autosave loop would
+            // potentially promote it into a brand new file). Instead,
+            // mark the pane as "pending leaf zoom"; the first edit
+            // intent (insertChar / insertNewline / insertText) will
+            // materialize the placeholder child for real.
             patch {
                 pushHistory(it).copy(
                     zoomedLineId = id,
-                    cursorRow = newChildRow,
-                    cursorCol = childPrefix.length,
+                    cursorRow = row,
+                    cursorCol = docState.lines[row].length,
                     anchorRow = null,
                     anchorCol = null,
                     collapsedIds = it.collapsedIds - id,
+                    pendingLeafZoomChild = id,
                 )
             }
         } else {
@@ -105,6 +122,7 @@ internal class ZoomNavigation(
                     anchorRow = null,
                     anchorCol = null,
                     collapsedIds = it.collapsedIds - id,
+                    pendingLeafZoomChild = null,
                 )
             }
         }
@@ -117,6 +135,7 @@ internal class ZoomNavigation(
                 zoomedLineId = null,
                 anchorRow = null,
                 anchorCol = null,
+                pendingLeafZoomChild = null,
             )
         }
     }
@@ -146,6 +165,7 @@ internal class ZoomNavigation(
                 anchorRow = null,
                 anchorCol = null,
                 collapsedIds = it.collapsedIds - lineId,
+                pendingLeafZoomChild = null,
             )
         }
     }
@@ -175,6 +195,7 @@ internal class ZoomNavigation(
                 anchorRow = null,
                 anchorCol = null,
                 collapsedIds = if (target != null) it.collapsedIds - target else it.collapsedIds,
+                pendingLeafZoomChild = null,
             )
         }
     }
@@ -200,6 +221,7 @@ internal class ZoomNavigation(
                 anchorRow = null,
                 anchorCol = null,
                 collapsedIds = if (target != null) it.collapsedIds - target else it.collapsedIds,
+                pendingLeafZoomChild = null,
             )
         }
     }

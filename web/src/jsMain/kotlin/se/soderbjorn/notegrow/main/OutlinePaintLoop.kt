@@ -194,7 +194,7 @@ private fun buildRowElement(
         val absoluteIndentInRaw = DocumentLayout.bulletAsteriskColumn(docState.lines[absoluteRow])
         if (rowId != null) {
             val isFoldedPromotedRef = viewModel.isPromotedRef(rowId) &&
-                rowId !in docState.expandedRefIds
+                rowId !in state.expandedRefIdsLocal
             val isCollapsibleParent =
                 DocumentLayout.hasChildren(docState.lines, absoluteRow, absoluteIndentInRaw) ||
                     isFoldedPromotedRef

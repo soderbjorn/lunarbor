@@ -102,6 +102,22 @@ class PaneBackingViewModel(
      * @property fileForward Mirror of [fileHistory] for forward
      *   navigation.
      * @property collapsedIds Within-file fold state.
+     * @property expandedRefIdsLocal Per-pane intent: which promoted-ref
+     *   ids THIS pane wants expanded. Drives chevron direction and
+     *   visibility for refs without coupling to other panes' choices.
+     *   Distinct from `Document.State.expandedRefIds`, which is the
+     *   shared "currently spliced into lines" set; the document
+     *   refcounts these per-pane intents to decide when to evict
+     *   children from `lines`.
+     * @property pendingLeafZoomChild When non-null, indicates this pane
+     *   has zoomed into a childless leaf bullet whose first child has
+     *   not been materialized yet. The `LineId` is the parent's id. The
+     *   first edit intent in this state inserts the placeholder child
+     *   into the document and clears this flag; zooming away or
+     *   switching files clears it without inserting anything. Avoids
+     *   the multi-pane bug where leaf-zoom in one pane would write a
+     *   stray bullet visible to all panes (and sometimes promote into
+     *   a brand new file via autosave).
      * @property seenLineIds Internal: the set of [LineId]s the
      *   default-collapse pass has already processed.
      * @property isVaultFooterExpanded Master toggle for the editor's
@@ -125,6 +141,8 @@ class PaneBackingViewModel(
         val fileHistory: List<String> = emptyList(),
         val fileForward: List<String> = emptyList(),
         val collapsedIds: Set<LineId> = emptySet(),
+        val expandedRefIdsLocal: Set<LineId> = emptySet(),
+        val pendingLeafZoomChild: LineId? = null,
         internal val seenLineIds: Set<LineId> = emptySet(),
         val isVaultFooterExpanded: Boolean = true,
         val expandedVaultPaths: Set<String> = emptySet(),
@@ -206,6 +224,7 @@ class PaneBackingViewModel(
         applyState = { _stateFlow.value = it },
         mutate = { transform -> mutate(transform) },
         patch = { transform -> patch(transform) },
+        revealAncestors = { row -> revealAncestors(row) },
     )
 
     private val zoomNavigation = ZoomNavigation(
@@ -270,10 +289,18 @@ class PaneBackingViewModel(
         if (_stateFlow.value.activeFileRel == fileRel && document != null) return
         val outgoing = document
         val outgoingFile = _stateFlow.value.activeFileRel
+        val outgoingExpansions = _stateFlow.value.expandedRefIdsLocal
         val incoming = registry.acquire(fileRel)
         documentCollectorJob?.cancelAndJoin()
         documentCollectorJob = null
         document = incoming
+        // Hand back this pane's per-id expansion intents on the outgoing
+        // document BEFORE releasing it, so the refcount can hit zero and
+        // the shared document evicts spliced child files no pane wants
+        // anymore.
+        if (outgoing != null) {
+            for (id in outgoingExpansions) outgoing.releaseExpansion(id)
+        }
         // Reset per-pane state tied to the outgoing file.
         _stateFlow.value = _stateFlow.value.copy(
             activeFileRel = fileRel,
@@ -286,6 +313,8 @@ class PaneBackingViewModel(
             zoomHistory = emptyList(),
             zoomForward = emptyList(),
             collapsedIds = emptySet(),
+            expandedRefIdsLocal = emptySet(),
+            pendingLeafZoomChild = null,
             seenLineIds = emptySet(),
             pendingInlineStyles = emptySet(),
         )
@@ -309,7 +338,11 @@ class PaneBackingViewModel(
         documentCollectorJob = null
         val outgoing = document
         val outgoingFile = _stateFlow.value.activeFileRel
+        val outgoingExpansions = _stateFlow.value.expandedRefIdsLocal
         document = null
+        if (outgoing != null) {
+            for (id in outgoingExpansions) outgoing.releaseExpansion(id)
+        }
         if (outgoing != null && outgoingFile.isNotEmpty()) {
             registry.release(outgoingFile)
         }
@@ -357,9 +390,11 @@ class PaneBackingViewModel(
     fun isPromotedRef(lineId: LineId): Boolean = document?.isPromotedRef(lineId) == true
 
     /**
-     * Toggle the fold state of [lineId]. For file-boundary references
-     * the call also drives `Document.expandSubtree` / `collapseSubtree`
-     * so children are lazy-loaded on expand and unloaded on collapse.
+     * Toggle the fold state of [lineId] for THIS pane. For file-boundary
+     * references the call also drives `Document.acquireExpansion` /
+     * `releaseExpansion` so the shared document refcounts pane-local
+     * intents — children are spliced in on the first acquire across all
+     * panes, and only evicted when every pane has released.
      */
     fun toggleCollapse(lineId: LineId) {
         val current = _stateFlow.value
@@ -367,14 +402,23 @@ class PaneBackingViewModel(
         val doc = document ?: return
         val isRef = doc.isPromotedRef(lineId)
         if (isRef) {
-            val docState = current.documentState
-            val isExpanded = docState != null && lineId in docState.expandedRefIds
-            if (isExpanded) {
-                doc.collapseSubtree(lineId)
-                patch { it.copy(collapsedIds = it.collapsedIds + lineId) }
+            val isExpandedInPane = lineId in current.expandedRefIdsLocal
+            if (isExpandedInPane) {
+                patch {
+                    it.copy(
+                        expandedRefIdsLocal = it.expandedRefIdsLocal - lineId,
+                        collapsedIds = it.collapsedIds + lineId,
+                    )
+                }
+                scope.launch { doc.releaseExpansion(lineId) }
             } else {
-                patch { it.copy(collapsedIds = it.collapsedIds - lineId) }
-                scope.launch { doc.expandSubtree(lineId) }
+                patch {
+                    it.copy(
+                        expandedRefIdsLocal = it.expandedRefIdsLocal + lineId,
+                        collapsedIds = it.collapsedIds - lineId,
+                    )
+                }
+                scope.launch { doc.acquireExpansion(lineId) }
             }
         } else {
             patch {
@@ -412,14 +456,73 @@ class PaneBackingViewModel(
 
     // ------------------------------------------------------------------ edits
 
+    /**
+     * If [State.pendingLeafZoomChild] is set, materializes the deferred
+     * placeholder bullet for real now: appends `"\n" + childPrefix` to
+     * the parent's row in the document, moves the caret to the start
+     * of the new child's editable area, and clears the pending flag.
+     * Returns `true` when materialization happened, `false` when there
+     * was nothing pending.
+     *
+     * The materialized child uses the parent's indent + [TAB_SIZE]; if
+     * the parent's row vanished or no longer parses as a bullet, the
+     * pending flag is cleared without writing.
+     */
+    private fun materializePendingLeafZoomChild(): Boolean {
+        val s = _stateFlow.value
+        val pending = s.pendingLeafZoomChild ?: return false
+        val docState = s.documentState
+        val doc = document
+        if (docState == null || doc == null) {
+            patch { it.copy(pendingLeafZoomChild = null) }
+            return false
+        }
+        val parentRow = docState.lineIds.indexOf(pending)
+        if (parentRow < 0) {
+            patch { it.copy(pendingLeafZoomChild = null) }
+            return false
+        }
+        val parentLine = docState.lines[parentRow]
+        val parentIndent = DocumentLayout.bulletAsteriskColumn(parentLine)
+        if (parentIndent < 0) {
+            patch { it.copy(pendingLeafZoomChild = null) }
+            return false
+        }
+        val childIndent = parentIndent + TAB_SIZE
+        val childPrefix = " ".repeat(childIndent) + "* "
+        doc.insertText(parentRow, parentLine.length, "\n" + childPrefix)
+        val newChildRow = parentRow + 1
+        patch {
+            it.copy(
+                cursorRow = newChildRow,
+                cursorCol = childPrefix.length,
+                anchorRow = null,
+                anchorCol = null,
+                pendingLeafZoomChild = null,
+            )
+        }
+        return true
+    }
+
     /** See [TextEditingViewModel.insertChar]. */
     fun insertChar(char: Char) {
-        recordEdit(FrameKind.TYPING) { textEditing.insertChar(char) }
+        recordEdit(FrameKind.TYPING) {
+            materializePendingLeafZoomChild()
+            textEditing.insertChar(char)
+        }
     }
 
     /** See [TextEditingViewModel.insertNewline]. */
     fun insertNewline() {
         recordEdit(FrameKind.OTHER) {
+            // Materialization itself already inserts a newline + bullet
+            // prefix and parks the caret on the new child — exactly what
+            // the user pressed Enter to get. Skip the standard newline
+            // insert in that case to avoid producing two blank bullets.
+            if (materializePendingLeafZoomChild()) {
+                revealAncestors(_stateFlow.value.cursorRow)
+                return@recordEdit
+            }
             textEditing.insertNewline()
             revealAncestors(_stateFlow.value.cursorRow)
         }
@@ -428,6 +531,7 @@ class PaneBackingViewModel(
     /** See [TextEditingViewModel.insertText]. */
     fun insertText(text: String) {
         recordEdit(FrameKind.OTHER) {
+            materializePendingLeafZoomChild()
             textEditing.insertText(text)
             if ('\n' in text || '\r' in text) revealAncestors(_stateFlow.value.cursorRow)
         }
@@ -435,12 +539,22 @@ class PaneBackingViewModel(
 
     /** See [TextEditingViewModel.backspace]. */
     fun backspace() {
-        recordEdit(FrameKind.BACKSPACE) { textEditing.backspace() }
+        recordEdit(FrameKind.BACKSPACE) {
+            // Backspace in the pending-leaf-zoom state has no obvious
+            // intent — there's nothing to delete in the (yet-uncreated)
+            // child. Clear the pending flag without materializing so the
+            // backspace acts on the parent row's text instead.
+            if (_stateFlow.value.pendingLeafZoomChild != null) {
+                patch { it.copy(pendingLeafZoomChild = null) }
+            }
+            textEditing.backspace()
+        }
     }
 
     /** See [TextEditingViewModel.indentLine]. */
     fun indentLine(amount: Int = TAB_SIZE) {
         recordEdit(FrameKind.OTHER) {
+            materializePendingLeafZoomChild()
             textEditing.indentLine(amount)
             revealAncestors(_stateFlow.value.cursorRow)
         }
@@ -448,7 +562,10 @@ class PaneBackingViewModel(
 
     /** See [TextEditingViewModel.outdentLine]. */
     fun outdentLine(amount: Int = TAB_SIZE) {
-        recordEdit(FrameKind.OTHER) { textEditing.outdentLine(amount) }
+        recordEdit(FrameKind.OTHER) {
+            materializePendingLeafZoomChild()
+            textEditing.outdentLine(amount)
+        }
     }
 
     /** See [TextEditingViewModel.isBulletLine]. */
@@ -701,6 +818,11 @@ class PaneBackingViewModel(
             current.anchorRow != (if (collapsed) null else anchorRow) ||
             current.anchorCol != (if (collapsed) null else anchorCol)
         val pending = if (moved) emptySet() else current.pendingInlineStyles
+        // Any explicit caret reposition (mouse click, IME) means the
+        // user has navigated past the "I just zoomed into a leaf" hint;
+        // drop the pending placeholder so a later edit on this caret
+        // doesn't accidentally insert a child under the old zoom target.
+        val pendingLeaf = if (moved) null else current.pendingLeafZoomChild
         _stateFlow.value = reconcile(
             current.copy(
                 cursorRow = cursorRow,
@@ -708,6 +830,7 @@ class PaneBackingViewModel(
                 anchorRow = if (collapsed) null else anchorRow,
                 anchorCol = if (collapsed) null else anchorCol,
                 pendingInlineStyles = pending,
+                pendingLeafZoomChild = pendingLeaf,
             )
         )
     }
@@ -733,12 +856,18 @@ class PaneBackingViewModel(
 
     /** See [MarkdownStyleViewModel.applyInlineStyle]. */
     fun applyInlineStyle(style: InlineStyle) {
-        recordEdit(FrameKind.OTHER) { markdownStyle.applyInlineStyle(style) }
+        recordEdit(FrameKind.OTHER) {
+            materializePendingLeafZoomChild()
+            markdownStyle.applyInlineStyle(style)
+        }
     }
 
     /** See [MarkdownStyleViewModel.applyLineStyle]. */
     fun applyLineStyle(style: LineStyle) {
-        recordEdit(FrameKind.OTHER) { markdownStyle.applyLineStyle(style) }
+        recordEdit(FrameKind.OTHER) {
+            materializePendingLeafZoomChild()
+            markdownStyle.applyLineStyle(style)
+        }
     }
 
     /** See [MarkdownStyleViewModel.activeInlineStyles]. */

@@ -35,6 +35,9 @@ import se.soderbjorn.notegrow.main.PaneBackingViewModel.Companion.TAB_SIZE
  * @param mutate Applies a transform to the current state and reconciles.
  * @param patch Applies a transform that touches document content; refreshes
  *   the mirrored `documentState` and reconciles.
+ * @param revealAncestors Drops the row's bullet ancestors from
+ *   [PaneBackingViewModel.State.collapsedIds] so an indent that lands the
+ *   row inside a previously-folded subtree leaves the row visible.
  */
 internal class TextEditingViewModel(
     private val documentProvider: () -> Document,
@@ -42,6 +45,7 @@ internal class TextEditingViewModel(
     @Suppress("unused") private val applyState: (PaneBackingViewModel.State) -> Unit,
     private val mutate: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
     private val patch: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
+    private val revealAncestors: (Int) -> Unit,
 ) {
     private val state: PaneBackingViewModel.State
         get() = stateProvider()
@@ -315,12 +319,36 @@ internal class TextEditingViewModel(
             indentRange(s, sel, amount)
             return
         }
-        val line = s.lines[s.cursorRow]
+        val row = s.cursorRow
+        val line = s.lines[row]
         val currentIndent = line.takeWhile { it == ' ' }.length
-        val ancestorIndent = precedingBulletIndent(s.lines, s.cursorRow) ?: return
+        val ancestorIndent = precedingBulletIndent(s.lines, row) ?: return
         if (currentIndent >= ancestorIndent + amount) return
-        document.insertText(s.cursorRow, 0, " ".repeat(amount))
-        patch { it.copy(cursorCol = s.cursorCol + amount, anchorRow = null, anchorCol = null) }
+
+        // Refuse to indent under a collapsed promoted-ref: auto-expanding
+        // it would silently splice in another file's content and the
+        // moved subtree would appear to belong to that other file at the
+        // next autosave. Force the user to expand the ref first.
+        val newIndent = currentIndent + amount
+        val newParentRow = precedingBulletRowAtIndentBelow(s.lines, row, newIndent)
+        if (newParentRow != null) {
+            val ids = s.documentState?.lineIds
+            val parentId = ids?.getOrNull(newParentRow)
+            if (parentId != null && parentId in s.collapsedIds && document.isPromotedRef(parentId)) {
+                return
+            }
+        }
+
+        // Indent the whole subtree as a unit so children stay nested
+        // under their parent (Workflowy-style Tab semantics).
+        val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+        val end = if (bulletCol >= 0) DocumentLayout.subtreeEnd(s.lines, row, bulletCol) else row
+        val pad = " ".repeat(amount)
+        for (r in row..end) {
+            document.insertText(r, 0, pad)
+        }
+        patch { it.copy(cursorCol = it.cursorCol + amount, anchorRow = null, anchorCol = null) }
+        revealAncestors(row)
     }
 
     fun outdentLine(amount: Int = TAB_SIZE) {
@@ -331,13 +359,23 @@ internal class TextEditingViewModel(
             outdentRange(s, sel, amount)
             return
         }
-        val line = s.lines[s.cursorRow]
+        val row = s.cursorRow
+        val line = s.lines[row]
         val leading = line.takeWhile { it == ' ' }.length
         val zoom = zoomInfoOf(s)
         val minAllowed = if (zoom != null) zoom.zoomIndent + TAB_SIZE else 0
         val remove = minOf(amount, leading - minAllowed).coerceAtLeast(0)
         if (remove == 0) return
-        document.delete(s.cursorRow, 0, s.cursorRow, remove)
+
+        // Outdent the whole subtree as a unit so the relative hierarchy
+        // is preserved. Children all have indent strictly greater than
+        // the parent's, so removing `remove` (≤ parent's leading) from
+        // each row's column 0 is always safe.
+        val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+        val end = if (bulletCol >= 0) DocumentLayout.subtreeEnd(s.lines, row, bulletCol) else row
+        for (r in row..end) {
+            document.delete(r, 0, r, remove)
+        }
         patch {
             it.copy(
                 cursorCol = (s.cursorCol - remove).coerceAtLeast(0),
@@ -648,6 +686,24 @@ internal class TextEditingViewModel(
         while (r >= 0) {
             val col = DocumentLayout.bulletAsteriskColumn(lines[r])
             if (col >= 0) return col
+            r--
+        }
+        return null
+    }
+
+    /**
+     * Walks backward from [row] and returns the row index of the nearest
+     * preceding bullet whose indent is strictly less than [newIndent], or
+     * `null` when no such bullet exists. Used by [indentLine] to identify
+     * the bullet that would *become* the new parent after a Tab so we
+     * can short-circuit the indent when that parent is a collapsed
+     * promoted-ref.
+     */
+    private fun precedingBulletRowAtIndentBelow(lines: List<String>, row: Int, newIndent: Int): Int? {
+        var r = row - 1
+        while (r >= 0) {
+            val col = DocumentLayout.bulletAsteriskColumn(lines[r])
+            if (col in 0 until newIndent) return r
             r--
         }
         return null

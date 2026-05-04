@@ -251,6 +251,30 @@ class MainScreen(
         }
     }
 
+    /**
+     * Move the caret to the top of this pane's document and give the
+     * editor DOM focus. Called by [AppShell] from the toolkit's
+     * `onPaneFocused` callback (which fires for both hotkey-driven pane
+     * cycles and mouse clicks on a different pane), so switching to a
+     * pane always lands the cursor at row 0 with the editor focused
+     * and ready for keystrokes.
+     *
+     * No-op until the editor has been mounted (i.e. before the first
+     * [render]) so a stray pre-mount focus event cannot crash. The
+     * cursor target column is `caretStartCol` of row 0 so the caret
+     * lands after any bullet/heading prefix rather than inside the
+     * hidden marker zone.
+     */
+    fun focusAndResetCursor() {
+        val editor = editorElement ?: return
+        val backing = viewModel.stateFlow.value.backingState
+        if (backing != null && backing.isLoaded) {
+            val firstLine = backing.lines.firstOrNull().orEmpty()
+            viewModel.moveTo(0, DocumentLayout.caretStartCol(firstLine))
+        }
+        editor.focus()
+    }
+
     // ----------------------------------------------------------------- input
 
     private fun wireInputListeners(editor: HTMLElement) {

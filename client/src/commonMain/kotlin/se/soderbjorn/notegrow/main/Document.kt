@@ -88,7 +88,10 @@ class Document(
      * @property expandedRefIds The subset of `[Title](path#notegrow)`
      *   rows whose child file is currently spliced into [lines]. Rows
      *   registered as file boundaries but absent from this set are
-     *   folded — autosave leaves their child files untouched.
+     *   folded — autosave leaves their child files untouched. This is
+     *   the file-level "is currently materialized" set, shared across
+     *   panes; per-pane "do I want this expanded" intent lives on
+     *   `PaneBackingViewModel.State.expandedRefIdsLocal`.
      */
     data class State(
         val lines: List<String> = listOf(""),
@@ -131,8 +134,22 @@ class Document(
      */
     private val saveLock = Mutex()
 
-    /** Guard against concurrent [expandSubtree] calls for the same id. */
-    private val inflightExpandIds: MutableSet<LineId> = mutableSetOf()
+    /**
+     * Serializes [acquireExpansion] / [releaseExpansion] across panes so
+     * the refcount map and the splice-in / splice-out of child file
+     * content stay consistent. Held across the suspending file load on
+     * first acquire of an id, so a second pane racing in on the same id
+     * waits and then sees the splice already done.
+     */
+    private val expansionLock = Mutex()
+
+    /**
+     * Per-id refcount of "panes that want this ref expanded right now".
+     * Zero ⇒ not in [State.expandedRefIds] (children not spliced).
+     * One or more ⇒ children are spliced in. Mutated only under
+     * [expansionLock].
+     */
+    private val expansionRefcounts: MutableMap<LineId, Int> = mutableMapOf()
 
     private var loadJob: Job? = null
     private var autoSaveJob: Job? = null
@@ -254,72 +271,124 @@ class Document(
     /**
      * `true` when [lineId] is a file-boundary reference — i.e. its
      * subtree lives in a separate `.md` file and can be lazy-loaded via
-     * [expandSubtree].
+     * [acquireExpansion].
      */
     fun isPromotedRef(lineId: LineId): Boolean = lineId in promotedSubtrees
 
     /**
-     * Loads the child file referenced by [lineId] and splices its
-     * content into [State.lines] immediately after the reference row.
-     * No-op if [lineId] is not a registered file boundary, is already
-     * expanded, or is currently being expanded by another caller.
+     * Records that one more pane wants the subtree at [lineId] expanded.
+     * On the first acquire (refcount 0 → 1) the child file is loaded
+     * and its content spliced into [State.lines] right after the
+     * reference row. Subsequent acquires from other panes just bump the
+     * refcount and return immediately — the splice is already in place.
+     *
+     * Symmetric with [releaseExpansion]; every successful acquire MUST
+     * be paired with exactly one release when the pane no longer wants
+     * the ref expanded (chevron collapse, file switch, pane teardown).
+     *
+     * No-op when [lineId] is not a registered file boundary or its row
+     * is no longer in the document.
      */
-    suspend fun expandSubtree(lineId: LineId) {
-        val ref = promotedSubtrees[lineId] ?: return
+    suspend fun acquireExpansion(lineId: LineId) {
+        expansionLock.withLock {
+            if (lineId !in promotedSubtrees) return@withLock
+            val current = expansionRefcounts[lineId] ?: 0
+            if (current > 0) {
+                expansionRefcounts[lineId] = current + 1
+                return@withLock
+            }
+            if (spliceInUnderLock(lineId)) {
+                expansionRefcounts[lineId] = 1
+            }
+        }
+    }
+
+    /**
+     * Records that one fewer pane wants the subtree at [lineId]
+     * expanded. On the last release (refcount 1 → 0) the child rows are
+     * removed from [State.lines]; the reference row itself stays.
+     * Subsequent releases while other panes still want the ref expanded
+     * just decrement the refcount.
+     *
+     * No-op when [lineId] has no outstanding acquires.
+     */
+    suspend fun releaseExpansion(lineId: LineId) {
+        expansionLock.withLock {
+            val current = expansionRefcounts[lineId] ?: return@withLock
+            if (current > 1) {
+                expansionRefcounts[lineId] = current - 1
+                return@withLock
+            }
+            expansionRefcounts.remove(lineId)
+            spliceOutUnderLock(lineId)
+        }
+    }
+
+    /**
+     * Performs the file load + line splice for [lineId]. Caller must
+     * hold [expansionLock]. Returns `true` on a successful splice (or
+     * an empty-child no-op that still flips [State.expandedRefIds]).
+     * Returns `false` when the row vanished mid-load or the line is
+     * malformed; caller should not bump the refcount in that case.
+     */
+    private suspend fun spliceInUnderLock(lineId: LineId): Boolean {
+        val ref = promotedSubtrees[lineId] ?: return false
         val state = _stateFlow.value
-        if (lineId in state.expandedRefIds) return
-        if (!inflightExpandIds.add(lineId)) return
-        try {
-            val row = state.lineIds.indexOf(lineId)
-            if (row < 0) return
-            val parentIndent = DocumentLayout.bulletAsteriskColumn(state.lines[row])
-            if (parentIndent < 0) return
-            val loaded = repository.loadSubtree(ref.fileRel, parentIndent)
-            val current = _stateFlow.value
-            val currentRow = current.lineIds.indexOf(lineId)
-            if (currentRow < 0) return
-            if (lineId in current.expandedRefIds) return
-            val childLines = loaded.lines
-            if (childLines.isEmpty()) {
-                _stateFlow.value = current.copy(
-                    expandedRefIds = current.expandedRefIds + lineId,
-                )
-                return
-            }
-            val newIds = List(childLines.size) { allocateId() }
-            val mergedLines = current.lines.toMutableList()
-            val mergedIdList = current.lineIds.toMutableList()
-            mergedLines.addAll(currentRow + 1, childLines)
-            mergedIdList.addAll(currentRow + 1, newIds)
-            for ((localRow, nestedRef) in loaded.promotedByRow) {
-                val absRow = currentRow + 1 + localRow
-                if (absRow in mergedIdList.indices) {
-                    promotedSubtrees[mergedIdList[absRow]] = nestedRef
-                }
-            }
+        if (lineId in state.expandedRefIds) return true
+        val row = state.lineIds.indexOf(lineId)
+        if (row < 0) return false
+        val parentIndent = DocumentLayout.bulletAsteriskColumn(state.lines[row])
+        if (parentIndent < 0) return false
+        val loaded = repository.loadSubtree(ref.fileRel, parentIndent)
+        val current = _stateFlow.value
+        val currentRow = current.lineIds.indexOf(lineId)
+        if (currentRow < 0) return false
+        if (lineId in current.expandedRefIds) return true
+        val childLines = loaded.lines
+        if (childLines.isEmpty()) {
             _stateFlow.value = current.copy(
-                lines = mergedLines,
-                lineIds = mergedIdList,
                 expandedRefIds = current.expandedRefIds + lineId,
             )
-        } finally {
-            inflightExpandIds.remove(lineId)
+            return true
         }
+        val newIds = List(childLines.size) { allocateId() }
+        val mergedLines = current.lines.toMutableList()
+        val mergedIdList = current.lineIds.toMutableList()
+        mergedLines.addAll(currentRow + 1, childLines)
+        mergedIdList.addAll(currentRow + 1, newIds)
+        for ((localRow, nestedRef) in loaded.promotedByRow) {
+            val absRow = currentRow + 1 + localRow
+            if (absRow in mergedIdList.indices) {
+                promotedSubtrees[mergedIdList[absRow]] = nestedRef
+            }
+        }
+        _stateFlow.value = current.copy(
+            lines = mergedLines,
+            lineIds = mergedIdList,
+            expandedRefIds = current.expandedRefIds + lineId,
+        )
+        return true
     }
 
     /**
      * Removes the children of the reference at [lineId] from
      * [State.lines], dropping their ids and any nested promoted-ref
-     * registrations within. The reference row itself stays.
-     * No-op if [lineId] is not currently expanded.
+     * registrations. Caller must hold [expansionLock]. No-op when the
+     * ref is not currently spliced in.
      */
-    fun collapseSubtree(lineId: LineId) {
+    private fun spliceOutUnderLock(lineId: LineId) {
         val state = _stateFlow.value
         if (lineId !in state.expandedRefIds) return
         val row = state.lineIds.indexOf(lineId)
-        if (row < 0) return
+        if (row < 0) {
+            _stateFlow.value = state.copy(expandedRefIds = state.expandedRefIds - lineId)
+            return
+        }
         val parentIndent = DocumentLayout.bulletAsteriskColumn(state.lines[row])
-        if (parentIndent < 0) return
+        if (parentIndent < 0) {
+            _stateFlow.value = state.copy(expandedRefIds = state.expandedRefIds - lineId)
+            return
+        }
         val endInclusive = DocumentLayout.subtreeEnd(state.lines, row, parentIndent)
         if (endInclusive <= row) {
             _stateFlow.value = state.copy(expandedRefIds = state.expandedRefIds - lineId)
@@ -335,6 +404,9 @@ class Document(
             newIds.removeAt(row + 1)
         }
         val newExpanded = (state.expandedRefIds - lineId) - droppedIds
+        // Drop refcounts for nested refs whose rows we just deleted, so
+        // re-acquiring those ids later starts fresh from zero.
+        for (id in droppedIds) expansionRefcounts.remove(id)
         _stateFlow.value = state.copy(
             lines = newLines,
             lineIds = newIds,
