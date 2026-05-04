@@ -871,6 +871,28 @@ class AppShell(
         // Re-apply theme so the freshly-mounted topbar + left sidebar +
         // pane elements pick up the active Theme's per-section schemes.
         applyTheme(uiSettings)
+        // Focus the newly-active tab's previously-focused pane (or its
+        // first pane) so the caret lands in the editor immediately —
+        // mirrors the focus behaviour the toolkit fires on hotkey-driven
+        // pane switches and keeps the user typing without an extra click.
+        focusActivePane(tabId)
+    }
+
+    /**
+     * Focuses the appropriate pane in [tabId]: the last pane the user
+     * focused in that tab if it still exists, otherwise the first
+     * floating pane in the layout. Routes through [LayoutRenderer.focusPane]
+     * so the toolkit's `onPaneFocused` callback fires and the editor's
+     * caret lands in the document.
+     */
+    private fun focusActivePane(tabId: String) {
+        val layout = tabLayouts[tabId] ?: return
+        if (layout.floatingPanes.isEmpty()) return
+        val remembered = lastFocusedPaneIdByTab[tabId]
+        val targetId = remembered
+            ?.takeIf { id -> layout.floatingPanes.any { it.id == id } }
+            ?: layout.floatingPanes.first().id
+        renderer?.focusPane(targetId)
     }
 
     // ── TabBar wiring ───────────────────────────────────────────────
@@ -909,6 +931,7 @@ class AppShell(
                         layoutState = layoutState.copy(activeTabId = id)
                         persistLayoutState()
                         rebuildShell()
+                        focusActivePane(id)
                     } else {
                         softSwitchTab(id)
                     }
