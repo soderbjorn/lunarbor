@@ -3,10 +3,11 @@
  * -----------------------
  * Owns text-editing intents (typing, deletion, indent/outdent, paste,
  * cursor and selection movement, copy/cut text extraction). Operates on
- * the shared `DocumentViewBackingViewModel.State` through the small set
+ * the shared `PaneBackingViewModel.State` through the small set
  * of mutators ([apply], [patch], [mutate]) supplied by the aggregate
- * `DocumentViewBackingViewModel`. Reads the canonical document via the
- * injected `DocumentBackingViewModel`.
+ * `PaneBackingViewModel`. Reads the canonical document via the injected
+ * `documentProvider` lambda — the pane swaps the underlying [Document]
+ * on cross-file navigation, so this slice never holds a direct ref.
  *
  * commonMain only — no DOM, Android UI, or UIKit imports. The class holds
  * no state of its own; cursor and selection live in the aggregate's
@@ -18,14 +19,16 @@ package se.soderbjorn.notegrow.main
 import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
 import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineMarkdownPrefix
-import se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.Companion.TAB_SIZE
+import se.soderbjorn.notegrow.main.PaneBackingViewModel.Companion.TAB_SIZE
 
 /**
- * Text-editing slice of the per-viewer ViewModel. Composed by
- * `DocumentViewBackingViewModel` which owns the state flow; this class
+ * Text-editing slice of the per-pane ViewModel. Composed by
+ * `PaneBackingViewModel` which owns the state flow; this class
  * implements the actual editing behavior.
  *
- * @param documentBackingViewModel Shared document VM this slice writes to.
+ * @param documentProvider Returns the [Document] the pane currently
+ *   has acquired. Called on every edit so a pane swap (between two
+ *   files) is transparent to this slice.
  * @param stateProvider Reads the latest aggregate state.
  * @param applyState Replaces the aggregate state without re-running the
  *   reconcile pass (used by the few intents that need a tight write).
@@ -34,14 +37,16 @@ import se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.Companion.TAB_SI
  *   the mirrored `documentState` and reconciles.
  */
 internal class TextEditingViewModel(
-    private val documentBackingViewModel: DocumentBackingViewModel,
-    private val stateProvider: () -> DocumentViewBackingViewModel.State,
-    @Suppress("unused") private val applyState: (DocumentViewBackingViewModel.State) -> Unit,
-    private val mutate: ((DocumentViewBackingViewModel.State) -> DocumentViewBackingViewModel.State) -> Unit,
-    private val patch: ((DocumentViewBackingViewModel.State) -> DocumentViewBackingViewModel.State) -> Unit,
+    private val documentProvider: () -> Document,
+    private val stateProvider: () -> PaneBackingViewModel.State,
+    @Suppress("unused") private val applyState: (PaneBackingViewModel.State) -> Unit,
+    private val mutate: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
+    private val patch: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
 ) {
-    private val state: DocumentViewBackingViewModel.State
+    private val state: PaneBackingViewModel.State
         get() = stateProvider()
+
+    private val document: Document get() = documentProvider()
 
     // ------------------------------------------------------------------ edits
 
@@ -90,21 +95,21 @@ internal class TextEditingViewModel(
      * row N+1) are re-balanced by a fresh opener. `pendingInlineStyles`
      * stays empty — the on-line markers handle styling, no need to arm.
      */
-    private fun insertNewlineSplittingSpan(s0: DocumentViewBackingViewModel.State, styles: Set<InlineStyle>) {
+    private fun insertNewlineSplittingSpan(s0: PaneBackingViewModel.State, styles: Set<InlineStyle>) {
         val ordered = InlineStyle.entries.filter { it in styles }
         val openers = ordered.joinToString("") { it.openMarker }
         val closers = ordered.reversed().joinToString("") { it.closeMarker }
 
-        documentBackingViewModel.insertText(s0.cursorRow, s0.cursorCol, closers)
+        document.insertText(s0.cursorRow, s0.cursorCol, closers)
         patch { it.copy(cursorCol = it.cursorCol + closers.length) }
 
         val s1 = state
         val line1 = s1.lines[s1.cursorRow]
         val bulletPrefix = continuationBulletPrefix(line1, s1.cursorCol)
-        val nlResult = documentBackingViewModel.insertText(
+        val nlResult = document.insertText(
             s1.cursorRow, s1.cursorCol, "\n" + bulletPrefix
         )
-        val openResult = documentBackingViewModel.insertText(
+        val openResult = document.insertText(
             nlResult.endRow, nlResult.endCol, openers
         )
         patch {
@@ -131,7 +136,7 @@ internal class TextEditingViewModel(
      * [insertWithPendingStyles], which keeps row N+1 free of stray empty
      * spans.
      */
-    private fun insertNewlineCarryingPending(s0: DocumentViewBackingViewModel.State, pending: Set<InlineStyle>) {
+    private fun insertNewlineCarryingPending(s0: PaneBackingViewModel.State, pending: Set<InlineStyle>) {
         val ordered = InlineStyle.entries.filter { it in pending }
         val closers = ordered.reversed().joinToString("") { it.closeMarker }
         val line0 = s0.lines[s0.cursorRow]
@@ -145,7 +150,7 @@ internal class TextEditingViewModel(
         val s1 = state
         val line1 = s1.lines[s1.cursorRow]
         val bulletPrefix = continuationBulletPrefix(line1, s1.cursorCol)
-        val nlResult = documentBackingViewModel.insertText(
+        val nlResult = document.insertText(
             s1.cursorRow, s1.cursorCol, "\n" + bulletPrefix
         )
         patch {
@@ -158,10 +163,10 @@ internal class TextEditingViewModel(
     }
 
     /** Case (3): no inline styles at the caret. Plain newline + bullet continuation. */
-    private fun insertNewlinePlain(s0: DocumentViewBackingViewModel.State) {
+    private fun insertNewlinePlain(s0: PaneBackingViewModel.State) {
         val line = s0.lines[s0.cursorRow]
         val bulletPrefix = continuationBulletPrefix(line, s0.cursorCol)
-        val result = documentBackingViewModel.insertText(s0.cursorRow, s0.cursorCol, "\n" + bulletPrefix)
+        val result = document.insertText(s0.cursorRow, s0.cursorCol, "\n" + bulletPrefix)
         patch {
             it.copy(
                 cursorRow = result.endRow, cursorCol = result.endCol,
@@ -177,7 +182,7 @@ internal class TextEditingViewModel(
      * between two runs) report empty — see
      * [se.soderbjorn.notegrow.data.TokenizedLine.stylesAt].
      */
-    private fun tokenizedStylesAtCaret(s: DocumentViewBackingViewModel.State): Set<InlineStyle> {
+    private fun tokenizedStylesAtCaret(s: PaneBackingViewModel.State): Set<InlineStyle> {
         val line = s.lines[s.cursorRow]
         val tStart = DocumentLayout.textStartCol(line)
         val linePrefix = LineMarkdownPrefix.detect(line, tStart)
@@ -195,7 +200,7 @@ internal class TextEditingViewModel(
     }
 
     /**
-     * Inserts [text] at the caret, honoring any [DocumentViewBackingViewModel.State.pendingInlineStyles]
+     * Inserts [text] at the caret, honoring any [PaneBackingViewModel.State.pendingInlineStyles]
      * by wrapping the inserted text with the matching markers. Keeps the
      * pending set armed across consecutive insertions so continuous typing
      * extends the styled span — the second character lands inside the
@@ -210,7 +215,7 @@ internal class TextEditingViewModel(
         val s = state
         val pending = s.pendingInlineStyles
         if (pending.isEmpty()) {
-            val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, text)
+            val result = document.insertText(s.cursorRow, s.cursorCol, text)
             patch { it.copy(cursorRow = result.endRow, cursorCol = result.endCol, anchorRow = null, anchorCol = null) }
             return
         }
@@ -223,7 +228,7 @@ internal class TextEditingViewModel(
             // Continuing to type inside the markers we just opened: the
             // closers already sit at the caret, so a plain insert grows
             // the styled span and the close markers shift right naturally.
-            val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, text)
+            val result = document.insertText(s.cursorRow, s.cursorCol, text)
             patch {
                 it.copy(
                     cursorRow = result.endRow, cursorCol = result.endCol,
@@ -238,7 +243,7 @@ internal class TextEditingViewModel(
         // marker = first entry in InlineStyle.entries.
         val openers = ordered.joinToString("") { it.openMarker }
         val wrapped = openers + text + closers
-        val result = documentBackingViewModel.insertText(s.cursorRow, s.cursorCol, wrapped)
+        val result = document.insertText(s.cursorRow, s.cursorCol, wrapped)
         patch {
             it.copy(
                 cursorRow = result.endRow,
@@ -265,7 +270,7 @@ internal class TextEditingViewModel(
                     // the trailing space and surface the marker — surprising the
                     // user. Remove the entire prefix in a single keystroke so
                     // the line "demotes" cleanly back to plain text.
-                    documentBackingViewModel.delete(s.cursorRow, textStart, s.cursorRow, caretStart)
+                    document.delete(s.cursorRow, textStart, s.cursorRow, caretStart)
                     patch { it.copy(cursorCol = textStart) }
                     return
                 }
@@ -287,7 +292,7 @@ internal class TextEditingViewModel(
                     else -> 1
                 }
                 val newCol = s.cursorCol - removed
-                documentBackingViewModel.delete(s.cursorRow, newCol, s.cursorRow, s.cursorCol)
+                document.delete(s.cursorRow, newCol, s.cursorRow, s.cursorCol)
                 patch { it.copy(cursorCol = newCol) }
             }
             s.cursorRow > 0 -> {
@@ -296,7 +301,7 @@ internal class TextEditingViewModel(
                     return
                 }
                 val previousLen = s.lines[s.cursorRow - 1].length
-                documentBackingViewModel.delete(s.cursorRow - 1, previousLen, s.cursorRow, 0)
+                document.delete(s.cursorRow - 1, previousLen, s.cursorRow, 0)
                 patch { it.copy(cursorRow = s.cursorRow - 1, cursorCol = previousLen) }
             }
         }
@@ -314,7 +319,7 @@ internal class TextEditingViewModel(
         val currentIndent = line.takeWhile { it == ' ' }.length
         val ancestorIndent = precedingBulletIndent(s.lines, s.cursorRow) ?: return
         if (currentIndent >= ancestorIndent + amount) return
-        documentBackingViewModel.insertText(s.cursorRow, 0, " ".repeat(amount))
+        document.insertText(s.cursorRow, 0, " ".repeat(amount))
         patch { it.copy(cursorCol = s.cursorCol + amount, anchorRow = null, anchorCol = null) }
     }
 
@@ -332,7 +337,7 @@ internal class TextEditingViewModel(
         val minAllowed = if (zoom != null) zoom.zoomIndent + TAB_SIZE else 0
         val remove = minOf(amount, leading - minAllowed).coerceAtLeast(0)
         if (remove == 0) return
-        documentBackingViewModel.delete(s.cursorRow, 0, s.cursorRow, remove)
+        document.delete(s.cursorRow, 0, s.cursorRow, remove)
         patch {
             it.copy(
                 cursorCol = (s.cursorCol - remove).coerceAtLeast(0),
@@ -351,8 +356,8 @@ internal class TextEditingViewModel(
      * behavior.
      */
     private fun indentRange(
-        s0: DocumentViewBackingViewModel.State,
-        sel: DocumentViewBackingViewModel.Selection,
+        s0: PaneBackingViewModel.State,
+        sel: PaneBackingViewModel.Selection,
         amount: Int,
     ) {
         val effEnd = if (sel.endCol == 0) sel.endRow - 1 else sel.endRow
@@ -362,7 +367,7 @@ internal class TextEditingViewModel(
         if (firstIndent >= ancestorIndent + amount) return
         val pad = " ".repeat(amount)
         for (row in sel.startRow..effEnd) {
-            documentBackingViewModel.insertText(row, 0, pad)
+            document.insertText(row, 0, pad)
         }
         val cursorShift = if (s0.cursorRow in sel.startRow..effEnd) amount else 0
         val anchorShift = if (s0.anchorRow != null && s0.anchorRow in sel.startRow..effEnd) amount else 0
@@ -382,8 +387,8 @@ internal class TextEditingViewModel(
      * respective rows. No-op when no row can be outdented.
      */
     private fun outdentRange(
-        s0: DocumentViewBackingViewModel.State,
-        sel: DocumentViewBackingViewModel.Selection,
+        s0: PaneBackingViewModel.State,
+        sel: PaneBackingViewModel.Selection,
         amount: Int,
     ) {
         val effEnd = if (sel.endCol == 0) sel.endRow - 1 else sel.endRow
@@ -400,7 +405,7 @@ internal class TextEditingViewModel(
             val remove = removals[i]
             if (remove > 0) {
                 val row = sel.startRow + i
-                documentBackingViewModel.delete(row, 0, row, remove)
+                document.delete(row, 0, row, remove)
             }
         }
         val cursorRemoval = if (s0.cursorRow in sel.startRow..effEnd) {
@@ -594,7 +599,7 @@ internal class TextEditingViewModel(
             }
             return false
         }
-        documentBackingViewModel.delete(sel.startRow, sel.startCol, sel.endRow, sel.endCol)
+        document.delete(sel.startRow, sel.startCol, sel.endRow, sel.endCol)
         patch {
             it.copy(
                 cursorRow = sel.startRow, cursorCol = sel.startCol,

@@ -101,7 +101,7 @@ fun paintLoading(editor: HTMLElement) {
  */
 fun paint(
     editor: HTMLElement,
-    state: DocumentViewBackingViewModel.State,
+    state: PaneBackingViewModel.State,
     viewModel: MainViewModel,
     style: EditorStyle,
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
@@ -125,7 +125,7 @@ fun paint(
     // bullet with indent strictly greater than `zoomIndent`, and
     // TAB_SIZE-aligned descendants always have at least
     // `zoomIndent + TAB_SIZE` leading characters.
-    val viewOriginCol = zoom?.let { it.zoomIndent + DocumentViewBackingViewModel.TAB_SIZE } ?: 0
+    val viewOriginCol = zoom?.let { it.zoomIndent + PaneBackingViewModel.TAB_SIZE } ?: 0
 
     val visibleRows = DocumentLayout.visibleRowsOf(
         docState.lines, docState.lineIds, state.collapsedIds, startRow, endRowInclusive
@@ -158,8 +158,8 @@ private fun buildRowElement(
     absoluteRow: Int,
     line: String,
     viewOriginCol: Int,
-    state: DocumentViewBackingViewModel.State,
-    docState: DocumentBackingViewModel.State,
+    state: PaneBackingViewModel.State,
+    docState: Document.State,
     viewModel: MainViewModel,
     style: EditorStyle,
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
@@ -179,7 +179,7 @@ private fun buildRowElement(
         // Visually indent the row by its bullet depth via padding-left, so the
         // bullet glyph itself sits at a depth-appropriate offset without
         // requiring monospace alignment.
-        val depth = bulletCol / DocumentViewBackingViewModel.TAB_SIZE
+        val depth = bulletCol / PaneBackingViewModel.TAB_SIZE
         rowDiv.style.paddingLeft = "${depth * style.indentStepPx}px"
         // `data-prefix-len` must be in raw (absolute) model columns so caret
         // mapping in MainScreen translates DOM offsets to model `(row, col)`

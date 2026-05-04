@@ -20,9 +20,8 @@ fun main() {
         val app = document.getElementById("app") as HTMLElement
         val graph = createJsAppGraph()
         AppShell(
-            viewModel = graph.mainViewModel,
             scope = graph.coroutineScope,
-            documentBackingViewModel = graph.documentBackingViewModel,
+            documentRegistry = graph.documentRegistry,
         ).render(app)
     }
 }

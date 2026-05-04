@@ -1,8 +1,8 @@
 /*
  * MarkdownStyleViewModel.kt
  * -------------------------
- * Inline / line-level markdown styling slice of the per-viewer ViewModel.
- * Composed by `DocumentViewBackingViewModel`, this class implements:
+ * Inline / line-level markdown styling slice of the per-pane ViewModel.
+ * Composed by `PaneBackingViewModel`, this class implements:
  *
  *   - [applyInlineStyle]  — wrap or unwrap a selection / word with one of
  *     the inline markers (bold, italic, strike, inline code).
@@ -28,9 +28,10 @@ import se.soderbjorn.notegrow.data.LineMarkdownPrefix
 import se.soderbjorn.notegrow.data.LineStyle
 
 /**
- * Markdown-styling slice of the per-viewer ViewModel.
+ * Markdown-styling slice of the per-pane ViewModel.
  *
- * @param documentBackingViewModel Shared document VM this slice writes to.
+ * @param documentProvider Returns the [Document] the pane currently has
+ *   acquired. Called on every edit so a pane swap is transparent.
  * @param stateProvider Reads the latest aggregate state.
  * @param patch Applies a transform that touches document content; refreshes
  *   the mirrored `documentState` and reconciles.
@@ -38,12 +39,13 @@ import se.soderbjorn.notegrow.data.LineStyle
  *   inline style is invoked with no active selection.
  */
 internal class MarkdownStyleViewModel(
-    private val documentBackingViewModel: DocumentBackingViewModel,
-    private val stateProvider: () -> DocumentViewBackingViewModel.State,
-    private val patch: ((DocumentViewBackingViewModel.State) -> DocumentViewBackingViewModel.State) -> Unit,
+    private val documentProvider: () -> Document,
+    private val stateProvider: () -> PaneBackingViewModel.State,
+    private val patch: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
     private val selectWord: (row: Int, col: Int) -> Unit,
 ) {
-    private val state: DocumentViewBackingViewModel.State get() = stateProvider()
+    private val state: PaneBackingViewModel.State get() = stateProvider()
+    private val document: Document get() = documentProvider()
 
     // ---------------------------------------------------------------- inline
 
@@ -123,8 +125,8 @@ internal class MarkdownStyleViewModel(
 
         if (wrappedByMarkers) {
             // Delete close marker first (later in the line) so start positions are stable.
-            documentBackingViewModel.delete(row, sel.endCol, row, sel.endCol + close.length)
-            documentBackingViewModel.delete(row, sel.startCol - open.length, row, sel.startCol)
+            document.delete(row, sel.endCol, row, sel.endCol + close.length)
+            document.delete(row, sel.startCol - open.length, row, sel.startCol)
             patch {
                 it.copy(
                     anchorRow = row, anchorCol = sel.startCol - open.length,
@@ -140,8 +142,8 @@ internal class MarkdownStyleViewModel(
 
         // Otherwise wrap.
         val selectedText = line.substring(sel.startCol, sel.endCol)
-        documentBackingViewModel.delete(row, sel.startCol, row, sel.endCol)
-        documentBackingViewModel.insertText(row, sel.startCol, open + selectedText + close)
+        document.delete(row, sel.startCol, row, sel.endCol)
+        document.insertText(row, sel.startCol, open + selectedText + close)
         patch {
             it.copy(
                 anchorRow = row, anchorCol = sel.startCol + open.length,
@@ -182,8 +184,8 @@ internal class MarkdownStyleViewModel(
                 LineMarkdownPrefix.apply(original, style, tStart)
             }
             if (updated == original) continue
-            documentBackingViewModel.delete(row, 0, row, original.length)
-            documentBackingViewModel.insertText(row, 0, updated)
+            document.delete(row, 0, row, original.length)
+            document.insertText(row, 0, updated)
         }
         patch { it }
     }
@@ -242,7 +244,7 @@ internal class MarkdownStyleViewModel(
 
     // --------------------------------------------------------------- helpers
 
-    private fun rowSpan(s: DocumentViewBackingViewModel.State): Pair<Int, Int> {
+    private fun rowSpan(s: PaneBackingViewModel.State): Pair<Int, Int> {
         val sel = selectionOf(s)
         return if (sel == null) s.cursorRow to s.cursorRow else sel.startRow to sel.endRow
     }
@@ -260,7 +262,7 @@ internal class MarkdownStyleViewModel(
      * what users expect when toggling a single shortcut.
      */
     private fun exitColumnForSurroundingStyle(
-        s: DocumentViewBackingViewModel.State,
+        s: PaneBackingViewModel.State,
         style: InlineStyle,
     ): Int? {
         val line = s.lines[s.cursorRow]

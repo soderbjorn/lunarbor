@@ -469,7 +469,7 @@ class MainScreen(
             event.preventDefault()
             syncSelectionFromDom(editor)
             val backing = viewModel.stateFlow.value.backingState
-            val sel = backing?.let { DocumentViewBackingViewModel.selectionOf(it) }
+            val sel = backing?.let { PaneBackingViewModel.selectionOf(it) }
             val multiRow = sel != null && sel.startRow != sel.endRow
             if (event.shiftKey) {
                 viewModel.outdentLine()
@@ -706,7 +706,7 @@ class MainScreen(
      * collapse/expand toggle while the user has scrolled away from the
      * caret would jump the viewport back to the caret row.
      */
-    private fun reconcile(editor: HTMLElement, state: DocumentViewBackingViewModel.State) {
+    private fun reconcile(editor: HTMLElement, state: PaneBackingViewModel.State) {
         val scroller = scrollWrapperElement ?: editor
         val savedScrollTop = scroller.scrollTop
         paint(editor, state, viewModel, style, onBulletMouseDown = { row, ev ->
@@ -744,6 +744,24 @@ class MainScreen(
         cursorCol: Int,
         scrollCursorIntoView: Boolean,
     ) {
+        // The browser has a single `window.getSelection()` shared across the
+        // whole document. If multiple panes view the same backing document,
+        // every pane's reconcile fires on every edit — letting an unfocused
+        // pane call `setBaseAndExtent` here would yank the live caret out
+        // of the pane the user is typing in and drop it into this one.
+        // Restrict the DOM-side caret update to either (a) this pane owns
+        // focus, or (b) the existing window selection is already inside
+        // this editor (initial mount / not-yet-focused case where activeElement
+        // is still <body>).
+        val active = document.activeElement
+        val ownsFocus = active != null && editor.contains(active)
+        val selectionInsideUs = run {
+            val sel = window.asDynamic().getSelection() ?: return@run false
+            if ((sel.rangeCount as Number).toInt() == 0) return@run false
+            val anchorNode = sel.anchorNode ?: return@run false
+            editor.contains(anchorNode)
+        }
+        if (!ownsFocus && !selectionInsideUs) return
         val anchor = locateDomPosition(editor, anchorRow, anchorCol) ?: return
         val focus = locateDomPosition(editor, cursorRow, cursorCol) ?: return
         val sel = window.asDynamic().getSelection() ?: return
@@ -872,7 +890,7 @@ class MainScreen(
      * while the document hasn't loaded yet so the headline doesn't flash
      * incorrect copy during boot.
      */
-    private fun updateTitle(title: HTMLElement, backing: DocumentViewBackingViewModel.State?) {
+    private fun updateTitle(title: HTMLElement, backing: PaneBackingViewModel.State?) {
         val text = when {
             backing == null || !backing.isLoaded -> ""
             else -> {
@@ -882,7 +900,7 @@ class MainScreen(
                     // `.md` extension and the directory path so the
                     // headline is just `Recipes` for `Recipes/Recipes.md`,
                     // `links` for `links.md`, etc.
-                    val fileRel = backing.documentState?.activeFileRel ?: ""
+                    val fileRel = backing.activeFileRel
                     fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Untitled" }
                 } else zoom.titleText.ifBlank { "(untitled)" }
             }
@@ -915,11 +933,11 @@ class MainScreen(
      * the transition on that very first emission so we can snapshot the
      * outgoing content before reconcile paints the loading placeholder.
      */
-    private fun isNavigationTransition(backing: DocumentViewBackingViewModel.State?): Boolean {
+    private fun isNavigationTransition(backing: PaneBackingViewModel.State?): Boolean {
         if (backing == null) return false
         val previous = lastNavSignature ?: return false
         val current: Pair<String?, LineId?> = Pair(
-            backing.documentState?.activeFileRel,
+            backing.activeFileRel,
             backing.zoomedLineId,
         )
         return previous != current
@@ -934,9 +952,9 @@ class MainScreen(
      * the trailing `isLoaded=true` emission for the same file is *not*
      * misclassified as a second navigation.
      */
-    private fun rememberNavSignature(backing: DocumentViewBackingViewModel.State?) {
+    private fun rememberNavSignature(backing: PaneBackingViewModel.State?) {
         lastNavSignature = if (backing == null) null else Pair(
-            backing.documentState?.activeFileRel,
+            backing.activeFileRel,
             backing.zoomedLineId,
         )
     }
@@ -1240,7 +1258,7 @@ class MainScreen(
      */
     private fun beginDragFromBullet(absoluteRow: Int, ev: MouseEvent) {
         val backing = viewModel.currentBackingState
-        val sel = DocumentViewBackingViewModel.selectionOf(backing)
+        val sel = PaneBackingViewModel.selectionOf(backing)
         if (sel != null && sel.startRow != sel.endRow && absoluteRow in sel.startRow..sel.endRow) {
             startDragSession(sel.startRow, sel.endRow, ev, DragSession.Origin.Selection)
             return
@@ -1261,7 +1279,7 @@ class MainScreen(
      */
     private fun maybeBeginGutterDrag(editor: HTMLElement, ev: MouseEvent) {
         val backing = viewModel.currentBackingState
-        val sel = DocumentViewBackingViewModel.selectionOf(backing) ?: return
+        val sel = PaneBackingViewModel.selectionOf(backing) ?: return
         val target = ev.target as? Node ?: return
         val rowDiv = ancestorRowDiv(target) ?: return
         val rowIdx = rowDiv.getAttribute("data-row")?.toIntOrNull() ?: return

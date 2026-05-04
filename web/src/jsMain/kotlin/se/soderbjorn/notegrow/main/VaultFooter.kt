@@ -48,7 +48,7 @@ import se.soderbjorn.notegrow.data.VaultEntry
  */
 fun paintVaultFooter(
     container: HTMLElement,
-    state: DocumentViewBackingViewModel.State,
+    state: PaneBackingViewModel.State,
     viewModel: MainViewModel,
     style: EditorStyle,
 ) {
@@ -63,13 +63,13 @@ fun paintVaultFooter(
     // user is "inside" a specific note and the vault-wide file index would
     // just be noise — they navigate back via the pane's back button or the
     // breadcrumb's leading segment.
-    val docState = state.documentState ?: return
-    if (docState.activeFileRel != viewModel.rootFileName) return
+    if (state.documentState == null) return
+    if (state.activeFileRel != viewModel.rootFileName) return
 
     container.appendChild(buildHeader(state.isVaultFooterExpanded, viewModel))
     if (!state.isVaultFooterExpanded) return
 
-    val rootEntries = docState.vaultListings[""]
+    val rootEntries = state.vaultListings[""]
     if (rootEntries == null) {
         container.appendChild(buildLoadingRow(0, style))
         return
@@ -83,7 +83,7 @@ fun paintVaultFooter(
 
 /**
  * Builds the "Files" header row plus its master chevron. Clicking either the
- * chevron or the header text toggles [DocumentViewBackingViewModel.State.isVaultFooterExpanded]
+ * chevron or the header text toggles [PaneBackingViewModel.State.isVaultFooterExpanded]
  * via [MainViewModel.toggleVaultFooter].
  */
 private fun buildHeader(isExpanded: Boolean, viewModel: MainViewModel): HTMLElement {
@@ -129,14 +129,14 @@ private fun renderEntries(
     container: HTMLElement,
     entries: List<VaultEntry>,
     depth: Int,
-    state: DocumentViewBackingViewModel.State,
+    state: PaneBackingViewModel.State,
     viewModel: MainViewModel,
     style: EditorStyle,
 ) {
     for (entry in entries) {
         container.appendChild(buildEntryRow(entry, depth, state, viewModel, style))
         if (entry.isDirectory && entry.pathRel in state.expandedVaultPaths) {
-            val children = state.documentState?.vaultListings?.get(entry.pathRel)
+            val children = state.vaultListings.get(entry.pathRel)
             if (children == null) {
                 container.appendChild(buildLoadingRow(depth + 1, style))
             } else if (children.isEmpty()) {
@@ -158,7 +158,7 @@ private fun renderEntries(
 private fun buildEntryRow(
     entry: VaultEntry,
     depth: Int,
-    state: DocumentViewBackingViewModel.State,
+    state: PaneBackingViewModel.State,
     viewModel: MainViewModel,
     style: EditorStyle,
 ): HTMLElement {

@@ -54,11 +54,11 @@ internal fun isAtBulletMarkerEnd(line: String, cursorCol: Int): Boolean {
  * grows the selection (when [extend] is `true`) or clears it.
  */
 internal fun moved(
-    state: DocumentViewBackingViewModel.State,
+    state: PaneBackingViewModel.State,
     newRow: Int,
     newCol: Int,
     extend: Boolean
-): DocumentViewBackingViewModel.State {
+): PaneBackingViewModel.State {
     // Any cursor movement cancels armed inline styles — Cmd-B followed
     // by an arrow key should not silently style the next typed character.
     val noPending = if (state.pendingInlineStyles.isEmpty()) state
@@ -79,7 +79,7 @@ internal fun moved(
  * etc.) skip past collapsed subtrees instead of landing on hidden rows that
  * `clampToVisible` would then bounce back into the parent.
  */
-internal fun nextVisibleRow(state: DocumentViewBackingViewModel.State, fromRow: Int): Int? {
+internal fun nextVisibleRow(state: PaneBackingViewModel.State, fromRow: Int): Int? {
     val docState = state.documentState ?: return null
     val zoom = zoomInfoOf(state)
     val startRow = zoom?.startRow ?: 0
@@ -95,7 +95,7 @@ internal fun nextVisibleRow(state: DocumentViewBackingViewModel.State, fromRow: 
  * Returns the largest visible row index strictly less than [fromRow], or `null` if
  * none exists. Symmetric to [nextVisibleRow] — see that doc for rationale.
  */
-internal fun prevVisibleRow(state: DocumentViewBackingViewModel.State, fromRow: Int): Int? {
+internal fun prevVisibleRow(state: PaneBackingViewModel.State, fromRow: Int): Int? {
     val docState = state.documentState ?: return null
     val zoom = zoomInfoOf(state)
     val startRow = zoom?.startRow ?: 0
@@ -113,7 +113,7 @@ internal fun prevVisibleRow(state: DocumentViewBackingViewModel.State, fromRow: 
  * render a `Root / outer / … / inner / current` style trail.
  *
  * @property lineId    stable id of the ancestor bullet — pass to
- *   [DocumentViewBackingViewModel.zoomTo] to navigate there.
+ *   [PaneBackingViewModel.zoomTo] to navigate there.
  * @property titleText display text of the bullet with leading indent
  *   and the `"* "` marker stripped. Empty when the bullet has no text.
  */
@@ -127,7 +127,7 @@ data class BreadcrumbAncestor(
  * returns each ancestor (parent, grandparent, …) in outer-to-inner
  * order. The zoomed line itself is *not* included — the view already
  * renders it as the trailing breadcrumb segment via
- * [DocumentViewBackingViewModel.ZoomInfo.titleText].
+ * [PaneBackingViewModel.ZoomInfo.titleText].
  *
  * "Ancestor" means: a bullet line above the zoom target whose indent is
  * strictly less than the running indent, walking up the document. The
@@ -144,7 +144,7 @@ data class BreadcrumbAncestor(
  * @return ancestors outer-to-inner, or an empty list when not zoomed.
  */
 internal fun bulletAncestorsOf(
-    state: DocumentViewBackingViewModel.State
+    state: PaneBackingViewModel.State
 ): List<BreadcrumbAncestor> {
     val zoom = zoomInfoOf(state) ?: return emptyList()
     val docState = state.documentState ?: return emptyList()
@@ -169,13 +169,13 @@ internal fun bulletAncestorsOf(
 }
 
 /**
- * Resolves [DocumentViewBackingViewModel.State.zoomedLineId] to concrete
+ * Resolves [PaneBackingViewModel.State.zoomedLineId] to concrete
  * row geometry. Returns `null` if there is no zoom, the id is no longer
  * in the document, or the line it points to is no longer a bullet.
  */
 internal fun zoomInfoOf(
-    state: DocumentViewBackingViewModel.State
-): DocumentViewBackingViewModel.ZoomInfo? {
+    state: PaneBackingViewModel.State
+): PaneBackingViewModel.ZoomInfo? {
     val id = state.zoomedLineId ?: return null
     val docState = state.documentState ?: return null
     val row = docState.lineIds.indexOf(id)
@@ -186,7 +186,7 @@ internal fun zoomInfoOf(
     if (indent < 0) return null
     val end = DocumentLayout.subtreeEnd(lines, row, indent)
     val titleText = lines[row].substring(minOf(indent + 2, lines[row].length))
-    return DocumentViewBackingViewModel.ZoomInfo(
+    return PaneBackingViewModel.ZoomInfo(
         zoomRow = row,
         zoomIndent = indent,
         startRow = row + 1,
@@ -210,7 +210,7 @@ internal fun zoomInfoOf(
  * @return outer-to-inner segments, or an empty list when not zoomed.
  */
 internal fun zoomPathSegmentsOf(
-    state: DocumentViewBackingViewModel.State
+    state: PaneBackingViewModel.State
 ): List<String> {
     val zoom = zoomInfoOf(state) ?: return emptyList()
     val ancestors = bulletAncestorsOf(state)
@@ -218,18 +218,18 @@ internal fun zoomPathSegmentsOf(
 }
 
 /**
- * Normalizes an anchor + cursor pair into a [DocumentViewBackingViewModel.Selection].
+ * Normalizes an anchor + cursor pair into a [PaneBackingViewModel.Selection].
  * Returns `null` when there is no anchor (caret only) or when the anchor
  * and caret coincide (empty selection).
  */
 internal fun selectionOf(
-    state: DocumentViewBackingViewModel.State
-): DocumentViewBackingViewModel.Selection? {
+    state: PaneBackingViewModel.State
+): PaneBackingViewModel.Selection? {
     val ar = state.anchorRow ?: return null
     val ac = state.anchorCol ?: return null
     if (ar == state.cursorRow && ac == state.cursorCol) return null
     return if (ar < state.cursorRow || (ar == state.cursorRow && ac <= state.cursorCol))
-        DocumentViewBackingViewModel.Selection(ar, ac, state.cursorRow, state.cursorCol)
+        PaneBackingViewModel.Selection(ar, ac, state.cursorRow, state.cursorCol)
     else
-        DocumentViewBackingViewModel.Selection(state.cursorRow, state.cursorCol, ar, ac)
+        PaneBackingViewModel.Selection(state.cursorRow, state.cursorCol, ar, ac)
 }

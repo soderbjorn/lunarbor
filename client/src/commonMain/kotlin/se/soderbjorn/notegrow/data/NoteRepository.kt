@@ -153,7 +153,7 @@ class NoteRepository(
      * [parentIndent] + [TAB_SIZE] so they slot under the parent bullet at
      * the correct depth in the composed outline.
      *
-     * Used by [se.soderbjorn.notegrow.main.DocumentBackingViewModel] when
+     * Used by [se.soderbjorn.notegrow.main.Document] when
      * the user expands a previously-collapsed reference bullet.
      *
      * Missing files produce an empty splice (the chevron flips open with
@@ -669,7 +669,7 @@ class NoteRepository(
      * @param title Human-readable label shown in the bookmark list.
      * @param targetPathRel Vault-relative path of the file the bookmark
      *   points at, including `.md`. Pass exactly what
-     *   [se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.navigateToVaultFile]
+     *   [se.soderbjorn.notegrow.main.PaneBackingViewModel.navigateToVaultFile]
      *   would accept.
      * @param targetRow Optional 0-indexed row within [targetPathRel];
      *   when non-null the link's URL fragment becomes `#r=<row>` so the

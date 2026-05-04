@@ -99,10 +99,10 @@ internal class StarredModal(
     // ----- per-open state (null when the modal is closed) -----------------
     private var openJob: Job? = null
     private var openScope: CoroutineScope? = null
-    private var modalDocBackingVm: DocumentBackingViewModel? = null
-    private var modalDocViewVm: DocumentViewBackingViewModel? = null
+    private var modalRegistry: DocumentRegistry? = null
+    private var modalPaneBackingVm: PaneBackingViewModel? = null
     private var modalMainVm: MainViewModel? = null
-    private var latestState: DocumentViewBackingViewModel.State? = null
+    private var latestState: PaneBackingViewModel.State? = null
 
     // ----- DOM refs -------------------------------------------------------
     private var backdropEl: HTMLElement? = null
@@ -262,11 +262,15 @@ internal class StarredModal(
         openJob = job
         openScope = scope
 
-        val docBackingVm = DocumentBackingViewModel(starredRepo, scope)
-        val docViewVm = DocumentViewBackingViewModel(docBackingVm, scope)
-        val mainVm = MainViewModel(scope, docViewVm)
-        modalDocBackingVm = docBackingVm
-        modalDocViewVm = docViewVm
+        val registry = DocumentRegistry(starredRepo, scope)
+        val paneVm = PaneBackingViewModel(
+            registry = registry,
+            scope = scope,
+            initialFileRel = NoteRepository.STARRED_FILE_NAME,
+        )
+        val mainVm = MainViewModel(scope, paneVm)
+        modalRegistry = registry
+        modalPaneBackingVm = paneVm
         modalMainVm = mainVm
 
         scope.launch {
@@ -298,7 +302,7 @@ internal class StarredModal(
         val docState = parentState.documentState ?: return
         if (!docState.isLoaded) return
 
-        val file = docState.activeFileRel
+        val file = parentState.activeFileRel
         if (file.isEmpty()) return
         if (file == NoteRepository.STARRED_FILE_NAME) {
             // Don't bookmark the bookmark file.
@@ -347,12 +351,14 @@ internal class StarredModal(
      * "Add to starred" so the modal body reflects the just-written entry.
      */
     private fun restartModalVms() {
+        val pane = modalPaneBackingVm
         openJob?.cancel()
         openJob = null
         openScope = null
-        modalDocBackingVm = null
-        modalDocViewVm = null
+        modalRegistry = null
+        modalPaneBackingVm = null
         modalMainVm = null
+        if (pane != null) parentScope.launch { pane.release() }
         // Clear the body so the next paint does not stack on top of stale
         // rows during the brief reload window.
         bodyEl?.innerHTML = ""
@@ -401,7 +407,7 @@ internal class StarredModal(
     private fun navigateParentTo(target: ParsedLink) {
         val parentVm = activePaneVmProvider() ?: return
         val parentState = parentVm.stateFlow.value.backingState
-        val currentFile = parentState?.documentState?.activeFileRel
+        val currentFile = parentState?.activeFileRel
         if (currentFile == target.path) {
             val docState = parentState.documentState ?: return
             val lineId = target.row?.let { docState.lineIds.getOrNull(it) }
@@ -412,15 +418,15 @@ internal class StarredModal(
         if (target.row == null) return
         val scope = parentScope
         scope.launch {
-            // Wait for the shared document VM (the one the pane mirrors)
-            // to actually reach the new file in a loaded state. We can't
-            // peek through MainViewModel because the wait happens after
-            // the modal has closed and the per-open scope is gone.
+            // Wait for the pane's active document to land on the
+            // target file in a loaded state. We can't peek through the
+            // modal's own scope because the modal has just closed.
             val pollVm = activePaneVmProvider() ?: return@launch
             val settled = pollVm.stateFlow
                 .first { env ->
-                    val ds = env.backingState?.documentState
-                    ds?.isLoaded == true && ds.activeFileRel == target.path
+                    val s = env.backingState
+                    s?.activeFileRel == target.path &&
+                        s.documentState?.isLoaded == true
                 }
                 .backingState!!
                 .documentState!!
@@ -440,14 +446,14 @@ internal class StarredModal(
         val btn = addStarBtn ?: return
         val parentVm = activePaneVmProvider()
         val parentState = parentVm?.stateFlow?.value?.backingState
+        val file = parentState?.activeFileRel
         val docState = parentState?.documentState
-        val file = docState?.activeFileRel
         if (file.isNullOrEmpty()) {
             applyAddStarBtnState(btn, active = false)
             return
         }
         val zoomedId = parentState.zoomedLineId
-        val row: Int? = if (zoomedId != null) {
+        val row: Int? = if (zoomedId != null && docState != null) {
             docState.lineIds.indexOf(zoomedId).takeIf { it >= 0 }
         } else null
         val href = if (row != null) "$file#r=$row" else file
@@ -485,12 +491,14 @@ internal class StarredModal(
         addStarBtnLabelEl = null
         addStarBtnIsActive = false
         latestState = null
+        val pane = modalPaneBackingVm
         openJob?.cancel()
         openJob = null
         openScope = null
-        modalDocBackingVm = null
-        modalDocViewVm = null
+        modalRegistry = null
+        modalPaneBackingVm = null
         modalMainVm = null
+        if (pane != null) parentScope.launch { pane.release() }
         detachEscDismiss()
     }
 

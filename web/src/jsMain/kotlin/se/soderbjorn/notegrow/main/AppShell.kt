@@ -36,17 +36,13 @@ import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
 import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.ColorScheme
-import se.soderbjorn.darkness.core.DEFAULT_THEME_NAME
+import se.soderbjorn.darkness.core.DEFAULT_DARK_THEME_NAME
+import se.soderbjorn.darkness.core.DEFAULT_LIGHT_THEME_NAME
+import se.soderbjorn.darkness.core.ThemeSnapshot
 import se.soderbjorn.darkness.core.UiSettings
-import se.soderbjorn.darkness.core.defaultThemes
-import se.soderbjorn.darkness.core.recommendedColorSchemes
-import se.soderbjorn.darkness.core.resolve
 import se.soderbjorn.darkness.store.LayoutState
 import se.soderbjorn.darkness.store.SidebarState
 import se.soderbjorn.darkness.store.TabState
-import se.soderbjorn.darkness.web.applyColorScheme
-import se.soderbjorn.darkness.web.applyCssVars
 import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
 import se.soderbjorn.darkness.web.isDarkActive
 import se.soderbjorn.darkness.web.layout.FloatingPaneSpec
@@ -71,34 +67,30 @@ import se.soderbjorn.darkness.web.shell.mountAppFrame
 import se.soderbjorn.darkness.web.shell.renderTopBar
 import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerHost
 import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerState
+import se.soderbjorn.darkness.web.themeeditor.applySnapshot
 import se.soderbjorn.darkness.web.themeeditor.buildThemeManagerSidebar
 import se.soderbjorn.darkness.web.themeeditor.isThemeManagerSidebarOpen
+import se.soderbjorn.darkness.web.themeeditor.localStorageThemeSnapshotStorage
 import se.soderbjorn.darkness.web.themeeditor.refreshThemeManager
+import se.soderbjorn.darkness.web.themeeditor.resolveActiveUiSettings
+import se.soderbjorn.darkness.web.themeeditor.toSnapshot
 import se.soderbjorn.darkness.web.themeeditor.toggleThemeManagerSidebar
-import se.soderbjorn.darkness.web.toCssAliasMap
-import se.soderbjorn.darkness.web.toCssVarMap
 
 /**
  * Top-level shell that wires the toolkit windowing system around the
  * notegrow editor. One instance per app startup; instantiated in
  * [se.soderbjorn.notegrow.Main].
  *
- * @param viewModel platform view-model passed through to the embedded
- *   [MainScreen] inside the editor pane.
  * @param scope     coroutine scope shared with the embedded [MainScreen]
  *   for its paint loop.
+ * @param documentRegistry The shared registry that hands out
+ *   [se.soderbjorn.notegrow.main.Document] instances. Each pane
+ *   acquires its current file from here; two panes pointed at the
+ *   same file share one Document so concurrent edits stay live.
  */
 class AppShell(
-    private val viewModel: MainViewModel,
     private val scope: CoroutineScope,
-    /**
-     * Singleton document VM shared across every pane. Each pane gets its
-     * own `DocumentViewBackingViewModel` (and matching `MainViewModel` +
-     * `MainScreen`) bound to this same backing — so all panes mutate one
-     * shared document but maintain independent zoom navigation, selection,
-     * and caret. Pane-specific view-models live in [paneEditors].
-     */
-    private val documentBackingViewModel: se.soderbjorn.notegrow.main.DocumentBackingViewModel,
+    private val documentRegistry: se.soderbjorn.notegrow.main.DocumentRegistry,
 ) {
 
     /** Stable id for the editor pane that hosts the live `MainScreen`. */
@@ -118,7 +110,7 @@ class AppShell(
 
     /**
      * Per-pane editor instances. Each entry pairs a `MainViewModel` (with
-     * its own `DocumentViewBackingViewModel` so zoom + selection don't
+     * its own `PaneBackingViewModel` so zoom + selection don't
      * leak across panes) with a `MainScreen` that paints into that pane's
      * DOM container. Created lazily on first render of a pane and cached
      * here so re-renders / tab switches reuse the same VM (preserves
@@ -166,17 +158,6 @@ class AppShell(
     private val collapsedTabs: MutableSet<String> = mutableSetOf()
 
     /**
-     * Last UiSettings JSON we wrote to disk, used to suppress the echo
-     * Electron sends back through `onUiSettingsChanged` for our own
-     * writes. Without this, picking a theme paints correctly once, then
-     * the echo re-seeds [themeState] and triggers a second paint that can
-     * land on subtly different colours (e.g. when the persisted scheme
-     * name resolves through `recommendedColorSchemes` only and a custom
-     * scheme can't round-trip).
-     */
-    private var lastWrittenUiSettingsJson: String? = null
-
-    /**
      * Temporary flag — when `true`, notegrow keeps its UiSettings in a
      * notegrow-private localStorage slot instead of going through the
      * shared `darknessApi` UI-settings IPC (which Electron persists to a
@@ -199,8 +180,27 @@ class AppShell(
 
     /** Toolkit-supplied default host bound to [themeState]. */
     private val themeHost: DefaultThemeManagerHost by lazy {
-        object : DefaultThemeManagerHost(themeState, onChange = { onThemeStateChange() }) {}
+        object : DefaultThemeManagerHost(
+            state = themeState,
+            _appPanes = notegrowPanes,
+            onChange = { onThemeStateChange() },
+        ) {}
     }
+
+    /**
+     * Persistent slot for the toolkit's [ThemeSnapshot]. Owns the
+     * round-trip of every field [DefaultThemeManagerState] holds beyond
+     * the active [UiSettings] — light/dark slot bindings, custom themes,
+     * custom schemes, and the theme/scheme favorites — through the
+     * Electron renderer's localStorage.
+     *
+     * Versioned key (`v1`) so that future shape changes can introduce a
+     * fresh slot without colliding with stale data; the toolkit's policy
+     * is to discard old shapes rather than migrate, so a key bump is the
+     * one-step way to reset.
+     */
+    private val themeSnapshotStorage =
+        localStorageThemeSnapshotStorage("notegrow.themeSnapshot.v1")
 
     /** Latest layout state; mirrored to disk via Electron IPC. */
     private var layoutState: LayoutState = LayoutState.defaults()
@@ -229,7 +229,22 @@ class AppShell(
             open = layoutState.leftSidebar.visible,
             widthPx = layoutState.leftSidebar.widthPx,
         )
+        // Hydrate the toolkit-managed theme state from its own snapshot
+        // slot BEFORE seeding from `UiSettings`. The snapshot owns
+        // light/dark slot bindings, custom themes, custom schemes, and
+        // favorites — fields `UiSettings` can't represent — so this is
+        // what makes them survive a restart. `seedThemeState` then only
+        // fills slots the snapshot left null with toolkit defaults.
+        themeSnapshotStorage.read()?.takeIf { it.isNotBlank() }?.let { json ->
+            themeState.applySnapshot(ThemeSnapshot.fromJsonString(json))
+        }
         seedThemeState(uiSettings)
+        // After hydration the snapshot may carry user-saved schemes the
+        // initial `uiSettings` parse couldn't resolve (it ran against
+        // `recommendedColorSchemes` only). Re-resolve through the toolkit
+        // so the very first paint uses the right palette for the active
+        // appearance slot's theme.
+        uiSettings = resolveActiveUiSettings(themeState, uiSettings, notegrowPanes)
         applyTheme(uiSettings)
 
         // The host (#app) just needs viewport sizing; AppFrame handles the
@@ -238,7 +253,6 @@ class AppShell(
         root.style.margin = "0"
 
         rebuildShell()
-        subscribeToExternalThemeChanges()
     }
 
     // ── Mount / re-mount ────────────────────────────────────────────
@@ -930,7 +944,7 @@ class AppShell(
     }
 
     /**
-     * Lazily creates the pane's [MainViewModel] + [DocumentViewBackingViewModel]
+     * Lazily creates the pane's [MainViewModel] + [PaneBackingViewModel]
      * the first time it's needed. Used by both [renderPaneContent] (when
      * mounting the editor DOM) and [buildPaneHeaderSpec] (when the chrome
      * needs to read the pane's zoom path before content has mounted).
@@ -940,9 +954,10 @@ class AppShell(
      */
     private fun ensurePaneViewModel(paneId: String) {
         if (paneId in paneViewModels) return
-        val docView = se.soderbjorn.notegrow.main.DocumentViewBackingViewModel(
-            documentBackingViewModel,
+        val docView = se.soderbjorn.notegrow.main.PaneBackingViewModel(
+            documentRegistry,
             scope,
+            initialFileRel = documentRegistry.rootFileName,
         )
         val paneVm = se.soderbjorn.notegrow.main.MainViewModel(scope, docView)
         paneViewModels[paneId] = paneVm
@@ -961,7 +976,7 @@ class AppShell(
                     // breadcrumb), zoom path, and back/forward stack
                     // availability for the toolbar buttons.
                     listOf<Any?>(
-                        backing?.documentState?.activeFileRel,
+                        backing?.activeFileRel,
                         backing?.let { paneVm.zoomPathSegments(it) } ?: emptyList<String>(),
                         backing != null && paneVm.canZoomBack(backing),
                         backing != null && paneVm.canZoomForward(backing),
@@ -1019,7 +1034,8 @@ class AppShell(
      */
     private fun activeFileDisplayName(paneId: String): String {
         val backing = paneViewModels[paneId]?.stateFlow?.value?.backingState ?: return "Root"
-        val fileRel = backing.documentState?.activeFileRel ?: return "Root"
+        val fileRel = backing.activeFileRel
+        if (fileRel.isEmpty()) return "Root"
         return fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Root" }
     }
 
@@ -1054,7 +1070,8 @@ class AppShell(
             backing.zoomedLineId != null -> paneVm.zoomTo(ancestors.lastOrNull()?.lineId)
             // No bullet zoom — interpret "up" as "go to the parent file".
             else -> {
-                val fileRel = backing.documentState?.activeFileRel ?: return
+                val fileRel = backing.activeFileRel
+                if (fileRel.isEmpty()) return
                 val parentRel = parentFileOf(fileRel, paneVm.rootFileName) ?: return
                 paneVm.navigateToVaultFile(parentRel)
             }
@@ -1071,8 +1088,8 @@ class AppShell(
         val paneVm = paneViewModels[paneId] ?: return
         val backing = paneVm.stateFlow.value.backingState ?: return
         if (backing.zoomedLineId != null) paneVm.zoomTo(null)
-        val fileRel = backing.documentState?.activeFileRel
-        if (fileRel != null && fileRel != paneVm.rootFileName) {
+        val fileRel = backing.activeFileRel
+        if (fileRel.isNotEmpty() && fileRel != paneVm.rootFileName) {
             paneVm.navigateToVaultFile(paneVm.rootFileName)
         }
     }
@@ -1326,10 +1343,11 @@ class AppShell(
      */
     private fun canNavigateUp(
         paneVm: MainViewModel,
-        backing: se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.State,
+        backing: se.soderbjorn.notegrow.main.PaneBackingViewModel.State,
     ): Boolean {
         if (backing.zoomedLineId != null) return true
-        val fileRel = backing.documentState?.activeFileRel ?: return false
+        val fileRel = backing.activeFileRel
+        if (fileRel.isEmpty()) return false
         return parentFileOf(fileRel, paneVm.rootFileName) != null
     }
 
@@ -1339,19 +1357,19 @@ class AppShell(
      */
     private fun isAtRootFileWithNoZoom(
         paneVm: MainViewModel,
-        backing: se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.State,
+        backing: se.soderbjorn.notegrow.main.PaneBackingViewModel.State,
     ): Boolean {
         if (backing.zoomedLineId != null) return false
-        return backing.documentState?.activeFileRel == paneVm.rootFileName
+        return backing.activeFileRel == paneVm.rootFileName
     }
 
     /**
      * Renders the in-pane content. Every pane is an editor onto the
      * shared global document — the original `editorPaneId` special-case
      * is gone (#15). Each pane id gets its own [MainScreen] backed by
-     * its own [MainViewModel] / [DocumentViewBackingViewModel] so zoom
+     * its own [MainViewModel] / [PaneBackingViewModel] so zoom
      * navigation, selection, and caret are pane-local while every edit
-     * mutates the shared [documentBackingViewModel].
+     * mutates the shared [documentRegistry].
      */
     private fun renderPaneContent(id: String, slot: HTMLElement) {
         val container = document.createElement("div") as HTMLElement
@@ -1525,8 +1543,12 @@ class AppShell(
         if (cur.floatingPanes.none { it.id == paneId }) return
         val remaining = cur.floatingPanes.filterNot { it.id == paneId }
         // Drop the closed pane's view-model so memory + zoom-path
-        // collectors don't outlive their pane.
-        paneViewModels.remove(paneId)
+        // collectors don't outlive their pane. Release the pane's
+        // active document back to the registry first — when the last
+        // pane on a file is closed, this flushes a final save and
+        // shuts down the document's autosave loop.
+        val removedVm = paneViewModels.remove(paneId)
+        if (removedVm != null) scope.launch { removedVm.release() }
         paneEditors.remove(paneId)
         starredModals.remove(paneId)?.dispose()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
@@ -1727,6 +1749,13 @@ class AppShell(
         appearanceButton = replacement
     }
 
+    /**
+     * Cycle appearance through Auto → Dark → Light → Auto, then re-resolve
+     * the active theme so the painter immediately picks up the new slot's
+     * bound theme. Without the resolver call, the previous appearance's
+     * theme would keep painting until the user touched the Theme Manager,
+     * which was bug #3 in the user report.
+     */
     private fun cycleAppearance() {
         val next = when (uiSettings.appearance) {
             Appearance.Auto -> Appearance.Dark
@@ -1735,9 +1764,11 @@ class AppShell(
         }
         uiSettings = uiSettings.copy(appearance = next)
         themeState.appearance = next
+        uiSettings = resolveActiveUiSettings(themeState, uiSettings, notegrowPanes)
         applyTheme(uiSettings)
         updateAppearanceButton()
         persistUiSettings()
+        persistThemeSnapshot()
         refreshThemeManager()
     }
 
@@ -1747,92 +1778,75 @@ class AppShell(
 
     // ── Theme persistence ───────────────────────────────────────────
 
+    /**
+     * Initialise the toolkit's [DefaultThemeManagerState] from the user's
+     * persisted [UiSettings].
+     *
+     * Run AFTER snapshot hydration in [render]: the snapshot owns the
+     * authoritative light/dark slot bindings; this method only fills slots
+     * the snapshot left null with the toolkit defaults. The previous
+     * implementation mirrored `settings.theme.name` into BOTH slots,
+     * which made picking a dark theme also overwrite the light slot —
+     * one of the bugs this method now exists to prevent.
+     *
+     * `mainSchemeName` is a derived view of "the theme bound to the
+     * currently-active slot"; we point it at the active slot here so the
+     * Theme Manager grid renders the correct selection on first open.
+     *
+     * @param settings the user's persisted [UiSettings]; only used as a
+     *   fallback for the active-slot theme name when neither slot is
+     *   populated yet.
+     */
     private fun seedThemeState(settings: UiSettings) {
-        // Notegrow has a single `theme` field in UiSettings — not separate
-        // light/dark slots like termtastic — so we mirror the active theme
-        // into both slots. The toolkit's theme grid clicks resolve to
-        // `setLightThemeName` / `setDarkThemeName` based on the active
-        // appearance, and `onThemeStateChange` reads back from the slot
-        // that matches the current appearance. Seeding both keeps the
-        // grid highlight stable when toggling appearance without first
-        // having opened the Theme Manager.
-        themeState.mainSchemeName = settings.theme.name
-        themeState.lightThemeName = settings.theme.name
-        themeState.darkThemeName = settings.theme.name
         themeState.appearance = settings.appearance
+        if (themeState.lightThemeName == null) {
+            themeState.lightThemeName = DEFAULT_LIGHT_THEME_NAME
+        }
+        if (themeState.darkThemeName == null) {
+            themeState.darkThemeName = DEFAULT_DARK_THEME_NAME
+        }
+        val activeSlot = if (isDarkActive(settings.appearance)) {
+            themeState.darkThemeName
+        } else {
+            themeState.lightThemeName
+        }
+        themeState.mainSchemeName = activeSlot ?: settings.theme.name
     }
 
+    /**
+     * Reflect a Theme Manager mutation (theme pick, scheme save, slot
+     * change, favorite toggle, …) into the live [uiSettings] and persist.
+     *
+     * Pipeline:
+     *  1. Run the toolkit resolver — picks the theme bound to the active
+     *     appearance slot, looks it up in defaults ∪ custom themes,
+     *     resolves every notegrow pane through `notegrowPanes`, and
+     *     returns a fresh [UiSettings].
+     *  2. Repaint via [applyTheme] / [updateAppearanceButton].
+     *  3. Persist [uiSettings] (notegrow's localStorage slot) AND the
+     *     full [ThemeSnapshot] (custom themes/schemes, favorites, slot
+     *     bindings) so all of it survives a restart.
+     *  4. Refresh the Theme Manager so the grid highlight catches up.
+     */
     private fun onThemeStateChange() {
-        // The toolkit's theme grid writes the picked **theme** name (from
-        // `defaultThemes` ∪ `customThemes`) into the light/dark slot that
-        // matches the active appearance. To round-trip correctly across
-        // every Darkness app reading the same `UiSettings` JSON, we have
-        // to map the picked Theme's full composition (main scheme + every
-        // per-section override) onto `UiSettings.*Theme` fields — writing
-        // only `UiSettings.theme` would lose the section overrides and
-        // both apps would see the wrong palette.
-        val isDark = isDarkActive(themeState.appearance)
-        val activeSlot = if (isDark) themeState.darkThemeName else themeState.lightThemeName
-        val candidates = listOfNotNull(
-            activeSlot,
-            themeState.lightThemeName,
-            themeState.darkThemeName,
-            themeState.mainSchemeName,
-        )
-        // Materialise customSchemes once so `applyTheme` can resolve any
-        // user-defined schemes the picked theme references.
-        val customSchemesAsColor: Map<String, ColorScheme> =
-            themeState.customSchemes.mapValues { it.value.toColorScheme() }
-        // Look up the picked name as a Theme first (default themes, then
-        // user-saved customThemes); fall back to "the name IS a scheme" so
-        // a user who picked from the schemes tab still applies cleanly.
-        val pickedTheme: se.soderbjorn.darkness.core.Theme? = candidates.asSequence()
-            .mapNotNull { name ->
-                defaultThemes.firstOrNull { it.name == name }
-                    ?: themeState.customThemes[name]
-            }
-            .firstOrNull()
-        uiSettings = if (pickedTheme != null) {
-            // Sync mainSchemeName to the picked theme name (not its
-            // colorScheme) so the grid filter + re-seed treat it as the
-            // active selection.
-            themeState.mainSchemeName = pickedTheme.name
-            UiSettings.applyTheme(
-                base = uiSettings.copy(appearance = themeState.appearance),
-                theme = pickedTheme,
-                customSchemes = customSchemesAsColor,
-            )
-        } else {
-            // Scheme-only path: name resolved directly as a ColorScheme.
-            val schemeFallback: ColorScheme = candidates.asSequence()
-                .mapNotNull { name ->
-                    recommendedColorSchemes.firstOrNull { it.name == name }
-                        ?: customSchemesAsColor[name]
-                }
-                .firstOrNull()
-                ?: recommendedColorSchemes.first { it.name == DEFAULT_THEME_NAME }
-            themeState.mainSchemeName = schemeFallback.name
-            // Reset every per-section override to null so the picked
-            // scheme paints uniformly (otherwise stale section overrides
-            // from a prior Theme selection would still apply).
-            uiSettings.copy(
-                theme = schemeFallback,
-                appearance = themeState.appearance,
-                sidebarTheme = null,
-                terminalTheme = null,
-                diffTheme = null,
-                fileBrowserTheme = null,
-                tabsTheme = null,
-                chromeTheme = null,
-                windowsTheme = null,
-                activeTheme = null,
-                bottomBarTheme = null,
-            )
-        }
+        uiSettings = resolveActiveUiSettings(themeState, uiSettings, notegrowPanes)
         applyTheme(uiSettings)
         updateAppearanceButton()
         persistUiSettings()
+        persistThemeSnapshot()
         refreshThemeManager()
+    }
+
+    /**
+     * Encode the toolkit's theme state as a [ThemeSnapshot] and write it
+     * to [themeSnapshotStorage]. Called after every state mutation that
+     * affects persisted snapshot fields (theme pick, custom theme/scheme
+     * save, favorite toggle, appearance cycle).
+     */
+    private fun persistThemeSnapshot() {
+        themeSnapshotStorage.write(
+            themeState.toSnapshot().encodeAsJsonObject().toString(),
+        )
     }
 
     private fun applyTheme(settings: UiSettings) {
@@ -1859,7 +1873,6 @@ class AppShell(
 
     private fun persistUiSettings() {
         val json = uiSettings.toJsonString()
-        lastWrittenUiSettingsJson = json
         if (perAppThemeSettings) {
             // Notegrow-private slot: bypass the shared Electron IPC so
             // termtastic's UiSettings file doesn't get overwritten.
@@ -1871,60 +1884,6 @@ class AppShell(
         val write = js("api && api.writeUiSettings") ?: return
         if (js("typeof write !== 'function'") as Boolean) return
         js("write.call(api, json)")
-    }
-
-    /**
-     * Parses [json] through a pool that includes the user's custom schemes
-     * so themes that reference custom (non-recommended) section schemes
-     * keep their per-section overrides intact across a write→watch
-     * round-trip. Without this, the file-watcher echo would re-parse with
-     * `recommendedColorSchemes` only, drop every custom-scheme section
-     * override to `null`, and visually collapse the per-area palette to
-     * the main scheme.
-     */
-    private fun parseUiSettingsWithCustomSchemes(json: String): UiSettings {
-        val customPool: List<ColorScheme> = themeState.customSchemes.values
-            .map { it.toColorScheme() }
-        val pool: List<ColorScheme> = recommendedColorSchemes + customPool
-        val obj = runCatching {
-            kotlinx.serialization.json.Json
-                .parseToJsonElement(json) as? kotlinx.serialization.json.JsonObject
-        }.getOrNull() ?: return UiSettings.fromJsonString(json)
-        return UiSettings.resolveAgainst(obj, pool)
-    }
-
-    private fun subscribeToExternalThemeChanges() {
-        // When notegrow's theme lives in its own localStorage slot, no
-        // file-watcher echoes can reach us — skip the subscription so a
-        // shared-file change in another app can't reset our theme.
-        if (perAppThemeSettings) return
-        val api = js("globalThis.darknessApi") ?: return
-        val onChange = js("api && api.onUiSettingsChanged") ?: return
-        if (js("typeof onChange !== 'function'") as Boolean) return
-        val cb: (String) -> Unit = lambda@{ json ->
-            // Suppress echoes of our own writes — Electron's settings
-            // bridge fans every write back through this callback, and
-            // re-seeding `themeState` from the persisted JSON would
-            // overwrite the in-memory theme name (which can be a Theme)
-            // with the persisted scheme name, causing a brief paint
-            // flicker as the colours snap to the scheme-only resolution.
-            //
-            // Compare structurally (parsed UiSettings == current uiSettings)
-            // rather than byte-for-byte: the file-watcher reads disk after
-            // a debounce, and OS or Electron normalisation can turn the
-            // bytes we wrote into a JSON that no longer string-equals our
-            // in-memory copy even though it represents the same settings.
-            // Parsing first also folds custom-scheme section overrides
-            // back into `UiSettings` so the equality check is fair.
-            val incoming = parseUiSettingsWithCustomSchemes(json)
-            if (incoming == uiSettings) return@lambda
-            uiSettings = incoming
-            seedThemeState(uiSettings)
-            applyTheme(uiSettings)
-            updateAppearanceButton()
-            refreshThemeManager()
-        }
-        js("onChange.call(api, cb)")
     }
 
     // ── Layout-state persistence ─────────────────────────────────────

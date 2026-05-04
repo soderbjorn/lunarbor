@@ -88,7 +88,7 @@ object DocumentLayout {
      * be the bullet column of [row] (i.e. [bulletAsteriskColumn] of that line);
      * pass `-1` for non-bullet rows and the result is always `false`.
      *
-     * Used by the chevron painter and by [DocumentViewBackingViewModel]'s
+     * Used by the chevron painter and by [PaneBackingViewModel]'s
      * default-collapse pass to decide whether a bullet is foldable.
      */
     fun hasChildren(lines: List<String>, row: Int, indent: Int): Boolean {

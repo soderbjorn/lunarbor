@@ -6,7 +6,7 @@
  * through past zoom targets, and resolving the current zoom id into
  * concrete row geometry. The reconciliation step that clamps a zoomed
  * cursor inside the visible subtree lives in
- * `DocumentViewBackingViewModel.reconcile`.
+ * `PaneBackingViewModel.reconcile`.
  *
  * Browser-style back/forward semantics:
  * - Every zoom-changing intent ([zoomInto], [zoomTo], [zoomOut]) pushes
@@ -25,25 +25,27 @@ package se.soderbjorn.notegrow.main
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import se.soderbjorn.notegrow.main.DocumentViewBackingViewModel.Companion.TAB_SIZE
+import se.soderbjorn.notegrow.main.PaneBackingViewModel.Companion.TAB_SIZE
 
 /**
- * Zoom slice of the per-viewer ViewModel. Composed by
- * `DocumentViewBackingViewModel`; mutates the aggregate state through
+ * Zoom slice of the per-pane ViewModel. Composed by
+ * `PaneBackingViewModel`; mutates the aggregate state through
  * the supplied [patch] hook.
  *
- * @param documentBackingViewModel Shared document VM used to insert a
- *   placeholder child when zooming into a leaf bullet.
+ * @param documentProvider Returns the [Document] the pane currently has
+ *   acquired. Called when zooming into a leaf bullet (which inserts a
+ *   placeholder child) so a pane swap is transparent.
  * @param stateProvider Reads the latest aggregate state.
  * @param patch Applies a transform that touches document content; refreshes
  *   the mirrored `documentState` and reconciles.
  */
 internal class ZoomNavigation(
-    private val documentBackingViewModel: DocumentBackingViewModel,
-    private val stateProvider: () -> DocumentViewBackingViewModel.State,
-    private val patch: ((DocumentViewBackingViewModel.State) -> DocumentViewBackingViewModel.State) -> Unit,
+    private val documentProvider: () -> Document,
+    private val stateProvider: () -> PaneBackingViewModel.State,
+    private val patch: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
     private val scope: CoroutineScope,
 ) {
+    private val document: Document get() = documentProvider()
 
     /** Cap on how many zoom transitions we remember per direction. */
     private val historyCap: Int = 50
@@ -59,9 +61,9 @@ internal class ZoomNavigation(
         val id = docState.lineIds[row]
         // If the zoom target is a folded ref, lazy-load its file first then
         // re-enter zoomInto with the now-loaded subtree.
-        if (documentBackingViewModel.isPromotedRef(id) && id !in docState.expandedRefIds) {
+        if (document.isPromotedRef(id) && id !in docState.expandedRefIds) {
             scope.launch {
-                documentBackingViewModel.expandSubtree(id)
+                document.expandSubtree(id)
                 zoomInto(row)
             }
             return
@@ -78,7 +80,7 @@ internal class ZoomNavigation(
         if (endInclusive < row + 1) {
             val childIndent = indent + TAB_SIZE
             val childPrefix = " ".repeat(childIndent) + "* "
-            documentBackingViewModel.insertText(row, docState.lines[row].length, "\n" + childPrefix)
+            document.insertText(row, docState.lines[row].length, "\n" + childPrefix)
             val newChildRow = row + 1
             patch {
                 pushHistory(it).copy(
@@ -149,9 +151,9 @@ internal class ZoomNavigation(
     }
 
     /**
-     * Pops the most recent entry off [DocumentViewBackingViewModel.State.zoomHistory]
+     * Pops the most recent entry off [PaneBackingViewModel.State.zoomHistory]
      * and applies it as the new zoom target, pushing the *current* target
-     * onto [DocumentViewBackingViewModel.State.zoomForward] so [zoomForward]
+     * onto [PaneBackingViewModel.State.zoomForward] so [zoomForward]
      * can replay the move. No-op when the history stack is empty.
      *
      * Skips entries whose `LineId` is no longer present in the document
@@ -178,9 +180,9 @@ internal class ZoomNavigation(
     }
 
     /**
-     * Mirror of [zoomBack]: pops [DocumentViewBackingViewModel.State.zoomForward]
+     * Mirror of [zoomBack]: pops [PaneBackingViewModel.State.zoomForward]
      * and pushes the current target onto
-     * [DocumentViewBackingViewModel.State.zoomHistory]. No-op when the
+     * [PaneBackingViewModel.State.zoomHistory]. No-op when the
      * forward stack is empty.
      */
     fun zoomForward() {
@@ -202,7 +204,7 @@ internal class ZoomNavigation(
         }
     }
 
-    fun zoomInfo(state: DocumentViewBackingViewModel.State): DocumentViewBackingViewModel.ZoomInfo? =
+    fun zoomInfo(state: PaneBackingViewModel.State): PaneBackingViewModel.ZoomInfo? =
         zoomInfoOf(state)
 
     /**
@@ -210,7 +212,7 @@ internal class ZoomNavigation(
      * (outer-to-inner, excluding the zoomed line itself). See
      * [bulletAncestorsOf] for ordering details.
      */
-    fun bulletAncestors(state: DocumentViewBackingViewModel.State): List<BreadcrumbAncestor> =
+    fun bulletAncestors(state: PaneBackingViewModel.State): List<BreadcrumbAncestor> =
         bulletAncestorsOf(state)
 
     /**
@@ -219,19 +221,19 @@ internal class ZoomNavigation(
      * callers fall back to the pane's static title in that case. Delegates
      * to [zoomPathSegmentsOf].
      */
-    fun zoomPathSegments(state: DocumentViewBackingViewModel.State): List<String> =
+    fun zoomPathSegments(state: PaneBackingViewModel.State): List<String> =
         zoomPathSegmentsOf(state)
 
     // ---------------------------------------------------------------- private
 
     /**
      * Returns [state] with the current `zoomedLineId` appended to
-     * [DocumentViewBackingViewModel.State.zoomHistory] and the forward
+     * [PaneBackingViewModel.State.zoomHistory] and the forward
      * stack cleared. Used by every "go somewhere new" intent so back can
      * find it later. Capped at [historyCap] to avoid unbounded growth on
      * navigation-heavy sessions.
      */
-    private fun pushHistory(state: DocumentViewBackingViewModel.State): DocumentViewBackingViewModel.State =
+    private fun pushHistory(state: PaneBackingViewModel.State): PaneBackingViewModel.State =
         state.copy(
             zoomHistory = (state.zoomHistory + state.zoomedLineId).takeLast(historyCap),
             zoomForward = emptyList(),
@@ -246,7 +248,7 @@ internal class ZoomNavigation(
      */
     private fun popValid(
         stack: List<LineId?>,
-        state: DocumentViewBackingViewModel.State,
+        state: PaneBackingViewModel.State,
     ): Pair<LineId?, List<LineId?>>? {
         val docState = state.documentState ?: return null
         var idx = stack.lastIndex

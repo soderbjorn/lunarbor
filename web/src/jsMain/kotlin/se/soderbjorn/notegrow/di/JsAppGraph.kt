@@ -7,9 +7,7 @@ import dev.zacsweers.metro.createGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.GlobalScope
 import se.soderbjorn.notegrow.data.NoteRepository
-import se.soderbjorn.notegrow.main.DocumentBackingViewModel
-import se.soderbjorn.notegrow.main.DocumentViewBackingViewModel
-import se.soderbjorn.notegrow.main.MainViewModel
+import se.soderbjorn.notegrow.main.DocumentRegistry
 import se.soderbjorn.notegrow.platform.FileSystem
 
 object AppScope
@@ -18,15 +16,19 @@ object AppScope
 @SingleIn(AppScope::class)
 @DependencyGraph
 interface JsAppGraph {
-    val mainViewModel: MainViewModel
     val coroutineScope: CoroutineScope
+
     /**
-     * Singleton holding the live document state. Every notegrow pane
-     * binds its own [DocumentViewBackingViewModel] (with its own zoom
-     * navigation + selection) to this same backing VM so all panes
-     * mutate one shared document but maintain independent views.
+     * Singleton [DocumentRegistry] shared across every pane. The
+     * registry hands out [se.soderbjorn.notegrow.main.Document]
+     * instances by `fileRel`, refcounted: two panes pointed at the
+     * same file get the same Document (so concurrent edits stay in
+     * sync); when the last pane releases a file, the Document is
+     * flushed and torn down. Per-pane state (cursor, zoom, history)
+     * lives on each pane's `PaneBackingViewModel`, created in
+     * `AppShell.ensurePaneViewModel`.
      */
-    val documentBackingViewModel: DocumentBackingViewModel
+    val documentRegistry: DocumentRegistry
 
     @SingleIn(AppScope::class)
     @Provides
@@ -43,25 +45,10 @@ interface JsAppGraph {
 
     @SingleIn(AppScope::class)
     @Provides
-    fun provideDocumentBackingViewModel(
+    fun provideDocumentRegistry(
         repository: NoteRepository,
-        scope: CoroutineScope
-    ): DocumentBackingViewModel = DocumentBackingViewModel(repository, scope)
-
-    @SingleIn(AppScope::class)
-    @Provides
-    fun provideDocumentViewBackingViewModel(
-        documentBackingViewModel: DocumentBackingViewModel,
-        scope: CoroutineScope
-    ): DocumentViewBackingViewModel =
-        DocumentViewBackingViewModel(documentBackingViewModel, scope)
-
-    @SingleIn(AppScope::class)
-    @Provides
-    fun provideMainViewModel(
-        backing: DocumentViewBackingViewModel,
-        scope: CoroutineScope
-    ): MainViewModel = MainViewModel(scope, backing)
+        scope: CoroutineScope,
+    ): DocumentRegistry = DocumentRegistry(repository, scope)
 }
 
 fun createJsAppGraph(): JsAppGraph = createGraph<JsAppGraph>()

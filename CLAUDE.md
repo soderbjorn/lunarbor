@@ -5,52 +5,65 @@ Notegrow is a Kotlin Multiplatform project. It follows a strict layered architec
 ## The layers (outside → in)
 
 ```
-View                     (per-platform — DOM, Compose, UIKit, …)
+View                  (per-platform — DOM, Compose, UIKit, …)
   ↓ intent calls
-ViewModel                (per-platform — thin facade over the view backing VM)
+MainViewModel         (per-platform — thin facade over the pane backing VM)
   ↓ delegates
-DocumentViewBackingViewModel   (commonMain — one viewer's cursor + selection)
+PaneBackingViewModel  (commonMain — one pane's cursor, selection, zoom,
+                       file/zoom history, undo/redo, fold state, etc.)
   ↓ primitive edits / observes state
-DocumentBackingViewModel       (commonMain — the canonical document + autosave)
+Document              (commonMain — one loaded file + its autosave loop)
+  ↑ acquired/released through
+DocumentRegistry      (commonMain — fileRel → Document, refcounted)
   ↓
-NoteRepository                 (commonMain — file I/O, plain text)
+NoteRepository        (commonMain — file I/O, plain text)
   ↓
-FileSystem (expect/actual)     (per-platform — Node fs on JS, java.io on Android, …)
+FileSystem (expect/actual)  (per-platform — Node fs on JS, java.io on Android, …)
 ```
 
 ### 1. View (per-platform)
 
 For web: `web/src/jsMain/.../MainScreen.kt`. Renders state; translates user input into intent calls on the `MainViewModel`. Holds only ephemeral UI state (e.g. `isDragging`, scroll offset, auto-scroll timer handle). No business rules, no document logic.
 
-### 2. ViewModel (per-platform — thin facade)
+### 2. MainViewModel (per-platform — thin facade)
 
 For web: `web/src/jsMain/.../MainViewModel.kt`.
 
 Structure:
-- Receives its `DocumentViewBackingViewModel` via constructor (Metro-injected).
-- Exposes a single `val stateFlow: StateFlow<State>` where `data class State(val backingState: DocumentViewBackingViewModel.State? = null)` — the envelope wraps the backing state so each platform can tack on its own fields without touching common code.
+- Receives its `PaneBackingViewModel` via constructor (built per-pane in `AppShell.ensurePaneViewModel`).
+- Exposes a single `val stateFlow: StateFlow<State>` where `data class State(val backingState: PaneBackingViewModel.State? = null)` — the envelope wraps the backing state so each platform can tack on its own fields without touching common code.
 - `init` collects the backing state flow and re-emits it through the envelope.
 - Every intent method is a one-line delegation. Do NOT re-implement logic here.
 - Only extra code allowed: platform-specific glue that cannot exist in commonMain (e.g. Android `SignInManager.signOut()` before delegating).
 
-### 3. DocumentViewBackingViewModel (common)
+### 3. PaneBackingViewModel (common)
 
-`client/src/commonMain/.../DocumentViewBackingViewModel.kt`. One instance per viewer (window / device / pane). Responsibilities:
+`client/src/commonMain/.../PaneBackingViewModel.kt`. One instance per visible pane (window / device / split). Responsibilities:
 
-- Owns view-local state: `cursorRow`, `cursorCol`, `anchorRow?`, `anchorCol?`. Mirrors `DocumentBackingViewModel.State` through its collector so every emission is a consistent snapshot of both document + cursor.
+- Owns pane-local state: `activeFileRel`, `cursorRow`, `cursorCol`, `anchorRow?`, `anchorCol?`, `zoomedLineId`, zoom + file back/forward stacks, within-file `collapsedIds`, `pendingInlineStyles`, undo/redo. Mirrors the active `Document.State` through a swappable inner collector so every emission is a consistent snapshot of both document + pane state.
 - Implements all selection-aware editor intents: `insertChar`, `insertNewline`, `backspace`, `moveLeft(extend)`, `selectAll`, `selectWord`, `indentLine`, `onCutRequested`, …
-- Composes primitive edits: typing first calls `deleteSelectionIfAny`, then `documentBackingViewModel.insertText(row, col, …)`, then updates its own cursor. Use the private `patch { }` helper so every emission carries a fresh `documentState` snapshot (avoids stale mirrors while the async collector catches up).
-- Exposes the normalized selection via `DocumentViewBackingViewModel.selectionOf(state)` (companion) so views don't re-implement the anchor/cursor sort.
+- Composes primitive edits: typing first calls `deleteSelectionIfAny`, then `document.insertText(row, col, …)`, then updates its own cursor. Use the private `patch { }` helper so every emission carries a fresh `documentState` snapshot (avoids stale mirrors while the async collector catches up).
+- Holds *one* `Document` at a time — the file the pane is currently viewing. `navigateToVaultFile`, `fileBack`, and `fileForward` swap the active document by acquiring the new one from `DocumentRegistry`, cancelling the old inner collector, starting a new one, and releasing the old document. Other panes are unaffected by this — pane navigation is genuinely pane-local.
+- Exposes the normalized selection via `PaneBackingViewModel.selectionOf(state)` (companion) so views don't re-implement the anchor/cursor sort.
 - No DOM, Android UI, or UIKit imports. commonMain only.
 
-### 4. DocumentBackingViewModel (common)
+### 4. Document (common)
 
-`client/src/commonMain/.../DocumentBackingViewModel.kt`. The canonical, persisted document. Responsibilities:
+`client/src/commonMain/.../Document.kt`. One instance per loaded file. Responsibilities:
 
-- Owns `lines: List<String>` and `isLoaded: Boolean`.
-- Exposes primitive edits only: `insertText(row, col, text) → InsertResult`, `insertNewline(row, col)`, `delete(startRow, startCol, endRow, endCol)`. No cursor concept, no selection concept, no editor policy.
-- Owns the `NoteRepository` and the autosave loop.
-- Single source of truth for document content — any future second viewer (another window, a collab peer) subscribes to the same flow.
+- Owns `lines: List<String>`, `lineIds: List<LineId>`, `expandedRefIds: Set<LineId>`, `isLoaded: Boolean`, plus the in-memory `promotedSubtrees` map for that file.
+- Exposes primitive edits only: `insertText(row, col, text) → InsertResult`, `insertNewline(row, col)`, `delete(startRow, startCol, endRow, endCol)`, `replaceContent(...)`, `expandSubtree(id)`, `collapseSubtree(id)`. No cursor concept, no selection concept, no editor policy, no file-switching concept.
+- Runs its own autosave loop on the scope passed in by `DocumentRegistry`. `start()` is called by the registry on first acquire; `shutdown()` (called by the registry when the last pane releases) flushes one final save synchronously and cancels the loop.
+- Single source of truth for *one file's* content. When two panes acquire the same `fileRel`, they get the same `Document` instance and their edits flow through to each other in real time.
+
+### 5. DocumentRegistry (common)
+
+`client/src/commonMain/.../DocumentRegistry.kt`. App-scoped singleton owning every loaded `Document` plus the shared vault-listings cache (the lazy directory tree the editor's filesystem-tree footer renders).
+
+- `acquire(fileRel)` → returns the live `Document`, refcount += 1, lazy-creates + `start()`s on the first call.
+- `release(fileRel)` → refcount −= 1; on zero, the `Document.shutdown()` flushes one final save and the slot is dropped.
+- `vaultListingsFlow` is observed by every pane so the footer can render shared folder state.
+- The only thing that touches `NoteRepository`. Both `Document` (for content I/O via `repository.loadFile` / `repository.save`) and the registry itself (for `repository.listVaultLevel`) go through this single instance.
 
 ## Dependency injection (Metro)
 
@@ -66,13 +79,12 @@ object AppScope
 @SingleIn(AppScope::class)
 @DependencyGraph
 interface JsAppGraph {
-    val mainViewModel: MainViewModel
     val coroutineScope: CoroutineScope
+    val documentRegistry: DocumentRegistry
 
     @SingleIn(AppScope::class) @Provides
     fun provideCoroutineScope(): CoroutineScope = GlobalScope
-    // … @Provides for FileSystem, NoteRepository, DocumentBackingViewModel,
-    //   DocumentViewBackingViewModel, MainViewModel
+    // … @Provides for FileSystem, NoteRepository, DocumentRegistry
 }
 
 fun createJsAppGraph(): JsAppGraph = createGraph<JsAppGraph>()
@@ -80,10 +92,10 @@ fun createJsAppGraph(): JsAppGraph = createGraph<JsAppGraph>()
 
 Rules:
 - **Interface-based graph** annotated `@DependencyGraph` + `@SingleIn(AppScope::class)`.
-- Exposed bindings as interface properties (`val mainViewModel: MainViewModel`).
-- Every binding is declared with an `@Provides` method. Every `@Provides` is `@SingleIn(AppScope::class)` because the whole graph is app-scoped.
+- Exposed bindings as interface properties (`val documentRegistry: DocumentRegistry`).
+- App-scoped infrastructure (`FileSystem`, `NoteRepository`, `DocumentRegistry`) is declared with `@Provides` methods, each `@SingleIn(AppScope::class)`. Per-pane VMs (`PaneBackingViewModel`, `MainViewModel`) are *not* in the DI graph — they're constructed directly in `AppShell.ensurePaneViewModel(paneId)` so each pane gets its own instance pointing at the shared `DocumentRegistry`.
 - commonMain classes stay annotation-free; they're constructed inside `@Provides` methods. This matches the `almedalen` pattern and keeps Metro out of commonMain.
-- `Main.kt` calls `createJsAppGraph()` once and pulls `mainViewModel` + `coroutineScope` out.
+- `Main.kt` calls `createJsAppGraph()` once and pulls `documentRegistry` + `coroutineScope` out, then hands them to `AppShell`.
 
 ### JS-specific Metro config
 
@@ -99,15 +111,16 @@ metro {
 
 ### Android / iOS (future)
 
-Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppScope`) and platform-specific `@Provides` — e.g. `FileSystem(context)` on Android, plain `FileSystem()` on iOS. The common `DocumentBackingViewModel` and `DocumentViewBackingViewModel` bindings are identical across platforms.
+Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppScope`) and platform-specific `@Provides` — e.g. `FileSystem(context)` on Android, plain `FileSystem()` on iOS. The common `Document` and `PaneBackingViewModel` classes are identical across platforms; only `FileSystem` is per-platform.
 
 ## State and intents
 
 - **One state per VM.** Add fields; don't introduce parallel flows.
 - **Envelope at the outer VM.** `MainViewModel.State.backingState` gives each platform a seam for platform-specific fields without touching common code.
 - **Name intents after the action**: `onSignOutTapped`, `selectWord(row, col)`, `insertNewline`. Not `_setLines(...)`.
-- **Cursor and selection are view state, not document state.** They live in `DocumentViewBackingViewModel`. `DocumentBackingViewModel` knows nothing about them.
-- **Selection-aware writes compose in the view VM.** Typing first deletes the selection, then inserts. The view VM owns this composition; the document VM only exposes the primitives.
+- **Cursor and selection are pane state, not document state.** They live in `PaneBackingViewModel`. `Document` knows nothing about them.
+- **Active file is pane state.** `PaneBackingViewModel.State.activeFileRel` says which file *this pane* is viewing. `Document` does not know "the active file" — there is no global active file. Two panes can be on the same file (sharing a `Document` instance) or on different files.
+- **Selection-aware writes compose in the pane VM.** Typing first deletes the selection, then inserts. The pane VM owns this composition; `Document` only exposes the primitives.
 
 ## On-disk format
 
@@ -129,7 +142,7 @@ notegrow: true
 
 ## Zoom navigation
 
-`DocumentViewBackingViewModel` keeps three zoom-related fields:
+`PaneBackingViewModel` keeps three zoom-related fields:
 
 - `zoomedLineId: LineId?` — the bullet whose subtree is currently shown, or `null` for the root view. Stored as a stable id so it survives edits above the target.
 - `zoomHistory: List<LineId?>` — browser-style back stack. Every zoom-changing intent (`zoomInto`, `zoomTo`, `zoomOut`) pushes the current target before changing, and clears the forward stack.
@@ -141,9 +154,14 @@ User-facing affordances on the web: the pane toolbar shows a back-arrow and forw
 
 ```
 client/src/commonMain/.../main/
-  DocumentBackingViewModel.kt         ← content + persistence
-  DocumentViewBackingViewModel.kt     ← cursor + selection + editor intents
-  DocumentLayout.kt                   ← pure layout helpers (wrap, hit-test)
+  Document.kt                         ← one loaded file: content + autosave
+  DocumentRegistry.kt                 ← fileRel → Document, refcounted
+  PaneBackingViewModel.kt             ← per-pane state + editor intents
+  TextEditingViewModel.kt             ← typing/movement/selection slice
+  ZoomNavigation.kt                   ← zoom in/out/back/forward slice
+  MarkdownStyleViewModel.kt           ← inline + line-level markdown slice
+  SelectionHelper.kt                  ← pure helpers (selection, breadcrumb)
+  DocumentLayout.kt                   ← pure layout helpers (visible rows, hit-test)
 
 client/src/commonMain/.../data/
   NoteRepository.kt                   ← Markdown I/O + frontmatter
@@ -156,8 +174,9 @@ client/src/*Main/.../platform/
 web/src/jsMain/.../
   Main.kt                             ← entry, creates graph
   di/JsAppGraph.kt                    ← Metro DI graph
-  main/MainViewModel.kt               ← thin facade
+  main/MainViewModel.kt               ← thin facade (one per pane)
   main/MainScreen.kt                  ← DOM rendering + event handling
+  main/AppShell.kt                    ← per-pane VM construction + lifecycle
 ```
 
 ## Source-file documentation
@@ -176,7 +195,7 @@ Use `/* … */` for file-level comments rather than KDoc `/** … */` — the fi
 
 ### Class and function KDoc
 
-Every top-level class, object, interface, and non-trivial function gets KDoc. "Non-trivial" excludes one-line delegation methods on facade classes, but even those should at least reference the underlying function (e.g. `/** See DocumentViewBackingViewModel.moveLeft. */`). Private helpers inside a class that are genuinely one-liners with obvious names can be left undocumented; anything with real logic should have KDoc.
+Every top-level class, object, interface, and non-trivial function gets KDoc. "Non-trivial" excludes one-line delegation methods on facade classes, but even those should at least reference the underlying function (e.g. `/** See PaneBackingViewModel.moveLeft. */`). Private helpers inside a class that are genuinely one-liners with obvious names can be left undocumented; anything with real logic should have KDoc.
 
 Each KDoc block should cover:
 
@@ -196,10 +215,10 @@ Each KDoc block should cover:
 
 ## Adding a feature
 
-1. Decide whether it's a *document* operation (content change that would matter to any viewer) or a *view* operation (cursor, selection, UI-local behavior).
-2. If document: add a primitive on `DocumentBackingViewModel`.
-3. Build the user-facing intent on `DocumentViewBackingViewModel`, composing document primitives and local cursor updates via `patch { }`.
+1. Decide whether it's a *document* operation (content change that would matter to any pane viewing the file) or a *pane* operation (cursor, selection, zoom, history, fold state — anything UI-local).
+2. If document: add a primitive on `Document`.
+3. Build the user-facing intent on `PaneBackingViewModel` (often via the relevant slice — `TextEditingViewModel`, `ZoomNavigation`, `MarkdownStyleViewModel`), composing document primitives and local cursor updates via `patch { }`.
 4. Add a one-line delegation to `MainViewModel`.
 5. Wire the input mapping in the platform view.
-6. If a new binding is required, add an `@Provides` in `JsAppGraph` (and future platform graphs).
+6. If a new app-scoped binding is required, add an `@Provides` in `JsAppGraph` (and future platform graphs). Per-pane wiring goes in `AppShell.ensurePaneViewModel`.
 
