@@ -273,7 +273,8 @@ class MainViewModel(
         paneBackingViewModel.insertMarkdownLink(label, url)
 
     /** See `PaneBackingViewModel.navigateToLink`. */
-    fun navigateToLink(url: String) = paneBackingViewModel.navigateToLink(url)
+    fun navigateToLink(url: String, onComplete: () -> Unit = {}) =
+        paneBackingViewModel.navigateToLink(url, onComplete)
 
     /**
      * Releases the underlying [Document] back to the registry. Call

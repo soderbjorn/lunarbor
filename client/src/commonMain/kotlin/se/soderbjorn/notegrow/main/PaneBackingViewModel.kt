@@ -1025,36 +1025,102 @@ class PaneBackingViewModel(
      *  3. [navigateToVaultFile] (if the target lives in another file).
      *  4. [zoomTo] (if the target is a specific bullet).
      */
-    fun navigateToLink(url: String) {
-        val parsed = LinkUrl.parse(url) ?: return
+    fun navigateToLink(url: String, onComplete: () -> Unit = {}) {
+        val parsed = LinkUrl.parse(url)
         val state = _stateFlow.value
-        if (!state.isLoaded) return
+        if (parsed == null || !state.isLoaded) {
+            onComplete()
+            return
+        }
         val activeFileRel = state.activeFileRel
         val inFilePath = currentInFileTitlePath()
         scope.launch {
-            val cursorFullPath =
-                vaultIndex.fullPathFor(activeFileRel, inFilePath) ?: emptyList()
-            val resolution = vaultIndex.resolve(parsed, cursorFullPath)
-            if (resolution !is VaultIndex.Resolution.Found) return@launch
-            // Navigate to the target file first if needed. switchActiveFile
-            // is suspend; await it so the lineId lookup below sees the new
-            // document's state.
-            if (resolution.fileRel != _stateFlow.value.activeFileRel) {
-                val priorFile = _stateFlow.value.activeFileRel
-                switchActiveFile(resolution.fileRel)
-                patch {
-                    it.copy(
-                        fileHistory = (it.fileHistory + priorFile).takeLast(NAV_HISTORY_CAP),
-                        fileForward = emptyList(),
-                    )
+            try {
+                val cursorFullPath =
+                    vaultIndex.fullPathFor(activeFileRel, inFilePath) ?: emptyList()
+                val resolution = vaultIndex.resolve(parsed, cursorFullPath)
+                if (resolution !is VaultIndex.Resolution.Found) {
+                    println("[notegrow] link target not found: $url (cursor at $cursorFullPath)")
+                    return@launch
                 }
+                val isCrossFile = resolution.fileRel != _stateFlow.value.activeFileRel
+                if (isCrossFile) {
+                    val priorFile = _stateFlow.value.activeFileRel
+                    switchActiveFile(resolution.fileRel)
+                    patch {
+                        it.copy(
+                            fileHistory = (it.fileHistory + priorFile).takeLast(NAV_HISTORY_CAP),
+                            fileForward = emptyList(),
+                        )
+                    }
+                }
+                if (resolution.titlePathInFile.isNotEmpty()) {
+                    val targetId = awaitLineIdForTitlePath(resolution.titlePathInFile)
+                    if (targetId != null) {
+                        if (isCrossFile) {
+                            // The link click is this pane's entry point into
+                            // the new file — no prior zoom in this file to
+                            // remember. Set [zoomedLineId] directly without
+                            // pushing to zoomHistory so the unified Back
+                            // chord falls through to fileBack (returning to
+                            // where the user came from) instead of unzooming
+                            // inside the just-arrived file.
+                            patch { it.copy(zoomedLineId = targetId) }
+                        } else {
+                            // Same-file navigation: keep the normal
+                            // push-to-history semantics so Back undoes the
+                            // zoom in place.
+                            zoomTo(targetId)
+                        }
+                        placeCursorOn(targetId)
+                    }
+                } else if (isCrossFile) {
+                    // File-root navigation (no specific bullet, e.g. user
+                    // picked "Framna" in the modal). Park the caret on
+                    // row 0 so the contenteditable has a valid DOM
+                    // selection to extend from — without this, focusing
+                    // the editor leaves the caret unset and chords like
+                    // Cmd-Shift-Left have nothing to anchor on.
+                    awaitFirstLoadedLineId()?.let { placeCursorOn(it) }
+                }
+            } finally {
+                onComplete()
             }
-            // The collector for the freshly-acquired document may not have
-            // emitted yet. Wait for the loaded state, with a short cap so a
-            // pathological case doesn't hang the click handler.
-            if (resolution.titlePathInFile.isEmpty()) return@launch
-            val targetId = awaitLineIdForTitlePath(resolution.titlePathInFile)
-            if (targetId != null) zoomTo(targetId)
+        }
+    }
+
+    /**
+     * Awaits the active document's first loaded emission and returns
+     * its row-0 [LineId]. Used by [navigateToLink] for file-root
+     * navigation where there is no specific bullet path to walk.
+     */
+    private suspend fun awaitFirstLoadedLineId(): LineId? {
+        val doc = document ?: return null
+        val loadedState = doc.stateFlow.first { it.isLoaded }
+        return loadedState.lineIds.firstOrNull()
+    }
+
+    /**
+     * Moves the caret onto the row that owns [lineId], collapsing any
+     * active selection. No-op when the row is gone (race with an
+     * in-flight edit) or the document hasn't loaded.
+     *
+     * Used by [navigateToLink] so a Cmd-O / link-click navigation
+     * lands the caret *on* the target bullet rather than wherever the
+     * caret happened to be in the now-zoomed view.
+     */
+    private fun placeCursorOn(lineId: LineId) {
+        patch {
+            val docState = it.documentState ?: return@patch it
+            val row = docState.lineIds.indexOf(lineId)
+            if (row < 0 || row !in docState.lines.indices) return@patch it
+            val caretCol = DocumentLayout.caretStartCol(docState.lines[row])
+            it.copy(
+                cursorRow = row,
+                cursorCol = caretCol,
+                anchorRow = null,
+                anchorCol = null,
+            )
         }
     }
 

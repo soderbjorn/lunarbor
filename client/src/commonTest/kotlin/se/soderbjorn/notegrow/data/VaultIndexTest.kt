@@ -47,6 +47,7 @@ class VaultIndexTest {
                 "* Inbox",
                 "* Projects",
                 "  * Alpha",
+                "    * note",
                 "* Recipes",
             ))
         }
@@ -66,6 +67,7 @@ class VaultIndexTest {
             put("Recipes/Recipes.md", listOf(
                 "* Pasta",
                 "  * Bolognese",
+                "    * notes",
                 "* Salads",
             ))
         }
@@ -86,11 +88,68 @@ class VaultIndexTest {
     }
 
     @Test
+    fun search_ranks_content_pages_above_external_files() = runTest {
+        // "FooContent" has 5 children (content page); "FooFile" is an
+        // empty loose file (external file boundary). Both should
+        // surface, with the content page first.
+        val vault = FakeVault().apply {
+            put("Root.md", listOf("* leaf"))
+            put("FooContent.md", listOf(
+                "* a", "* b", "* c", "* d", "* e",
+            ))
+            put("FooFile.md", listOf(""))
+        }
+        val index = vault.newIndex()
+        val hits = index.search("Foo")
+        assertEquals(2, hits.size)
+        assertEquals("FooContent", hits[0].title)
+        assertEquals("FooFile", hits[1].title)
+    }
+
+    @Test
+    fun search_filters_out_leaf_bullets() = runTest {
+        // "Foo" inline bullet has zero descendants — should be filtered
+        // out. "FooParent" with one child should remain.
+        val vault = FakeVault().apply {
+            put("Root.md", listOf(
+                "* Foo",
+                "* FooParent",
+                "  * leaf",
+            ))
+        }
+        val index = vault.newIndex()
+        val hits = index.search("Foo")
+        // Only the bullet with descendants survives. The leaf "Foo" and
+        // the inline "leaf" child are both filtered (the latter doesn't
+        // match the query anyway).
+        assertEquals(listOf("FooParent"), hits.map { it.title })
+    }
+
+    @Test
+    fun search_marks_promoted_ref_bullets_as_file_boundaries() = runTest {
+        val vault = FakeVault().apply {
+            put("Root.md", listOf("* Topic"), promoted = mapOf(0 to ref("Topic/Topic.md")))
+            put("Topic/Topic.md", listOf("* leaf"))
+        }
+        val index = vault.newIndex()
+        val topic = index.search("Topic").single()
+        assertTrue(topic.isFileBoundary, "promoted-ref bullet should be flagged as a file boundary")
+        // descendantCount counts everything reachable in the unified tree:
+        // Topic itself contains "leaf" as its only child.
+        assertEquals(1, topic.descendantCount)
+    }
+
+    @Test
     fun search_ranks_earlier_match_position_higher() = runTest {
+        // Both bullets need at least one child so they survive the
+        // leaf filter — matters here because we're testing position
+        // ranking, not the leaf rule.
         val vault = FakeVault().apply {
             put("Root.md", listOf(
                 "* My foo recipe",
+                "  * a",
                 "* Foo",
+                "  * a",
             ))
         }
         val index = vault.newIndex()
@@ -211,6 +270,50 @@ class VaultIndexTest {
     }
 
     @Test
+    fun resolve_falls_back_to_unique_suffix_match_for_underqualified_url() = runTest {
+        // Mirror the user's vault: Root.md hosts Ämnen, Ämnen.md hosts Teknik,
+        // Teknik.md hosts Programmering → Kotlin. The URL omits the leading
+        // "Ämnen" segment (a stale link from before reorganisation). With one
+        // matching path tail, the fallback should resolve to Kotlin anyway.
+        val vault = FakeVault().apply {
+            put("Root.md", listOf("* Ämnen"), promoted = mapOf(0 to ref("Ämnen/Ämnen.md")))
+            put("Ämnen/Ämnen.md", listOf("* Teknik"), promoted = mapOf(0 to ref("Ämnen/Teknik/Teknik.md")))
+            put("Ämnen/Teknik/Teknik.md", listOf(
+                "* Programmering",
+                "  * Kotlin",
+                "    * some stuff",
+            ))
+        }
+        val index = vault.newIndex()
+        val res = index.resolve(
+            url = LinkUrl(listOf("Teknik", "Programmering", "Kotlin"), isAbsolute = true),
+            cursorTitlePath = emptyList(),
+        )
+        assertTrue(res is VaultIndex.Resolution.Found)
+        assertEquals("Ämnen/Teknik/Teknik.md", res.fileRel)
+        assertEquals(listOf("Programmering", "Kotlin"), res.titlePathInFile)
+    }
+
+    @Test
+    fun resolve_does_not_fall_back_when_suffix_is_ambiguous() = runTest {
+        val vault = FakeVault().apply {
+            put("Root.md", listOf(
+                "* A",
+                "  * Leaf",
+                "* B",
+                "  * Leaf",
+            ))
+        }
+        val index = vault.newIndex()
+        // "Leaf" alone is ambiguous — two nodes with the same suffix.
+        val res = index.resolve(
+            url = LinkUrl(listOf("Mystery", "Leaf"), isAbsolute = true),
+            cursorTitlePath = emptyList(),
+        )
+        assertEquals(VaultIndex.Resolution.NotFound, res)
+    }
+
+    @Test
     fun resolve_picks_first_match_in_document_order_on_collision() = runTest {
         val vault = FakeVault().apply {
             put("Root.md", listOf(
@@ -277,7 +380,10 @@ class VaultIndexTest {
     fun search_finds_loose_files_not_reachable_from_root() = runTest {
         val vault = FakeVault().apply {
             put("Root.md", listOf("* Inbox"))
-            put("Starred.md", listOf("* Bookmark"))
+            put("Starred.md", listOf(
+                "* Bookmark",
+                "  * note",
+            ))
             put("subdir/Random.md", listOf("* something"))
         }
         val index = vault.newIndex()
@@ -285,14 +391,17 @@ class VaultIndexTest {
         assertEquals(1, starred.size)
         assertEquals("Starred.md", starred[0].fileRel)
         assertEquals(emptyList(), starred[0].titlePathInFile)
-        // Bullets inside loose files surface too, prefixed by the file's title.
+        // Bullets inside loose files surface too, prefixed by the file's
+        // title path (which now includes the directory chain).
         val bookmark = index.search("Bookmark").single()
         assertEquals(listOf("Starred", "Bookmark"), bookmark.titlePathFromRoot)
         assertEquals(listOf("Bookmark"), bookmark.titlePathInFile)
-        // Files in subdirs are findable by their basename, not their path.
+        // Files in subdirs are findable by basename, but their full
+        // title path includes the directory so duplicate basenames in
+        // different directories stay disambiguated.
         val random = index.search("Random").single()
         assertEquals("subdir/Random.md", random.fileRel)
-        assertEquals(listOf("Random"), random.titlePathFromRoot)
+        assertEquals(listOf("subdir", "Random"), random.titlePathFromRoot)
     }
 
     @Test
@@ -309,6 +418,80 @@ class VaultIndexTest {
         assertTrue(res is VaultIndex.Resolution.Found)
         assertEquals("Starred.md", res.fileRel)
         assertEquals(emptyList(), res.titlePathInFile)
+    }
+
+    @Test
+    fun loose_files_with_same_basename_get_distinct_paths() = runTest {
+        // Mirrors the user's vault: two `Framna/Framna.md` files in
+        // different directories. Each must resolve independently.
+        val vault = FakeVault().apply {
+            put("Root.md", listOf("* dummy"))
+            put("Framna/Framna.md", listOf("* a", "  * note"))
+            put("Work/Framna/Framna.md", listOf("* b", "  * note"))
+        }
+        val index = vault.newIndex()
+
+        val res1 = index.resolve(
+            url = LinkUrl(listOf("Framna"), isAbsolute = true),
+            cursorTitlePath = emptyList(),
+        )
+        assertTrue(res1 is VaultIndex.Resolution.Found)
+        assertEquals("Framna/Framna.md", res1.fileRel)
+
+        val res2 = index.resolve(
+            url = LinkUrl(listOf("Work", "Framna"), isAbsolute = true),
+            cursorTitlePath = emptyList(),
+        )
+        assertTrue(res2 is VaultIndex.Resolution.Found)
+        assertEquals("Work/Framna/Framna.md", res2.fileRel)
+    }
+
+    @Test
+    fun loose_files_walk_into_inner_bullets_via_directory_segments() = runTest {
+        // `/Work/Framna/topic` should walk through the synthetic
+        // "Work" directory node, into the Framna FileRoot, then to the
+        // file's top-level bullet "topic".
+        val vault = FakeVault().apply {
+            put("Root.md", listOf("* dummy"))
+            put("Work/Framna/Framna.md", listOf(
+                "* topic",
+                "  * detail",
+            ))
+        }
+        val index = vault.newIndex()
+        val res = index.resolve(
+            url = LinkUrl(listOf("Work", "Framna", "topic"), isAbsolute = true),
+            cursorTitlePath = emptyList(),
+        )
+        assertTrue(res is VaultIndex.Resolution.Found)
+        assertEquals("Work/Framna/Framna.md", res.fileRel)
+        assertEquals(listOf("topic"), res.titlePathInFile)
+    }
+
+    @Test
+    fun suffix_fallback_dedupes_duplicate_bullets_in_same_file() = runTest {
+        // The user's `Work/Framna/Framna.md` had two `* [1-on-1s](...)`
+        // bullets that both reduced to `* 1-on-1s` after parsing.
+        // Without dedupe in the suffix fallback, the under-qualified
+        // URL `/Framna/1-on-1s` (omitting the leading "Work" segment)
+        // would see two matches and bail. Same target → should resolve.
+        val vault = FakeVault().apply {
+            put("Root.md", listOf("* dummy"))
+            put("Work/Framna/Framna.md", listOf(
+                "* 1-on-1s",
+                "  * detail",
+                "* 1-on-1s",   // duplicate-titled bullet; same in-file path
+                "  * detail2",
+            ))
+        }
+        val index = vault.newIndex()
+        val res = index.resolve(
+            url = LinkUrl(listOf("Framna", "1-on-1s"), isAbsolute = true),
+            cursorTitlePath = emptyList(),
+        )
+        assertTrue(res is VaultIndex.Resolution.Found)
+        assertEquals("Work/Framna/Framna.md", res.fileRel)
+        assertEquals(listOf("1-on-1s"), res.titlePathInFile)
     }
 
     @Test
@@ -334,14 +517,18 @@ class VaultIndexTest {
 
     @Test
     fun shortestUrlFor_uses_single_segment_when_target_is_a_sibling() = runTest {
+        // Each top-level bullet has a child so it survives the leaf
+        // filter — search() needs to surface them for the test.
         val vault = FakeVault().apply {
             put("Root.md", listOf(
                 "* A",
+                "  * a-child",
                 "* B",
+                "  * b-child",
             ))
         }
         val index = vault.newIndex()
-        val target = index.search("A").single()
+        val target = index.search("A").single { it.title == "A" }
         val url = index.shortestUrlFor(target, cursorTitlePath = listOf("B"))
         assertEquals(LinkUrl(listOf("A"), isAbsolute = false), url)
     }
@@ -358,6 +545,7 @@ class VaultIndexTest {
                 "    * Sub",
                 "      * Cursor",
                 "    * Target",
+                "      * payload",
             ))
         }
         val index = vault.newIndex()
@@ -379,6 +567,7 @@ class VaultIndexTest {
                 "      * D",   // depth 4
                 "        * E", // depth 5
                 "* Far",
+                "  * payload",
             ))
         }
         val index = vault.newIndex()

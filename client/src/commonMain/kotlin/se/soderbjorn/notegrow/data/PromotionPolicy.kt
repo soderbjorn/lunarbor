@@ -58,16 +58,19 @@ object PromotionPolicy {
 
     /**
      * Subtree must have at least this many descendants to be promoted into
-     * its own file. Production: 40 (≈ a screenful). Debug: 3.
+     * its own file. Production: 40 (≈ a screenful). Debug: 10 — small
+     * enough to see promotions while editing a few bullets, large enough
+     * that a depth-3 chain like `Ämnen → Teknik → Programmering → Kotlin`
+     * doesn't fragment into a file per level.
      */
-    val promoteMinDescendants: Int get() = if (DEBUG) 3 else 40
+    val promoteMinDescendants: Int get() = if (DEBUG) 10 else 40
 
     /**
      * An already-promoted subtree shrinks back below this descendant count
      * gets inlined again. The gap to [promoteMinDescendants] is the
-     * hysteresis band. Production: 15. Debug: 1.
+     * hysteresis band. Production: 15. Debug: 4.
      */
-    val demoteMaxDescendants: Int get() = if (DEBUG) 1 else 15
+    val demoteMaxDescendants: Int get() = if (DEBUG) 4 else 15
 
     /**
      * Subtrees deeper than this in the global outline are never promoted.

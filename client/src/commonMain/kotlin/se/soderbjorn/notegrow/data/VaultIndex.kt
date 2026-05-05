@@ -127,11 +127,30 @@ class VaultIndex(
      *   (the bullet that promotes the file lives in its parent file —
      *   this hit represents the linked file's "I'm here" entry).
      */
+    /**
+     * @property title The node's own title — what the modal shows in
+     *   the primary line.
+     * @property titlePathFromRoot Full path from the vault root, ending
+     *   with [title].
+     * @property fileRel File the node currently lives in.
+     * @property titlePathInFile Path inside [fileRel] from the file's
+     *   root to this node. Empty for the root of a loose file.
+     * @property descendantCount Total number of nodes nested under this
+     *   one in the unified outline tree (transitively, across
+     *   promoted-ref boundaries). Used for "is this a content page?"
+     *   ranking — higher = more page-like.
+     * @property isFileBoundary `true` when this node is a `.md` file
+     *   in its own right: a loose file root, or a promoted-ref bullet
+     *   whose subtree lives in a separate file. Drives the
+     *   "external files rank above sparse bullets" tier.
+     */
     data class SearchHit(
         val title: String,
         val titlePathFromRoot: List<String>,
         val fileRel: String,
         val titlePathInFile: List<String>,
+        val descendantCount: Int = 0,
+        val isFileBoundary: Boolean = false,
     )
 
     /** One file's parsed view, used as input to every other walker. */
@@ -192,18 +211,88 @@ class VaultIndex(
         val needle = query.trim().lowercase()
         if (needle.isEmpty()) return emptyList()
         val all = enumerateAllNodes()
-        val scored = ArrayList<Pair<Int, SearchHit>>(all.size)
+        val scored = ArrayList<Pair<Long, SearchHit>>(all.size)
         for (hit in all) {
+            // Drop leaf bullets entirely. They're rarely useful as link
+            // targets and crowd the result list. External file boundaries
+            // (loose files, promoted-ref bullets) stay even when they're
+            // empty — the user explicitly wanted those to surface.
+            if (hit.descendantCount == 0 && !hit.isFileBoundary) continue
             val title = hit.title.lowercase()
             val pos = title.indexOf(needle)
             if (pos < 0) continue
-            // Lower scores rank higher. Position dominates; length tiebreaks.
-            val score = pos * 1_000 + (title.length - needle.length).coerceAtLeast(0)
-            scored += score to hit
+            scored += scoreOf(pos, hit, needle.length) to hit
         }
         if (scored.isEmpty()) return emptyList()
         scored.sortBy { it.first }
-        return scored.asSequence().map { it.second }.take(max).toList()
+        // Dedupe: two hits with the same `(fileRel, titlePathInFile)`
+        // address the same navigable target. Preserve the first-by-score
+        // occurrence so the user always sees the canonical one.
+        val seen = HashSet<Pair<String, List<String>>>()
+        val out = ArrayList<SearchHit>(scored.size.coerceAtMost(max))
+        for ((_, hit) in scored) {
+            if (!seen.add(hit.fileRel to hit.titlePathInFile)) continue
+            out += hit
+            if (out.size >= max) break
+        }
+        return out
+    }
+
+    /**
+     * Composite ranking score; **lower is better**. Sort keys, in
+     * descending priority:
+     *
+     *  1. **Match position.** A title that starts with the query beats
+     *     one that contains it later. Position is in characters.
+     *  2. **Content tier** — the user's "page-likeness" intuition:
+     *      - tier 0: bullets with many descendants (≥ [MANY_CHILDREN_THRESHOLD]).
+     *        These are topic / section pages.
+     *      - tier 1: external file boundaries (loose `.md` files and
+     *        promoted-ref bullets), regardless of descendant count.
+     *        Even an empty file is a "page" the user may want to
+     *        navigate to or fill.
+     *      - tier 2: bullets with at least one descendant but fewer
+     *        than the many-children threshold.
+     *      - tier 3: leaves (no descendants). Often single-line notes;
+     *        less useful as link targets.
+     *  3. **Title-length tiebreak.** Among hits that match at the same
+     *     position and tier, shorter titles rank first — they're the
+     *     more canonical hit for a given prefix.
+     *
+     * The score is packed into a [Long] to keep the comparators trivial.
+     */
+    private fun scoreOf(matchPos: Int, hit: SearchHit, needleLen: Int): Long {
+        val tier = when {
+            hit.descendantCount >= MANY_CHILDREN_THRESHOLD -> 0
+            hit.isFileBoundary -> 1
+            hit.descendantCount >= 1 -> 2
+            else -> 3
+        }
+        val lenSlop = (hit.title.length - needleLen).coerceAtLeast(0)
+        // Bit layout: matchPos (high) | tier | lenSlop (low). The shifts
+        // are wide enough that no field overflows for any plausible
+        // vault — titles aren't longer than a few thousand chars, the
+        // tier is 0..3, and matchPos is bounded by title length.
+        return (matchPos.toLong() shl 32) or
+            (tier.toLong() shl 24) or
+            (lenSlop.toLong().coerceAtMost(0xFFFFFF))
+    }
+
+    companion object {
+        /**
+         * Cap on how many `..` segments [shortestUrlFor] is willing to
+         * emit before giving up on the relative form.
+         */
+        private const val MAX_PARENT_HOPS: Int = 3
+
+        /**
+         * Descendant count at which a node is considered a "content
+         * page" for ranking — gets the top tier in [scoreOf]. Picked
+         * to be small enough that a meaningful topic with a handful of
+         * sub-bullets qualifies, large enough that a stray `* foo` with
+         * one child stays in the lower-priority tier.
+         */
+        private const val MANY_CHILDREN_THRESHOLD: Int = 5
     }
 
     /**
@@ -230,26 +319,85 @@ class VaultIndex(
         for (fileRel in listAllMdFiles()) {
             if (fileRel in visited) continue
             if (fileRel == rootFileName) continue
-            val title = fileTitleFromPath(fileRel)
+            val titlePath = titlePathForLooseFile(fileRel)
+            val title = titlePath.last()
             out += SearchHit(
                 title = title,
-                titlePathFromRoot = listOf(title),
+                titlePathFromRoot = titlePath,
                 fileRel = fileRel,
                 titlePathInFile = emptyList(),
+                isFileBoundary = true,
             )
             walkFile(
                 fileRel = fileRel,
-                parentTitlePathFromRoot = listOf(title),
+                parentTitlePathFromRoot = titlePath,
                 visited = visited,
                 visit = { out += it },
             )
         }
-        return out
+        return populateDescendantCounts(out)
     }
 
-    /** Filename basename without the `.md` extension; used as a loose file's title. */
-    private fun fileTitleFromPath(fileRel: String): String =
-        fileRel.substringAfterLast('/').removeSuffix(".md")
+    /**
+     * Single-pass post-processor: hits arrive in DFS document order, so
+     * a node's descendants always sit contiguously after it until the
+     * first hit whose path is not a strict descendant. We maintain an
+     * "ancestor stack" indexed into [hits]; for each new hit, anything
+     * on the stack that isn't a strict ancestor pops, then every
+     * remaining ancestor's count gets bumped.
+     *
+     * Returns a fresh list with [SearchHit.descendantCount] filled in.
+     */
+    private fun populateDescendantCounts(hits: List<SearchHit>): List<SearchHit> {
+        if (hits.isEmpty()) return hits
+        val counts = IntArray(hits.size)
+        val stack = ArrayDeque<Int>()
+        for (i in hits.indices) {
+            val path = hits[i].titlePathFromRoot
+            while (stack.isNotEmpty()) {
+                val topPath = hits[stack.last()].titlePathFromRoot
+                val ancestor = path.size > topPath.size &&
+                    topPath.indices.all { path[it].equals(topPath[it], ignoreCase = true) }
+                if (ancestor) break
+                stack.removeLast()
+            }
+            for (j in stack) counts[j]++
+            stack.addLast(i)
+        }
+        return List(hits.size) { hits[it].copy(descendantCount = counts[it]) }
+    }
+
+    /**
+     * Vault-root title path for a loose file — the directory chain
+     * leading to the file plus the filename basename. Doubled-name
+     * pairs (Notegrow's own promoted-file convention `<X>/<X>.md`) are
+     * collapsed so the path doesn't carry a redundant duplicate of
+     * the parent directory's name.
+     *
+     * Examples:
+     *   - `Starred.md` → `["Starred"]`
+     *   - `Framna/Framna.md` → `["Framna"]` (doubled-name collapse)
+     *   - `Work/Framna/Framna.md` → `["Work", "Framna"]`
+     *   - `Personal/Tech & programming.md` → `["Personal", "Tech & programming"]`
+     *
+     * Including the directory chain makes each loose file uniquely
+     * addressable even when basenames collide across directories
+     * (the user's vault has both `Framna/Framna.md` and
+     * `Work/Framna/Framna.md`).
+     */
+    private fun titlePathForLooseFile(fileRel: String): List<String> {
+        val parts = fileRel.split('/')
+        val fileName = parts.last().removeSuffix(".md")
+        val out = ArrayList<String>(parts.size)
+        out.addAll(parts.dropLast(1))
+        out.add(fileName)
+        if (out.size >= 2 &&
+            out[out.size - 1].equals(out[out.size - 2], ignoreCase = true)
+        ) {
+            out.removeAt(out.size - 1)
+        }
+        return out
+    }
 
     private suspend fun walkFile(
         fileRel: String,
@@ -298,15 +446,16 @@ class VaultIndex(
             val title = SubtreeCodec.titleOf(line)
             val newPathFromRoot = parentTitlePathFromRoot + title
             val newInFilePath = inFilePath + title
+            val ref = entry.promotedByRow[i]
             visit(
                 SearchHit(
                     title = title,
                     titlePathFromRoot = newPathFromRoot,
                     fileRel = entry.fileRel,
                     titlePathInFile = newInFilePath,
+                    isFileBoundary = ref != null,
                 )
             )
-            val ref = entry.promotedByRow[i]
             val end = DocumentLayout.subtreeEnd(entry.lines, i, indent)
             if (ref != null) {
                 // The bullet is a promoted-ref boundary: its children come
@@ -392,7 +541,7 @@ class VaultIndex(
             if (fileRel in visited) continue
             populateFileMap(
                 fileRel = fileRel,
-                fileHostPath = listOf(fileTitleFromPath(fileRel)),
+                fileHostPath = titlePathForLooseFile(fileRel),
                 out = out,
                 visited = visited,
             )
@@ -463,29 +612,52 @@ class VaultIndex(
         url: LinkUrl,
         cursorTitlePath: List<String>,
     ): Resolution {
+        val strict = resolveStrict(url, cursorTitlePath)
+        if (strict is Resolution.Found) return strict
+        // Strict walk failed — typically because the URL is under-qualified
+        // (was authored when the target had a shorter outline path, or by
+        // an earlier modal version that emitted truncated paths). Fall
+        // back to a suffix match: if exactly one node in the vault has a
+        // full path ending with the URL's segments, treat that as the
+        // intended target. Ambiguous (multiple matches) and zero matches
+        // both return NotFound — we never silently navigate somewhere
+        // unrelated.
+        return resolveBySuffixFallback(url)
+    }
+
+    /**
+     * Deterministic walk implementation. Returns [Resolution.NotFound]
+     * the moment any segment fails to match a child in the current
+     * scope; the caller layers a suffix-match fallback on top.
+     */
+    private suspend fun resolveStrict(
+        url: LinkUrl,
+        cursorTitlePath: List<String>,
+    ): Resolution {
         val startPath: List<String> = if (url.isAbsolute) {
             emptyList()
         } else {
-            // Parent of the cursor's bullet: drop the last segment.
-            // Empty when the cursor is at file root or has no bullet path.
             if (cursorTitlePath.isEmpty()) emptyList()
             else cursorTitlePath.dropLast(1)
         }
-        // Walk from vault root to startPath to anchor ourselves.
-        var current: WalkPosition? = WalkPosition.VaultRoot
+        var current: WalkPosition = WalkPosition.VaultRoot
         for (seg in startPath) {
-            current = childByTitle(current!!, seg) ?: return Resolution.NotFound
+            current = childByTitle(current, seg) ?: return Resolution.NotFound
         }
-        // Apply each URL segment.
         for (seg in url.segments) {
             current = if (seg == "..") {
-                walkUp(current!!) ?: return Resolution.NotFound
+                walkUp(current) ?: return Resolution.NotFound
             } else {
-                childByTitle(current!!, seg) ?: return Resolution.NotFound
+                childByTitle(current, seg) ?: return Resolution.NotFound
             }
         }
-        return when (val pos = current!!) {
+        return when (val pos = current) {
             is WalkPosition.VaultRoot -> Resolution.NotFound
+            // A directory segment with no `.md` file at exactly that
+            // path isn't a navigable target; let the suffix fallback
+            // try, in case the URL was authored to point at one of the
+            // directory's descendants.
+            is WalkPosition.DirectoryNode -> Resolution.NotFound
             is WalkPosition.FileRoot -> Resolution.Found(
                 fileRel = pos.fileRel,
                 titlePathInFile = emptyList(),
@@ -498,21 +670,78 @@ class VaultIndex(
     }
 
     /**
+     * Last-resort resolution: walk every reachable node and pick the
+     * one whose full title path *ends* with [url]'s segments. Returns
+     * [Resolution.Found] only when exactly one node matches, so an
+     * ambiguous URL still surfaces as NotFound rather than navigating
+     * somewhere surprising.
+     *
+     * Used when [resolve]'s deterministic walk fails — usually because
+     * the user has reorganized the vault and a previously-correct URL
+     * is now under-qualified.
+     */
+    private suspend fun resolveBySuffixFallback(url: LinkUrl): Resolution {
+        if (url.segments.isEmpty()) return Resolution.NotFound
+        // A relative URL with `..` segments has its own walk semantics; the
+        // suffix match isn't meaningful for those. Only run for paths made
+        // entirely of titles.
+        if (url.segments.any { it == ".." }) return Resolution.NotFound
+        val needle = url.segments
+        // Dedupe by `(fileRel, titlePathInFile)` — `enumerateAllNodes`
+        // doesn't dedupe (`search()` does that downstream), and a file
+        // that has two bullets with the same title (e.g. one inline
+        // and one promoted-ref both reading `* Foo`) would otherwise
+        // count as two distinct matches even though they resolve to
+        // the exact same target via the document-order match rule.
+        val seen = HashSet<Pair<String, List<String>>>()
+        var unique: SearchHit? = null
+        for (hit in enumerateAllNodes()) {
+            val full = hit.titlePathFromRoot
+            if (full.size < needle.size) continue
+            val tail = full.subList(full.size - needle.size, full.size)
+            val matches = tail.zip(needle).all { (a, b) -> a.equals(b, ignoreCase = true) }
+            if (!matches) continue
+            if (!seen.add(hit.fileRel to hit.titlePathInFile)) continue
+            if (unique != null) return Resolution.NotFound
+            unique = hit
+        }
+        val only = unique ?: return Resolution.NotFound
+        return Resolution.Found(fileRel = only.fileRel, titlePathInFile = only.titlePathInFile)
+    }
+
+    /**
      * Position during a title-path walk. A walk-cursor is either the
-     * synthetic vault root, the root of a loose file, or a specific
-     * bullet inside a file.
+     * synthetic vault root, an intermediate directory segment, the
+     * root of a loose file, or a specific bullet inside a file.
      */
     private sealed class WalkPosition {
         object VaultRoot : WalkPosition()
 
         /**
+         * An intermediate directory segment in a loose-file path that
+         * has no `.md` file at exactly this path but does contain
+         * deeper loose-file descendants (e.g. `Work/` when the only
+         * file is `Work/Framna/Framna.md`). Its children come purely
+         * from those deeper paths.
+         *
+         * @property fullPath Title path from the vault root to this
+         *   directory.
+         */
+        data class DirectoryNode(
+            val fullPath: List<String>,
+        ) : WalkPosition()
+
+        /**
          * The file root of a loose `.md` file (one not reachable from
          * the configured root via promoted-ref links). Its children
-         * are the file's top-level bullets.
+         * are the file's top-level bullets *plus* any deeper loose-file
+         * descendants whose path extends this one (so a doubled-name
+         * file like `Framna/Framna.md` can host both its own bullets
+         * AND a sibling like `Framna/Projects/...`).
          *
          * @property fileRel Vault-relative path of the file.
          * @property fullPath Title path from the vault root to this
-         *   file root (a single segment, the file's basename).
+         *   file root.
          */
         data class FileRoot(
             val fileRel: String,
@@ -539,7 +768,14 @@ class VaultIndex(
     /** Walks from [pos] one level up, or `null` when [pos] is already the vault root. */
     private suspend fun walkUp(pos: WalkPosition): WalkPosition? = when (pos) {
         is WalkPosition.VaultRoot -> null
-        is WalkPosition.FileRoot -> WalkPosition.VaultRoot
+        is WalkPosition.DirectoryNode -> {
+            if (pos.fullPath.size <= 1) WalkPosition.VaultRoot
+            else findByFullPath(pos.fullPath.dropLast(1))
+        }
+        is WalkPosition.FileRoot -> {
+            if (pos.fullPath.size <= 1) WalkPosition.VaultRoot
+            else findByFullPath(pos.fullPath.dropLast(1))
+        }
         is WalkPosition.Bullet -> {
             if (pos.fullPath.size <= 1) WalkPosition.VaultRoot
             else findByFullPath(pos.fullPath.dropLast(1))
@@ -572,13 +808,21 @@ class VaultIndex(
         return when (pos) {
             is WalkPosition.VaultRoot -> {
                 // Vault root's children = top-level bullets of the root
-                // file plus loose files at any depth in the vault dir.
+                // file plus loose files (or intermediate directories) at
+                // any depth in the vault dir.
                 findTopLevelChild(rootFileName, title, parentFullPath = emptyList())
-                    ?: findLooseFileChild(title)
+                    ?: findLooseChild(parentPath = emptyList(), title)
+            }
+            is WalkPosition.DirectoryNode -> {
+                findLooseChild(parentPath = pos.fullPath, title)
             }
             is WalkPosition.FileRoot -> {
-                // Loose file root's children = its top-level bullets.
+                // A loose file root's children are its top-level bullets
+                // *and* any deeper loose-file descendants whose host path
+                // extends this one (e.g. Framna/Framna.md hosts both its
+                // own bullets and Framna/Projects/...).
                 findTopLevelChild(pos.fileRel, title, parentFullPath = pos.fullPath)
+                    ?: findLooseChild(parentPath = pos.fullPath, title)
             }
             is WalkPosition.Bullet -> {
                 val entry = loadFileEntry(pos.fileRel)
@@ -595,26 +839,47 @@ class VaultIndex(
     }
 
     /**
-     * Returns a loose-file [WalkPosition.FileRoot] whose basename
-     * matches [title] (case-insensitive). "Loose" = present in
-     * [listAllMdFiles] output but not reachable from the configured
-     * root via promoted-ref links. The configured root file itself is
-     * never returned here — its bullets are the vault root's direct
-     * children, not a separate FileRoot node.
+     * Returns a loose-file walk position whose host path is exactly
+     * `parentPath + [title]`, or — when no file sits at that exact
+     * path but at least one deeper file's host path extends through it
+     * — a [WalkPosition.DirectoryNode] for the intermediate directory
+     * segment. Returns `null` when nothing is at or below this
+     * extended path.
+     *
+     * The map iteration is per-call (relies on
+     * [buildFileToFullPath]'s own cache for amortized cost). The
+     * configured root file is excluded — its bullets are vault-root
+     * direct children, not a separate FileRoot node.
      */
-    private suspend fun findLooseFileChild(title: String): WalkPosition.FileRoot? {
-        val target = title.lowercase()
+    private suspend fun findLooseChild(
+        parentPath: List<String>,
+        title: String,
+    ): WalkPosition? {
+        val target = parentPath + title
         val map = buildFileToFullPath()
+        var fileMatch: String? = null
+        var hasDeeperDescendant = false
         for ((fileRel, hostPath) in map) {
             if (fileRel == rootFileName) continue
-            // Loose files have host path of length 1 (just the file's
-            // own title) — promoted children have longer paths.
-            if (hostPath.size != 1) continue
-            if (hostPath[0].lowercase() == target) {
-                return WalkPosition.FileRoot(fileRel = fileRel, fullPath = hostPath)
+            if (hostPath.size < target.size) continue
+            val prefixMatches = target.indices.all {
+                hostPath[it].equals(target[it], ignoreCase = true)
+            }
+            if (!prefixMatches) continue
+            if (hostPath.size == target.size) {
+                fileMatch = fileRel
+            } else {
+                hasDeeperDescendant = true
             }
         }
-        return null
+        return when {
+            fileMatch != null -> WalkPosition.FileRoot(
+                fileRel = fileMatch,
+                fullPath = target,
+            )
+            hasDeeperDescendant -> WalkPosition.DirectoryNode(fullPath = target)
+            else -> null
+        }
     }
 
     /**
@@ -742,13 +1007,4 @@ class VaultIndex(
         return n
     }
 
-    companion object {
-        /**
-         * Cap on how many `..` segments [shortestUrlFor] is willing to
-         * emit before giving up on the relative form. Beyond three, the
-         * absolute path is usually shorter *and* easier for a human to
-         * read.
-         */
-        private const val MAX_PARENT_HOPS: Int = 3
-    }
 }

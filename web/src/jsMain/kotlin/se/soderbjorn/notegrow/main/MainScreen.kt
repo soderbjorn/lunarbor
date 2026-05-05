@@ -286,6 +286,36 @@ class MainScreen(
         editor.focus()
     }
 
+    /**
+     * Whether [target] is contained inside this pane's editor element.
+     * Used by the AppShell-level keydown delegate to know if it should
+     * dispatch a non-editor-focused keypress to this pane's editor (it
+     * shouldn't if focus is already inside the editor — the editor's
+     * own handler is about to fire).
+     */
+    fun editorContains(target: org.w3c.dom.Node?): Boolean {
+        if (target == null) return false
+        val editor = editorElement ?: return false
+        return editor.contains(target)
+    }
+
+    /**
+     * Synthesise a keydown event into this pane's editor handling
+     * pipeline. Used by AppShell's document-level key delegate so
+     * shortcuts like Cmd-Shift-Left work even when DOM focus is
+     * outside any editable (e.g., on `<body>` after the user closed a
+     * non-editor popover).
+     *
+     * Focuses the editor before dispatching so the regular flow
+     * (selection sync, model updates, paint) can settle in the right
+     * place once the dispatched key has done its work.
+     */
+    fun dispatchEditorKey(event: KeyboardEvent) {
+        val editor = editorElement ?: return
+        editor.focus()
+        handleKey(editor, event)
+    }
+
     // ----------------------------------------------------------------- input
 
     private fun wireInputListeners(editor: HTMLElement) {

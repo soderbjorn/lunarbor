@@ -140,7 +140,14 @@ class AppShell(
      * pattern as [starredModals]: lazily created on first open from the
      * command palette, reused thereafter, cleared in [closePane].
      */
-    private val insertLinkModals: MutableMap<String, InsertLinkModal> = mutableMapOf()
+    private val insertLinkModals: MutableMap<String, LinkSearchModal> = mutableMapOf()
+
+    /**
+     * Per-pane Navigate-to modals (Cmd-O / "Navigate to" command).
+     * Same lifecycle pattern as [insertLinkModals]: lazy first-open
+     * create, reuse thereafter, cleared in [closePane].
+     */
+    private val navigateToModals: MutableMap<String, LinkSearchModal> = mutableMapOf()
 
     /**
      * Per-pane [MainViewModel] handles, keyed by leaf pane id. Maintained
@@ -254,6 +261,21 @@ class AppShell(
      *  ways (the menu only fires when the platform actually has one). */
     private var hotkeysShortcutHandler: ((Event) -> Unit)? = null
 
+    /** Document-level Cmd/Ctrl+O listener installed in [render] — opens
+     *  the Navigate-to modal for the focused pane. Tracked so the
+     *  listener can be re-installed idempotently. */
+    private var navigateToShortcutHandler: ((Event) -> Unit)? = null
+
+    /** Document-level keydown delegate — dispatches editor shortcuts
+     *  to the focused pane's editor when DOM focus sits on
+     *  `<body>` / a non-editable element (e.g., right after a modal
+     *  close), so chords like Cmd-Shift-Left, undo, or arrow-key
+     *  navigation work without the user first re-clicking into the
+     *  contenteditable. Pure-formatting chords (Cmd-B/I/U/E/K) are
+     *  intentionally excluded — those should require explicit editor
+     *  focus to avoid surprise toggles from across the page. */
+    private var editorKeyDelegateHandler: ((Event) -> Unit)? = null
+
     /**
      * Singleton hotkeys cheatsheet modal. Opened from the macOS
      * application menu (`Notegrow → Hotkeys…`) via the `notegrow:show-hotkeys`
@@ -311,6 +333,8 @@ class AppShell(
 
         installPaletteShortcut()
         installHotkeysShortcut()
+        installNavigateToShortcut()
+        installEditorKeyDelegate()
         installHotkeysMenuBridge()
 
         rebuildShell()
@@ -359,6 +383,108 @@ class AppShell(
             hotkeysModal.open()
         }
         hotkeysShortcutHandler = handler
+        document.addEventListener("keydown", handler, /* capture = */ true)
+    }
+
+    /**
+     * Installs a bubble-phase (NOT capture) document-level keydown
+     * delegate that, when no editable element holds focus, dispatches
+     * editor-relevant chords to the focused pane's editor. Idempotent.
+     *
+     * **Bubble phase, not capture:** when focus *is* inside the editor
+     * the editor's own keydown handler runs first; that handler may
+     * `preventDefault` for keys it consumes, and `defaultPrevented`
+     * tells us to stand down. When focus is on `<body>` or a
+     * non-editable element, no upstream handler fires and this
+     * delegate routes the key to the editor.
+     *
+     * Skips:
+     *  - any key whose target sits inside an `<input>`, `<textarea>`,
+     *    or other `contenteditable` element (that element owns the key);
+     *  - pure-formatting chords (Cmd-B / Cmd-I / Cmd-U / Cmd-E / Cmd-K) —
+     *    the user explicitly excluded these so a stray Cmd-B doesn't
+     *    bold something across the page.
+     *  - bare keys without a modifier and without being a recognised
+     *    navigation key — typing on body shouldn't appear in the editor
+     *    out of nowhere.
+     */
+    private fun installEditorKeyDelegate() {
+        if (editorKeyDelegateHandler != null) return
+        val handler: (Event) -> Unit = lambda@{ e ->
+            val ke = e as? org.w3c.dom.events.KeyboardEvent ?: return@lambda
+            if (ke.defaultPrevented) return@lambda
+            val target = ke.target as? org.w3c.dom.Node ?: return@lambda
+            if (isInsideEditable(target)) return@lambda
+            if (!shouldDelegateToEditor(ke)) return@lambda
+            val paneId = focusedPaneId() ?: return@lambda
+            val mainScreen = paneEditors[paneId] ?: return@lambda
+            // The editor's handler may preventDefault; mirror that here
+            // so the browser doesn't run its own behaviour for chords
+            // we just consumed (e.g. Cmd-Z's browser undo).
+            mainScreen.dispatchEditorKey(ke)
+        }
+        editorKeyDelegateHandler = handler
+        document.addEventListener("keydown", handler, /* capture = */ false)
+    }
+
+    /** True when [node] (or an ancestor) is an editable form field or
+     *  a `contenteditable` host. */
+    private fun isInsideEditable(node: org.w3c.dom.Node): Boolean {
+        var n: org.w3c.dom.Node? = node
+        while (n != null) {
+            if (n is org.w3c.dom.Element) {
+                val tag = n.tagName
+                if (tag.equals("INPUT", true) || tag.equals("TEXTAREA", true)) return true
+                val ce = n.getAttribute("contenteditable")
+                if (ce != null && !ce.equals("false", ignoreCase = true)) return true
+            }
+            n = n.parentNode
+        }
+        return false
+    }
+
+    /** Predicate for the document-level delegate. */
+    private fun shouldDelegateToEditor(ke: org.w3c.dom.events.KeyboardEvent): Boolean {
+        // Pure-formatting chords (Cmd/Ctrl + a single letter, no other
+        // modifier) are excluded — the user wants those to require
+        // explicit editor focus.
+        if ((ke.metaKey || ke.ctrlKey) && !ke.altKey && !ke.shiftKey) {
+            when (ke.key.lowercase()) {
+                "b", "i", "u", "e", "k" -> return false
+            }
+        }
+        // Modifier-bearing chords are editor-relevant: undo/redo,
+        // selection extension (Cmd-Shift-Arrow), word-jump, etc.
+        if (ke.metaKey || ke.ctrlKey || ke.altKey) return true
+        // Bare navigation keys also delegate so arrow-key motion works
+        // without re-clicking the editor.
+        return when (ke.key) {
+            "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+            "Home", "End", "PageUp", "PageDown" -> true
+            else -> false
+        }
+    }
+
+    /**
+     * Document-level Cmd/Ctrl+O listener that opens the Navigate-to
+     * modal for the focused pane. Capture phase so the editor's own
+     * keydown handler doesn't swallow it inside a focused
+     * contenteditable. Idempotent.
+     */
+    private fun installNavigateToShortcut() {
+        if (navigateToShortcutHandler != null) return
+        val handler: (Event) -> Unit = lambda@{ e ->
+            val ke = e as? org.w3c.dom.events.KeyboardEvent ?: return@lambda
+            val isCmdO = (ke.metaKey || ke.ctrlKey) &&
+                !ke.altKey && !ke.shiftKey &&
+                ke.key.equals("o", ignoreCase = true)
+            if (!isCmdO) return@lambda
+            ke.preventDefault()
+            ke.stopPropagation()
+            val paneId = focusedPaneId() ?: return@lambda
+            openNavigateToModal(paneId)
+        }
+        navigateToShortcutHandler = handler
         document.addEventListener("keydown", handler, /* capture = */ true)
     }
 
@@ -432,6 +558,14 @@ class AppShell(
             run = {
                 val paneId = focusedPaneId()
                 if (paneId != null) openInsertLinkModal(paneId)
+            },
+        )
+        out += CommandPalette.Command(
+            id = "navigate-to",
+            title = "Navigate to",
+            run = {
+                val paneId = focusedPaneId()
+                if (paneId != null) openNavigateToModal(paneId)
             },
         )
         out += CommandPalette.Command(
@@ -1576,9 +1710,28 @@ class AppShell(
     private fun openInsertLinkModal(paneId: String) {
         if (paneViewModels[paneId] == null) return
         val modal = insertLinkModals.getOrPut(paneId) {
-            InsertLinkModal(
+            LinkSearchModal.forInsertLink(
                 parentScope = scope,
                 activePaneVmProvider = { paneViewModels[paneId] },
+                onAfterPick = { paneEditors[paneId]?.focusEditor() },
+            )
+        }
+        modal.open()
+    }
+
+    /**
+     * Opens the per-pane Navigate-to modal. Same lifecycle pattern as
+     * [openInsertLinkModal] — lazy first-open create, reuse thereafter.
+     * Reachable from the command palette ("Navigate to") and the
+     * Cmd-O shortcut.
+     */
+    private fun openNavigateToModal(paneId: String) {
+        if (paneViewModels[paneId] == null) return
+        val modal = navigateToModals.getOrPut(paneId) {
+            LinkSearchModal.forNavigateTo(
+                parentScope = scope,
+                activePaneVmProvider = { paneViewModels[paneId] },
+                onAfterPick = { paneEditors[paneId]?.focusEditor() },
             )
         }
         modal.open()
@@ -1778,6 +1931,15 @@ class AppShell(
                 font-size: 12px;
                 color: var(--t-text-secondary, rgba(255, 255, 255, 0.55));
                 margin-top: 2px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .notegrow-link-item-path {
+                font-size: 11px;
+                color: var(--t-text-secondary, rgba(255, 255, 255, 0.40));
+                margin-top: 1px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
@@ -2013,6 +2175,7 @@ ${HotkeysModal.STYLESHEET}
         paneEditors.remove(paneId)
         starredModals.remove(paneId)?.dispose()
         insertLinkModals.remove(paneId)?.close()
+        navigateToModals.remove(paneId)?.close()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
             // Last pane in a non-last tab: cascade to closing the tab.
             closeTab(tabId)
