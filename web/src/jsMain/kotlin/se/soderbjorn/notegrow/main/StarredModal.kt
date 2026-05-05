@@ -1,25 +1,27 @@
 /*
  * StarredModal.kt (jsMain)
  * ------------------------
- * Read-only popup that displays the contents of `Starred.md` — the user's
- * bookmark file — using the same outline renderer the live editor uses.
+ * Browse-only popup that lists every bookmark stored in `Starred.md`.
+ * Inspired by the Cmd-O navigation modal ([LinkSearchModal]) so users
+ * get the same arrow-key + Enter affordances they're used to —
+ * minus the type-to-filter input, which doesn't apply here because
+ * the bookmark file is the user's own curated list.
  *
- * One instance per pane (created lazily by [AppShell.openStarredModal]).
+ * One instance per pane (lazily created by [AppShell.openStarredModal]).
  * The modal:
  *
- * 1. Reads `Starred.md` through a *private* document-VM trio whose
- *    `rootFileName` is `Starred.md`. The trio is rebuilt on every open so
- *    a fresh disk snapshot is shown.
- * 2. Paints the file via [paint] inside a non-`contenteditable` host so
- *    the user cannot edit it from inside the modal.
- * 3. Intercepts clicks on the rendered bullet rows in the *capture* phase
- *    so the bullet's own zoom-into-modal handler never fires; instead the
- *    modal closes and the *parent pane*'s [MainViewModel] is asked to
- *    navigate to the bookmark target.
- * 4. Provides an "Add to starred" toggle that snapshots the parent pane's
- *    current navigation target — file alone, or `(file, zoomedRow)` — and
- *    appends a markdown-link bullet to `Starred.md` via
- *    [NoteRepository.appendStarredEntry].
+ * 1. Reads `Starred.md` through a *private* document-VM trio rooted at
+ *    `Starred.md`. Rebuilt on every open so a fresh disk snapshot is
+ *    shown.
+ * 2. Parses each markdown-link bullet via [parseLinkBullet] and renders
+ *    each as a row in the palette-list shape (title + path).
+ * 3. Supports keyboard navigation:
+ *    - `ArrowUp` / `ArrowDown` — move highlight.
+ *    - `Enter` — open the highlighted bookmark in the parent pane.
+ *    - `Escape` — close.
+ *    - `Cmd+D` / `Ctrl+D` — toggle the parent pane's current location
+ *      in/out of the starred list (same as the Add button).
+ * 4. Mouse: row click → open; row hover → highlight; Add button → toggle.
  *
  * The modal is appended to `document.body` with `position: fixed`. ESC,
  * outside-click on the backdrop, and the close button all dismiss it.
@@ -28,17 +30,14 @@
 package se.soderbjorn.notegrow.main
 
 import kotlinx.browser.document
-import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import org.w3c.dom.HTMLElement
-import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.dom.events.MouseEvent
@@ -53,13 +52,6 @@ import se.soderbjorn.notegrow.platform.FileSystem
  *   own per-open [SupervisorJob] underneath this scope so cancelling the
  *   modal cancels its document-VM autosave loop and state collector
  *   without disturbing anything else. [dispose] cancels everything.
- * @param fileSystem Platform filesystem, used to construct the modal's
- *   private [NoteRepository] (rooted at `Starred.md`).
- * @param noteRepository Shared repository used to append new bookmarks
- *   via [NoteRepository.appendStarredEntry]. Distinct from the modal's
- *   private repository so writes go through the same instance the rest
- *   of the app uses (keeping the on-disk file consistent with autosave's
- *   view of the world).
  * @param activePaneVmProvider Returns the parent pane's current
  *   [MainViewModel], or `null` if the pane has been torn down. Looked up
  *   on every interaction so the modal always targets the latest VM if
@@ -69,23 +61,7 @@ internal class StarredModal(
     private val parentScope: CoroutineScope,
     private val activePaneVmProvider: () -> MainViewModel?,
 ) {
-    private val style = EditorStyle()
-
-    /**
-     * Stateless platform filesystem instance used for both the modal's
-     * read-only document VM and bookmark writes. Constructed locally so
-     * the modal does not need to be threaded through DI — `FileSystem`
-     * holds no state across calls (every method delegates straight to
-     * `window.noteApi`).
-     */
     private val fileSystem = FileSystem()
-
-    /**
-     * Repository used by the "Add to starred" handler to append new
-     * bookmark entries to `Starred.md`. Distinct instance from the rest
-     * of the app's repository, but safe: writes go through `FileSystem`
-     * directly with no in-memory cache that could diverge.
-     */
     private val noteRepository = NoteRepository(fileSystem = fileSystem)
 
     /** Private repo whose `rootFileName` is `Starred.md`, so the modal's
@@ -106,7 +82,7 @@ internal class StarredModal(
 
     // ----- DOM refs -------------------------------------------------------
     private var backdropEl: HTMLElement? = null
-    private var bodyEl: HTMLElement? = null
+    private var listEl: HTMLElement? = null
     private var addStarBtn: HTMLElement? = null
     private var addStarBtnLabelEl: HTMLElement? = null
     /** True when the parent pane's current target is already in
@@ -114,6 +90,10 @@ internal class StarredModal(
      *  "Add". Kept in sync by [refreshAddStarButtonState]. */
     private var addStarBtnIsActive: Boolean = false
     private var documentKeyDownHandler: ((Event) -> Unit)? = null
+
+    // ----- list state -----------------------------------------------------
+    private var entries: List<BookmarkEntry> = emptyList()
+    private var highlightedIndex: Int = 0
 
     /**
      * Open the modal. If already open, closes the previous instance first
@@ -129,7 +109,7 @@ internal class StarredModal(
         document.body?.appendChild(backdrop)
         backdropEl = backdrop
 
-        attachEscDismiss()
+        attachDocumentKeyHandler()
         startModalVms()
         refreshAddStarButtonState()
     }
@@ -155,7 +135,7 @@ internal class StarredModal(
 
     private fun buildBackdrop(): HTMLElement {
         val b = document.createElement("div") as HTMLElement
-        b.className = "notegrow-starred-backdrop"
+        b.className = "notegrow-palette-backdrop"
         b.addEventListener("mousedown", { e ->
             // Only dismiss when the click originates on the backdrop
             // itself, not when it bubbles up from the panel.
@@ -170,38 +150,28 @@ internal class StarredModal(
 
     private fun buildPanel(): HTMLElement {
         val panel = document.createElement("div") as HTMLElement
-        panel.className = "notegrow-starred-panel"
+        panel.className = "notegrow-palette-panel notegrow-starred-panel"
         panel.setAttribute("role", "dialog")
         panel.setAttribute("aria-modal", "true")
         panel.setAttribute("aria-label", "Starred")
+        panel.addEventListener("mousedown", { e ->
+            (e as MouseEvent).stopPropagation()
+        })
 
         panel.appendChild(buildHeader())
 
-        val body = document.createElement("div") as HTMLElement
-        body.className = "notegrow-starred-body notegrow-editor"
-        body.style.apply {
-            fontFamily = style.fontFamily
-            fontSize = "${style.fontSize}px"
-            setProperty("line-height", "${style.lineHeightPx}px")
-            paddingTop = "${style.editorPaddingTopPx}px"
-            paddingBottom = "${style.editorPaddingBottomPx}px"
-            paddingLeft = "${style.editorPaddingLeftPx}px"
-            paddingRight = "${style.editorPaddingRightPx}px"
-            setProperty("overflow-y", "auto")
-        }
-        // Capture-phase click handler: intercept bullet/row clicks BEFORE
-        // OutlinePaintLoop's per-bullet zoom handler fires, so the modal
-        // closes and the parent pane navigates instead.
-        body.addEventListener("click", { e ->
-            handleBodyClick(e as MouseEvent)
-        }, /* useCapture = */ true)
-        bodyEl = body
-        panel.appendChild(body)
+        val list = document.createElement("div") as HTMLElement
+        list.className = "notegrow-palette-list"
+        listEl = list
+        panel.appendChild(list)
 
         return panel
     }
 
     private fun buildHeader(): HTMLElement {
+        // Slim header row mirroring the cmd-O input slot's height/border,
+        // but without an input — instead it shows the modal title plus
+        // the Add and Close affordances aligned right.
         val header = document.createElement("div") as HTMLElement
         header.className = "notegrow-starred-header"
 
@@ -213,7 +183,7 @@ internal class StarredModal(
         val addBtn = document.createElement("button") as HTMLElement
         addBtn.className = "notegrow-starred-add"
         addBtn.setAttribute("type", "button")
-        addBtn.title = "Add the active pane's current location to your starred list"
+        addBtn.title = "Add the active pane's current location to your starred list (⌘D)"
         val iconSpan = document.createElement("span") as HTMLElement
         iconSpan.className = "notegrow-starred-add-icon"
         iconSpan.innerHTML = AppShell.ICON_STAR
@@ -227,6 +197,10 @@ internal class StarredModal(
             e.stopPropagation()
             handleToggleStarred()
         })
+        // Don't allow keyboard tab-focus to land on the button; the
+        // panel's own keydown handler maps Cmd/Ctrl+D to the same
+        // action, and tab-into-button would otherwise eat arrow keys.
+        addBtn.tabIndex = -1
         addStarBtn = addBtn
         addStarBtnLabelEl = labelSpan
         header.appendChild(addBtn)
@@ -237,6 +211,7 @@ internal class StarredModal(
         closeBtn.title = "Close"
         closeBtn.setAttribute("aria-label", "Close")
         closeBtn.innerHTML = "&times;"
+        closeBtn.tabIndex = -1
         closeBtn.addEventListener("click", { e ->
             (e as MouseEvent).preventDefault()
             e.stopPropagation()
@@ -251,9 +226,9 @@ internal class StarredModal(
 
     /**
      * Build a fresh per-open document-VM trio rooted at `Starred.md`,
-     * launch a state collector that paints the body on every emission,
-     * and remember the latest state so the click handler can resolve
-     * row → markdown link without re-querying.
+     * launch a state collector that re-renders the list on every
+     * emission, and remember the latest state so toggle-star can
+     * resolve "is this target already starred?" without re-querying.
      */
     private fun startModalVms() {
         val parentJob = parentScope.coroutineContext[Job]
@@ -277,11 +252,99 @@ internal class StarredModal(
             mainVm.stateFlow.collect { envelope ->
                 val st = envelope.backingState ?: return@collect
                 latestState = st
-                val body = bodyEl ?: return@collect
-                paint(body, st, mainVm, style)
+                renderEntries(buildEntries(st))
                 refreshAddStarButtonState()
             }
         }
+    }
+
+    private fun buildEntries(state: PaneBackingViewModel.State): List<BookmarkEntry> {
+        val docState = state.documentState ?: return emptyList()
+        if (!docState.isLoaded) return emptyList()
+        val out = ArrayList<BookmarkEntry>(state.lines.size)
+        for (line in state.lines) {
+            val parsed = parseLinkBullet(line) ?: continue
+            out.add(
+                BookmarkEntry(
+                    label = parsed.label.ifBlank { defaultFileTitle(parsed.path) },
+                    path = parsed.path,
+                    row = parsed.row,
+                    rawHref = parsed.rawHref,
+                ),
+            )
+        }
+        return out
+    }
+
+    private fun renderEntries(newEntries: List<BookmarkEntry>) {
+        val list = listEl ?: return
+        // Preserve highlight if it still maps to a bookmark with the
+        // same href; otherwise reset to the top.
+        val priorHref = entries.getOrNull(highlightedIndex)?.rawHref
+        entries = newEntries
+        highlightedIndex = if (newEntries.isEmpty()) 0
+        else newEntries.indexOfFirst { it.rawHref == priorHref }.takeIf { it >= 0 } ?: 0
+
+        while (list.firstChild != null) list.removeChild(list.firstChild!!)
+        if (newEntries.isEmpty()) {
+            val empty = document.createElement("div") as HTMLElement
+            empty.className = "notegrow-palette-empty"
+            empty.textContent =
+                "No bookmarks yet. Press ⌘D inside this dialog (or click ★ in any pane) to add one."
+            list.appendChild(empty)
+            return
+        }
+        for ((index, entry) in newEntries.withIndex()) {
+            val row = document.createElement("button") as HTMLElement
+            row.className = "notegrow-palette-item notegrow-link-item" +
+                if (index == highlightedIndex) " is-active" else ""
+            row.setAttribute("type", "button")
+            row.tabIndex = -1
+
+            val titleEl = document.createElement("div") as HTMLElement
+            titleEl.className = "notegrow-link-item-title"
+            titleEl.textContent = entry.label
+            row.appendChild(titleEl)
+
+            val pathEl = document.createElement("div") as HTMLElement
+            pathEl.className = "notegrow-link-item-path"
+            pathEl.textContent = if (entry.row != null) "${entry.path} #${entry.row}"
+            else entry.path
+            row.appendChild(pathEl)
+
+            row.addEventListener("mousemove", { _ ->
+                if (highlightedIndex != index) {
+                    highlightedIndex = index
+                    repaintHighlight()
+                }
+            })
+            row.addEventListener("mousedown", { e ->
+                (e as MouseEvent).preventDefault()
+            })
+            row.addEventListener("click", { _ ->
+                highlightedIndex = index
+                openHighlighted()
+            })
+            list.appendChild(row)
+        }
+    }
+
+    private fun repaintHighlight() {
+        val list = listEl ?: return
+        val rows = list.children
+        for (i in 0 until rows.length) {
+            val row = rows.item(i) as? HTMLElement ?: continue
+            val active = i == highlightedIndex
+            row.className = "notegrow-palette-item notegrow-link-item" +
+                if (active) " is-active" else ""
+            if (active) row.scrollIntoView(js("({block:'nearest'})"))
+        }
+    }
+
+    private fun openHighlighted() {
+        val entry = entries.getOrNull(highlightedIndex) ?: return
+        navigateParentTo(entry.toParsedLink())
+        closeInternal()
     }
 
     // -------------------------------------------------------- interactions
@@ -359,44 +422,10 @@ internal class StarredModal(
         modalPaneBackingVm = null
         modalMainVm = null
         if (pane != null) parentScope.launch { pane.release() }
-        // Clear the body so the next paint does not stack on top of stale
-        // rows during the brief reload window.
-        bodyEl?.innerHTML = ""
+        listEl?.let { while (it.firstChild != null) it.removeChild(it.firstChild!!) }
+        entries = emptyList()
+        highlightedIndex = 0
         startModalVms()
-    }
-
-    /**
-     * Capture-phase click on the modal body. If the click originated on a
-     * row that is a markdown-link bullet, close the modal and route the
-     * navigation to the parent pane.
-     */
-    private fun handleBodyClick(e: MouseEvent) {
-        val rowDiv = closestRowDiv(e.target as? Node) ?: return
-        val rowAttr = rowDiv.getAttribute("data-row") ?: return
-        val rowIdx = rowAttr.toIntOrNull() ?: return
-        val state = latestState ?: return
-        val rawLine = state.lines.getOrNull(rowIdx) ?: return
-        val link = parseLinkBullet(rawLine) ?: return
-
-        e.preventDefault()
-        e.stopPropagation()
-        // stopImmediatePropagation prevents OutlinePaintLoop's per-bullet
-        // and per-chevron handlers (registered on inner elements during
-        // the bubble phase) from firing.
-        e.stopImmediatePropagation()
-
-        navigateParentTo(link)
-        closeInternal()
-    }
-
-    private fun closestRowDiv(start: Node?): HTMLElement? {
-        var n: Node? = start
-        while (n != null) {
-            if (n is HTMLElement && n.hasAttribute("data-row")) return n
-            n = n.parentNode
-            if (n === bodyEl) return null
-        }
-        return null
     }
 
     /**
@@ -472,11 +501,11 @@ internal class StarredModal(
         addStarBtnIsActive = active
         if (active) {
             btn.classList.add("is-active")
-            btn.title = "Remove the active pane's current location from your starred list"
+            btn.title = "Remove the active pane's current location from your starred list (⌘D)"
             addStarBtnLabelEl?.textContent = "Remove from starred"
         } else {
             btn.classList.remove("is-active")
-            btn.title = "Add the active pane's current location to your starred list"
+            btn.title = "Add the active pane's current location to your starred list (⌘D)"
             addStarBtnLabelEl?.textContent = "Add to starred"
         }
     }
@@ -486,11 +515,13 @@ internal class StarredModal(
     private fun closeInternal() {
         backdropEl?.parentNode?.removeChild(backdropEl!!)
         backdropEl = null
-        bodyEl = null
+        listEl = null
         addStarBtn = null
         addStarBtnLabelEl = null
         addStarBtnIsActive = false
         latestState = null
+        entries = emptyList()
+        highlightedIndex = 0
         val pane = modalPaneBackingVm
         openJob?.cancel()
         openJob = null
@@ -499,32 +530,99 @@ internal class StarredModal(
         modalPaneBackingVm = null
         modalMainVm = null
         if (pane != null) parentScope.launch { pane.release() }
-        detachEscDismiss()
+        detachDocumentKeyHandler()
     }
 
-    private fun attachEscDismiss() {
+    private fun attachDocumentKeyHandler() {
         val handler: (Event) -> Unit = lambda@ { e ->
             val ke = e as? KeyboardEvent ?: return@lambda
-            if (ke.key == "Escape") {
-                e.preventDefault()
-                e.stopPropagation()
-                closeInternal()
+            // Cmd/Ctrl+D toggles starred for the parent pane's current
+            // target — same effect as clicking the Add button. Honoured
+            // before the fall-through arrow/Enter handling so the
+            // shortcut works regardless of which row is highlighted.
+            if ((ke.metaKey || ke.ctrlKey) && ke.key.equals("d", ignoreCase = true)) {
+                ke.preventDefault()
+                ke.stopPropagation()
+                handleToggleStarred()
+                return@lambda
+            }
+            when (ke.key) {
+                "Escape" -> {
+                    ke.preventDefault()
+                    ke.stopPropagation()
+                    closeInternal()
+                }
+                "ArrowDown" -> {
+                    if (entries.isNotEmpty()) {
+                        ke.preventDefault()
+                        ke.stopPropagation()
+                        highlightedIndex = (highlightedIndex + 1).coerceAtMost(entries.lastIndex)
+                        repaintHighlight()
+                    }
+                }
+                "ArrowUp" -> {
+                    if (entries.isNotEmpty()) {
+                        ke.preventDefault()
+                        ke.stopPropagation()
+                        highlightedIndex = (highlightedIndex - 1).coerceAtLeast(0)
+                        repaintHighlight()
+                    }
+                }
+                "Home" -> {
+                    if (entries.isNotEmpty()) {
+                        ke.preventDefault()
+                        ke.stopPropagation()
+                        highlightedIndex = 0
+                        repaintHighlight()
+                    }
+                }
+                "End" -> {
+                    if (entries.isNotEmpty()) {
+                        ke.preventDefault()
+                        ke.stopPropagation()
+                        highlightedIndex = entries.lastIndex
+                        repaintHighlight()
+                    }
+                }
+                "Enter" -> {
+                    if (entries.isNotEmpty()) {
+                        ke.preventDefault()
+                        ke.stopPropagation()
+                        openHighlighted()
+                    }
+                }
             }
         }
         documentKeyDownHandler = handler
         document.addEventListener("keydown", handler, /* capture = */ true)
     }
 
-    private fun detachEscDismiss() {
+    private fun detachDocumentKeyHandler() {
         documentKeyDownHandler?.let {
             document.removeEventListener("keydown", it, /* capture = */ true)
         }
         documentKeyDownHandler = null
     }
 
-    // -------------------------------------------------------- link parser
+    // -------------------------------------------------------- entries
+
+    private data class BookmarkEntry(
+        val label: String,
+        val path: String,
+        val row: Int?,
+        val rawHref: String,
+    ) {
+        fun toParsedLink(): ParsedLink = ParsedLink(path = path, row = row, rawHref = rawHref)
+    }
 
     private data class ParsedLink(
+        val path: String,
+        val row: Int?,
+        val rawHref: String,
+    )
+
+    private data class ParsedBullet(
+        val label: String,
         val path: String,
         val row: Int?,
         val rawHref: String,
@@ -538,7 +636,7 @@ internal class StarredModal(
      * Recognises `#r=<n>` as a row anchor; ignores any other fragment
      * (treats it as part of the path).
      */
-    private fun parseLinkBullet(line: String): ParsedLink? {
+    private fun parseLinkBullet(line: String): ParsedBullet? {
         var i = 0
         while (i < line.length && line[i] == ' ') i++
         if (i + 2 > line.length) return null
@@ -561,6 +659,7 @@ internal class StarredModal(
         }
         if (j >= line.length || depth != 0) return null
         if (j + 1 >= line.length || line[j + 1] != '(') return null
+        val label = line.substring(labelStart, j)
         var k = j + 2
         var rawHref = ""
         if (k < line.length && line[k] == '<') {
@@ -590,7 +689,7 @@ internal class StarredModal(
         } else {
             rawHref to null
         }
-        return ParsedLink(path = path, row = row, rawHref = rawHref)
+        return ParsedBullet(label = label, path = path, row = row, rawHref = rawHref)
     }
 
     private fun defaultFileTitle(fileRel: String): String {

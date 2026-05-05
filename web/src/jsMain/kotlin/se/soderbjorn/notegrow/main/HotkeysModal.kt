@@ -441,6 +441,16 @@ internal class HotkeysModal {
             "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" " +
                 "stroke-linejoin=\"round\"><path d=\"M3 8h6l2-3h10v14H3z\"/></svg>"
+        private const val ICON_STARRED: String =
+            "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
+                "stroke-linejoin=\"round\"><polygon points=\"12 2 15 9 22 9.5 17 14.5 " +
+                "18.5 21.5 12 18 5.5 21.5 7 14.5 2 9.5 9 9\"/></svg>"
+        private const val ICON_NAVIGATE: String =
+            "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
+                "stroke-linejoin=\"round\"><circle cx=\"11\" cy=\"11\" r=\"6\"/>" +
+                "<line x1=\"15.5\" y1=\"15.5\" x2=\"20\" y2=\"20\"/></svg>"
 
         /**
          * Curated chord list, grouped for display. Groups render in this
@@ -450,7 +460,10 @@ internal class HotkeysModal {
          * - Outline navigation: [MainScreen.handleKey] Opt-Cmd zoom set.
          * - Window chrome: darkness-toolkit `StandardHotkeys`
          *   (LayoutRenderer / TabBar registrations).
-         * - App: [AppShell.installPaletteShortcut] + the Hotkeys menu item.
+         * - App: [AppShell.installPaletteShortcut],
+         *   [AppShell.installNavigateToShortcut],
+         *   [AppShell.installStarredShortcut],
+         *   [AppShell.installHotkeysShortcut] + the Hotkeys menu item.
          */
         private val HOTKEY_GROUPS: List<HotkeyGroup> = listOf(
             HotkeyGroup(
@@ -555,6 +568,16 @@ internal class HotkeysModal {
                         label = "Open command palette",
                         chord = listOf(CMD, "P"),
                         iconSvg = ICON_PALETTE,
+                    ),
+                    HotkeyEntry(
+                        label = "Navigate to file",
+                        chord = listOf(CMD, "O"),
+                        iconSvg = ICON_NAVIGATE,
+                    ),
+                    HotkeyEntry(
+                        label = "Open Starred",
+                        chord = listOf(CMD, "S"),
+                        iconSvg = ICON_STARRED,
                     ),
                     HotkeyEntry(
                         label = "Show this hotkeys cheatsheet",

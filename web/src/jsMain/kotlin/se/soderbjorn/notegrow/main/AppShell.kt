@@ -269,6 +269,13 @@ class AppShell(
      *  listener can be re-installed idempotently. */
     private var navigateToShortcutHandler: ((Event) -> Unit)? = null
 
+    /** Document-level Cmd/Ctrl+S listener installed in [render] — opens
+     *  the Starred (bookmarks) modal for the focused pane. Notes are
+     *  autosaved so Cmd+S has no "save document" meaning to collide
+     *  with; we override the browser's default save dialog in capture
+     *  phase. */
+    private var starredShortcutHandler: ((Event) -> Unit)? = null
+
     /** Document-level keydown delegate — dispatches editor shortcuts
      *  to the focused pane's editor when DOM focus sits on
      *  `<body>` / a non-editable element (e.g., right after a modal
@@ -337,6 +344,7 @@ class AppShell(
         installPaletteShortcut()
         installHotkeysShortcut()
         installNavigateToShortcut()
+        installStarredShortcut()
         installEditorKeyDelegate()
         installHotkeysMenuBridge()
 
@@ -488,6 +496,32 @@ class AppShell(
             openNavigateToModal(paneId)
         }
         navigateToShortcutHandler = handler
+        document.addEventListener("keydown", handler, /* capture = */ true)
+    }
+
+    /**
+     * Document-level Cmd/Ctrl+S listener that opens the Starred
+     * (bookmarks) modal for the focused pane. Capture phase so the
+     * browser's default save dialog is suppressed before any other
+     * handler sees the keystroke. The pane lookup uses [focusedPaneId]
+     * which falls back to the first pane in the active tab on a
+     * fresh launch, so Cmd+S works even before any pane has been
+     * clicked into. Idempotent.
+     */
+    private fun installStarredShortcut() {
+        if (starredShortcutHandler != null) return
+        val handler: (Event) -> Unit = lambda@{ e ->
+            val ke = e as? org.w3c.dom.events.KeyboardEvent ?: return@lambda
+            val isCmdS = (ke.metaKey || ke.ctrlKey) &&
+                !ke.altKey && !ke.shiftKey &&
+                ke.key.equals("s", ignoreCase = true)
+            if (!isCmdS) return@lambda
+            ke.preventDefault()
+            ke.stopPropagation()
+            val paneId = focusedPaneId() ?: return@lambda
+            openStarredModal(paneId)
+        }
+        starredShortcutHandler = handler
         document.addEventListener("keydown", handler, /* capture = */ true)
     }
 
@@ -927,6 +961,27 @@ class AppShell(
      * by the next add/remove event.
      */
     private val activePresetByTab: MutableMap<String, LayoutPreset> = mutableMapOf()
+
+    /**
+     * Returns the layout preset currently driving [tabId], consulting
+     * the in-memory map first and falling back to the persisted
+     * [LayoutState] tab — so a hydration that missed the in-memory
+     * cache (or a stale build that didn't populate it) still
+     * re-engages Auto re-tile on the next pane add/remove.
+     * Self-heals by writing back into [activePresetByTab] when the
+     * fallback finds a value.
+     */
+    private fun activePresetFor(tabId: String): LayoutPreset? {
+        activePresetByTab[tabId]?.let { return it }
+        val persisted = layoutState.tabs.firstOrNull { it.id == tabId }
+            ?.layoutPreset
+            ?: return null
+        val preset = LayoutPreset.fromKey(persisted)
+            ?.takeIf { it != LayoutPreset.Custom }
+            ?: return null
+        activePresetByTab[tabId] = preset
+        return preset
+    }
 
     /**
      * Snap grid passed to [LayoutPreset.computeBoxes] so Auto-tiled
@@ -1797,38 +1852,18 @@ class AppShell(
             .notegrow-title.notegrow-nav-fade {
                 animation: notegrow-nav-fade-in 500ms ease-out;
             }
-            .notegrow-starred-backdrop {
-                position: fixed;
-                inset: 0;
-                background: rgba(0, 0, 0, 0.45);
-                z-index: 2147483640;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-            .notegrow-starred-panel {
-                width: min(640px, 92vw);
-                height: min(720px, 85vh);
-                display: flex;
-                flex-direction: column;
-                background: var(--t-terminal-bg, #1e1e1e);
-                color: var(--t-terminal-fg, #e6e6e6);
-                border: 3px solid var(--t-accent-primary, #5ab0ff);
-                border-radius: 14px;
-                box-shadow:
-                    0 0 0 1px rgba(0, 0, 0, 0.65),
-                    0 0 0 6px color-mix(in srgb, var(--t-accent-primary, #5ab0ff) 22%, transparent),
-                    0 1px 0 rgba(255, 255, 255, 0.06) inset,
-                    0 28px 72px rgba(0, 0, 0, 0.65),
-                    0 10px 24px rgba(0, 0, 0, 0.45);
-                overflow: hidden;
-            }
+            /* StarredModal reuses the palette backdrop + panel so it
+               looks identical to the Cmd-O navigation modal. The few
+               .notegrow-starred-* rules below tweak the header bar
+               that replaces the palette's text input — there's no
+               type-to-filter for bookmarks, so the slot is repurposed
+               as a title + Add + Close row. */
             .notegrow-starred-header {
                 display: flex;
                 align-items: center;
                 gap: 12px;
-                padding: 10px 12px;
-                border-bottom: 1px solid var(--t-border, rgba(255, 255, 255, 0.08));
+                padding: 10px 14px;
+                border-bottom: 1px solid var(--t-border, rgba(255, 255, 255, 0.10));
             }
             .notegrow-starred-title {
                 font-size: 14px;
@@ -1872,11 +1907,6 @@ class AppShell(
                 opacity: 0.7;
             }
             .notegrow-starred-close:hover { opacity: 1; }
-            .notegrow-starred-body {
-                flex: 1 1 auto;
-                min-height: 0;
-                overflow-y: auto;
-            }
             /* Command palette (Cmd-P). Surface colors match the toolkit
                variables so the palette inherits the active theme. */
             .notegrow-palette-backdrop {
@@ -2112,7 +2142,7 @@ ${HotkeysModal.STYLESHEET}
         // If Auto is the active preset, re-tile so the new pane (and
         // its parent) land in their auto-layout slots immediately.
         // Otherwise just re-render with the spawn position.
-        if (activePresetByTab[tabId] == LayoutPreset.Auto) {
+        if (activePresetFor(tabId) == LayoutPreset.Auto) {
             applyLayoutPreset(tabId, LayoutPreset.Auto)
         } else {
             rerenderActivePane()
@@ -2270,7 +2300,7 @@ ${HotkeysModal.STYLESHEET}
         persistLayoutState()
         // Auto re-tile so the surviving panes fill the freed space
         // immediately. Other presets stay where the user put them.
-        if (activePresetByTab[tabId] == LayoutPreset.Auto && remaining.isNotEmpty()) {
+        if (activePresetFor(tabId) == LayoutPreset.Auto && remaining.isNotEmpty()) {
             applyLayoutPreset(tabId, LayoutPreset.Auto)
         } else {
             refreshLeftSidebarSections()
@@ -2670,6 +2700,13 @@ ${HotkeysModal.STYLESHEET}
             // tab so the user lands on a usable pane.
             val final = if (merged.isEmpty()) listOf(seedPane(tab.id)) else merged
             tabLayouts[tab.id] = PaneLayout(floatingPanes = final)
+            // Re-engage the persisted layout preset (if any) so Auto
+            // re-tile fires on the next pane add/remove without the
+            // user having to re-pick from the dropdown.
+            val preset = tab.layoutPreset
+                ?.let { LayoutPreset.fromKey(it) }
+                ?.takeIf { it != LayoutPreset.Custom }
+            if (preset != null) activePresetByTab[tab.id] = preset
         }
 
         val activeId = seeded.activeTabId ?: seeded.tabs.first().id
@@ -2742,6 +2779,9 @@ ${HotkeysModal.STYLESHEET}
                         isMinimized = f.isMinimized,
                     )
                 },
+                // Persist the active preset so reloads re-engage Auto
+                // re-tile without requiring the user to re-pick.
+                layoutPreset = activePresetByTab[tab.id]?.key,
             )
         }
         layoutState = layoutState.copy(
