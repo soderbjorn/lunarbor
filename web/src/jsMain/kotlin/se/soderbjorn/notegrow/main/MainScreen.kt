@@ -217,10 +217,21 @@ class MainScreen(
                 // the overlay until a subsequent `isLoaded=true` emission
                 // arrives — only then is there real new content beneath
                 // the overlay to dissolve into.
-                val newOverlay = if (pendingCrossfadeOverlay == null && isNavigationTransition(backing)) {
+                val navigated = isNavigationTransition(backing)
+                val newOverlay = if (pendingCrossfadeOverlay == null && navigated) {
                     snapshotForCrossfade()
                 } else null
                 if (newOverlay != null) pendingCrossfadeOverlay = newOverlay
+                // Pull DOM focus back into the editor whenever the pane
+                // changes file or zoom target. The trigger may have come
+                // from a click on a toolbar button (back/forward, zoom up,
+                // home), the vault footer, the starred modal, or the
+                // command palette — none of which leave focus on the
+                // editor. Mirrors the on-pane-focus behaviour so the
+                // caret is ready for keystrokes the moment the new view
+                // lands. Cursor position itself is restored from the
+                // pane VM during reconcile, so this only re-arms input.
+                if (navigated) editor.focus()
                 // Skip the paint while a crossfade is pending and the new
                 // file is still loading: reconcile would wipe the editor
                 // and stamp "Loading…" underneath the overlay, which —
@@ -252,26 +263,26 @@ class MainScreen(
     }
 
     /**
-     * Move the caret to the top of this pane's document and give the
-     * editor DOM focus. Called by [AppShell] from the toolkit's
-     * `onPaneFocused` callback (which fires for both hotkey-driven pane
-     * cycles and mouse clicks on a different pane), so switching to a
-     * pane always lands the cursor at row 0 with the editor focused
-     * and ready for keystrokes.
+     * Give the editor DOM focus without moving the caret. Called by
+     * [AppShell] from the toolkit's `onPaneFocused` callback (which
+     * fires on every pane focus event — hotkey cycles, mouse clicks on
+     * a pane, host-driven focus on tab switch) so the editor is ready
+     * for keystrokes the moment a pane becomes active.
+     *
+     * The caret position is per-pane state owned by
+     * [se.soderbjorn.notegrow.main.PaneBackingViewModel] and survives
+     * re-renders and tab switches. Re-focusing a pane (including the
+     * already-active one) therefore leaves the caret exactly where the
+     * user last placed it — opening and closing the command palette,
+     * clicking inside the active pane, or switching tabs and back all
+     * preserve the caret. The per-pane VM is what makes "switch to
+     * pane X" land back at pane X's last cursor instead of row 0.
      *
      * No-op until the editor has been mounted (i.e. before the first
-     * [render]) so a stray pre-mount focus event cannot crash. The
-     * cursor target column is `caretStartCol` of row 0 so the caret
-     * lands after any bullet/heading prefix rather than inside the
-     * hidden marker zone.
+     * [render]) so a stray pre-mount focus event cannot crash.
      */
-    fun focusAndResetCursor() {
+    fun focusEditor() {
         val editor = editorElement ?: return
-        val backing = viewModel.stateFlow.value.backingState
-        if (backing != null && backing.isLoaded) {
-            val firstLine = backing.lines.firstOrNull().orEmpty()
-            viewModel.moveTo(0, DocumentLayout.caretStartCol(firstLine))
-        }
         editor.focus()
     }
 
@@ -389,9 +400,11 @@ class MainScreen(
      * Handles keyboard shortcuts that don't fit the `beforeinput` model:
      * Tab (indent/outdent), Escape (zoom out), Cmd/Ctrl+A (select all
      * routed through the model so subsequent edits see the right range),
-     * and the Option-Cmd navigation triplet —
+     * and the Option-Cmd navigation set —
      * Left = back through zoom history, Right = forward,
-     * Up = zoom one level out (parent ancestor).
+     * Up = zoom one level out (parent ancestor),
+     * Enter = zoom into the bullet on the cursor row (a promoted-ref
+     * bullet lazy-loads its linked file, giving "open this page" UX).
      */
     private fun handleKey(editor: HTMLElement, event: KeyboardEvent) {
         val cmd = event.ctrlKey || event.metaKey
@@ -465,6 +478,34 @@ class MainScreen(
                 "ArrowUp" -> {
                     event.preventDefault()
                     onZoomUpRequested()
+                    return
+                }
+                "Enter" -> {
+                    event.preventDefault()
+                    viewModel.zoomInto(viewModel.currentBackingState.cursorRow)
+                    return
+                }
+            }
+        }
+        if ((event.key == "ArrowLeft" || event.key == "ArrowRight") &&
+            !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey
+        ) {
+            // Plain Arrow with an active model selection: collapse through
+            // the view model rather than letting the browser collapse the
+            // DOM selection. Hidden marker runs (`**`, `~~`, …) make the
+            // DOM-level collapse ambiguous — multiple model columns map to
+            // the same display column and the round-trip lands "past the
+            // closers". After Cmd-B'ing a word at the end of a row, that
+            // round-trip leaves the caret at end-of-editable, and the
+            // browser's next caret slot is the start of the following row,
+            // so the press visibly jumps to the next line. Routing through
+            // the model makes collapse selection-aware and unambiguous.
+            if (syncSelectionFromDom(editor)) {
+                val backing = viewModel.stateFlow.value.backingState
+                val sel = backing?.let { PaneBackingViewModel.selectionOf(it) }
+                if (sel != null) {
+                    event.preventDefault()
+                    if (event.key == "ArrowLeft") viewModel.moveLeft() else viewModel.moveRight()
                     return
                 }
             }
@@ -1395,10 +1436,24 @@ class MainScreen(
 
     private fun handleDragUp(@Suppress("UNUSED_PARAMETER") ev: MouseEvent) {
         val s = dragSession ?: return
-        // A press without movement is a click; let the click handler run
-        // (bullet → zoom, gutter → nothing, by design).
+        // A press without movement is a stationary click. Bullet origin →
+        // zoom into the bullet's row. Selection origin → no-op (gutter
+        // press without drag does nothing by design).
+        //
+        // Zooming is fired here rather than via a `click` listener on the
+        // bullet because the editor's `mouseup` listener runs
+        // `syncSelectionFromDom`, which can emit state and rebuild the
+        // DOM — by the time `click` would fire, the original bullet span
+        // is detached and the event is lost. See the matching note above
+        // `handleExternalLinkMouseDown` for the same issue with link
+        // following.
         if (!s.armed) {
+            val origin = s.originMode
+            val sourceStart = s.sourceStart
             endDragSession()
+            if (origin == DragSession.Origin.Bullet) {
+                viewModel.zoomInto(sourceStart)
+            }
             return
         }
         val targetRow = s.lastTargetRow

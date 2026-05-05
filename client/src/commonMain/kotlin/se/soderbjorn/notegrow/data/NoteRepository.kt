@@ -347,9 +347,10 @@ class NoteRepository(
             }
             for (plan in plans) {
                 val absFile = "$rootDirectory/${plan.fileRel}"
-                val body = plan.content.joinToString("\n")
+                val stripped = stripTrailingEmptyBullets(plan.content)
+                val body = stripped.joinToString("\n")
                 val frontmatter = frontmatterByFile[plan.fileRel] ?: ""
-                println("[autosave]   write $absFile (${plan.content.size} lines)")
+                println("[autosave]   write $absFile (${stripped.size} lines)")
                 fileSystem.writeFile(absFile, frontmatter + body)
             }
 
@@ -567,6 +568,38 @@ class NoteRepository(
         val fileRel: String,
         val content: List<String>,
     )
+
+    /**
+     * Drops trailing empty-bullet rows (and trailing blank lines) from the
+     * tail of [content]. An "empty bullet" is a row matching
+     * [DocumentLayout.isEmptyBulletLine] — `"  * "`, `"* "`, etc. with no
+     * actual text after the marker.
+     *
+     * Implements the "don't write any trailing bullets without content on
+     * the last line" rule: the editor freely materializes empty
+     * placeholder bullets at zoom-into-leaf time and at the bottom of
+     * the file as the user types, but those should never reach disk if
+     * they end up at the very end of the file. Pure-content saves with a
+     * fully populated file are unaffected.
+     *
+     * Always preserves at least one row so an emptied-out file still
+     * round-trips through [loadFile] as `listOf("")`.
+     */
+    private fun stripTrailingEmptyBullets(content: List<String>): List<String> {
+        if (content.isEmpty()) return content
+        var end = content.size
+        while (end > 0) {
+            val last = content[end - 1]
+            val isStrippable = last.isEmpty() ||
+                last.all { it.isWhitespace() } ||
+                DocumentLayout.isEmptyBulletLine(last)
+            if (!isStrippable) break
+            end--
+        }
+        if (end == content.size) return content
+        if (end == 0) return listOf("")
+        return content.subList(0, end).toList()
+    }
 
     // ----------------------------------------------------------- frontmatter
 

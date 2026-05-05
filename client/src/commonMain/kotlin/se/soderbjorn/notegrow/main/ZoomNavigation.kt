@@ -38,12 +38,18 @@ import se.soderbjorn.notegrow.main.PaneBackingViewModel.Companion.TAB_SIZE
  * @param stateProvider Reads the latest aggregate state.
  * @param patch Applies a transform that touches document content; refreshes
  *   the mirrored `documentState` and reconciles.
+ * @param cleanupEmptyPlaceholder Called at the top of every zoom-changing
+ *   intent. If [PaneBackingViewModel.State.pendingLeafZoomChild] points
+ *   at a still-empty placeholder bullet, the row is removed from the
+ *   document. Implements the "go back without writing anything → don't
+ *   leave the placeholder behind" rule.
  */
 internal class ZoomNavigation(
     private val documentProvider: () -> Document,
     private val stateProvider: () -> PaneBackingViewModel.State,
     private val patch: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
     private val scope: CoroutineScope,
+    private val cleanupEmptyPlaceholder: () -> Unit,
 ) {
     private val document: Document get() = documentProvider()
 
@@ -56,12 +62,26 @@ internal class ZoomNavigation(
         // Read the freshest doc state directly. The pane mirror in
         // [State.documentState] may lag by one collector tick when this
         // runs in the re-entry continuation after `acquireExpansion`.
+        val docState0 = document.stateFlow.value
+        if (row !in docState0.lines.indices) return
+        // Capture the target's stable id before calling cleanup — the
+        // cleanup may delete a placeholder row above the target, shifting
+        // the row index. Re-resolve via the id afterwards.
+        val targetId = docState0.lineIds[row]
+        // Capture the pre-cleanup zoom target so we push the original
+        // value (not the post-cleanup `null`) onto history.
+        val previousZoom = s.zoomedLineId
+
+        cleanupEmptyPlaceholder()
+
         val docState = document.stateFlow.value
-        if (row !in docState.lines.indices) return
-        val line = docState.lines[row]
+        val resolvedRow = docState.lineIds.indexOf(targetId)
+        if (resolvedRow < 0) return
+        if (resolvedRow !in docState.lines.indices) return
+        val line = docState.lines[resolvedRow]
         val indent = DocumentLayout.bulletAsteriskColumn(line)
         if (indent < 0) return
-        val id = docState.lineIds[row]
+        val id = targetId
         // If the zoom target is a folded ref FOR THIS PANE, lazy-load its
         // file first then re-enter zoomInto with the now-loaded subtree.
         // We consult per-pane intent (not the shared `expandedRefIds`)
@@ -77,45 +97,52 @@ internal class ZoomNavigation(
             }
             scope.launch {
                 document.acquireExpansion(id)
-                zoomInto(row)
+                // Re-resolve the row by id; expansion may have shifted nothing
+                // above this row, but a sibling cleanup or async edit could.
+                val after = document.stateFlow.value
+                val newRow = after.lineIds.indexOf(id)
+                if (newRow >= 0) zoomInto(newRow)
             }
             return
         }
-        val endInclusive = DocumentLayout.subtreeEnd(docState.lines, row, indent)
-        // Refuse to zoom into a bullet that has neither text of its own nor any
-        // children. Without this guard, the leaf-placeholder branch below would
-        // auto-create an empty child and zoom in, and clicking that child's
-        // handle would do the same thing again — producing an infinite chain
-        // of "(untitled)" breadcrumbs from a single empty bullet.
-        val hasChildren = endInclusive >= row + 1
-        val hasText = line.substring(minOf(indent + 2, line.length)).isNotBlank()
-        if (!hasChildren && !hasText) return
-        if (endInclusive < row + 1) {
-            // Childless leaf with text: don't write a placeholder bullet
-            // into the shared document yet — that would surface to other
-            // panes viewing the same file (and the autosave loop would
-            // potentially promote it into a brand new file). Instead,
-            // mark the pane as "pending leaf zoom"; the first edit
-            // intent (insertChar / insertNewline / insertText) will
-            // materialize the placeholder child for real.
+        val endInclusive = DocumentLayout.subtreeEnd(docState.lines, resolvedRow, indent)
+        if (endInclusive < resolvedRow + 1) {
+            // Childless bullet (with or without its own text). Insert an
+            // empty placeholder child so the user has somewhere to type
+            // inside the zoom view, and remember the placeholder's id in
+            // [State.pendingLeafZoomChild]. If the user navigates away
+            // without modifying it, the cleanup hook removes the row
+            // again. If they type, [PaneBackingViewModel] clears the
+            // pending flag (committing the placeholder for real).
+            // [NoteRepository.save] also strips trailing empty bullets
+            // globally so any placeholder that survives at the end of a
+            // file never makes it to disk.
+            val childIndent = indent + TAB_SIZE
+            val childPrefix = " ".repeat(childIndent) + "* "
+            document.insertText(resolvedRow, line.length, "\n" + childPrefix)
+            val newDocState = document.stateFlow.value
+            val childRow = resolvedRow + 1
+            val childId = if (childRow in newDocState.lineIds.indices) {
+                newDocState.lineIds[childRow]
+            } else null
             patch {
-                pushHistory(it).copy(
+                pushHistory(it, previousZoom).copy(
                     zoomedLineId = id,
-                    cursorRow = row,
-                    cursorCol = docState.lines[row].length,
+                    cursorRow = childRow,
+                    cursorCol = childPrefix.length,
                     anchorRow = null,
                     anchorCol = null,
                     collapsedIds = it.collapsedIds - id,
-                    pendingLeafZoomChild = id,
+                    pendingLeafZoomChild = childId,
                 )
             }
         } else {
-            val firstChildRow = row + 1
+            val firstChildRow = resolvedRow + 1
             val firstChildLine = docState.lines[firstChildRow]
             val bulletCol = DocumentLayout.bulletAsteriskColumn(firstChildLine)
             val targetCol = if (bulletCol >= 0) bulletCol + 2 else 0
             patch {
-                pushHistory(it).copy(
+                pushHistory(it, previousZoom).copy(
                     zoomedLineId = id,
                     cursorRow = firstChildRow,
                     cursorCol = targetCol,
@@ -129,9 +156,12 @@ internal class ZoomNavigation(
     }
 
     fun zoomOut() {
-        if (!stateProvider().isLoaded) return
+        val s = stateProvider()
+        if (!s.isLoaded) return
+        val previousZoom = s.zoomedLineId
+        cleanupEmptyPlaceholder()
         patch {
-            pushHistory(it).copy(
+            pushHistory(it, previousZoom).copy(
                 zoomedLineId = null,
                 anchorRow = null,
                 anchorCol = null,
@@ -154,13 +184,16 @@ internal class ZoomNavigation(
      * @param lineId target bullet id, or null to clear the zoom.
      */
     fun zoomTo(lineId: LineId?) {
-        if (!stateProvider().isLoaded) return
+        val s = stateProvider()
+        if (!s.isLoaded) return
         if (lineId == null) {
             zoomOut()
             return
         }
+        val previousZoom = s.zoomedLineId
+        cleanupEmptyPlaceholder()
         patch {
-            pushHistory(it).copy(
+            pushHistory(it, previousZoom).copy(
                 zoomedLineId = lineId,
                 anchorRow = null,
                 anchorCol = null,
@@ -187,17 +220,12 @@ internal class ZoomNavigation(
         val previous = popValid(s.zoomHistory, s) ?: return
         val (target, remaining) = previous
         val current = s.zoomedLineId
-        patch {
-            it.copy(
-                zoomedLineId = target,
-                zoomHistory = remaining,
-                zoomForward = (it.zoomForward + current).takeLast(historyCap),
-                anchorRow = null,
-                anchorCol = null,
-                collapsedIds = if (target != null) it.collapsedIds - target else it.collapsedIds,
-                pendingLeafZoomChild = null,
-            )
-        }
+        cleanupEmptyPlaceholder()
+        applyZoomTransition(
+            target = target,
+            newHistory = remaining,
+            newForward = (s.zoomForward + current).takeLast(historyCap),
+        )
     }
 
     /**
@@ -213,17 +241,65 @@ internal class ZoomNavigation(
         val next = popValid(s.zoomForward, s) ?: return
         val (target, remaining) = next
         val current = s.zoomedLineId
+        cleanupEmptyPlaceholder()
+        applyZoomTransition(
+            target = target,
+            newHistory = (s.zoomHistory + current).takeLast(historyCap),
+            newForward = remaining,
+        )
+    }
+
+    /**
+     * Shared core for [zoomBack] / [zoomForward]: lands the pane on
+     * [target], re-creating the leaf placeholder when [target] points at
+     * a now-childless bullet so `reconcile` doesn't clear the zoom on
+     * `hasVisibleRows = false`. Without this, a forward into a former
+     * leaf zoom (whose placeholder was removed by the corresponding back)
+     * silently snaps back to the root view.
+     */
+    private fun applyZoomTransition(
+        target: LineId?,
+        newHistory: List<LineId?>,
+        newForward: List<LineId?>,
+    ) {
+        val placeholderChildId = target?.let(::insertLeafZoomPlaceholderIfNeeded)
         patch {
             it.copy(
                 zoomedLineId = target,
-                zoomForward = remaining,
-                zoomHistory = (it.zoomHistory + current).takeLast(historyCap),
+                zoomHistory = newHistory,
+                zoomForward = newForward,
                 anchorRow = null,
                 anchorCol = null,
                 collapsedIds = if (target != null) it.collapsedIds - target else it.collapsedIds,
-                pendingLeafZoomChild = null,
+                pendingLeafZoomChild = placeholderChildId,
             )
         }
+    }
+
+    /**
+     * If [targetId] points at a childless bullet (a former leaf zoom),
+     * splices in an empty placeholder child the same way [zoomInto] does
+     * and returns the placeholder's stable id so the caller can record it
+     * in `pendingLeafZoomChild`. Returns `null` for non-leaf targets,
+     * targets that no longer exist, and ref bullets (handled by the
+     * lazy-load branch in [zoomInto]).
+     */
+    private fun insertLeafZoomPlaceholderIfNeeded(targetId: LineId): LineId? {
+        val docState = document.stateFlow.value
+        val row = docState.lineIds.indexOf(targetId)
+        if (row < 0) return null
+        val line = docState.lines[row]
+        val indent = DocumentLayout.bulletAsteriskColumn(line)
+        if (indent < 0) return null
+        if (document.isPromotedRef(targetId)) return null
+        val endInclusive = DocumentLayout.subtreeEnd(docState.lines, row, indent)
+        if (endInclusive >= row + 1) return null
+        val childIndent = indent + TAB_SIZE
+        val childPrefix = " ".repeat(childIndent) + "* "
+        document.insertText(row, line.length, "\n" + childPrefix)
+        val newDocState = document.stateFlow.value
+        val childRow = row + 1
+        return if (childRow in newDocState.lineIds.indices) newDocState.lineIds[childRow] else null
     }
 
     fun zoomInfo(state: PaneBackingViewModel.State): PaneBackingViewModel.ZoomInfo? =
@@ -249,15 +325,25 @@ internal class ZoomNavigation(
     // ---------------------------------------------------------------- private
 
     /**
-     * Returns [state] with the current `zoomedLineId` appended to
+     * Returns [state] with [previousZoom] appended to
      * [PaneBackingViewModel.State.zoomHistory] and the forward
      * stack cleared. Used by every "go somewhere new" intent so back can
      * find it later. Capped at [historyCap] to avoid unbounded growth on
      * navigation-heavy sessions.
+     *
+     * [previousZoom] is passed explicitly rather than read from `state`
+     * because [cleanupEmptyPlaceholder] runs first and may have caused
+     * [reconcile][PaneBackingViewModel] to clear `state.zoomedLineId`
+     * already (a leaf zoom whose placeholder we just deleted has
+     * `hasVisibleRows = false`, which clears the zoom). Callers capture
+     * the pre-cleanup id and pass it through here.
      */
-    private fun pushHistory(state: PaneBackingViewModel.State): PaneBackingViewModel.State =
+    private fun pushHistory(
+        state: PaneBackingViewModel.State,
+        previousZoom: LineId?,
+    ): PaneBackingViewModel.State =
         state.copy(
-            zoomHistory = (state.zoomHistory + state.zoomedLineId).takeLast(historyCap),
+            zoomHistory = (state.zoomHistory + previousZoom).takeLast(historyCap),
             zoomForward = emptyList(),
         )
 

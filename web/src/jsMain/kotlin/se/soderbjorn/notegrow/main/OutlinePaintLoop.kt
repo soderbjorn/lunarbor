@@ -219,7 +219,7 @@ private fun buildRowElement(
             }
         }
 
-        rowDiv.appendChild(buildBulletPrefix(absoluteRow, viewModel, onBulletMouseDown))
+        rowDiv.appendChild(buildBulletPrefix(absoluteRow, onBulletMouseDown))
         rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2)))
     } else {
         // Non-bullet line: editable text starts at column 0 of the raw line,
@@ -304,7 +304,7 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
     } else {
         for (run in tokenized.runs) {
             val span = document.createElement("span") as HTMLElement
-            span.className = runClassName(run.styles, isLink = run.linkHref != null)
+            span.className = runClassName(run.styles, isLink = run.linkHref != null, isTag = run.isTag)
             if (run.linkHref != null) {
                 span.setAttribute("data-href", run.linkHref!!)
             }
@@ -320,8 +320,8 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
  * Always includes the base `notegrow-text-run` class so global
  * editable-region styles still apply.
  */
-private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false): String {
-    if (styles.isEmpty() && !isLink) return "notegrow-text-run"
+private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false, isTag: Boolean = false): String {
+    if (styles.isEmpty() && !isLink && !isTag) return "notegrow-text-run"
     val parts = StringBuilder("notegrow-text-run")
     for (s in styles) {
         parts.append(' ')
@@ -333,6 +333,7 @@ private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false): Str
         })
     }
     if (isLink) parts.append(" notegrow-md-link")
+    if (isTag) parts.append(" notegrow-md-tag")
     return parts.toString()
 }
 
@@ -340,21 +341,24 @@ private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false): Str
  * Non-editable bullet glyph + trailing space. Sized as a single inline
  * unit so wrap behaviour treats it as the start of the line.
  *
- * Two gestures are wired here:
- * - **mousedown**: forwarded to [onBulletMouseDown] (when supplied) so the
- *   caller can begin tracking a potential drag-to-move gesture. The handler
- *   already calls `preventDefault()` to keep the browser from starting its
- *   own native drag, so the caller doesn't need to.
- * - **click**: zooms into the bullet's subtree via
- *   [MainViewModel.zoomInto]. A click only fires when no drag started; the
- *   caller is responsible for using a small movement threshold to
- *   distinguish drag from click. Re-using the browser's native click event
- *   means a stationary press → release still navigates without any
- *   coordination with the drag handler.
+ * The only gesture wired here is **mousedown**, forwarded to
+ * [onBulletMouseDown] (when supplied) so the caller can begin tracking a
+ * potential drag-to-move gesture. The handler calls `preventDefault()` to
+ * keep the browser from focusing the editor or moving the caret, and
+ * `stopPropagation()` to keep the editor's gutter-drag init from also
+ * firing.
+ *
+ * Zoom-on-click is *not* wired here. The editor's `mouseup` listener runs
+ * `syncSelectionFromDom`, which can rebuild the DOM and detach this
+ * span — a `click` listener would then fail to fire on the first press.
+ * Stationary release → zoom is handled by `MainScreen.handleDragUp`
+ * instead, which sees the same event via the window-level mouseup
+ * listener installed by `startDragSession`. See the comment in
+ * `MainScreen.wireInputListeners` about the matching pattern for
+ * external-link follow.
  */
 private fun buildBulletPrefix(
     absoluteRow: Int,
-    viewModel: MainViewModel,
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ): HTMLElement {
     val prefix = document.createElement("span") as HTMLElement
@@ -379,19 +383,12 @@ private fun buildBulletPrefix(
     space.textContent = " "
     prefix.appendChild(space)
 
-    val zoomHandler: (org.w3c.dom.events.Event) -> Unit = { event ->
-        val me = event as MouseEvent
-        me.stopPropagation()
-        me.preventDefault()
-        viewModel.zoomInto(absoluteRow)
-    }
     prefix.addEventListener("mousedown", { event ->
         val me = event as MouseEvent
         me.stopPropagation()
         me.preventDefault()
         onBulletMouseDown?.invoke(absoluteRow, me)
     })
-    prefix.addEventListener("click", zoomHandler)
     return prefix
 }
 
@@ -668,6 +665,16 @@ fun ensureStyles() {
             text-decoration: underline;
             text-underline-offset: 2px;
             cursor: pointer;
+        }
+        /* Hashtag (`#name`) — drawn with a rectangle in the accent color.
+           The whole `#name` is real text in the model so the border just
+           wraps the run span; padding gives it breathing room without
+           shifting surrounding glyph positions noticeably. */
+        .notegrow-md-tag {
+            color: var(--t-accent, #5ab0ff);
+            border: 1px solid var(--t-accent, #5ab0ff);
+            border-radius: 4px;
+            padding: 0 4px;
         }
         .notegrow-text.notegrow-md-h1 {
             font-size: 1.6em;

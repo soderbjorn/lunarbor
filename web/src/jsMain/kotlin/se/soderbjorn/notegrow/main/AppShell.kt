@@ -60,10 +60,12 @@ import se.soderbjorn.darkness.web.shell.TabBarCallbacks
 import se.soderbjorn.darkness.web.shell.TabBarSpec
 import se.soderbjorn.darkness.web.shell.TabSpec
 import se.soderbjorn.darkness.web.shell.TopBarSpec
+import se.soderbjorn.darkness.web.shell.bottomBarController
 import se.soderbjorn.darkness.web.shell.buildNewWindowButton
 import se.soderbjorn.darkness.web.shell.buildThemeManagerButton
 import se.soderbjorn.darkness.web.shell.mountAppFrame
 import se.soderbjorn.darkness.web.shell.renderTopBar
+import se.soderbjorn.darkness.web.shell.topBarController
 import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerHost
 import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerState
 import se.soderbjorn.darkness.web.themeeditor.applySnapshot
@@ -240,6 +242,19 @@ class AppShell(
      *  shell host (idempotency guard). */
     private var paletteShortcutHandler: ((Event) -> Unit)? = null
 
+    /** Document-level Cmd/Ctrl+/ listener installed in [render]. Mirrors
+     *  the Electron menu accelerator so the cheatsheet is reachable both
+     *  ways (the menu only fires when the platform actually has one). */
+    private var hotkeysShortcutHandler: ((Event) -> Unit)? = null
+
+    /**
+     * Singleton hotkeys cheatsheet modal. Opened from the macOS
+     * application menu (`Notegrow → Hotkeys…`) via the `notegrow:show-hotkeys`
+     * IPC bridge installed in [render], or from the in-app `Cmd+/`
+     * shortcut. Lazily constructed.
+     */
+    private val hotkeysModal: HotkeysModal by lazy { HotkeysModal() }
+
     /** Boots the shell into [root]. Safe to call once. */
     fun render(root: HTMLElement) {
         injectDarknessToolkitStyles()
@@ -258,6 +273,12 @@ class AppShell(
             open = layoutState.leftSidebar.visible,
             widthPx = layoutState.leftSidebar.widthPx,
         )
+        // Top/bottom bar drag-to-hide visibility: persisted in our own
+        // localStorage slot (LayoutState lives in the shared toolkit-store
+        // model and would need a schema bump to host these flags). Each
+        // host app picks its own persistence layer; termtastic, for
+        // example, would round-trip these through its server.
+        seedBarControllers()
         // Hydrate the toolkit-managed theme state from its own snapshot
         // slot BEFORE seeding from `UiSettings`. The snapshot owns
         // light/dark slot bindings, custom themes, custom schemes, and
@@ -282,6 +303,8 @@ class AppShell(
         root.style.margin = "0"
 
         installPaletteShortcut()
+        installHotkeysShortcut()
+        installHotkeysMenuBridge()
 
         rebuildShell()
     }
@@ -308,6 +331,43 @@ class AppShell(
         }
         paletteShortcutHandler = handler
         document.addEventListener("keydown", handler, /* capture = */ true)
+    }
+
+    /**
+     * Document-level Cmd/Ctrl+/ listener that opens [hotkeysModal]. Capture
+     * phase so the editor's own keydown handler doesn't swallow it inside
+     * a focused contenteditable. Mirrors the macOS application menu
+     * accelerator built in `electron/main.js`. Idempotent.
+     */
+    private fun installHotkeysShortcut() {
+        if (hotkeysShortcutHandler != null) return
+        val handler: (Event) -> Unit = lambda@{ e ->
+            val ke = e as? org.w3c.dom.events.KeyboardEvent ?: return@lambda
+            val isHotkeysChord = (ke.metaKey || ke.ctrlKey) &&
+                !ke.altKey && !ke.shiftKey &&
+                ke.key == "/"
+            if (!isHotkeysChord) return@lambda
+            ke.preventDefault()
+            ke.stopPropagation()
+            hotkeysModal.open()
+        }
+        hotkeysShortcutHandler = handler
+        document.addEventListener("keydown", handler, /* capture = */ true)
+    }
+
+    /**
+     * Subscribes to the Electron preload's `notegrow:show-hotkeys` channel,
+     * dispatched when the user picks `Notegrow → Hotkeys…` from the macOS
+     * application menu. No-op when running in a plain browser (no
+     * `darknessApi.onShowHotkeys` global) — the in-app `Cmd+/` shortcut
+     * still works there.
+     */
+    private fun installHotkeysMenuBridge() {
+        val api = js("globalThis.darknessApi") ?: return
+        val onShow = js("api && api.onShowHotkeys") ?: return
+        if (js("typeof onShow !== 'function'") as Boolean) return
+        val callback: () -> Unit = { hotkeysModal.open() }
+        js("onShow.call(api, callback)")
     }
 
     /**
@@ -387,6 +447,24 @@ class AppShell(
             run = { layoutDropdown.openAnchoredTo(layoutDropdown.triggerButton) },
         )
 
+        // Restore-after-drag-to-hide entries. Only surface the command
+        // for a bar that is currently hidden, so the palette stays
+        // uncluttered when both bars are visible (the common case).
+        if (!topBarController.isVisible) {
+            out += CommandPalette.Command(
+                id = "show-top-bar",
+                title = "Show top bar",
+                run = { topBarController.show { rebuildShell() } },
+            )
+        }
+        if (!bottomBarController.isVisible) {
+            out += CommandPalette.Command(
+                id = "show-bottom-bar",
+                title = "Show bottom bar",
+                run = { bottomBarController.show { rebuildShell() } },
+            )
+        }
+
         return out
     }
 
@@ -428,8 +506,14 @@ class AppShell(
      */
     private fun rebuildShell() {
         val root = rootEl ?: return
-        val topBar = renderTopBar(
-            TopBarSpec(
+        // Route the topbar through topBarController so drag-to-zero hides
+        // the bar persistently — the controller flips its `isVisible` flag
+        // and re-runs rebuildShell, which then sees `isVisible = false`
+        // and gets `null` back instead of an element. Without this, a
+        // subsequent topbar slot rebuild (softSwitchTab) would replace
+        // the inline `height: 0px` with a fresh full-height bar.
+        val topBar = topBarController.mountTopBar(
+            spec = TopBarSpec(
                 leadingContent = buildLeadingTitleAndToggle(),
                 tabBar = buildTabBarSpec(),
                 trailingContent = buildTrailingActions(),
@@ -438,10 +522,11 @@ class AppShell(
                 // Cap at the natural CSS min-height; bar is allowed to
                 // shrink below this on drag, but not grow above it. The
                 // toolkit's snap rule decides 0-vs-default on release.
-                maxHeightPx = 48,
-                defaultHeightPx = 48,
+                maxHeightPx = 40,
+                defaultHeightPx = 40,
                 allowGrowBeyondDefault = false,
-            )
+            ),
+            requestRebuild = { rebuildShell() },
         )
 
         val main = document.createElement("div") as HTMLElement
@@ -453,11 +538,12 @@ class AppShell(
         }
         paneHost = main
 
-        val leftSidebarEl: HTMLElement? = if (
-            se.soderbjorn.darkness.web.shell.leftSidebarController.isOpen
-        ) {
-            buildLeftSidebarElement()
-        } else null
+        // Always mount the left sidebar through the controller — when the
+        // user has dragged it closed, the controller returns a 0-width
+        // placeholder that keeps the resize handle in the DOM so they can
+        // drag it back open. Without this, a drag-to-collapse gesture
+        // strands the user (the resize strip disappears with the sidebar).
+        val leftSidebarEl: HTMLElement? = buildLeftSidebarElement()
 
         val rightSidebarEl: HTMLElement? = if (isThemeManagerSidebarOpen()) {
             buildThemeManagerSidebar(
@@ -482,6 +568,9 @@ class AppShell(
                 bottomBar = buildBottomBar(),
             ),
         )
+        // `topBar` is null when the user has dragged it to hide; the
+        // controller stays in the hidden state until the user runs the
+        // "Show top bar" palette command.
 
         // Mount the active tab's pane layout into `main`.
         mountActivePane()
@@ -504,7 +593,7 @@ class AppShell(
     private fun buildLeftSidebarElement(): HTMLElement {
         val contentWrap = document.createElement("div") as HTMLElement
         contentWrap.appendChild(buildLeftSidebarSections())
-        return se.soderbjorn.darkness.web.shell.leftSidebarController.mountSidebar(
+        return se.soderbjorn.darkness.web.shell.leftSidebarController.mountSidebarOrPlaceholder(
             spec = se.soderbjorn.darkness.web.shell.SidebarSpec(
                 content = contentWrap,
                 visible = true,
@@ -516,8 +605,12 @@ class AppShell(
                 onResize = { newWidth ->
                     if (newWidth == 0) {
                         // Drag-to-collapse: flip the controller closed
-                        // so the toggle button restores the sidebar to
-                        // its persisted (non-zero) width on next click.
+                        // (via the same toggle path the icon uses) and
+                        // mirror the visibility into [layoutState] so it
+                        // survives a reload. The controller's [widthPx]
+                        // is preserved (the toolkit no longer clobbers
+                        // it to 0), so the icon-restore opens at the
+                        // last non-zero width.
                         layoutState = layoutState.copy(
                             leftSidebar = layoutState.leftSidebar.copy(visible = false),
                         )
@@ -525,14 +618,22 @@ class AppShell(
                         se.soderbjorn.darkness.web.shell.leftSidebarController
                             .toggle(requestRebuild = { rebuildShell() })
                     } else {
+                        // Live resize OR drag-back-from-collapsed. Both
+                        // paths land here with a non-zero width — persist
+                        // it as the new default open width and flip
+                        // visibility back on (no-op when already open).
                         layoutState = layoutState.copy(
-                            leftSidebar = layoutState.leftSidebar.copy(widthPx = newWidth),
+                            leftSidebar = layoutState.leftSidebar.copy(
+                                widthPx = newWidth,
+                                visible = true,
+                            ),
                         )
                         persistLayoutState()
                     }
                 },
             ),
             onLeft = true,
+            requestRebuild = { rebuildShell() },
         )
     }
 
@@ -678,8 +779,12 @@ class AppShell(
      * Build the bottom status bar — leading slot shows nothing yet
      * (notegrow has no usage telemetry to report); trailing slot shows
      * just the app name.
+     *
+     * Routed through [bottomBarController] so a drag-to-zero gesture
+     * persists the hidden state across shell rebuilds (mirrors the topbar
+     * path). Returns `null` when the user has hidden the bar.
      */
-    private fun buildBottomBar(): HTMLElement {
+    private fun buildBottomBar(): HTMLElement? {
         val trailing = document.createElement("div") as HTMLElement
         trailing.style.apply {
             display = "flex"
@@ -688,15 +793,16 @@ class AppShell(
         val name = document.createElement("span") as HTMLElement
         name.textContent = "Notegrow"
         trailing.appendChild(name)
-        return se.soderbjorn.darkness.web.shell.renderBottomBar(
-            se.soderbjorn.darkness.web.shell.BottomBarSpec(
+        return bottomBarController.mountBottomBar(
+            spec = se.soderbjorn.darkness.web.shell.BottomBarSpec(
                 trailingContent = trailing,
                 isResizable = true,
                 minHeightPx = 0,
-                maxHeightPx = 30,
-                defaultHeightPx = 30,
+                maxHeightPx = 22,
+                defaultHeightPx = 22,
                 allowGrowBeyondDefault = false,
-            )
+            ),
+            requestRebuild = { rebuildShell() },
         )
     }
 
@@ -733,10 +839,12 @@ class AppShell(
                 refreshLeftSidebarSections()
                 // The toolkit fires onPaneFocused for any change in active
                 // pane (mouse click on a different pane OR hotkey-driven
-                // cycling). On every such switch, drop the caret to the
-                // top of the newly active pane's document and give the
-                // editor DOM focus so the user can start typing.
-                paneEditors[paneId]?.focusAndResetCursor()
+                // cycling). Give the editor DOM focus so the user can
+                // start typing immediately. The caret position itself
+                // is per-pane state owned by PaneBackingViewModel and
+                // is intentionally preserved — switching back to a pane
+                // restores the caret where the user last left it.
+                paneEditors[paneId]?.focusEditor()
             },
             onFloatingMoved = { id, xPct, yPct ->
                 val cur = tabLayouts[activeId] ?: return@PaneCallbacks
@@ -834,23 +942,27 @@ class AppShell(
         if (root != null) {
             // Topbar swap: rebuild the topbar element with the new active
             // id and replace the slot's children. The slot keeps its
-            // attachment so `.dt-app-frame-body` doesn't re-flow.
+            // attachment so `.dt-app-frame-body` doesn't re-flow. Routed
+            // through topBarController so the hidden state survives a
+            // soft tab switch (the controller returns null when hidden,
+            // and we leave the slot empty in that case).
             val topSlot = root.querySelector(".dt-app-frame-topbar") as? HTMLElement
             if (topSlot != null) {
                 while (topSlot.firstChild != null) topSlot.removeChild(topSlot.firstChild!!)
-                topSlot.appendChild(
-                    renderTopBar(
-                        TopBarSpec(
-                            leadingContent = buildLeadingTitleAndToggle(),
-                            tabBar = buildTabBarSpec(),
-                            trailingContent = buildTrailingActions(),
-                            isResizable = true,
-                            minHeightPx = 0,
-                            maxHeightPx = 80,
-                            onResize = { _ -> },
-                        )
-                    )
+                val refreshed = topBarController.mountTopBar(
+                    spec = TopBarSpec(
+                        leadingContent = buildLeadingTitleAndToggle(),
+                        tabBar = buildTabBarSpec(),
+                        trailingContent = buildTrailingActions(),
+                        isResizable = true,
+                        minHeightPx = 0,
+                        maxHeightPx = 40,
+                        defaultHeightPx = 40,
+                        allowGrowBeyondDefault = false,
+                    ),
+                    requestRebuild = { rebuildShell() },
                 )
+                topSlot.appendChild(refreshed)
             }
             // Left sidebar refresh in place — only its content (the
             // tabs / panes tree) changes; the sidebar shell stays mounted
@@ -1482,9 +1594,14 @@ class AppShell(
                 flex-direction: column;
                 background: var(--t-terminal-bg, #1e1e1e);
                 color: var(--t-terminal-fg, #e6e6e6);
-                border: 1px solid var(--t-border, rgba(255, 255, 255, 0.12));
-                border-radius: 8px;
-                box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+                border: 3px solid var(--t-accent-primary, #5ab0ff);
+                border-radius: 14px;
+                box-shadow:
+                    0 0 0 1px rgba(0, 0, 0, 0.65),
+                    0 0 0 6px color-mix(in srgb, var(--t-accent-primary, #5ab0ff) 22%, transparent),
+                    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+                    0 28px 72px rgba(0, 0, 0, 0.65),
+                    0 10px 24px rgba(0, 0, 0, 0.45);
                 overflow: hidden;
             }
             .notegrow-starred-header {
@@ -1616,6 +1733,7 @@ class AppShell(
                 color: var(--t-text-secondary, rgba(255, 255, 255, 0.55));
                 text-align: center;
             }
+${HotkeysModal.STYLESHEET}
             /* Keyboard-focus highlight on the layout-preset tiles — same
                surface as :hover so mouse + keyboard agree. */
             .dt-layout-preset-tile.is-focused,
@@ -2307,7 +2425,40 @@ class AppShell(
         js("write.call(api, json)")
     }
 
+    /**
+     * Seed [topBarController] / [bottomBarController] from the
+     * notegrow-private localStorage slot, then wire their
+     * `onVisibilityChanged` callbacks back to the same slot so
+     * subsequent drag-to-hide / "Show … bar" toggles round-trip.
+     *
+     * Each app picks its own substrate — termtastic, for example, will
+     * push these flags through its server-side state — so the toolkit's
+     * [BarController] is intentionally ignorant of where the bytes go.
+     */
+    private fun seedBarControllers() {
+        val raw = window.localStorage.getItem(BAR_VISIBILITY_KEY)
+        if (raw != null) {
+            // Format: "<topVisible>:<bottomVisible>" with bools rendered
+            // as "1" / "0". Hand-rolled instead of JSON-encoded so a
+            // corrupt slot never trips the parser — only an explicit "0"
+            // hides the bar; anything else (including a corrupt empty
+            // string) falls through to the default visible=true branch.
+            val parts = raw.split(":")
+            topBarController.setInitial(parts.getOrNull(0) != "0")
+            bottomBarController.setInitial(parts.getOrNull(1) != "0")
+        }
+        topBarController.onVisibilityChanged = { persistBarVisibility() }
+        bottomBarController.onVisibilityChanged = { persistBarVisibility() }
+    }
+
+    private fun persistBarVisibility() {
+        val top = if (topBarController.isVisible) "1" else "0"
+        val bot = if (bottomBarController.isVisible) "1" else "0"
+        window.localStorage.setItem(BAR_VISIBILITY_KEY, "$top:$bot")
+    }
+
     companion object {
+        private const val BAR_VISIBILITY_KEY: String = "notegrow.barVisibility.v1"
         /** Three-stripe palette glyph — opens the ThemeManager. */
         private const val ICON_PALETTE: String =
             "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +

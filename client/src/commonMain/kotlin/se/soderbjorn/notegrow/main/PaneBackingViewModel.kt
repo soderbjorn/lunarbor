@@ -109,15 +109,16 @@ class PaneBackingViewModel(
      *   shared "currently spliced into lines" set; the document
      *   refcounts these per-pane intents to decide when to evict
      *   children from `lines`.
-     * @property pendingLeafZoomChild When non-null, indicates this pane
-     *   has zoomed into a childless leaf bullet whose first child has
-     *   not been materialized yet. The `LineId` is the parent's id. The
-     *   first edit intent in this state inserts the placeholder child
-     *   into the document and clears this flag; zooming away or
-     *   switching files clears it without inserting anything. Avoids
-     *   the multi-pane bug where leaf-zoom in one pane would write a
-     *   stray bullet visible to all panes (and sometimes promote into
-     *   a brand new file via autosave).
+     * @property pendingLeafZoomChild When non-null, the [LineId] of an
+     *   empty placeholder bullet that was inserted by [zoomInto] when
+     *   the user zoomed into a childless leaf so the zoom view would
+     *   have something to type into. Cleared on the first edit (the
+     *   user has committed to the placeholder). On any zoom navigation
+     *   away or file switch, if the placeholder is still empty, the row
+     *   is deleted again — so "zoom in, look around, go back" never
+     *   leaves a stray empty bullet behind. [NoteRepository.save] also
+     *   strips any trailing empty bullet that survives in memory before
+     *   it reaches disk.
      * @property seenLineIds Internal: the set of [LineId]s the
      *   default-collapse pass has already processed.
      * @property isVaultFooterExpanded Master toggle for the editor's
@@ -232,6 +233,7 @@ class PaneBackingViewModel(
         stateProvider = { _stateFlow.value },
         patch = { transform -> patch(transform) },
         scope = scope,
+        cleanupEmptyPlaceholder = { cleanupEmptyPlaceholderIfAny() },
     )
 
     private val markdownStyle = MarkdownStyleViewModel(
@@ -287,6 +289,11 @@ class PaneBackingViewModel(
      */
     private suspend fun switchActiveFile(fileRel: String) {
         if (_stateFlow.value.activeFileRel == fileRel && document != null) return
+        // Strip any throwaway placeholder before swapping the active
+        // document — otherwise an empty placeholder bullet inserted by a
+        // leaf-zoom on the outgoing file would persist into the next
+        // autosave tick on that file.
+        cleanupEmptyPlaceholderIfAny()
         val outgoing = document
         val outgoingFile = _stateFlow.value.activeFileRel
         val outgoingExpansions = _stateFlow.value.expandedRefIdsLocal
@@ -334,6 +341,10 @@ class PaneBackingViewModel(
      * pane). Safe to call once; subsequent calls are no-ops.
      */
     suspend fun release() {
+        // Strip any throwaway placeholder before tearing down — a pane
+        // closed mid-leaf-zoom should not persist its empty placeholder
+        // through [Document.shutdown]'s final save.
+        cleanupEmptyPlaceholderIfAny()
         documentCollectorJob?.cancelAndJoin()
         documentCollectorJob = null
         val outgoing = document
@@ -457,57 +468,67 @@ class PaneBackingViewModel(
     // ------------------------------------------------------------------ edits
 
     /**
-     * If [State.pendingLeafZoomChild] is set, materializes the deferred
-     * placeholder bullet for real now: appends `"\n" + childPrefix` to
-     * the parent's row in the document, moves the caret to the start
-     * of the new child's editable area, and clears the pending flag.
-     * Returns `true` when materialization happened, `false` when there
-     * was nothing pending.
-     *
-     * The materialized child uses the parent's indent + [TAB_SIZE]; if
-     * the parent's row vanished or no longer parses as a bullet, the
-     * pending flag is cleared without writing.
+     * Clears [State.pendingLeafZoomChild] if set. Called at the start of
+     * every text-edit intent: once the user starts typing into the
+     * placeholder, it is no longer "throwaway" — subsequent navigation
+     * should leave it alone instead of cleaning it up.
      */
-    private fun materializePendingLeafZoomChild(): Boolean {
+    private fun commitPlaceholderIfAny() {
+        if (_stateFlow.value.pendingLeafZoomChild != null) {
+            patch { it.copy(pendingLeafZoomChild = null) }
+        }
+    }
+
+    /**
+     * If [State.pendingLeafZoomChild] points at a row that is still an
+     * empty bullet, deletes that row from the document (merging the
+     * placeholder line back into the parent's tail) and clears the
+     * pending flag. Used by every zoom-changing intent and by
+     * [switchActiveFile] so "zoom into a childless bullet, look around,
+     * go back" never leaves the placeholder behind.
+     *
+     * Safe to call when no placeholder is pending — it's a no-op in
+     * that case.
+     */
+    private fun cleanupEmptyPlaceholderIfAny() {
         val s = _stateFlow.value
-        val pending = s.pendingLeafZoomChild ?: return false
+        val pending = s.pendingLeafZoomChild ?: return
         val docState = s.documentState
         val doc = document
         if (docState == null || doc == null) {
             patch { it.copy(pendingLeafZoomChild = null) }
-            return false
+            return
         }
-        val parentRow = docState.lineIds.indexOf(pending)
-        if (parentRow < 0) {
+        val row = docState.lineIds.indexOf(pending)
+        if (row < 0 || row !in docState.lines.indices) {
             patch { it.copy(pendingLeafZoomChild = null) }
-            return false
+            return
         }
-        val parentLine = docState.lines[parentRow]
-        val parentIndent = DocumentLayout.bulletAsteriskColumn(parentLine)
-        if (parentIndent < 0) {
+        val line = docState.lines[row]
+        if (!DocumentLayout.isEmptyBulletLine(line)) {
+            // User has put text in the placeholder by some path that
+            // didn't go through commit (rare). Just clear the flag and
+            // leave the content alone.
             patch { it.copy(pendingLeafZoomChild = null) }
-            return false
+            return
         }
-        val childIndent = parentIndent + TAB_SIZE
-        val childPrefix = " ".repeat(childIndent) + "* "
-        doc.insertText(parentRow, parentLine.length, "\n" + childPrefix)
-        val newChildRow = parentRow + 1
-        patch {
-            it.copy(
-                cursorRow = newChildRow,
-                cursorCol = childPrefix.length,
-                anchorRow = null,
-                anchorCol = null,
-                pendingLeafZoomChild = null,
-            )
+        if (row == 0) {
+            // Defensive: we always insert the placeholder *after* the
+            // parent row, so the placeholder can never be at row 0. If
+            // that invariant is broken, drop the row by replacing it
+            // with an empty line instead of merging upward.
+            patch { it.copy(pendingLeafZoomChild = null) }
+            return
         }
-        return true
+        val prevLineLen = docState.lines[row - 1].length
+        doc.delete(row - 1, prevLineLen, row, line.length)
+        patch { it.copy(pendingLeafZoomChild = null) }
     }
 
     /** See [TextEditingViewModel.insertChar]. */
     fun insertChar(char: Char) {
         recordEdit(FrameKind.TYPING) {
-            materializePendingLeafZoomChild()
+            commitPlaceholderIfAny()
             textEditing.insertChar(char)
         }
     }
@@ -515,14 +536,7 @@ class PaneBackingViewModel(
     /** See [TextEditingViewModel.insertNewline]. */
     fun insertNewline() {
         recordEdit(FrameKind.OTHER) {
-            // Materialization itself already inserts a newline + bullet
-            // prefix and parks the caret on the new child — exactly what
-            // the user pressed Enter to get. Skip the standard newline
-            // insert in that case to avoid producing two blank bullets.
-            if (materializePendingLeafZoomChild()) {
-                revealAncestors(_stateFlow.value.cursorRow)
-                return@recordEdit
-            }
+            commitPlaceholderIfAny()
             textEditing.insertNewline()
             revealAncestors(_stateFlow.value.cursorRow)
         }
@@ -531,7 +545,7 @@ class PaneBackingViewModel(
     /** See [TextEditingViewModel.insertText]. */
     fun insertText(text: String) {
         recordEdit(FrameKind.OTHER) {
-            materializePendingLeafZoomChild()
+            commitPlaceholderIfAny()
             textEditing.insertText(text)
             if ('\n' in text || '\r' in text) revealAncestors(_stateFlow.value.cursorRow)
         }
@@ -540,13 +554,7 @@ class PaneBackingViewModel(
     /** See [TextEditingViewModel.backspace]. */
     fun backspace() {
         recordEdit(FrameKind.BACKSPACE) {
-            // Backspace in the pending-leaf-zoom state has no obvious
-            // intent — there's nothing to delete in the (yet-uncreated)
-            // child. Clear the pending flag without materializing so the
-            // backspace acts on the parent row's text instead.
-            if (_stateFlow.value.pendingLeafZoomChild != null) {
-                patch { it.copy(pendingLeafZoomChild = null) }
-            }
+            commitPlaceholderIfAny()
             textEditing.backspace()
         }
     }
@@ -554,7 +562,7 @@ class PaneBackingViewModel(
     /** See [TextEditingViewModel.indentLine]. */
     fun indentLine(amount: Int = TAB_SIZE) {
         recordEdit(FrameKind.OTHER) {
-            materializePendingLeafZoomChild()
+            commitPlaceholderIfAny()
             textEditing.indentLine(amount)
             revealAncestors(_stateFlow.value.cursorRow)
         }
@@ -563,7 +571,7 @@ class PaneBackingViewModel(
     /** See [TextEditingViewModel.outdentLine]. */
     fun outdentLine(amount: Int = TAB_SIZE) {
         recordEdit(FrameKind.OTHER) {
-            materializePendingLeafZoomChild()
+            commitPlaceholderIfAny()
             textEditing.outdentLine(amount)
         }
     }
@@ -857,7 +865,7 @@ class PaneBackingViewModel(
     /** See [MarkdownStyleViewModel.applyInlineStyle]. */
     fun applyInlineStyle(style: InlineStyle) {
         recordEdit(FrameKind.OTHER) {
-            materializePendingLeafZoomChild()
+            commitPlaceholderIfAny()
             markdownStyle.applyInlineStyle(style)
         }
     }
@@ -865,7 +873,7 @@ class PaneBackingViewModel(
     /** See [MarkdownStyleViewModel.applyLineStyle]. */
     fun applyLineStyle(style: LineStyle) {
         recordEdit(FrameKind.OTHER) {
-            materializePendingLeafZoomChild()
+            commitPlaceholderIfAny()
             markdownStyle.applyLineStyle(style)
         }
     }

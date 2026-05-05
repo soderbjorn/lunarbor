@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, ipcMain, shell } = require("electron");
 const fs = require("fs/promises");
 const fsSync = require("fs");
 const os = require("os");
@@ -372,7 +372,101 @@ app.on("second-instance", () => {
   }
 });
 
-app.whenReady().then(createWindow);
+/**
+ * Builds the application menu. On macOS the application menu is the menu
+ * bar at the top of the screen; on Windows/Linux it's the per-window
+ * menu. The custom item we care about is `Hotkeys…`, slotted directly
+ * under `About Notegrow` in the application menu (mac) / under `Help`
+ * (other platforms). Activation IPCs `notegrow:show-hotkeys` to the
+ * renderer, which opens [HotkeysModal].
+ */
+function buildAppMenu() {
+  const isMac = process.platform === "darwin";
+  const showHotkeys = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("notegrow:show-hotkeys");
+    }
+  };
+
+  /** @type {Electron.MenuItemConstructorOptions[]} */
+  const template = [];
+
+  if (isMac) {
+    template.push({
+      label: APP_NAME,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { label: "Hotkeys…", accelerator: "Cmd+/", click: showHotkeys },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    });
+  }
+
+  template.push({
+    label: "Edit",
+    submenu: [
+      { role: "undo" },
+      { role: "redo" },
+      { type: "separator" },
+      { role: "cut" },
+      { role: "copy" },
+      { role: "paste" },
+      { role: "selectAll" },
+    ],
+  });
+
+  template.push({
+    label: "View",
+    submenu: [
+      { role: "reload" },
+      { role: "forceReload" },
+      { role: "toggleDevTools" },
+      { type: "separator" },
+      { role: "resetZoom" },
+      { role: "zoomIn" },
+      { role: "zoomOut" },
+      { type: "separator" },
+      { role: "togglefullscreen" },
+    ],
+  });
+
+  template.push({
+    role: "window",
+    submenu: isMac
+      ? [
+          { role: "minimize" },
+          { role: "zoom" },
+          { type: "separator" },
+          { role: "front" },
+        ]
+      : [
+          { role: "minimize" },
+          { role: "close" },
+        ],
+  });
+
+  /** @type {Electron.MenuItemConstructorOptions[]} */
+  const helpSubmenu = [];
+  if (!isMac) {
+    helpSubmenu.push({ label: "Hotkeys…", accelerator: "Ctrl+/", click: showHotkeys });
+  }
+  template.push({ role: "help", submenu: helpSubmenu });
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+app.whenReady().then(() => {
+  buildAppMenu();
+  createWindow();
+});
 
 app.on("window-all-closed", () => {
   app.quit();

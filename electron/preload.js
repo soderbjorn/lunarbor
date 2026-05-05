@@ -70,4 +70,18 @@ contextBridge.exposeInMainWorld("darknessApi", {
    * @returns {Promise<string|null>} the JSON, or null
    */
   readLayoutState: () => ipcRenderer.invoke("darkness:readLayoutState"),
+
+  /**
+   * Subscribe to "show hotkeys" requests dispatched from the application
+   * menu (macOS: Notegrow → Hotkeys…). The callback is invoked once per
+   * menu activation. Returns an unsubscribe function.
+   *
+   * @param {() => void} cb invoked once per menu activation
+   * @returns {() => void} unsubscribe
+   */
+  onShowHotkeys: (cb) => {
+    const handler = () => { try { cb(); } catch (_) { /* swallow */ } };
+    ipcRenderer.on("notegrow:show-hotkeys", handler);
+    return () => ipcRenderer.removeListener("notegrow:show-hotkeys", handler);
+  },
 });

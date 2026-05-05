@@ -86,6 +86,19 @@ data class StyledRun(
      * (the Starred bookmarks modal) clicking can navigate to the URL.
      */
     val linkHref: String? = null,
+    /**
+     * When `true`, this run is a hashtag of the form `#name` (e.g.
+     * `#test`, `#test-me`). The `#` and the name characters are all
+     * visible — none collapse into [TokenizedLine.markerCols] — so the
+     * caret moves through tag text like normal characters. Renderers are
+     * expected to draw a distinguishing decoration around the run (a
+     * rectangle in the accent color).
+     *
+     * The tag's [text] always starts with `#` and contains the full
+     * matched name. Tags can co-occur with inline [styles] (a tag inside
+     * `**…**` carries [InlineStyle.BOLD] and remains a tag).
+     */
+    val isTag: Boolean = false,
 )
 
 /**
@@ -200,6 +213,14 @@ private class Parser(val text: String) {
             //    the link path instead of becoming a literal `[`. Plain
             //    `[`/`]` characters that don't form a link fall through.
             if (text[pos] == '[' && tryConsumeLink()) continue
+
+            // 0b. Hashtag `#name` — preceded by start-of-string or
+            //     whitespace, then `#` followed by a letter and any number
+            //     of letters/digits/`_`/`-`. Emits a single tag run with
+            //     all chars visible; nothing is folded into markerCols.
+            //     Comes before opener detection so a `*` after the tag
+            //     still gets a chance to open italic / bold normally.
+            if (text[pos] == '#' && tryConsumeTag()) continue
 
             // 1. Try to open a new style first — opening takes precedence over
             //    closing so that e.g. `*it **bo** it*` opens BOLD inside ITALIC
@@ -382,6 +403,62 @@ private class Parser(val text: String) {
         runStart = pos
         return true
     }
+
+    /**
+     * Try to consume a hashtag starting at [pos]. A tag is `#` followed
+     * by a letter and any number of `[A-Za-z0-9_-]` chars. The `#` must
+     * sit on a word boundary — at position 0, or preceded by a character
+     * that is not itself part of a tag name (anything other than
+     * `[A-Za-z0-9_-]`). That way a stray `#` inside a word (e.g.
+     * `id#42`) is left as a literal, while `(#foo)` and `**#foo**` both
+     * still produce a tag.
+     *
+     * On success: flushes any pending plain run, emits one [StyledRun]
+     * with [StyledRun.isTag] = true containing the entire `#name`,
+     * advances [pos] past the tag name, and returns `true`. Inherits the
+     * current [activeStyles] so a tag inside bold or italic still carries
+     * those styles.
+     *
+     * On failure (not enough text after `#`, first char is not a letter,
+     * preceding char is itself a tag-name char): returns `false` and
+     * leaves [pos] alone so the `#` falls through to literal handling.
+     */
+    private fun tryConsumeTag(): Boolean {
+        if (pos >= text.length || text[pos] != '#') return false
+        if (pos > 0 && isTagNameChar(text[pos - 1])) return false
+        val nameStart = pos + 1
+        if (nameStart >= text.length) return false
+        if (!text[nameStart].isLetter()) return false
+        var end = nameStart + 1
+        while (end < text.length && isTagNameChar(text[end])) end++
+        flushRun()
+        val tagStart = pos
+        val styles = activeStyles.toSet()
+        while (pos < end) {
+            // All tag characters — including the leading `#` — are visible.
+            // Don't route through `appendLiteralChar` because we want them
+            // emitted as their own dedicated run rather than being merged
+            // into a surrounding plain run by `flushRun`.
+            modelToDom[pos] = displayBuilder.length
+            domToModel.add(pos)
+            displayBuilder.append(text[pos])
+            pos++
+        }
+        runs += StyledRun(
+            text = text.substring(tagStart, pos),
+            styles = styles,
+            modelStart = tagStart,
+            modelEnd = pos,
+            isTag = true,
+        )
+        runStart = pos
+        return true
+    }
+
+    /** Tag-name predicate used by [tryConsumeTag] for both the trailing
+     *  scan and the preceding word-boundary check. */
+    private fun isTagNameChar(c: Char): Boolean =
+        c.isLetterOrDigit() || c == '_' || c == '-'
 
     /**
      * Lookahead: does a valid closer for [style] appear at or after [from]?

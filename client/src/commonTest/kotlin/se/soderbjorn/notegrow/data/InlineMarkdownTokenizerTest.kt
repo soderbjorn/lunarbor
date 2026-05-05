@@ -312,4 +312,92 @@ class InlineMarkdownTokenizerTest {
             assertEquals(displayCol, t.modelToDom[modelCol])
         }
     }
+
+    // ---- tags ----------------------------------------------------------
+
+    @Test
+    fun tag_at_start_of_line_is_recognised() {
+        val t = tokenize("#test")
+        assertEquals("#test", t.displayText)
+        assertEquals(1, t.runs.size)
+        assertTrue(t.runs[0].isTag)
+        assertEquals("#test", t.runs[0].text)
+        assertEquals(0, t.runs[0].modelStart)
+        assertEquals(5, t.runs[0].modelEnd)
+        assertTrue(t.markerCols.isEmpty())
+    }
+
+    @Test
+    fun tag_with_hyphen_is_recognised() {
+        val t = tokenize("#test-me")
+        assertEquals("#test-me", t.displayText)
+        assertEquals(1, t.runs.size)
+        assertTrue(t.runs[0].isTag)
+        assertEquals("#test-me", t.runs[0].text)
+    }
+
+    @Test
+    fun tag_after_whitespace_is_recognised() {
+        val t = tokenize("hello #world there")
+        assertEquals("hello #world there", t.displayText)
+        // Plain "hello ", then tag "#world", then plain " there".
+        assertEquals(3, t.runs.size)
+        assertFalse(t.runs[0].isTag)
+        assertTrue(t.runs[1].isTag)
+        assertEquals("#world", t.runs[1].text)
+        assertFalse(t.runs[2].isTag)
+    }
+
+    @Test
+    fun hash_mid_word_is_not_a_tag() {
+        val t = tokenize("id#42")
+        assertEquals("id#42", t.displayText)
+        assertEquals(1, t.runs.size)
+        assertFalse(t.runs[0].isTag)
+    }
+
+    @Test
+    fun bare_hash_is_not_a_tag() {
+        val t = tokenize("#")
+        assertEquals("#", t.displayText)
+        assertEquals(1, t.runs.size)
+        assertFalse(t.runs[0].isTag)
+    }
+
+    @Test
+    fun hash_followed_by_digit_is_not_a_tag() {
+        // `#1` — the first char after `#` must be a letter.
+        val t = tokenize("#1foo")
+        assertEquals("#1foo", t.displayText)
+        assertEquals(1, t.runs.size)
+        assertFalse(t.runs[0].isTag)
+    }
+
+    @Test
+    fun tag_inside_bold_carries_bold_style() {
+        val t = tokenize("**#tagged**")
+        assertEquals("#tagged", t.displayText)
+        assertEquals(1, t.runs.size)
+        assertTrue(t.runs[0].isTag)
+        assertEquals(setOf(InlineStyle.BOLD), t.runs[0].styles)
+    }
+
+    @Test
+    fun tag_followed_by_punctuation_terminates_at_punctuation() {
+        val t = tokenize("see #foo, ok")
+        assertEquals("see #foo, ok", t.displayText)
+        // "see ", "#foo", ", ok"
+        assertEquals(3, t.runs.size)
+        assertEquals("#foo", t.runs[1].text)
+        assertTrue(t.runs[1].isTag)
+    }
+
+    @Test
+    fun tag_column_maps_round_trip() {
+        val t = tokenize("a #t ok")
+        for (displayCol in 0..t.displayText.length) {
+            val modelCol = t.domToModel[displayCol]
+            assertEquals(displayCol, t.modelToDom[modelCol])
+        }
+    }
 }

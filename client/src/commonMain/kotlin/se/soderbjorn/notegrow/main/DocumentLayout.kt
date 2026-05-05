@@ -20,6 +20,27 @@ import se.soderbjorn.notegrow.data.LineMarkdownPrefix
 
 object DocumentLayout {
 
+    /**
+     * `true` when [line] is a bullet line whose content (everything after
+     * the `"* "` marker) is empty or only whitespace. Includes both the
+     * fully-blank string and bullets like `"  * "` or `"  *  "`.
+     *
+     * Used both by the per-pane VM (to decide whether a placeholder
+     * inserted by [se.soderbjorn.notegrow.main.PaneBackingViewModel.zoomInto]
+     * is still "throwaway") and by [se.soderbjorn.notegrow.data.NoteRepository.save]
+     * (to strip trailing empty bullets at file end).
+     */
+    fun isEmptyBulletLine(line: String): Boolean {
+        val bulletCol = bulletAsteriskColumn(line)
+        if (bulletCol < 0) return false
+        val textStart = bulletCol + 2
+        if (textStart >= line.length) return true
+        for (i in textStart until line.length) {
+            if (!line[i].isWhitespace()) return false
+        }
+        return true
+    }
+
     /** Column of the leading bullet `*` on [line], or -1 if [line] is not a bullet line. */
     fun bulletAsteriskColumn(line: String): Int {
         val indent = line.indexOfFirst { !it.isWhitespace() }
