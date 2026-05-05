@@ -27,6 +27,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import se.soderbjorn.notegrow.data.NoteRepository
 import se.soderbjorn.notegrow.data.VaultEntry
+import se.soderbjorn.notegrow.data.VaultIndex
 
 /**
  * App-scoped registry of loaded [Document]s and shared vault state.
@@ -61,6 +62,31 @@ class DocumentRegistry(
     private data class Slot(val document: Document, var refCount: Int)
 
     private val slots: MutableMap<String, Slot> = mutableMapOf()
+
+    /**
+     * App-scoped outline index used by the Insert Link feature. Bypasses
+     * its own cache for files the registry currently holds — always
+     * reads from [Document.stateFlow] for those — so the autosave loop
+     * does not invalidate anything. Closed-file entries are invalidated
+     * here whenever a save tick completes ([refreshLoadedVaultListings])
+     * or a [Document] is shut down.
+     */
+    val vaultIndex: VaultIndex = VaultIndex(
+        loadFromDisk = repository::loadFile,
+        listAllMdFiles = repository::listAllMdFiles,
+        rootFileName = repository.rootFileName,
+        openDocuments = ::openDocumentsSnapshot,
+    )
+
+    private fun openDocumentsSnapshot(): Map<String, Document> {
+        // Snapshot taken without the slots lock — slot mutations would
+        // race with VaultIndex lookups otherwise, and we only need a
+        // best-effort view (newly-acquired docs can lag one lookup; the
+        // next call sees them).
+        val result = HashMap<String, Document>(slots.size)
+        for ((rel, slot) in slots) result[rel] = slot.document
+        return result
+    }
 
     /**
      * Serializes acquire / release across panes so the refcount, slot
@@ -110,9 +136,22 @@ class DocumentRegistry(
             scope = scope,
             fileRel = fileRel,
             autoSaveIntervalMillis = autoSaveIntervalMillis,
-            onAfterSave = { refreshLoadedVaultListings() },
+            onAfterSave = {
+                refreshLoadedVaultListings()
+                // The save may have promoted/demoted nodes inside this
+                // file; drop the cache entry so the next non-live lookup
+                // (which only happens once this file is closed again)
+                // re-reads from disk. Live lookups bypass the cache
+                // anyway, so this is purely belt-and-braces for after
+                // [release] tears the [Document] down.
+                vaultIndex.invalidate(fileRel)
+            },
         )
         slots[fileRel] = Slot(doc, refCount = 1)
+        // While the file is open as a [Document], the index reads from
+        // it live, so any cached pre-open parse is now misleading. Drop
+        // it so closing the doc later re-reads fresh from disk.
+        vaultIndex.invalidate(fileRel)
         doc.start()
         doc
     }
@@ -132,6 +171,10 @@ class DocumentRegistry(
             slot.document
         } ?: return
         toShutdown.shutdown()
+        // Document.shutdown flushed one final save; the next non-live
+        // lookup of this file will need to re-read from disk to see
+        // those changes, so invalidate any cache entry.
+        vaultIndex.invalidate(fileRel)
     }
 
     /**

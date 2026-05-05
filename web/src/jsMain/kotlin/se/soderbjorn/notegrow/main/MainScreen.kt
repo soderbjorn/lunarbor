@@ -309,6 +309,7 @@ class MainScreen(
         editor.addEventListener("mousedown", { event ->
             val me = event as MouseEvent
             if (handleExternalLinkMouseDown(me)) return@addEventListener
+            if (handleNotegrowLinkMouseDown(me)) return@addEventListener
             maybeBeginGutterDrag(editor, me)
         })
         editor.addEventListener("copy", { event ->
@@ -742,6 +743,28 @@ class MainScreen(
             n = n.parentNode
         }
         return null
+    }
+
+    /**
+     * If [ev] hit a span carrying a `data-href` of the Notegrow
+     * title-path form (`#notegrow-bullet=…`), route it through the
+     * pane's [MainViewModel.navigateToLink] intent and suppress the
+     * default contenteditable caret placement. Returns `true` when the
+     * event was handled.
+     *
+     * Plain `#section` anchors and bare `*.md` file paths fall through
+     * (we have no first-class support yet for the latter and the former
+     * is browser-native), so the press lands as a normal caret place.
+     */
+    private fun handleNotegrowLinkMouseDown(ev: MouseEvent): Boolean {
+        if (ev.button.toInt() != 0) return false
+        val target = ev.target as? Node ?: return false
+        val href = ancestorHref(target) ?: return false
+        if (!href.startsWith("#notegrow-bullet=")) return false
+        ev.preventDefault()
+        ev.stopPropagation()
+        viewModel.navigateToLink(href)
+        return true
     }
 
     private fun isExternalUrl(href: String): Boolean {

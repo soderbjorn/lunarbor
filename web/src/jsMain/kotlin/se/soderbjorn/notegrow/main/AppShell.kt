@@ -136,6 +136,13 @@ class AppShell(
     private val starredModals: MutableMap<String, StarredModal> = mutableMapOf()
 
     /**
+     * Per-pane Insert Link modals, keyed by leaf pane id. Same lifecycle
+     * pattern as [starredModals]: lazily created on first open from the
+     * command palette, reused thereafter, cleared in [closePane].
+     */
+    private val insertLinkModals: MutableMap<String, InsertLinkModal> = mutableMapOf()
+
+    /**
      * Per-pane [MainViewModel] handles, keyed by leaf pane id. Maintained
      * alongside [paneEditors] so the toolkit-rendered pane header (built by
      * [buildPaneHeaderSpec], where the [MainScreen] is not directly
@@ -417,6 +424,14 @@ class AppShell(
             run = {
                 val paneId = focusedPaneId()
                 if (paneId != null) openStarredModal(paneId)
+            },
+        )
+        out += CommandPalette.Command(
+            id = "insert-link",
+            title = "Insert Link",
+            run = {
+                val paneId = focusedPaneId()
+                if (paneId != null) openInsertLinkModal(paneId)
             },
         )
         out += CommandPalette.Command(
@@ -1554,6 +1569,22 @@ class AppShell(
     }
 
     /**
+     * Opens the per-pane Insert Link modal. Same lifecycle pattern as
+     * [openStarredModal] — lazy first-open create, reuse thereafter,
+     * one modal per pane keyed by [paneId].
+     */
+    private fun openInsertLinkModal(paneId: String) {
+        if (paneViewModels[paneId] == null) return
+        val modal = insertLinkModals.getOrPut(paneId) {
+            InsertLinkModal(
+                parentScope = scope,
+                activePaneVmProvider = { paneViewModels[paneId] },
+            )
+        }
+        modal.open()
+    }
+
+    /**
      * Injects notegrow-only chrome styles that aren't part of the toolkit
      * stylesheet: the disabled state for nav buttons (back/forward/up/
      * home stay in place when inert, dimmed instead of removed) and the
@@ -1732,6 +1763,24 @@ class AppShell(
                 font-size: 12px;
                 color: var(--t-text-secondary, rgba(255, 255, 255, 0.55));
                 text-align: center;
+            }
+            /* Insert Link modal — same visuals as the palette plus a
+               two-line layout: bold title + muted breadcrumb. */
+            .notegrow-link-item {
+                padding: 7px 14px;
+                line-height: 1.25;
+            }
+            .notegrow-link-item-title {
+                font-size: 15px;
+                font-weight: 500;
+            }
+            .notegrow-link-item-crumb {
+                font-size: 12px;
+                color: var(--t-text-secondary, rgba(255, 255, 255, 0.55));
+                margin-top: 2px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
 ${HotkeysModal.STYLESHEET}
             /* Keyboard-focus highlight on the layout-preset tiles — same
@@ -1963,6 +2012,7 @@ ${HotkeysModal.STYLESHEET}
         if (removedVm != null) scope.launch { removedVm.release() }
         paneEditors.remove(paneId)
         starredModals.remove(paneId)?.dispose()
+        insertLinkModals.remove(paneId)?.close()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
             // Last pane in a non-last tab: cascade to closing the tab.
             closeTab(tabId)

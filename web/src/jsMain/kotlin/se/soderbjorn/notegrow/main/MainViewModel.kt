@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineStyle
+import se.soderbjorn.notegrow.data.VaultIndex
 
 /**
  * Thin web-platform ViewModel that `MainScreen` collects from. Receives the
@@ -258,6 +259,21 @@ class MainViewModel(
 
     /** See `PaneBackingViewModel.navigateToVaultFile`. */
     fun navigateToVaultFile(pathRel: String) = paneBackingViewModel.navigateToVaultFile(pathRel)
+
+    // ---- link intents ---------------------------------------------------
+
+    /** App-scoped outline index used by the Insert Link modal's search. */
+    val vaultIndex: VaultIndex get() = paneBackingViewModel.vaultIndex
+
+    /** See `PaneBackingViewModel.currentInFileTitlePath`. */
+    fun currentInFileTitlePath(): List<String> = paneBackingViewModel.currentInFileTitlePath()
+
+    /** See `PaneBackingViewModel.insertMarkdownLink`. */
+    fun insertMarkdownLink(label: String, url: String) =
+        paneBackingViewModel.insertMarkdownLink(label, url)
+
+    /** See `PaneBackingViewModel.navigateToLink`. */
+    fun navigateToLink(url: String) = paneBackingViewModel.navigateToLink(url)
 
     /**
      * Releases the underlying [Document] back to the registry. Call

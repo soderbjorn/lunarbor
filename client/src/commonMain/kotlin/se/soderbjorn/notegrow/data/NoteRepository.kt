@@ -645,6 +645,38 @@ class NoteRepository(
     // -------------------------------------------------------- vault listing
 
     /**
+     * Recursively walks every `.md` file under [rootDirectory] and returns
+     * their vault-relative paths. Used by `VaultIndex` to discover loose
+     * files (those not reachable from the configured root via promoted-ref
+     * links) so the Insert Link search can offer them as targets too.
+     *
+     * Skips dotfiles and any non-`.md` entries. The walk is breadth-first
+     * by directory level — order within a directory follows the platform
+     * filesystem's listing order, which is what every file-tree consumer
+     * in Notegrow already relies on.
+     */
+    suspend fun listAllMdFiles(): List<String> {
+        fileSystem.ensureDirectory(rootDirectory)
+        val out = mutableListOf<String>()
+        walkAllMdFiles("", out)
+        return out
+    }
+
+    private suspend fun walkAllMdFiles(dirRel: String, out: MutableList<String>) {
+        val absPath = if (dirRel.isEmpty()) rootDirectory else "$rootDirectory/$dirRel"
+        val raw = fileSystem.listDirectoryEntries(absPath)
+        for (entry in raw) {
+            if (entry.name.startsWith(".")) continue
+            val pathRel = if (dirRel.isEmpty()) entry.name else "$dirRel/${entry.name}"
+            if (entry.isDirectory) {
+                walkAllMdFiles(pathRel, out)
+            } else if (entry.name.endsWith(NOTE_EXTENSION)) {
+                out += pathRel
+            }
+        }
+    }
+
+    /**
      * Lists the direct entries under `<rootDirectory>/<dirRel>`. Pass `""`
      * to list the vault root. Filters to `.md` files plus subdirectories;
      * dotfiles and other extensions are dropped. The body of `.md` files is

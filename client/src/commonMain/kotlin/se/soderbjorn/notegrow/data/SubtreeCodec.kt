@@ -309,6 +309,27 @@ object SubtreeCodec {
 
     // -------------------------------------------------------- link helpers
 
+    /**
+     * Backslash-escapes the CommonMark link-label specials (`\`, `[`,
+     * `]`, `(`, `)`) inside [label] so the label survives a round-trip
+     * through `[…](…)`. Used by [formatRef] / [formatPlainLinkBullet]
+     * for emitted bullets and by `PaneBackingViewModel.insertMarkdownLink`
+     * for user-inserted Notegrow title-path links.
+     */
+    fun escapeLabel(label: String): String = escapeLinkLabel(label)
+
+    /**
+     * Wraps [url] in `<…>` when it contains a space, paren, or angle
+     * bracket — the CommonMark rule for embedding such characters in
+     * an inline link's URL. Bare URLs (no whitespace, no parens) are
+     * returned unchanged.
+     *
+     * Used both by [formatRef] / [formatPlainLinkBullet] and by the
+     * Insert Link feature's emitter so a `#notegrow-bullet=…` URL
+     * containing percent-encoded title parens still wraps correctly.
+     */
+    fun formatLinkUrlForLabel(url: String): String = formatLinkUrl(url)
+
     private fun escapeLinkLabel(label: String): String {
         val sb = StringBuilder(label.length)
         for (ch in label) {

@@ -276,6 +276,27 @@ class Document(
     fun isPromotedRef(lineId: LineId): Boolean = lineId in promotedSubtrees
 
     /**
+     * Snapshot of which rows in the current [State.lines] are promoted
+     * refs, keyed by row index. The [PromotedRef.fileRel] tells you which
+     * child file each ref points at — exactly the same shape
+     * [NoteRepository.Loaded.promotedByRow] returns from a cold disk read.
+     *
+     * Computed on demand from [promotedSubtrees] and the current
+     * `lineIds`. `VaultIndex` calls this to read the live promoted-ref
+     * structure without paying for a re-parse of every line.
+     */
+    fun promotedByRow(): Map<Int, PromotedRef> {
+        val state = _stateFlow.value
+        if (promotedSubtrees.isEmpty()) return emptyMap()
+        val out = HashMap<Int, PromotedRef>(promotedSubtrees.size)
+        for ((row, id) in state.lineIds.withIndex()) {
+            val ref = promotedSubtrees[id] ?: continue
+            out[row] = ref
+        }
+        return out
+    }
+
+    /**
      * Records that one more pane wants the subtree at [lineId] expanded.
      * On the first acquire (refcount 0 → 1) the child file is loaded
      * and its content spliced into [State.lines] right after the

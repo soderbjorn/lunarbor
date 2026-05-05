@@ -37,11 +37,15 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.time.TimeSource
 import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineStyle
+import se.soderbjorn.notegrow.data.LinkUrl
+import se.soderbjorn.notegrow.data.SubtreeCodec
 import se.soderbjorn.notegrow.data.VaultEntry
+import se.soderbjorn.notegrow.data.VaultIndex
 
 /**
  * Per-pane backing view-model. Mirrors the active [Document]'s content
@@ -69,6 +73,9 @@ class PaneBackingViewModel(
 ) {
     /** Mirrors [DocumentRegistry.rootFileName] for the view layer. */
     val rootFileName: String get() = registry.rootFileName
+
+    /** App-scoped outline index, exposed for the Insert Link modal's search. */
+    val vaultIndex: VaultIndex get() = registry.vaultIndex
 
     /**
      * Immutable snapshot of one pane's state.
@@ -936,6 +943,187 @@ class PaneBackingViewModel(
                 )
             }
         }
+    }
+
+    // ----------------------------------------------------------------- links
+
+    /**
+     * The title path inside the active file from the file's top down
+     * to the bullet currently containing the cursor. Empty when the
+     * cursor is on a non-bullet row or the document hasn't loaded.
+     *
+     * Used by the Insert Link modal to scope its relative-URL math:
+     * combined with [activeFileRel] and [VaultIndex.fullPathFor] this
+     * yields the cursor's full vault title path.
+     */
+    fun currentInFileTitlePath(): List<String> {
+        val state = _stateFlow.value
+        val docState = state.documentState ?: return emptyList()
+        if (!docState.isLoaded) return emptyList()
+        val lines = docState.lines
+        val row = state.cursorRow
+        if (row !in lines.indices) return emptyList()
+        val rowIndent = DocumentLayout.bulletAsteriskColumn(lines[row])
+        if (rowIndent < 0) return emptyList()
+        val baseline = topLevelBulletIndent(lines)
+        if (baseline < 0) return emptyList()
+        val stack = ArrayDeque<String>()
+        // Include the bullet itself, then walk up the ancestor chain by
+        // strictly-shallower indent.
+        stack.addFirst(SubtreeCodec.titleOf(lines[row]))
+        var lookingFor = rowIndent - 1
+        var r = row - 1
+        while (r >= 0 && lookingFor >= baseline) {
+            val ind = DocumentLayout.bulletAsteriskColumn(lines[r])
+            if (ind in baseline..lookingFor) {
+                stack.addFirst(SubtreeCodec.titleOf(lines[r]))
+                lookingFor = ind - 1
+            }
+            r--
+        }
+        return stack.toList()
+    }
+
+    private fun topLevelBulletIndent(lines: List<String>): Int {
+        var min = Int.MAX_VALUE
+        for (line in lines) {
+            val c = DocumentLayout.bulletAsteriskColumn(line)
+            if (c >= 0 && c < min) min = c
+        }
+        return if (min == Int.MAX_VALUE) -1 else min
+    }
+
+    /**
+     * Inserts `[label](url)` at the cursor — replacing any active
+     * selection — and leaves the caret immediately after the closing
+     * `)`. Reuses the standard text-insert pipeline so the edit is
+     * undoable, autosaves with the file, and respects pane state
+     * (placeholder cleanup, ancestor reveal, etc).
+     *
+     * @param label Display text inside the brackets. Special markdown
+     *   characters (`\`, `[`, `]`, `(`, `)`) are backslash-escaped so
+     *   the label round-trips through CommonMark.
+     * @param url The URL to put inside the parentheses. Wrapped in
+     *   `<…>` automatically when it contains a space, paren, or angle
+     *   bracket.
+     */
+    fun insertMarkdownLink(label: String, url: String) {
+        val markdown = "[" + SubtreeCodec.escapeLabel(label) + "](" +
+            SubtreeCodec.formatLinkUrlForLabel(url) + ")"
+        insertText(markdown)
+    }
+
+    /**
+     * Resolves [url] against the cursor's position and navigates this
+     * pane to the target. No-op when the URL is unparseable or the
+     * resolver returns [VaultIndex.Resolution.NotFound] — the link
+     * text stays in the document for the user to fix manually.
+     *
+     * Wires together:
+     *  1. [LinkUrl.parse] (pure codec).
+     *  2. [VaultIndex.resolve] (deterministic walk).
+     *  3. [navigateToVaultFile] (if the target lives in another file).
+     *  4. [zoomTo] (if the target is a specific bullet).
+     */
+    fun navigateToLink(url: String) {
+        val parsed = LinkUrl.parse(url) ?: return
+        val state = _stateFlow.value
+        if (!state.isLoaded) return
+        val activeFileRel = state.activeFileRel
+        val inFilePath = currentInFileTitlePath()
+        scope.launch {
+            val cursorFullPath =
+                vaultIndex.fullPathFor(activeFileRel, inFilePath) ?: emptyList()
+            val resolution = vaultIndex.resolve(parsed, cursorFullPath)
+            if (resolution !is VaultIndex.Resolution.Found) return@launch
+            // Navigate to the target file first if needed. switchActiveFile
+            // is suspend; await it so the lineId lookup below sees the new
+            // document's state.
+            if (resolution.fileRel != _stateFlow.value.activeFileRel) {
+                val priorFile = _stateFlow.value.activeFileRel
+                switchActiveFile(resolution.fileRel)
+                patch {
+                    it.copy(
+                        fileHistory = (it.fileHistory + priorFile).takeLast(NAV_HISTORY_CAP),
+                        fileForward = emptyList(),
+                    )
+                }
+            }
+            // The collector for the freshly-acquired document may not have
+            // emitted yet. Wait for the loaded state, with a short cap so a
+            // pathological case doesn't hang the click handler.
+            if (resolution.titlePathInFile.isEmpty()) return@launch
+            val targetId = awaitLineIdForTitlePath(resolution.titlePathInFile)
+            if (targetId != null) zoomTo(targetId)
+        }
+    }
+
+    /**
+     * Awaits the active document's first loaded emission and tries
+     * to resolve [titlePath] inside it. Used by [navigateToLink] so
+     * the lookup runs on the freshly-acquired document's content even
+     * when the click happens before the initial disk read finishes.
+     *
+     * Returns `null` when the active document is gone or the path
+     * doesn't match any bullet in the loaded content.
+     */
+    private suspend fun awaitLineIdForTitlePath(titlePath: List<String>): LineId? {
+        val doc = document ?: return null
+        val loadedState = doc.stateFlow.first { it.isLoaded }
+        return findLineIdByTitlePathIn(loadedState.lines, loadedState.lineIds, titlePath)
+    }
+
+    /**
+     * Walks [titlePath] through the active document's bullets and
+     * returns the [LineId] of the matching row, or `null` when no
+     * walk succeeds. Each segment is matched against direct-child
+     * bullets (deeper indent) of the previously matched row.
+     */
+    fun findLineIdByTitlePath(titlePath: List<String>): LineId? {
+        val docState = _stateFlow.value.documentState ?: return null
+        return findLineIdByTitlePathIn(docState.lines, docState.lineIds, titlePath)
+    }
+
+    private fun findLineIdByTitlePathIn(
+        lines: List<String>,
+        lineIds: List<LineId>,
+        titlePath: List<String>,
+    ): LineId? {
+        if (titlePath.isEmpty()) return null
+        val baseline = topLevelBulletIndent(lines)
+        if (baseline < 0) return null
+        var startRow = 0
+        var endRowExclusive = lines.size
+        var parentIndent = baseline - 1
+        var matchedRow = -1
+        for (segIdx in titlePath.indices) {
+            val target = titlePath[segIdx].lowercase()
+            var found = false
+            var i = startRow
+            var childIndent = -1
+            while (i < endRowExclusive) {
+                val line = lines[i]
+                val ind = DocumentLayout.bulletAsteriskColumn(line)
+                if (ind < 0) { i++; continue }
+                if (ind <= parentIndent) break
+                if (childIndent < 0) childIndent = ind
+                if (ind == childIndent &&
+                    SubtreeCodec.titleOf(line).lowercase() == target
+                ) {
+                    matchedRow = i
+                    found = true
+                    val end = DocumentLayout.subtreeEnd(lines, i, ind)
+                    startRow = i + 1
+                    endRowExclusive = end + 1
+                    parentIndent = ind
+                    break
+                }
+                i++
+            }
+            if (!found) return null
+        }
+        return if (matchedRow >= 0 && matchedRow in lineIds.indices) lineIds[matchedRow]
+               else null
     }
 
     // ------------------------------------------------------------------ helpers
