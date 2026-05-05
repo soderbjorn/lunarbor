@@ -848,6 +848,12 @@ fun ensureStyles() {
         .dt-app-frame .dt-topbar {
             padding-top: 6px !important;
         }
+        /* Wider gap between adjacent tabs. Toolkit default is 4px,
+           which packs the pills tightly enough that adjacent tabs
+           visually fuse on schemes with low border contrast. */
+        .dt-app-frame .dt-tabbar-strip {
+            gap: 14px !important;
+        }
     """.trimIndent()
     document.head?.appendChild(style)
 }

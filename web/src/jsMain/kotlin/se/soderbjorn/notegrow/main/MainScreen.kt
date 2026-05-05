@@ -47,6 +47,14 @@ import kotlin.math.sqrt
 class MainScreen(
     private val viewModel: MainViewModel,
     private val scope: CoroutineScope,
+    /**
+     * Invoked when the user shift-clicks an internal Notegrow bullet
+     * link. Receives the link's `href` (a `#notegrow-bullet=…` URL).
+     * The host opens the target in a new pane instead of navigating
+     * the current one. `null` falls back to in-pane navigation —
+     * shift-click behaves the same as a plain click.
+     */
+    private val onShiftClickInternalLink: ((href: String) -> Unit)? = null,
 ) {
     private val style = EditorStyle()
 
@@ -793,7 +801,15 @@ class MainScreen(
         if (!href.startsWith("#notegrow-bullet=")) return false
         ev.preventDefault()
         ev.stopPropagation()
-        viewModel.navigateToLink(href)
+        // Shift-click opens the link in a new pane instead of navigating
+        // the current one. The host (AppShell) creates the pane and
+        // routes the href into the new pane's view model.
+        val onShift = onShiftClickInternalLink
+        if (ev.shiftKey && onShift != null) {
+            onShift(href)
+        } else {
+            viewModel.navigateToLink(href)
+        }
         return true
     }
 

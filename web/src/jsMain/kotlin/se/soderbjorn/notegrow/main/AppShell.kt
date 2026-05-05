@@ -31,6 +31,7 @@ import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLElement
@@ -46,6 +47,8 @@ import se.soderbjorn.darkness.store.TabState
 import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
 import se.soderbjorn.darkness.web.isDarkActive
 import se.soderbjorn.darkness.web.layout.FloatingPaneSpec
+import se.soderbjorn.darkness.web.layout.GridSpec
+import se.soderbjorn.darkness.web.layout.LayoutDropdown
 import se.soderbjorn.darkness.web.layout.LayoutPreset
 import se.soderbjorn.darkness.web.layout.LayoutRenderer
 import se.soderbjorn.darkness.web.layout.PaneCallbacks
@@ -907,6 +910,33 @@ class AppShell(
         layoutState.activeTabId?.let { lastFocusedPaneIdByTab[it] }
 
     /**
+     * The pane that was active when each pane was created. Used by the
+     * Auto layout preset to keep the originating pane prominent
+     * (slot 1, second-largest) when a freshly-created child takes
+     * primary focus. Populated in [addFloatingPane] / [openLinkInNewPane]
+     * and cleared on pane close.
+     */
+    private val parentByPane: MutableMap<String, String> = mutableMapOf()
+
+    /**
+     * Layout preset currently driving each tab's geometry. Tracks
+     * whether Auto re-tile should run after pane add/remove. Absent
+     * entries mean "no preset is driving" (manual placement / first
+     * load) and skip auto re-tile. Manual move/resize clears the
+     * tab's entry so the user's hand-placed geometry isn't undone
+     * by the next add/remove event.
+     */
+    private val activePresetByTab: MutableMap<String, LayoutPreset> = mutableMapOf()
+
+    /**
+     * Snap grid passed to [LayoutPreset.computeBoxes] so Auto-tiled
+     * panes land on the same 5% grid the toolkit's drag-to-move and
+     * drag-to-resize gestures snap to. Keeps auto-placed panes
+     * visually indistinguishable from hand-placed ones.
+     */
+    private val AUTO_LAYOUT_GRID: GridSpec = GridSpec(cols = 20, rows = 20)
+
+    /**
      * Re-renders the left sidebar's inner sections in place — same fast
      * path [softSwitchTab] uses, but without touching the topbar or the
      * pane host. Used after focus / minimise / float changes that the
@@ -1002,6 +1032,10 @@ class AppShell(
                         if (f.id == id) f.copy(xPct = xPct, yPct = yPct) else f
                     },
                 )
+                // User overrode preset-driven geometry — drop the active
+                // preset so subsequent add/remove events don't undo the
+                // hand-placement. Re-selecting a preset re-engages it.
+                activePresetByTab.remove(activeId)
                 persistLayoutState()
             },
             onFloatingResized = { id, w, h ->
@@ -1011,6 +1045,7 @@ class AppShell(
                         if (f.id == id) f.copy(widthPct = w, heightPct = h) else f
                     },
                 )
+                activePresetByTab.remove(activeId)
                 persistLayoutState()
             },
             onFloatingFocused = { id -> bringFloatingPaneToFront(activeId, id) },
@@ -2009,7 +2044,14 @@ ${HotkeysModal.STYLESHEET}
         // a fresh per-pane VM stack on first render.
         ensurePaneViewModel(id)
         val screen = paneEditors.getOrPut(id) {
-            MainScreen(paneViewModels.getValue(id), scope)
+            MainScreen(
+                paneViewModels.getValue(id),
+                scope,
+                onShiftClickInternalLink = { href ->
+                    val tabId = layoutState.activeTabId ?: return@MainScreen
+                    openLinkInNewPane(tabId, sourcePaneId = id, href = href)
+                },
+            )
         }
         screen.render(container)
     }
@@ -2032,8 +2074,11 @@ ${HotkeysModal.STYLESHEET}
      * so panes survive reload. In the floats-only model every pane lives
      * here — there is no separate split tree.
      */
-    private fun addFloatingPane(tabId: String) {
-        val cur = tabLayouts[tabId] ?: return
+    private fun addFloatingPane(
+        tabId: String,
+        parentPaneId: String? = lastFocusedPaneIdByTab[tabId],
+    ): String? {
+        val cur = tabLayouts[tabId] ?: return null
         val existingIds = cur.floatingPanes.map { it.id }.toSet()
         var n = existingIds.size + 1
         var newId = "$tabId-pane-$n"
@@ -2057,9 +2102,46 @@ ${HotkeysModal.STYLESHEET}
         tabLayouts[tabId] = cur.copy(
             floatingPanes = cur.floatingPanes.withNoneMaximized() + spec,
         )
+        // Record parent linkage for Auto layout. The originating pane
+        // (active at creation) gets to keep the second-largest slot so
+        // it isn't demoted just because the new child stole focus.
+        if (parentPaneId != null && parentPaneId != newId) {
+            parentByPane[newId] = parentPaneId
+        }
         persistLayoutState()
-        rerenderActivePane()
-        refreshLeftSidebarSections()
+        // If Auto is the active preset, re-tile so the new pane (and
+        // its parent) land in their auto-layout slots immediately.
+        // Otherwise just re-render with the spawn position.
+        if (activePresetByTab[tabId] == LayoutPreset.Auto) {
+            applyLayoutPreset(tabId, LayoutPreset.Auto)
+        } else {
+            rerenderActivePane()
+            refreshLeftSidebarSections()
+        }
+        return newId
+    }
+
+    /**
+     * Opens the Notegrow internal link [href] in a new pane spawned
+     * from [sourcePaneId]. Wired via [MainScreen.onShiftClickInternalLink]
+     * so shift-clicking a `#notegrow-bullet=…` link creates a new pane
+     * rooted at the link target, leaving the originating pane
+     * untouched. Auto layout (if active) immediately re-tiles to fit
+     * both panes.
+     */
+    private fun openLinkInNewPane(tabId: String, sourcePaneId: String, href: String) {
+        val newId = addFloatingPane(tabId, parentPaneId = sourcePaneId) ?: return
+        ensurePaneViewModel(newId)
+        val paneVm = paneViewModels[newId] ?: return
+        // The brand-new pane's document hasn't loaded yet —
+        // [PaneBackingViewModel.navigateToLink] silently no-ops when
+        // `state.isLoaded == false`. Wait for the first loaded
+        // emission before dispatching the navigation so the new pane
+        // actually lands on the link target instead of the root.
+        scope.launch {
+            paneVm.stateFlow.first { it.backingState?.isLoaded == true }
+            paneVm.navigateToLink(href)
+        }
     }
 
     /** Bumps [paneId]'s z-index to `max(existing) + 1` so it lands on top. */
@@ -2182,9 +2264,18 @@ ${HotkeysModal.STYLESHEET}
             return
         }
         tabLayouts[tabId] = cur.copy(floatingPanes = remaining)
+        // Drop the closed pane's parent linkage; preserve other entries
+        // so a chain of recorded parents survives sibling-only removals.
+        parentByPane.remove(paneId)
         persistLayoutState()
-        refreshLeftSidebarSections()
-        rerenderActivePane()
+        // Auto re-tile so the surviving panes fill the freed space
+        // immediately. Other presets stay where the user put them.
+        if (activePresetByTab[tabId] == LayoutPreset.Auto && remaining.isNotEmpty()) {
+            applyLayoutPreset(tabId, LayoutPreset.Auto)
+        } else {
+            refreshLeftSidebarSections()
+            rerenderActivePane()
+        }
     }
 
     // ── Trailing actions: palette + appearance toggle ────────────────
@@ -2301,6 +2392,18 @@ ${HotkeysModal.STYLESHEET}
      */
     private fun applyLayoutPreset(tabId: String, preset: LayoutPreset) {
         val cur = tabLayouts[tabId] ?: return
+        // Track the preset so subsequent pane add/remove can decide
+        // whether to auto re-tile. Custom is the sentinel that means
+        // "user has hand-tweaked geometry — don't drive layout."
+        if (preset == LayoutPreset.Custom) {
+            activePresetByTab.remove(tabId)
+        } else {
+            activePresetByTab[tabId] = preset
+        }
+        if (preset == LayoutPreset.Custom) {
+            // Custom is non-applicable — leave geometry as-is.
+            return
+        }
         val visible = cur.floatingPanes.filter { !it.isMinimized }
         if (visible.isEmpty()) {
             tabLayouts[tabId] = cur.copy(floatingPanes = listOf(seedPane(tabId)))
@@ -2310,11 +2413,26 @@ ${HotkeysModal.STYLESHEET}
             return
         }
         val focusedId = lastFocusedPaneIdByTab[tabId]
-        val ordered = if (focusedId != null && visible.any { it.id == focusedId }) {
-            listOf(visible.first { it.id == focusedId }) +
-                visible.filter { it.id != focusedId }
-        } else visible
-        val boxes = preset.computeBoxes(ordered.size)
+        // Importance order: focused pane first; for Auto, the focused
+        // pane's parent (recorded at creation) goes to slot 1 so the
+        // originating pane keeps its prominence; the rest preserve
+        // existing list order.
+        val ordered = buildList {
+            if (focusedId != null && visible.any { it.id == focusedId }) {
+                add(visible.first { it.id == focusedId })
+            }
+            if (preset == LayoutPreset.Auto && focusedId != null) {
+                val parentId = parentByPane[focusedId]
+                if (parentId != null && visible.any { it.id == parentId } &&
+                    parentId !in this.map { it.id }) {
+                    add(visible.first { it.id == parentId })
+                }
+            }
+            for (spec in visible) {
+                if (this.none { it.id == spec.id }) add(spec)
+            }
+        }
+        val boxes = preset.computeBoxes(ordered.size, AUTO_LAYOUT_GRID)
         val rearranged = ordered.mapIndexed { index, spec ->
             val box = boxes[index]
             spec.copy(
