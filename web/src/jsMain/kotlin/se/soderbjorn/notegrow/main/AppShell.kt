@@ -3,24 +3,28 @@
  * --------------------
  * Top-level shell for the notegrow web app, built on darkness-toolkit.
  *
- * Composes — via a single `mountAppFrame(...)` call — every shell primitive
- * the toolkit ships:
+ * The chrome — top bar, tab strip, kebab menu, left sidebar's
+ * tabs→panes tree, layout renderer, theme manager sidebar, bottom
+ * bar — comes from the toolkit's `mountAppShell(AppShellSpec(...))`
+ * one-call assembler. Notegrow contributes:
  *
- *  - `TopBar` with leading title, a full `TabBar` (add/close/rename/drag),
- *    and a trailing slot holding a palette button + appearance toggle.
- *  - `LayoutRenderer` mounted into the AppFrame's main slot, painting the
- *    active tab's `PaneTree` with full pane chrome (close + inline rename
- *    + cross-tab drag, plus a kebab menu for split/expand/restore/close).
- *  - A right-side `ThemeManager` host wired through the toolkit's
- *    `DefaultThemeManagerHost` and a `DefaultThemeManagerState`.
- *  - Boot-time + on-mutation persistence of `LayoutState` and `UiSettings`
- *    via the Electron preload's `darknessApi` IPC bridge.
+ *  - The per-pane note editor (rendered through [renderPaneContent]).
+ *  - A typed `LayoutState` source ([NotegrowTabSource]) for tab +
+ *    pane identity (notegrow has its own document-model-derived shape;
+ *    the toolkit's local-mode tab list isn't expressive enough).
+ *  - One extra trailing top-bar action — the command-palette button
+ *    (Cmd-P) — passed via `extraTopbarTrailing`.
+ *  - Notegrow-specific keyboard shortcuts (Cmd-P / Cmd-/ / Cmd-O /
+ *    Cmd-S) and the Electron-menu `notegrow:show-hotkeys` bridge.
+ *  - Per-pane navigation actions (zoom back/forward + up/home).
+ *  - The pane→universal-section map (`notegrowPanes` in `AppPanes.kt`)
+ *    forwarded via `AppShellSpec.appPanes` so the theme manager can
+ *    present per-pane override rows for `starred` / `outline` etc.
  *
- * Theme persistence is loaded from `globalThis.__darknessSettings`;
- * layout persistence is loaded from `globalThis.__darknessLayoutState`.
- * Both are populated by the Electron preload at boot. When running in a
- * plain browser (no `darknessApi` global) the shell falls back to
- * defaults and persistence is a no-op.
+ * Persistence — theme, ui settings, layout — routes through the
+ * darkness-toolkit `Persister` injected by [JsAppGraph]: Electron
+ * IPC when `globalThis.darknessApi` is present, namespaced
+ * `localStorage` otherwise.
  *
  * commonMain rules: this file is jsMain only (touches the DOM).
  */
@@ -28,89 +32,69 @@
 package se.soderbjorn.notegrow.main
 
 import kotlinx.browser.document
-import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
-import se.soderbjorn.darkness.core.Appearance
-import se.soderbjorn.darkness.core.DEFAULT_DARK_THEME_NAME
-import se.soderbjorn.darkness.core.DEFAULT_LIGHT_THEME_NAME
-import se.soderbjorn.darkness.core.ThemeSnapshot
-import se.soderbjorn.darkness.core.UiSettings
+import se.soderbjorn.darkness.core.PersistKeys
+import se.soderbjorn.darkness.core.Persister
 import se.soderbjorn.darkness.store.LayoutState
-import se.soderbjorn.darkness.store.SidebarState
 import se.soderbjorn.darkness.store.TabState
 import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
-import se.soderbjorn.darkness.web.isDarkActive
 import se.soderbjorn.darkness.web.layout.FloatingPaneSpec
 import se.soderbjorn.darkness.web.layout.GridSpec
-import se.soderbjorn.darkness.web.layout.LayoutDropdown
 import se.soderbjorn.darkness.web.layout.LayoutPreset
-import se.soderbjorn.darkness.web.layout.LayoutRenderer
-import se.soderbjorn.darkness.web.layout.PaneCallbacks
 import se.soderbjorn.darkness.web.layout.PaneHeaderSpec
 import se.soderbjorn.darkness.web.layout.PaneLayout
 import se.soderbjorn.darkness.web.layout.PaneActions
 import se.soderbjorn.darkness.web.layout.PaneAction
 import se.soderbjorn.darkness.web.layout.PaneTitleSegment
 import se.soderbjorn.darkness.web.layout.withNoneMaximized
-import se.soderbjorn.darkness.web.shell.AppFrameSpec
-import se.soderbjorn.darkness.web.shell.TabBarCallbacks
-import se.soderbjorn.darkness.web.shell.TabBarSpec
-import se.soderbjorn.darkness.web.shell.TabSpec
-import se.soderbjorn.darkness.web.shell.TopBarSpec
-import se.soderbjorn.darkness.web.shell.bottomBarController
-import se.soderbjorn.darkness.web.shell.buildNewWindowButton
-import se.soderbjorn.darkness.web.shell.buildThemeManagerButton
-import se.soderbjorn.darkness.web.shell.mountAppFrame
-import se.soderbjorn.darkness.web.shell.renderTopBar
-import se.soderbjorn.darkness.web.shell.topBarController
-import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerHost
-import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerState
-import se.soderbjorn.darkness.web.themeeditor.applySnapshot
-import se.soderbjorn.darkness.web.themeeditor.buildThemeManagerSidebar
-import se.soderbjorn.darkness.web.themeeditor.isThemeManagerSidebarOpen
-import se.soderbjorn.darkness.web.themeeditor.localStorageThemeSnapshotStorage
-import se.soderbjorn.darkness.web.themeeditor.refreshThemeManager
-import se.soderbjorn.darkness.web.themeeditor.resolveActiveUiSettings
-import se.soderbjorn.darkness.web.themeeditor.toSnapshot
-import se.soderbjorn.darkness.web.themeeditor.toggleThemeManagerSidebar
+import se.soderbjorn.darkness.web.shell.AppShellHandle
+import se.soderbjorn.darkness.web.shell.AppShellSpec
+import se.soderbjorn.darkness.web.shell.TopbarAction
+import se.soderbjorn.darkness.web.shell.mountAppShell
 
 /**
- * Top-level shell that wires the toolkit windowing system around the
- * notegrow editor. One instance per app startup; instantiated in
- * [se.soderbjorn.notegrow.Main].
+ * Top-level shell that wires the darkness-toolkit windowing system
+ * around the notegrow editor. One instance per app startup;
+ * instantiated in [se.soderbjorn.notegrow.Main].
  *
- * @param scope     coroutine scope shared with the embedded [MainScreen]
- *   for its paint loop.
+ * @param scope coroutine scope shared with the embedded [MainScreen]
+ *   for its paint loop and used for [Persister] reads/writes.
  * @param documentRegistry The shared registry that hands out
  *   [se.soderbjorn.notegrow.main.Document] instances. Each pane
  *   acquires its current file from here; two panes pointed at the
  *   same file share one Document so concurrent edits stay live.
+ * @param persister Toolkit-canonical KV bridge for theme / layout /
+ *   ui-settings (see [PersistKeys]). Backed by Electron IPC inside
+ *   the desktop wrapper, namespaced `localStorage` in a plain browser.
+ *   The toolkit's `mountAppShell` reads `UI_SETTINGS` /
+ *   `LAYOUT_STATE` / `THEME_SNAPSHOT` itself; notegrow uses this
+ *   handle for `LAYOUT` (its typed [LayoutState] shape, owned by
+ *   the app when a `TabSource` is supplied).
  */
 class AppShell(
     private val scope: CoroutineScope,
     private val documentRegistry: se.soderbjorn.notegrow.main.DocumentRegistry,
+    private val persister: Persister,
 ) {
 
-    /** Stable id for the editor pane that hosts the live `MainScreen`. */
-    private val editorPaneId = "pane-editor"
-
-    /** Stable id for the only tab that is allowed to host the editor pane. */
-    private val defaultTabId = "tab-default"
-
-    /** Mounted root element — kept for re-renders triggered by state changes. */
+    /** Mounted root element. Captured at boot for the toolkit assembler. */
     private var rootEl: HTMLElement? = null
 
-    /** Container holding the active tab's `LayoutRenderer` output. */
-    private var paneHost: HTMLElement? = null
-
-    /** Active layout renderer, recreated on every tab switch. */
-    private var renderer: LayoutRenderer? = null
+    /**
+     * Handle returned by [mountAppShell]. Used to push pane-state
+     * changes back to the toolkit so the per-pane chrome (action
+     * button enabled state, breadcrumb title) refreshes when the
+     * pane's zoom history / active file changes. See
+     * [se.soderbjorn.darkness.web.shell.AppShellHandle.refresh].
+     */
+    private var shellHandle: AppShellHandle? = null
 
     /**
      * Per-pane editor instances. Each entry pairs a `MainViewModel` (with
@@ -153,6 +137,21 @@ class AppShell(
     private val navigateToModals: MutableMap<String, LinkSearchModal> = mutableMapOf()
 
     /**
+     * Singleton Starred-bookmarks modal mounted in the *tab toolbar*
+     * (left of the layout dropdown), distinct from the per-pane
+     * [starredModals]. Picking a favorite navigates whichever pane is
+     * currently focused on the active tab; if no tab/pane exists, one
+     * is created on the fly via [resolveOrCreateFocusedPaneVm] so the
+     * navigation always lands somewhere visible.
+     */
+    private val topbarStarredModal: StarredModal by lazy {
+        StarredModal(
+            parentScope = scope,
+            activePaneVmProvider = { resolveOrCreateFocusedPaneVm() },
+        )
+    }
+
+    /**
      * Per-pane [MainViewModel] handles, keyed by leaf pane id. Maintained
      * alongside [paneEditors] so the toolkit-rendered pane header (built by
      * [buildPaneHeaderSpec], where the [MainScreen] is not directly
@@ -165,69 +164,51 @@ class AppShell(
      */
     private val paneViewModels: MutableMap<String, MainViewModel> = mutableMapOf()
 
-    /** Latest UI settings; mirrors disk + Electron-pushed updates. */
-    private var uiSettings: UiSettings = UiSettings.defaults()
-
     /**
-     * Tab ids whose sidebar section the user has manually collapsed.
-     * Independent of which tab is active — termtastic's pattern. Clicking
-     * the chevron toggles membership.
+     * Notegrow's typed layout state — tab list, per-tab floating panes
+     * (id + title + on-disk file ref). Hydrated from
+     * `persister.read(LAYOUT)` at boot; mutated by tab/pane intents
+     * and re-persisted via [persistLayoutState]. The toolkit's
+     * `mountAppShell` skips its own LAYOUT key when a `TabSource` is
+     * supplied, so this is the authoritative tab/pane source.
      */
-    private val collapsedTabs: MutableSet<String> = mutableSetOf()
-
-    /**
-     * Temporary flag — when `true`, notegrow keeps its UiSettings in a
-     * notegrow-private localStorage slot instead of going through the
-     * shared `darknessApi` UI-settings IPC (which Electron persists to a
-     * file shared with termtastic). The shared-file path currently
-     * collapses per-section overrides on a write→watch round-trip when
-     * the apps disagree on resolved scheme names; until that's properly
-     * fixed at the storage layer, isolating notegrow's theme keeps it
-     * stable. Set to `false` once the shared store round-trips cleanly.
-     */
-    private val perAppThemeSettings: Boolean = true
-
-    /** localStorage key used when [perAppThemeSettings] is `true`. */
-    private val perAppThemeStorageKey: String = "notegrow.uiSettings.v1"
-
-    /**
-     * Mutable theme-manager state holder. Wraps `uiSettings` plus the
-     * larger custom-theme bookkeeping the manager needs.
-     */
-    private val themeState: DefaultThemeManagerState = DefaultThemeManagerState()
-
-    /** Toolkit-supplied default host bound to [themeState]. */
-    private val themeHost: DefaultThemeManagerHost by lazy {
-        object : DefaultThemeManagerHost(
-            state = themeState,
-            _appPanes = notegrowPanes,
-            onChange = { onThemeStateChange() },
-        ) {}
-    }
-
-    /**
-     * Persistent slot for the toolkit's [ThemeSnapshot]. Owns the
-     * round-trip of every field [DefaultThemeManagerState] holds beyond
-     * the active [UiSettings] — light/dark slot bindings, custom themes,
-     * custom schemes, and the theme/scheme favorites — through the
-     * Electron renderer's localStorage.
-     *
-     * Versioned key (`v1`) so that future shape changes can introduce a
-     * fresh slot without colliding with stale data; the toolkit's policy
-     * is to discard old shapes rather than migrate, so a key bump is the
-     * one-step way to reset.
-     */
-    private val themeSnapshotStorage =
-        localStorageThemeSnapshotStorage("notegrow.themeSnapshot.v1")
-
-    /** Latest layout state; mirrored to disk via Electron IPC. */
     private var layoutState: LayoutState = LayoutState.defaults()
 
-    /** Per-tab pane layout (tree + expanded leaf id). Keyed by tab id. */
+    /**
+     * Pushes a fresh [se.soderbjorn.darkness.web.shell.TabListSnapshot]
+     * to the toolkit shell when notegrow's [LayoutState] mutates.
+     * Captured by [render] when it constructs the [NotegrowTabSource].
+     */
+    private var notifyToolkitTabs: (() -> Unit)? = null
+
+    /** Per-tab pane layout (floats only). Keyed by tab id. */
     private val tabLayouts: MutableMap<String, PaneLayout> = mutableMapOf()
 
-    /** Trailing toolbar reference — re-rendered when appearance cycles. */
-    private var appearanceButton: HTMLElement? = null
+    /**
+     * The most recently focused pane id per tab. The toolkit's
+     * `mountAppShell` owns *runtime* focus through its layout
+     * renderer; notegrow only tracks an *advisory* last-focus per
+     * tab so palette commands ("Close current pane", "Open new
+     * pane in same tab") and link-follow can target the right
+     * pane when nothing has been clicked yet.
+     */
+    private val lastFocusedPaneIdByTab: MutableMap<String, String> = mutableMapOf()
+
+    /**
+     * The pane that was active when each newly-spawned pane was
+     * created. Used by [openLinkInNewPane] / [addFloatingPane] to
+     * cluster a freshly-spawned child near its originator. Cleared
+     * on pane close.
+     */
+    private val parentByPane: MutableMap<String, String> = mutableMapOf()
+
+    /**
+     * Layout preset currently driving each tab's geometry. Maintained
+     * for [persistLayoutState] so the persisted shape continues to
+     * carry the user's last preset choice round-trip; the toolkit
+     * owns runtime preset enforcement.
+     */
+    private val activePresetByTab: MutableMap<String, LayoutPreset> = mutableMapOf()
 
     /**
      * Singleton command palette (Cmd-P). Lazily constructed so the
@@ -237,21 +218,6 @@ class AppShell(
      */
     private val commandPalette: CommandPalette by lazy {
         CommandPalette(provideCommands = { buildPaletteCommands() })
-    }
-
-    /**
-     * Singleton keyboard-navigable layout-preset dropdown. Owns its own
-     * trigger button (mounted in [buildTrailingActions]) and is also
-     * driven from the "Layout" command in the palette.
-     */
-    private val layoutDropdown: LayoutDropdown by lazy {
-        LayoutDropdown(
-            paneCount = { activeTabPaneCount() },
-            onSelect = { preset ->
-                val activeId = layoutState.activeTabId ?: return@LayoutDropdown
-                applyLayoutPreset(activeId, preset)
-            },
-        )
     }
 
     /** Document-level Cmd/Ctrl+P listener installed in [render]. Tracked so
@@ -294,52 +260,21 @@ class AppShell(
      */
     private val hotkeysModal: HotkeysModal by lazy { HotkeysModal() }
 
-    /** Boots the shell into [root]. Safe to call once. */
+    /**
+     * Boots the shell into [root]. Safe to call once.
+     *
+     * Notegrow contributes the persistence-aware [LayoutState] (tabs +
+     * floating panes), per-pane editor body, palette button, and
+     * notegrow-only keyboard shortcuts. Everything else — top bar,
+     * tab strip, kebab menu, layout dropdown, new-pane button,
+     * appearance toggle, theme manager sidebar, layout renderer,
+     * pane chrome, bottom bar — comes from
+     * [se.soderbjorn.darkness.web.shell.mountAppShell].
+     */
     fun render(root: HTMLElement) {
         injectDarknessToolkitStyles()
         ensureNotegrowChromeStyles()
         rootEl = root
-
-        // Load persisted state. Both globals are populated by the Electron
-        // preload at boot via `additionalArguments`; absence means "first
-        // launch" and we fall back to library defaults.
-        uiSettings = loadInitialUiSettings()
-        layoutState = loadInitialLayoutState()
-        // Seed the toolkit's left-sidebar controller from the persisted
-        // visibility so the slide-in animation only triggers on user
-        // toggles, not on boot.
-        se.soderbjorn.darkness.web.shell.leftSidebarController.setInitial(
-            open = layoutState.leftSidebar.visible,
-            widthPx = layoutState.leftSidebar.widthPx,
-        )
-        // Top/bottom bar drag-to-hide visibility: persisted in our own
-        // localStorage slot (LayoutState lives in the shared toolkit-store
-        // model and would need a schema bump to host these flags). Each
-        // host app picks its own persistence layer; termtastic, for
-        // example, would round-trip these through its server.
-        seedBarControllers()
-        // Hydrate the toolkit-managed theme state from its own snapshot
-        // slot BEFORE seeding from `UiSettings`. The snapshot owns
-        // light/dark slot bindings, custom themes, custom schemes, and
-        // favorites — fields `UiSettings` can't represent — so this is
-        // what makes them survive a restart. `seedThemeState` then only
-        // fills slots the snapshot left null with toolkit defaults.
-        themeSnapshotStorage.read()?.takeIf { it.isNotBlank() }?.let { json ->
-            themeState.applySnapshot(ThemeSnapshot.fromJsonString(json))
-        }
-        seedThemeState(uiSettings)
-        // After hydration the snapshot may carry user-saved schemes the
-        // initial `uiSettings` parse couldn't resolve (it ran against
-        // `recommendedColorSchemes` only). Re-resolve through the toolkit
-        // so the very first paint uses the right palette for the active
-        // appearance slot's theme.
-        uiSettings = resolveActiveUiSettings(themeState, uiSettings, notegrowPanes)
-        applyTheme(uiSettings)
-
-        // The host (#app) just needs viewport sizing; AppFrame handles the
-        // column/row composition.
-        root.style.height = "100vh"
-        root.style.margin = "0"
 
         installPaletteShortcut()
         installHotkeysShortcut()
@@ -348,7 +283,76 @@ class AppShell(
         installEditorKeyDelegate()
         installHotkeysMenuBridge()
 
-        rebuildShell()
+        val tabSource = NotegrowTabSource(
+            onTabSelected = { id ->
+                layoutState = layoutState.copy(activeTabId = id)
+                persistLayoutState()
+            },
+            onTabAdded = { addTab() },
+            onTabClosed = { id -> closeTab(id) },
+            onTabRenamed = { id, label -> renameTab(id, label) },
+            onTabReordered = { sourceId, targetId, before -> reorderTab(sourceId, targetId, before) },
+            onPaneSelected = { tabId, paneId ->
+                if (layoutState.activeTabId != tabId) {
+                    layoutState = layoutState.copy(activeTabId = tabId)
+                    persistLayoutState()
+                }
+                paneEditors[paneId]?.focusEditor()
+            },
+            onPaneClosed = { tabId, paneId -> closeFloatingPane(tabId, paneId) },
+            onPaneAdded = { tabId ->
+                // `addFloatingPane` already calls `persistLayoutState`,
+                // which calls `notifyToolkitTabs`. Don't re-notify here
+                // — a second rerender right behind the first wipes the
+                // restore-from-maximize CSS transition the first
+                // rerender just kicked off.
+                addFloatingPane(tabId)?.let { newId ->
+                    ensurePaneViewModel(newId)
+                    lastFocusedPaneIdByTab[tabId] = newId
+                }
+            },
+        )
+        notifyToolkitTabs = { tabSource.notify(layoutState) }
+
+        shellHandle = mountAppShell(
+            AppShellSpec(
+                rootContainer = root,
+                title = "Notegrow",
+                persister = persister,
+                paneContent = { paneId ->
+                    val container = document.createElement("div") as HTMLElement
+                    renderPaneContent(paneId, container)
+                    container
+                },
+                tabSource = tabSource.tabSource,
+                paneLabel = { _, paneId -> paneSidebarLabel(paneId) },
+                paneIcon = { _, _ -> ICON_NOTE },
+                paneActions = { _, paneId -> buildPaneNavActions(paneId) },
+                extraTopbarBeforeStandard = listOf(
+                    TopbarAction(
+                        id = "notegrow-topbar-starred",
+                        iconHtml = ICON_STAR,
+                        label = "Starred",
+                        onActivate = { topbarStarredModal.open() },
+                    )
+                ),
+                appPanes = notegrowPanes,
+            ),
+            scope = scope,
+        )
+
+        // Hydrate notegrow's typed LayoutState from the toolkit's
+        // Persister (Electron-IPC or localStorage) and push the first
+        // snapshot through the TabSource. mountAppShell is launched
+        // synchronously above; if the toolkit subscribes before this
+        // load finishes, NotegrowTabSource pushes its empty
+        // `lastSnapshot` first and updates once we [persistLayoutState]
+        // here.
+        scope.launch {
+            val raw = persister.read(PersistKeys.LAYOUT)
+            layoutState = if (raw == null) LayoutState.defaults() else hydrateLayoutState(raw)
+            tabSource.notify(layoutState)
+        }
     }
 
     /**
@@ -622,34 +626,10 @@ class AppShell(
                 if (tabId != null && paneId != null) closeFloatingPane(tabId, paneId)
             },
         )
-        out += CommandPalette.Command(
-            id = "layout",
-            title = "Layout",
-            // Anchor the dropdown to its own trigger button so the popover
-            // appears in the same place mouse users would expect, and so
-            // outside-click dismissal treats the trigger as part of the
-            // popover (clicking the trigger after we open from the palette
-            // toggles closed instead of immediately re-opening).
-            run = { layoutDropdown.openAnchoredTo(layoutDropdown.triggerButton) },
-        )
-
-        // Restore-after-drag-to-hide entries. Only surface the command
-        // for a bar that is currently hidden, so the palette stays
-        // uncluttered when both bars are visible (the common case).
-        if (!topBarController.isVisible) {
-            out += CommandPalette.Command(
-                id = "show-top-bar",
-                title = "Show top bar",
-                run = { topBarController.show { rebuildShell() } },
-            )
-        }
-        if (!bottomBarController.isVisible) {
-            out += CommandPalette.Command(
-                id = "show-bottom-bar",
-                title = "Show bottom bar",
-                run = { bottomBarController.show { rebuildShell() } },
-            )
-        }
+        // Layout-preset picking, top/bottom bar visibility, and the
+        // appearance toggle live in the toolkit's mountAppShell now —
+        // accessible via the trailing topbar buttons it builds. The
+        // command palette only ships notegrow-specific commands.
 
         return out
     }
@@ -682,444 +662,138 @@ class AppShell(
         return paneViewModels[id]
     }
 
+    /**
+     * Resolves the active pane's [MainViewModel], creating tab and/or
+     * pane on the fly when none exist. Used by the tab-toolbar Starred
+     * modal so picking a favorite always has a target to navigate.
+     *
+     * Order:
+     *  1. If there is no active tab, create one (which seeds a pane).
+     *  2. If the active tab has no panes, create a floating pane in it.
+     *  3. Return the focused pane's VM (lazy-instantiating it if the
+     *     pane was just created and hasn't rendered yet).
+     */
+    private fun resolveOrCreateFocusedPaneVm(): MainViewModel? {
+        if (layoutState.activeTabId == null || layoutState.tabs.isEmpty()) {
+            addTab()
+        } else {
+            val activeTabId = layoutState.activeTabId!!
+            val layout = tabLayouts[activeTabId]
+            if (layout == null || layout.floatingPanes.isEmpty()) {
+                addFloatingPane(activeTabId)
+            }
+        }
+        val paneId = focusedPaneId() ?: return null
+        ensurePaneViewModel(paneId)
+        return paneViewModels[paneId]
+    }
+
     // ── Mount / re-mount ────────────────────────────────────────────
 
     /**
-     * Tears down and rebuilds the AppFrame. Called on every change that
-     * affects shell shape (sidebar visibility/width, active tab swap, tab
-     * list mutation). Pane-internal changes that only need a renderer
-     * repaint go through [rerenderActivePane] instead.
+     * Builds the sidebar tree row label for [paneId] in the toolkit's
+     * tabs→panes default sidebar. Combines the pane's own custom title
+     * (if any), the active file's display name, and the current zoom
+     * path so each row reads like `"My Note / Recipes / Pasta"`.
+     *
+     * Called by the [paneLabel] lambda passed to
+     * [se.soderbjorn.darkness.web.shell.AppShellSpec]; the toolkit
+     * looks it up once per pane on every sidebar re-render.
      */
-    private fun rebuildShell() {
-        val root = rootEl ?: return
-        // Route the topbar through topBarController so drag-to-zero hides
-        // the bar persistently — the controller flips its `isVisible` flag
-        // and re-runs rebuildShell, which then sees `isVisible = false`
-        // and gets `null` back instead of an element. Without this, a
-        // subsequent topbar slot rebuild (softSwitchTab) would replace
-        // the inline `height: 0px` with a fresh full-height bar.
-        val topBar = topBarController.mountTopBar(
-            spec = TopBarSpec(
-                leadingContent = buildLeadingTitleAndToggle(),
-                tabBar = buildTabBarSpec(),
-                trailingContent = buildTrailingActions(),
-                isResizable = true,
-                minHeightPx = 0,
-                // Cap at the natural CSS min-height; bar is allowed to
-                // shrink below this on drag, but not grow above it. The
-                // toolkit's snap rule decides 0-vs-default on release.
-                maxHeightPx = 40,
-                defaultHeightPx = 40,
-                allowGrowBeyondDefault = false,
-            ),
-            requestRebuild = { rebuildShell() },
-        )
-
-        val main = document.createElement("div") as HTMLElement
-        main.style.apply {
-            display = "flex"
-            flexDirection = "column"
-            flex = "1 1 auto"
-            setProperty("min-height", "0")
+    private fun paneSidebarLabel(paneId: String): String {
+        val activeTab = layoutState.activeTabId
+        val float = activeTab?.let {
+            tabLayouts[it]?.floatingPanes?.firstOrNull { f -> f.id == paneId }
         }
-        paneHost = main
-
-        // Always mount the left sidebar through the controller — when the
-        // user has dragged it closed, the controller returns a 0-width
-        // placeholder that keeps the resize handle in the DOM so they can
-        // drag it back open. Without this, a drag-to-collapse gesture
-        // strands the user (the resize strip disappears with the sidebar).
-        val leftSidebarEl: HTMLElement? = buildLeftSidebarElement()
-
-        val rightSidebarEl: HTMLElement? = if (isThemeManagerSidebarOpen()) {
-            buildThemeManagerSidebar(
-                host = themeHost,
-                initialWidthPx = layoutState.rightSidebar.widthPx,
-                onResize = { newWidth ->
-                    layoutState = layoutState.copy(
-                        rightSidebar = layoutState.rightSidebar.copy(widthPx = newWidth),
-                    )
-                    persistLayoutState()
-                },
-            )
-        } else null
-
-        mountAppFrame(
-            root,
-            AppFrameSpec(
-                topBar = topBar,
-                leftSidebar = leftSidebarEl,
-                main = main,
-                rightSidebar = rightSidebarEl,
-                bottomBar = buildBottomBar(),
-            ),
-        )
-        // `topBar` is null when the user has dragged it to hide; the
-        // controller stays in the hidden state until the user runs the
-        // "Show top bar" palette command.
-
-        // Mount the active tab's pane layout into `main`.
-        mountActivePane()
-
-        // Re-apply the theme now that the freshly-mounted DOM contains
-        // the section containers (.dt-topbar, .dt-sidebar, .dt-pane, …).
-        // Without this, the toolkit's per-section paint pass has nothing
-        // to target on first render and the picked Theme's distinct
-        // schemes for chrome / sidebar / panes never reach the screen.
-        applyTheme(uiSettings)
+        val fileLabel = activeFileDisplayName(paneId)
+        val path = zoomPathStringForPane(paneId)
+        val own = float?.title?.ifBlank { null }?.takeUnless { it == "Untitled" }
+        val combined = if (path != null) "$fileLabel / $path" else fileLabel
+        return if (own != null) "$own / $combined" else combined
     }
 
     /**
-     * Builds the left sidebar SHELL (the `<aside>`, the resize handle, the
-     * boot slide-in animation). Inner content is built separately via
-     * [buildLeftSidebarSections] so [softSwitchTab] can refresh just the
-     * sections in place without re-mounting the sidebar (which would
-     * re-trigger the slide-in animation).
+     * Reconstructs notegrow's [LayoutState] from the persisted JSON read
+     * back through the toolkit's [Persister]. Migrates any legacy split
+     * trees into the floats-only model the runtime uses today, then
+     * seeds [tabLayouts] so the tab/pane mutators have a starting point.
      */
-    private fun buildLeftSidebarElement(): HTMLElement {
-        val contentWrap = document.createElement("div") as HTMLElement
-        contentWrap.appendChild(buildLeftSidebarSections())
-        return se.soderbjorn.darkness.web.shell.leftSidebarController.mountSidebarOrPlaceholder(
-            spec = se.soderbjorn.darkness.web.shell.SidebarSpec(
-                content = contentWrap,
-                visible = true,
-                isResizable = true,
-                minWidthPx = 0,
-                maxWidthPx = 480,
-                defaultWidthPx = 240,
-                allowGrowBeyondDefault = true,
-                onResize = { newWidth ->
-                    if (newWidth == 0) {
-                        // Drag-to-collapse: flip the controller closed
-                        // (via the same toggle path the icon uses) and
-                        // mirror the visibility into [layoutState] so it
-                        // survives a reload. The controller's [widthPx]
-                        // is preserved (the toolkit no longer clobbers
-                        // it to 0), so the icon-restore opens at the
-                        // last non-zero width.
-                        layoutState = layoutState.copy(
-                            leftSidebar = layoutState.leftSidebar.copy(visible = false),
-                        )
-                        persistLayoutState()
-                        se.soderbjorn.darkness.web.shell.leftSidebarController
-                            .toggle(requestRebuild = { rebuildShell() })
-                    } else {
-                        // Live resize OR drag-back-from-collapsed. Both
-                        // paths land here with a non-zero width — persist
-                        // it as the new default open width and flip
-                        // visibility back on (no-op when already open).
-                        layoutState = layoutState.copy(
-                            leftSidebar = layoutState.leftSidebar.copy(
-                                widthPx = newWidth,
-                                visible = true,
-                            ),
-                        )
-                        persistLayoutState()
-                    }
-                },
-            ),
-            onLeft = true,
-            requestRebuild = { rebuildShell() },
-        )
-    }
+    private fun hydrateLayoutState(raw: String): LayoutState {
+        val state = LayoutState.fromJsonString(raw)
+        val seeded = if (state.tabs.isEmpty()) LayoutState.defaults() else state
 
-    /**
-     * Builds the inner sidebar sections — one collapsible section per
-     * tab, with that tab's panes (every pane is a float in the floats-only
-     * model; minimised floats render with a muted "(hidden)" style) as
-     * section items. Click a pane row to switch tabs (if needed) and
-     * focus it.
-     *
-     * Termtastic-style structure: the active tab's section gets the
-     * `.active-tab` class so the toolkit CSS paints the active rectangle
-     * background; pane rows in the active tab matching the focused pane
-     * id get the `dt-active` class via [SidebarRow.isActive].
-     *
-     * Returns a fresh `<div>` containing the sections — caller mounts
-     * it inside the sidebar's content wrap.
-     */
-    private fun buildLeftSidebarSections(): HTMLElement {
-        val container = document.createElement("div") as HTMLElement
-        for (tab in layoutState.tabs) {
-            if (tab.isHidden) continue
-            // `isHiddenFromSidebar` is independent of `isHidden`: a tab can
-            // stay in the strip while being hidden from this tree so the
-            // sidebar can be decluttered without losing tab access.
-            if (tab.isHiddenFromSidebar) continue
-            val isActiveTab = tab.id == layoutState.activeTabId
-            val layout = tabLayouts[tab.id]
-
-            val rows = mutableListOf<HTMLElement>()
-            if (layout != null) {
-                fun sidebarLabelFor(paneId: String, fallback: String?): String {
-                    val fileLabel = activeFileDisplayName(paneId)
-                    val path = zoomPathStringForPane(paneId)
-                    val own = fallback?.ifBlank { null }?.takeUnless { it == "Untitled" }
-                    val combined = if (path != null) "$fileLabel / $path" else fileLabel
-                    return if (own != null) "$own / $combined" else combined
-                }
-                for (float in layout.floatingPanes) {
-                    rows.add(buildPaneSidebarRow(
-                        tabId = tab.id,
-                        paneId = float.id,
-                        label = sidebarLabelFor(float.id, float.title),
-                        // `focusedPaneId()` already falls back to the first
-                        // non-minimised pane when nothing is recorded yet
-                        // (e.g. right after the app loads or a tab switch
-                        // before the user has clicked into a pane), so the
-                        // active tab's pane is always highlighted.
-                        isFocused = isActiveTab && focusedPaneId() == float.id,
-                        isMinimised = float.isMinimized,
-                    ))
-                }
+        for (tab in seeded.tabs) {
+            // Persisted floats come over verbatim; legacy split-tree
+            // leaves become full-bleed maximised floats so a user
+            // upgrading from the pre-floats model still sees their
+            // panes. The tab's persisted tree is dropped on next save.
+            val persistedFloats = tab.floatingPanes.map { f ->
+                FloatingPaneSpec(
+                    id = f.id,
+                    title = f.title,
+                    xPct = f.xPct,
+                    yPct = f.yPct,
+                    widthPct = f.widthPct,
+                    heightPct = f.heightPct,
+                    zIndex = f.zIndex,
+                    isMaximized = f.isMaximized,
+                    isMinimized = f.isMinimized,
+                )
             }
+            val migratedTreeLeaves: List<FloatingPaneSpec> = tab.tree
+                ?.let { collectTreeLeafSpecs(it) }
+                .orEmpty()
+            val existingIds = persistedFloats.map { it.id }.toSet()
+            val merged = persistedFloats + migratedTreeLeaves.filterNot { it.id in existingIds }
+            val final = if (merged.isEmpty()) listOf(seedPane(tab.id)) else merged
+            tabLayouts[tab.id] = PaneLayout(floatingPanes = final)
+        }
 
-            val isOpen = tab.id !in collapsedTabs
-            val section = se.soderbjorn.darkness.web.shell.renderSidebarSection(
-                se.soderbjorn.darkness.web.shell.SidebarSectionSpec(
-                    title = tab.title.ifBlank { "Untitled" },
-                    isOpen = isOpen,
-                    items = rows,
-                    onToggle = {
-                        // Match termtastic: chevron click toggles the
-                        // section's collapsed state independently of which
-                        // tab is active. Activating an inactive tab is a
-                        // separate concern and happens via clicking a row.
-                        if (tab.id in collapsedTabs) collapsedTabs.remove(tab.id)
-                        else collapsedTabs.add(tab.id)
-                        refreshLeftSidebarSections()
-                    },
-                )
+        val activeId = seeded.activeTabId ?: seeded.tabs.first().id
+        // Sync `seeded.tabs[i].floatingPanes` with whatever
+        // `tabLayouts[tab.id]` ended up holding — including the
+        // [seedPane] we added above when a tab had zero persisted
+        // floats. Without this sync, [NotegrowTabSource.notify]
+        // (which reads `layoutState.tabs[i].floatingPanes`) would
+        // push an empty pane list to the toolkit, and a later
+        // `addFloatingPane` would discover the seed in tabLayouts
+        // and report TWO panes appearing for the user's first "+"
+        // click. Mirrors the sync persistLayoutState does after
+        // every mutation, applied at boot.
+        val syncedTabs = seeded.tabs.map { tab ->
+            val layout = tabLayouts[tab.id] ?: return@map tab
+            tab.copy(
+                floatingPanes = layout.floatingPanes.map { f ->
+                    se.soderbjorn.darkness.store.FloatingPaneJson(
+                        id = f.id,
+                        title = f.title,
+                        xPct = f.xPct,
+                        yPct = f.yPct,
+                        widthPct = f.widthPct,
+                        heightPct = f.heightPct,
+                        zIndex = f.zIndex,
+                        isMaximized = f.isMaximized,
+                        isMinimized = f.isMinimized,
+                    )
+                },
             )
-            section.setAttribute("data-tab", tab.id)
-            if (isActiveTab) section.classList.add("active-tab")
-            container.appendChild(section)
         }
-        return container
+        return seeded.copy(activeTabId = activeId, tabs = syncedTabs)
     }
 
     /**
-     * Build one `.dt-sidebar-row` for a pane (either a split-tree leaf
-     * or a floating overlay). Clicking the row activates the row's tab
-     * (if needed) and focuses the pane.
-     *
-     * @param tabId the tab the pane lives in.
-     * @param paneId the pane's id.
-     * @param label visible row label.
-     * @param isFocused mark the row as the currently-focused pane.
-     * @param isMinimised render in a muted style (italics + dim) so
-     *   minimised floats read distinctly. Click on a minimised row
-     *   un-minimises and brings the float back to front.
+     * Builds the sidebar tree — REMOVED. The toolkit's `mountAppShell`
+     * owns the tabs→panes default tree; row labels and focus state come
+     * from [paneSidebarLabel] and [paneEditors] reachability.
      */
-    private fun buildPaneSidebarRow(
-        tabId: String,
-        paneId: String,
-        label: String,
-        isFocused: Boolean,
-        isMinimised: Boolean,
-    ): HTMLElement {
-        val displayLabel = if (isMinimised) "$label (hidden)" else label
-        return se.soderbjorn.darkness.web.shell.SidebarRow(
-            label = displayLabel,
-            iconHtml = ICON_NOTE,
-            isActive = isFocused,
-            handler = {
-                if (tabId != layoutState.activeTabId) softSwitchTab(tabId)
-                if (isMinimised) {
-                    // Un-minimise + bring to front + focus.
-                    setFloatingPaneMinimized(tabId, paneId, false)
-                    bringFloatingPaneToFront(tabId, paneId)
-                }
-                renderer?.focusPane(paneId)
-            },
-            // Match the pane chrome's RTL clipping so the deepest segment of
-            // long zoom paths stays visible on the right end of the row.
-            labelRtl = true,
-        )
-    }
-
-    /** The renderer doesn't expose its focused id; track via callback. */
-    private var lastFocusedPaneIdByTab: MutableMap<String, String> = mutableMapOf()
-    private fun rendererFocusedPaneId(): String? =
-        layoutState.activeTabId?.let { lastFocusedPaneIdByTab[it] }
-
-    /**
-     * The pane that was active when each pane was created. Used by the
-     * Auto layout preset to keep the originating pane prominent
-     * (slot 1, second-largest) when a freshly-created child takes
-     * primary focus. Populated in [addFloatingPane] / [openLinkInNewPane]
-     * and cleared on pane close.
-     */
-    private val parentByPane: MutableMap<String, String> = mutableMapOf()
-
-    /**
-     * Layout preset currently driving each tab's geometry. Tracks
-     * whether Auto re-tile should run after pane add/remove. Absent
-     * entries mean "no preset is driving" (manual placement / first
-     * load) and skip auto re-tile. Manual move/resize clears the
-     * tab's entry so the user's hand-placed geometry isn't undone
-     * by the next add/remove event.
-     */
-    private val activePresetByTab: MutableMap<String, LayoutPreset> = mutableMapOf()
-
-    /**
-     * Returns the layout preset currently driving [tabId], consulting
-     * the in-memory map first and falling back to the persisted
-     * [LayoutState] tab — so a hydration that missed the in-memory
-     * cache (or a stale build that didn't populate it) still
-     * re-engages Auto re-tile on the next pane add/remove.
-     * Self-heals by writing back into [activePresetByTab] when the
-     * fallback finds a value.
-     */
-    private fun activePresetFor(tabId: String): LayoutPreset? {
-        activePresetByTab[tabId]?.let { return it }
-        val persisted = layoutState.tabs.firstOrNull { it.id == tabId }
-            ?.layoutPreset
-            ?: return null
-        val preset = LayoutPreset.fromKey(persisted)
-            ?.takeIf { it != LayoutPreset.Custom }
-            ?: return null
-        activePresetByTab[tabId] = preset
-        return preset
-    }
-
-    /**
-     * Snap grid passed to [LayoutPreset.computeBoxes] so Auto-tiled
-     * panes land on the same 5% grid the toolkit's drag-to-move and
-     * drag-to-resize gestures snap to. Keeps auto-placed panes
-     * visually indistinguishable from hand-placed ones.
-     */
-    private val AUTO_LAYOUT_GRID: GridSpec = GridSpec(cols = 20, rows = 20)
-
-    /**
-     * Re-renders the left sidebar's inner sections in place — same fast
-     * path [softSwitchTab] uses, but without touching the topbar or the
-     * pane host. Used after focus / minimise / float changes that the
-     * sidebar tree needs to reflect.
-     */
-    private fun refreshLeftSidebarSections() {
-        val root = rootEl ?: return
-        val leftContent = root
-            .querySelector(".dt-app-frame-sidebar-left .dt-sidebar-content")
-            as? HTMLElement
-            ?: return
-        while (leftContent.firstChild != null) {
-            leftContent.removeChild(leftContent.firstChild!!)
-        }
-        leftContent.appendChild(buildLeftSidebarSections())
-    }
-
-    /**
-     * Build the bottom status bar — leading slot shows nothing yet
-     * (notegrow has no usage telemetry to report); trailing slot shows
-     * just the app name.
-     *
-     * Routed through [bottomBarController] so a drag-to-zero gesture
-     * persists the hidden state across shell rebuilds (mirrors the topbar
-     * path). Returns `null` when the user has hidden the bar.
-     */
-    private fun buildBottomBar(): HTMLElement? {
-        val trailing = document.createElement("div") as HTMLElement
-        trailing.style.apply {
-            display = "flex"
-            alignItems = "center"
-        }
-        val name = document.createElement("span") as HTMLElement
-        name.textContent = "Notegrow"
-        trailing.appendChild(name)
-        return bottomBarController.mountBottomBar(
-            spec = se.soderbjorn.darkness.web.shell.BottomBarSpec(
-                trailingContent = trailing,
-                isResizable = true,
-                minHeightPx = 0,
-                maxHeightPx = 22,
-                defaultHeightPx = 22,
-                allowGrowBeyondDefault = false,
-            ),
-            requestRebuild = { rebuildShell() },
-        )
-    }
-
-    /** Mounts a fresh [LayoutRenderer] over [paneHost] for the active tab. */
-    private fun mountActivePane() {
-        val host = paneHost ?: return
-        // Wipe any prior children — switching tabs re-creates the pane host
-        // body so MainScreen's installed listeners don't double-fire.
-        while (host.firstChild != null) host.removeChild(host.firstChild!!)
-
-        val activeId = layoutState.activeTabId ?: return
-        val layout = tabLayouts[activeId] ?: PaneLayout(
-            floatingPanes = listOf(seedPane(activeId)),
-        ).also { tabLayouts[activeId] = it }
-
-        // No panes — show the toolkit's empty-tab placeholder. The button
-        // re-enters the same spawn flow the topbar "+" uses, so the empty
-        // state is recoverable in one click. Mirrors termtastic.
-        if (layout.floatingPanes.isEmpty()) {
-            renderer = null
-            host.appendChild(
-                se.soderbjorn.darkness.web.layout.renderEmptyTabPlaceholder(
-                    onAdd = { addFloatingPane(activeId) },
-                )
-            )
-            return
-        }
-
-        val callbacks = PaneCallbacks(
-            contentRenderer = { id, slot -> renderPaneContent(id, slot) },
-            paneHeader = { id, title -> buildPaneHeaderSpec(id, title, activeId) },
-            onPaneFocused = { paneId ->
-                lastFocusedPaneIdByTab[activeId] = paneId
-                refreshLeftSidebarSections()
-                // The toolkit fires onPaneFocused for any change in active
-                // pane (mouse click on a different pane OR hotkey-driven
-                // cycling). Give the editor DOM focus so the user can
-                // start typing immediately. The caret position itself
-                // is per-pane state owned by PaneBackingViewModel and
-                // is intentionally preserved — switching back to a pane
-                // restores the caret where the user last left it.
-                paneEditors[paneId]?.focusEditor()
-            },
-            onFloatingMoved = { id, xPct, yPct ->
-                val cur = tabLayouts[activeId] ?: return@PaneCallbacks
-                tabLayouts[activeId] = cur.copy(
-                    floatingPanes = cur.floatingPanes.map { f ->
-                        if (f.id == id) f.copy(xPct = xPct, yPct = yPct) else f
-                    },
-                )
-                // User overrode preset-driven geometry — drop the active
-                // preset so subsequent add/remove events don't undo the
-                // hand-placement. Re-selecting a preset re-engages it.
-                activePresetByTab.remove(activeId)
-                persistLayoutState()
-            },
-            onFloatingResized = { id, w, h ->
-                val cur = tabLayouts[activeId] ?: return@PaneCallbacks
-                tabLayouts[activeId] = cur.copy(
-                    floatingPanes = cur.floatingPanes.map { f ->
-                        if (f.id == id) f.copy(widthPct = w, heightPct = h) else f
-                    },
-                )
-                activePresetByTab.remove(activeId)
-                persistLayoutState()
-            },
-            onFloatingFocused = { id -> bringFloatingPaneToFront(activeId, id) },
-            onFloatingClosed = { id -> closeFloatingPane(activeId, id) },
-            onFloatingMaximizeToggled = { id -> toggleFloatingPaneMaximized(activeId, id) },
-            // Intentionally no `onFloatingMinimized` wiring — the maximise
-            // button doubles as a restore toggle, so a separate minimise
-            // affordance in the pane chrome would only confuse the user.
-            // [setFloatingPaneMinimized] still exists to un-minimise legacy
-            // panes whose persisted layout has `isMinimized = true`.
-        )
-        renderer = LayoutRenderer(host, callbacks).also { it.render(layout) }
-    }
 
     /**
      * Builds the seed pane every fresh tab gets: a single full-bleed
-     * (maximized) float so the editor fills the canvas exactly like every
-     * subsequent pane the user creates via `+`. No two pane types — every
-     * pane in notegrow is a [FloatingPaneSpec], matching termtastic.
+     * (maximized) float. Geometry fields are kept on the persisted
+     * shape for backwards compatibility but the toolkit's
+     * `LAYOUT_STATE` is the runtime authority for pane positions —
+     * notegrow only owns pane *identity* (id + title + the file the
+     * editor body is viewing).
      */
     private fun seedPane(tabId: String): FloatingPaneSpec =
         FloatingPaneSpec(
@@ -1133,172 +807,13 @@ class AppShell(
             isMaximized = true,
         )
 
-    /**
-     * Re-renders the active tab's pane tree without rebuilding the
-     * surrounding AppFrame. Fast path for splits, closes, retitles,
-     * expand/restore.
-     */
-    private fun rerenderActivePane() {
-        val activeId = layoutState.activeTabId ?: return
-        val layout = tabLayouts[activeId] ?: return
-        // Transitioning into / out of the empty-tab state requires swapping
-        // between the toolkit's [LayoutRenderer] and the [renderEmptyTabPlaceholder]
-        // element. The mount path covers both branches, so route the
-        // first / last-pane transitions through it; otherwise the placeholder
-        // would be left attached behind a re-rendered (but un-mounted) layout.
-        if (layout.floatingPanes.isEmpty() || renderer == null) {
-            mountActivePane()
-            applyTheme(uiSettings)
-            return
-        }
-        renderer?.render(layout)
-        // The renderer rebuilds every `.dt-pane` element from scratch, so
-        // any per-section paint we previously stamped on the windows
-        // section is gone. Re-apply the theme so the new pane elements
-        // pick up the active Theme's `windows` scheme.
-        applyTheme(uiSettings)
-    }
-
-    /**
-     * Activates [tabId] without tearing down the AppFrame. Updates the
-     * persisted active id, re-mounts the active tab's pane host, and
-     * re-renders the topbar + left sidebar in place so their `.dt-selected`
-     * / `.active-tab` classes refresh — but leaves the right sidebar
-     * (theme editor) and the bottom bar untouched.
-     *
-     * Replaces the previous `rebuildShell()` call on tab activation. The
-     * full rebuild blew away every chrome element, which made the sidebar
-     * controllers re-run their slide-in animations on every tab switch
-     * (visible as a parallel left/right slide glitch) and unmounted the
-     * theme editor whenever the user picked a tab while it was open.
-     */
-    private fun softSwitchTab(tabId: String) {
-        if (layoutState.activeTabId == tabId) return
-        layoutState = layoutState.copy(activeTabId = tabId)
-        persistLayoutState()
-
-        val root = rootEl
-        if (root != null) {
-            // Topbar swap: rebuild the topbar element with the new active
-            // id and replace the slot's children. The slot keeps its
-            // attachment so `.dt-app-frame-body` doesn't re-flow. Routed
-            // through topBarController so the hidden state survives a
-            // soft tab switch (the controller returns null when hidden,
-            // and we leave the slot empty in that case).
-            val topSlot = root.querySelector(".dt-app-frame-topbar") as? HTMLElement
-            if (topSlot != null) {
-                while (topSlot.firstChild != null) topSlot.removeChild(topSlot.firstChild!!)
-                val refreshed = topBarController.mountTopBar(
-                    spec = TopBarSpec(
-                        leadingContent = buildLeadingTitleAndToggle(),
-                        tabBar = buildTabBarSpec(),
-                        trailingContent = buildTrailingActions(),
-                        isResizable = true,
-                        minHeightPx = 0,
-                        maxHeightPx = 40,
-                        defaultHeightPx = 40,
-                        allowGrowBeyondDefault = false,
-                    ),
-                    requestRebuild = { rebuildShell() },
-                )
-                topSlot.appendChild(refreshed)
-            }
-            // Left sidebar refresh in place — only its content (the
-            // tabs / panes tree) changes; the sidebar shell stays mounted
-            // so SidebarController doesn't see a re-mount + slide-in.
-            val leftContent = root
-                .querySelector(".dt-app-frame-sidebar-left .dt-sidebar-content")
-                as? HTMLElement
-            if (leftContent != null) {
-                while (leftContent.firstChild != null) {
-                    leftContent.removeChild(leftContent.firstChild!!)
-                }
-                leftContent.appendChild(buildLeftSidebarSections())
-            }
-        }
-
-        // Swap the editor content for the newly-active tab.
-        mountActivePane()
-        // Re-apply theme so the freshly-mounted topbar + left sidebar +
-        // pane elements pick up the active Theme's per-section schemes.
-        applyTheme(uiSettings)
-        // Focus the newly-active tab's previously-focused pane (or its
-        // first pane) so the caret lands in the editor immediately —
-        // mirrors the focus behaviour the toolkit fires on hotkey-driven
-        // pane switches and keeps the user typing without an extra click.
-        focusActivePane(tabId)
-    }
-
-    /**
-     * Focuses the appropriate pane in [tabId]: the last pane the user
-     * focused in that tab if it still exists, otherwise the first
-     * floating pane in the layout. Routes through [LayoutRenderer.focusPane]
-     * so the toolkit's `onPaneFocused` callback fires and the editor's
-     * caret lands in the document.
-     */
-    private fun focusActivePane(tabId: String) {
-        val layout = tabLayouts[tabId] ?: return
-        if (layout.floatingPanes.isEmpty()) return
-        val remembered = lastFocusedPaneIdByTab[tabId]
-        val targetId = remembered
-            ?.takeIf { id -> layout.floatingPanes.any { it.id == id } }
-            ?: layout.floatingPanes.first().id
-        renderer?.focusPane(targetId)
-    }
-
-    // ── TabBar wiring ───────────────────────────────────────────────
-
-    private fun buildTabBarSpec(): TabBarSpec {
-        return TabBarSpec(
-            tabs = layoutState.tabs.map { t ->
-                TabSpec(
-                    id = t.id,
-                    label = t.title.ifBlank { "Untitled" },
-                    // Per-tab × in the strip is intentionally off — Close
-                    // lives in the `…` overflow menu so the strip stays
-                    // chromeless and matches termtastic.
-                    isClosable = false,
-                    isDraggable = true,
-                    isRenamable = true,
-                    isHidden = t.isHidden,
-                    isHiddenFromSidebar = t.isHiddenFromSidebar,
-                )
-            },
-            activeTabId = layoutState.activeTabId,
-            // The `+` button is omitted: the `…` overflow menu has a "New
-            // tab" entry, so showing both is redundant chrome.
-            showAddButton = false,
-            showOverflowMenu = true,
-            callbacks = TabBarCallbacks(
-                onSelect = { id ->
-                    // Activating a hidden tab (only reachable via the
-                    // overflow menu's "Unlisted tabs" section) goes through
-                    // the full rebuild so the freshly-active tab's panes
-                    // mount cleanly even though no `.dt-selected` strip
-                    // entry exists for it. Visible tabs keep the soft path
-                    // so the sidebar slide-in / theme editor stay intact.
-                    val target = layoutState.tabs.firstOrNull { it.id == id }
-                    if (target?.isHidden == true) {
-                        layoutState = layoutState.copy(activeTabId = id)
-                        persistLayoutState()
-                        rebuildShell()
-                        focusActivePane(id)
-                    } else {
-                        softSwitchTab(id)
-                    }
-                },
-                onClose = { id -> closeTab(id) },
-                onAdd = { addTab() },
-                onReorder = { sourceId, targetId, before -> reorderTab(sourceId, targetId, before) },
-                onRename = { id, newLabel -> renameTab(id, newLabel) },
-                onSetHidden = { id, hidden -> setTabHidden(id, hidden) },
-                onSetHiddenFromSidebar = { id, hidden -> setTabHiddenFromSidebar(id, hidden) },
-                onPaneDroppedOnTab = { sourcePaneId, destTabId ->
-                    movePaneToTab(sourcePaneId, destTabId)
-                },
-            ),
-        )
-    }
+    // ── Tab mutators ───────────────────────────────────────────────
+    //
+    // Wired into [NotegrowTabSource]'s callbacks in [render]. Each
+    // mutator updates [layoutState] (and [tabLayouts] where relevant),
+    // then calls [persistLayoutState] which both writes through the
+    // toolkit [Persister] and notifies the toolkit-shell tab source
+    // so the chrome re-renders.
 
     private fun addTab() {
         var n = layoutState.tabs.size + 1
@@ -1317,7 +832,7 @@ class AppShell(
             activeTabId = newTabId,
         )
         persistLayoutState()
-        rebuildShell()
+        notifyToolkitTabs?.invoke()
     }
 
     private fun closeTab(id: String) {
@@ -1331,7 +846,7 @@ class AppShell(
         tabLayouts.remove(id)
         layoutState = layoutState.copy(tabs = newTabs, activeTabId = newActive)
         persistLayoutState()
-        rebuildShell()
+        notifyToolkitTabs?.invoke()
     }
 
     private fun setTabHidden(id: String, hidden: Boolean) {
@@ -1349,7 +864,7 @@ class AppShell(
         }
         layoutState = layoutState.copy(tabs = newTabs, activeTabId = newActive)
         persistLayoutState()
-        rebuildShell()
+        notifyToolkitTabs?.invoke()
     }
 
     /**
@@ -1371,7 +886,7 @@ class AppShell(
         }
         layoutState = layoutState.copy(tabs = newTabs)
         persistLayoutState()
-        rebuildShell()
+        notifyToolkitTabs?.invoke()
     }
 
     private fun renameTab(id: String, newLabel: String) {
@@ -1381,7 +896,7 @@ class AppShell(
         }
         layoutState = layoutState.copy(tabs = newTabs)
         persistLayoutState()
-        rebuildShell()
+        notifyToolkitTabs?.invoke()
     }
 
     private fun reorderTab(sourceId: String, targetId: String, before: Boolean) {
@@ -1399,7 +914,7 @@ class AppShell(
         }
         layoutState = layoutState.copy(tabs = tabs)
         persistLayoutState()
-        rebuildShell()
+        notifyToolkitTabs?.invoke()
     }
 
     // ── Pane chrome ─────────────────────────────────────────────────
@@ -1543,6 +1058,15 @@ class AppShell(
                     )
                 }
                 .distinctUntilChanged()
+                // Drop the very first emission — it's the pane's
+                // initial state at collector start, fired
+                // synchronously when collect() begins. The chrome was
+                // already rendered with that state when the pane
+                // mounted, so refreshing again would just trigger a
+                // redundant rerender that wipes any in-flight CSS
+                // transition (e.g. the new-pane entry pop-in or the
+                // restore-from-maximize on an existing pane).
+                .drop(1)
                 .collect {
                     val active = layoutState.activeTabId
                     val activeIds = tabLayouts[active]?.floatingPanes?.map { it.id }.orEmpty()
@@ -1559,9 +1083,17 @@ class AppShell(
                         // the page background as a visible blink before the
                         // crossfade starts.
                         paneEditors[paneId]?.prepareNavigationCrossfade()
-                        rerenderActivePane()
+                        notifyToolkitTabs?.invoke()
                     }
-                    refreshLeftSidebarSections()
+                    notifyToolkitTabs?.invoke()
+                    // Rebuild the per-pane chrome header so its action
+                    // buttons (back/forward/up/home) reflect the new
+                    // zoom-stack availability. `notifyToolkitTabs` only
+                    // pushes a fresh TabListSnapshot (tab + pane
+                    // structure); it doesn't re-invoke the
+                    // `paneActions` callback. `shellHandle.refresh()`
+                    // does — see [AppShellHandle.refresh].
+                    shellHandle?.refresh()
                 }
         }
     }
@@ -1745,14 +1277,9 @@ class AppShell(
             handler = if (canStyle) ({ openStyleMenu(paneId) }) else ({}),
             extraClass = "notegrow-pane-action-style" + if (!canStyle) " $DISABLED_CLASS" else "",
         )
-        val canStar = paneVm != null
-        out += PaneAction(
-            iconHtml = ICON_STAR,
-            tooltip = "Starred",
-            handler = if (canStar) ({ openStarredModal(paneId) }) else ({}),
-            extraClass = "notegrow-pane-action-starred" + if (!canStar) " $DISABLED_CLASS" else "",
-        )
-        out += PaneActions.separator()
+        // Starred lives in the tab toolbar (see [buildTopbarStarredAction]).
+        // The toolkit auto-inserts a separator between this list and its
+        // standard window-control cluster — no manual `separator()` needed.
         return out
     }
 
@@ -2095,7 +1622,7 @@ ${HotkeysModal.STYLESHEET}
             },
         )
         persistLayoutState()
-        rerenderActivePane()
+        notifyToolkitTabs?.invoke()
     }
 
     /**
@@ -2139,15 +1666,6 @@ ${HotkeysModal.STYLESHEET}
             parentByPane[newId] = parentPaneId
         }
         persistLayoutState()
-        // If Auto is the active preset, re-tile so the new pane (and
-        // its parent) land in their auto-layout slots immediately.
-        // Otherwise just re-render with the spawn position.
-        if (activePresetFor(tabId) == LayoutPreset.Auto) {
-            applyLayoutPreset(tabId, LayoutPreset.Auto)
-        } else {
-            rerenderActivePane()
-            refreshLeftSidebarSections()
-        }
         return newId
     }
 
@@ -2186,7 +1704,7 @@ ${HotkeysModal.STYLESHEET}
             },
         )
         persistLayoutState()
-        rerenderActivePane()
+        notifyToolkitTabs?.invoke()
     }
 
     /**
@@ -2227,7 +1745,7 @@ ${HotkeysModal.STYLESHEET}
         // Activate the destination tab so the user sees the pane land.
         layoutState = layoutState.copy(activeTabId = destTabId)
         persistLayoutState()
-        rebuildShell()
+        notifyToolkitTabs?.invoke()
     }
 
     /** Flips the matching float's `isMaximized` flag. The toolkit re-paints
@@ -2241,7 +1759,7 @@ ${HotkeysModal.STYLESHEET}
             },
         )
         persistLayoutState()
-        rerenderActivePane()
+        notifyToolkitTabs?.invoke()
     }
 
     /**
@@ -2261,8 +1779,7 @@ ${HotkeysModal.STYLESHEET}
         // Re-render the active pane host (overlay re-paints) AND refresh
         // the sidebar in place so the minimised row appears/disappears
         // without tearing down the whole shell (no rebuildShell).
-        rerenderActivePane()
-        refreshLeftSidebarSections()
+        notifyToolkitTabs?.invoke()
     }
 
     /**
@@ -2298,428 +1815,17 @@ ${HotkeysModal.STYLESHEET}
         // so a chain of recorded parents survives sibling-only removals.
         parentByPane.remove(paneId)
         persistLayoutState()
-        // Auto re-tile so the surviving panes fill the freed space
-        // immediately. Other presets stay where the user put them.
-        if (activePresetFor(tabId) == LayoutPreset.Auto && remaining.isNotEmpty()) {
-            applyLayoutPreset(tabId, LayoutPreset.Auto)
-        } else {
-            refreshLeftSidebarSections()
-            rerenderActivePane()
-        }
-    }
-
-    // ── Trailing actions: palette + appearance toggle ────────────────
-
-    private fun buildLeadingTitle(): HTMLElement {
-        val title = document.createElement("div") as HTMLElement
-        title.textContent = "Notegrow"
-        title.style.apply {
-            // Inherit the toolkit chrome font (.dt-topbar sets the UI stack);
-            // forcing a different family here was leaking the editor's
-            // monospace into the chrome.
-            fontWeight = "600"
-            fontSize = "13px"
-            setProperty("letter-spacing", "0.02em")
-            color = "var(--t-chrome-titleText, #e6e6e6)"
-            display = "flex"
-            alignItems = "center"
-        }
-        return title
-    }
-
-    private fun buildTrailingActions(): HTMLElement {
-        val wrap = document.createElement("div") as HTMLElement
-        wrap.style.apply {
-            display = "flex"
-            alignItems = "center"
-            setProperty("gap", "4px")
-        }
-        // Layout-preset dropdown comes first; the "new pane" button (which
-        // spawns a floating overlay) sits to its right so the trailing-area
-        // ordering reads layout → new pane → appearance → palette.
-        // Notegrow uses its own `LayoutDropdown` (rather than the toolkit's
-        // `buildLayoutPresetButton`) so the popover responds to the
-        // keyboard and the command palette's "Layout" command can drive it.
-        wrap.appendChild(layoutDropdown.triggerButton)
-        // The "new pane" button spawns a FLOATING overlay pane (high
-        // z-index, randomised position) on top of the existing layout —
-        // matches termtastic's window-style spawn behaviour rather than
-        // splitting the tree underneath. The split-pane glyph from the
-        // toolkit reads the same as termtastic's #new-window-button. New
-        // tabs go through the `…` overflow menu's "New tab" entry.
-        wrap.appendChild(
-            buildNewWindowButton(tooltip = "New pane") {
-                val activeId = layoutState.activeTabId ?: return@buildNewWindowButton
-                addFloatingPane(activeId)
-            }
-        )
-        // Order matches termtastic: appearance toggle, then palette.
-        // (No separate right-sidebar-toggle: the palette button already
-        // opens / closes the theme manager sidebar.)
-        wrap.appendChild(buildAppearanceButton())
-        wrap.appendChild(buildPaletteButton())
-        return wrap
-    }
-
-    /** Build the leading area: just the left-sidebar toggle button. The
-     *  app name lives in the OS window title bar, not the topbar — same
-     *  pattern termtastic uses. */
-    private fun buildLeadingTitleAndToggle(): HTMLElement {
-        val wrap = document.createElement("div") as HTMLElement
-        wrap.style.apply {
-            display = "flex"
-            alignItems = "center"
-        }
-        wrap.appendChild(
-            se.soderbjorn.darkness.web.shell.buildLeftSidebarToggleButton(
-                isOpen = se.soderbjorn.darkness.web.shell.leftSidebarController.isOpen,
-                onToggle = {
-                    se.soderbjorn.darkness.web.shell.leftSidebarController.toggle(
-                        requestRebuild = {
-                            layoutState = layoutState.copy(
-                                leftSidebar = layoutState.leftSidebar.copy(
-                                    visible =
-                                        se.soderbjorn.darkness.web.shell
-                                            .leftSidebarController.isOpen,
-                                ),
-                            )
-                            persistLayoutState()
-                            rebuildShell()
-                        },
-                    )
-                },
-            )
-        )
-        return wrap
-    }
-
-    /** Pane count of the active tab — drives the layout-dropdown
-     *  miniatures so the previewed slot count matches what the user
-     *  currently sees. Counts only non-minimised floats; minimised panes
-     *  aren't visible on canvas, so they aren't part of the arrangement. */
-    private fun activeTabPaneCount(): Int {
-        val activeId = layoutState.activeTabId ?: return 0
-        val layout = tabLayouts[activeId] ?: return 0
-        return layout.floatingPanes.count { !it.isMinimized }
-    }
-
-    /**
-     * Rearranges the active tab's visible panes into the chosen preset.
-     * Floats-only model: the preset's boxes are assigned directly to the
-     * existing float specs (no tree rebuild). The currently-focused pane
-     * lands in slot 0 (the highlighted primary in the dropdown miniature);
-     * remaining panes fill the other slots in their list order so per-pane
-     * state (open document, scroll position, view-models keyed on pane id)
-     * survives the switch. Every visible pane is unmaximised so the
-     * arrangement is actually visible — applying a preset on a maximised
-     * pane would otherwise just paint one full-bleed pane on top of the
-     * intended layout. Minimised panes are kept verbatim: they aren't part
-     * of the visible arrangement.
-     *
-     * If the tab has no panes at all (shouldn't happen — close keeps the
-     * floor at one — but defensive), the seed pane is materialised so
-     * the user always lands on something.
-     */
-    private fun applyLayoutPreset(tabId: String, preset: LayoutPreset) {
-        val cur = tabLayouts[tabId] ?: return
-        // Track the preset so subsequent pane add/remove can decide
-        // whether to auto re-tile. Custom is the sentinel that means
-        // "user has hand-tweaked geometry — don't drive layout."
-        if (preset == LayoutPreset.Custom) {
-            activePresetByTab.remove(tabId)
-        } else {
-            activePresetByTab[tabId] = preset
-        }
-        if (preset == LayoutPreset.Custom) {
-            // Custom is non-applicable — leave geometry as-is.
-            return
-        }
-        val visible = cur.floatingPanes.filter { !it.isMinimized }
-        if (visible.isEmpty()) {
-            tabLayouts[tabId] = cur.copy(floatingPanes = listOf(seedPane(tabId)))
-            persistLayoutState()
-            rerenderActivePane()
-            refreshLeftSidebarSections()
-            return
-        }
-        val focusedId = lastFocusedPaneIdByTab[tabId]
-        // Importance order: focused pane first; for Auto, the focused
-        // pane's parent (recorded at creation) goes to slot 1 so the
-        // originating pane keeps its prominence; the rest preserve
-        // existing list order.
-        val ordered = buildList {
-            if (focusedId != null && visible.any { it.id == focusedId }) {
-                add(visible.first { it.id == focusedId })
-            }
-            if (preset == LayoutPreset.Auto && focusedId != null) {
-                val parentId = parentByPane[focusedId]
-                if (parentId != null && visible.any { it.id == parentId } &&
-                    parentId !in this.map { it.id }) {
-                    add(visible.first { it.id == parentId })
-                }
-            }
-            for (spec in visible) {
-                if (this.none { it.id == spec.id }) add(spec)
-            }
-        }
-        val boxes = preset.computeBoxes(ordered.size, AUTO_LAYOUT_GRID)
-        val rearranged = ordered.mapIndexed { index, spec ->
-            val box = boxes[index]
-            spec.copy(
-                xPct = box.x,
-                yPct = box.y,
-                widthPct = box.width,
-                heightPct = box.height,
-                isMaximized = false,
-            )
-        }
-        // Preserve list order for non-rearranged (minimised) floats and
-        // append rearranged ones in the slot order the preset chose.
-        val minimised = cur.floatingPanes.filter { it.isMinimized }
-        tabLayouts[tabId] = cur.copy(
-            floatingPanes = rearranged + minimised,
-        )
-        persistLayoutState()
-        rerenderActivePane()
-        refreshLeftSidebarSections()
-    }
-
-    private fun buildPaletteButton(): HTMLElement =
-        buildThemeManagerButton(
-            isOpen = isThemeManagerSidebarOpen(),
-            tooltip = "Theme manager",
-            onToggle = { toggleThemeManager() },
-        )
-
-    private fun buildAppearanceButton(): HTMLElement {
-        val btn = se.soderbjorn.darkness.web.shell.buildAppearanceCycleButton(
-            appearance = uiSettings.appearance,
-            onCycle = { cycleAppearance() },
-        )
-        appearanceButton = btn
-        return btn
-    }
-
-    /**
-     * Repaints the appearance button with the current state's icon. Called
-     * after [cycleAppearance] / external settings updates so the user sees
-     * the icon change immediately. Re-uses the toolkit factory so the icon
-     * stays in sync with termtastic's `#appearance-toggle`.
-     */
-    private fun updateAppearanceButton() {
-        val btn = appearanceButton ?: return
-        val parent = btn.parentElement ?: return
-        val replacement = se.soderbjorn.darkness.web.shell.buildAppearanceCycleButton(
-            appearance = uiSettings.appearance,
-            onCycle = { cycleAppearance() },
-        )
-        parent.replaceChild(replacement, btn)
-        appearanceButton = replacement
-    }
-
-    /**
-     * Cycle appearance through Auto → Dark → Light → Auto, then re-resolve
-     * the active theme so the painter immediately picks up the new slot's
-     * bound theme. Without the resolver call, the previous appearance's
-     * theme would keep painting until the user touched the Theme Manager,
-     * which was bug #3 in the user report.
-     */
-    private fun cycleAppearance() {
-        val next = when (uiSettings.appearance) {
-            Appearance.Auto -> Appearance.Dark
-            Appearance.Dark -> Appearance.Light
-            Appearance.Light -> Appearance.Auto
-        }
-        uiSettings = uiSettings.copy(appearance = next)
-        themeState.appearance = next
-        uiSettings = resolveActiveUiSettings(themeState, uiSettings, notegrowPanes)
-        applyTheme(uiSettings)
-        updateAppearanceButton()
-        persistUiSettings()
-        persistThemeSnapshot()
-        refreshThemeManager()
-    }
-
-    private fun toggleThemeManager() {
-        toggleThemeManagerSidebar(requestRebuild = ::rebuildShell)
-    }
-
-    // ── Theme persistence ───────────────────────────────────────────
-
-    /**
-     * Initialise the toolkit's [DefaultThemeManagerState] from the user's
-     * persisted [UiSettings].
-     *
-     * Run AFTER snapshot hydration in [render]: the snapshot owns the
-     * authoritative light/dark slot bindings; this method only fills slots
-     * the snapshot left null with the toolkit defaults. The previous
-     * implementation mirrored `settings.theme.name` into BOTH slots,
-     * which made picking a dark theme also overwrite the light slot —
-     * one of the bugs this method now exists to prevent.
-     *
-     * `mainSchemeName` is a derived view of "the theme bound to the
-     * currently-active slot"; we point it at the active slot here so the
-     * Theme Manager grid renders the correct selection on first open.
-     *
-     * @param settings the user's persisted [UiSettings]; only used as a
-     *   fallback for the active-slot theme name when neither slot is
-     *   populated yet.
-     */
-    private fun seedThemeState(settings: UiSettings) {
-        themeState.appearance = settings.appearance
-        if (themeState.lightThemeName == null) {
-            themeState.lightThemeName = DEFAULT_LIGHT_THEME_NAME
-        }
-        if (themeState.darkThemeName == null) {
-            themeState.darkThemeName = DEFAULT_DARK_THEME_NAME
-        }
-        val activeSlot = if (isDarkActive(settings.appearance)) {
-            themeState.darkThemeName
-        } else {
-            themeState.lightThemeName
-        }
-        themeState.mainSchemeName = activeSlot ?: settings.theme.name
-    }
-
-    /**
-     * Reflect a Theme Manager mutation (theme pick, scheme save, slot
-     * change, favorite toggle, …) into the live [uiSettings] and persist.
-     *
-     * Pipeline:
-     *  1. Run the toolkit resolver — picks the theme bound to the active
-     *     appearance slot, looks it up in defaults ∪ custom themes,
-     *     resolves every notegrow pane through `notegrowPanes`, and
-     *     returns a fresh [UiSettings].
-     *  2. Repaint via [applyTheme] / [updateAppearanceButton].
-     *  3. Persist [uiSettings] (notegrow's localStorage slot) AND the
-     *     full [ThemeSnapshot] (custom themes/schemes, favorites, slot
-     *     bindings) so all of it survives a restart.
-     *  4. Refresh the Theme Manager so the grid highlight catches up.
-     */
-    private fun onThemeStateChange() {
-        uiSettings = resolveActiveUiSettings(themeState, uiSettings, notegrowPanes)
-        applyTheme(uiSettings)
-        updateAppearanceButton()
-        persistUiSettings()
-        persistThemeSnapshot()
-        refreshThemeManager()
-    }
-
-    /**
-     * Encode the toolkit's theme state as a [ThemeSnapshot] and write it
-     * to [themeSnapshotStorage]. Called after every state mutation that
-     * affects persisted snapshot fields (theme pick, custom theme/scheme
-     * save, favorite toggle, appearance cycle).
-     */
-    private fun persistThemeSnapshot() {
-        themeSnapshotStorage.write(
-            themeState.toSnapshot().encodeAsJsonObject().toString(),
-        )
-    }
-
-    private fun applyTheme(settings: UiSettings) {
-        val isDark = isDarkActive(settings.appearance)
-        val docEl = document.documentElement as? HTMLElement ?: return
-        // Toolkit helper paints both the main theme AND every per-section
-        // override (sidebar / chrome / terminal / …) so the topbar bg,
-        // sidebar surface, etc. all match the picked Theme — not just the
-        // main scheme. Single source of truth for both apps in the family.
-        se.soderbjorn.darkness.web.applyUiSettings(docEl, settings, isDark)
-    }
-
-    private fun loadInitialUiSettings(): UiSettings {
-        if (perAppThemeSettings) {
-            val key = perAppThemeStorageKey
-            val raw = (js("(globalThis.localStorage && globalThis.localStorage.getItem(key)) || null") as? String)
-                ?: return UiSettings.defaults()
-            return UiSettings.fromJsonString(raw)
-        }
-        val raw = js("globalThis.__darknessSettings || null") as? String
-            ?: return UiSettings.defaults()
-        return UiSettings.fromJsonString(raw)
-    }
-
-    private fun persistUiSettings() {
-        val json = uiSettings.toJsonString()
-        if (perAppThemeSettings) {
-            // Notegrow-private slot: bypass the shared Electron IPC so
-            // termtastic's UiSettings file doesn't get overwritten.
-            val key = perAppThemeStorageKey
-            js("globalThis.localStorage && globalThis.localStorage.setItem(key, json)")
-            return
-        }
-        val api = js("globalThis.darknessApi") ?: return
-        val write = js("api && api.writeUiSettings") ?: return
-        if (js("typeof write !== 'function'") as Boolean) return
-        js("write.call(api, json)")
-    }
-
-    // ── Layout-state persistence ─────────────────────────────────────
-
-    private fun loadInitialLayoutState(): LayoutState {
-        val raw = js("globalThis.__darknessLayoutState || null") as? String
-        val state = if (raw == null) LayoutState.defaults() else LayoutState.fromJsonString(raw)
-
-        val seeded = if (state.tabs.isEmpty()) {
-            // Shouldn't happen — defaults() always includes one tab — but
-            // fall through gracefully.
-            LayoutState.defaults()
-        } else state
-
-        for (tab in seeded.tabs) {
-            // Flatten any legacy split tree into the float list so the
-            // tab is purely floats-only on the runtime side, regardless
-            // of what's still on disk. Persisted floats land first
-            // (preserving their stored geometry); legacy tree leaves
-            // become full-bleed maximised floats so the user sees the
-            // pane content survive the migration. The tab's persisted
-            // tree is dropped on next save (the loader builds floats
-            // out of it; we never re-emit a tree).
-            val persistedFloats = tab.floatingPanes.map { f ->
-                FloatingPaneSpec(
-                    id = f.id,
-                    title = f.title,
-                    xPct = f.xPct,
-                    yPct = f.yPct,
-                    widthPct = f.widthPct,
-                    heightPct = f.heightPct,
-                    zIndex = f.zIndex,
-                    isMaximized = f.isMaximized,
-                    isMinimized = f.isMinimized,
-                )
-            }
-            val migratedTreeLeaves: List<FloatingPaneSpec> = tab.tree
-                ?.let { collectTreeLeafSpecs(it) }
-                .orEmpty()
-            // Drop migrated leaves whose ids already exist as floats —
-            // shouldn't happen in legitimate persisted data but guards
-            // against duplicate ids producing two panes of the same id.
-            val existingIds = persistedFloats.map { it.id }.toSet()
-            val merged = persistedFloats + migratedTreeLeaves.filterNot { it.id in existingIds }
-            // If every source was empty (no tree, no floats), seed the
-            // tab so the user lands on a usable pane.
-            val final = if (merged.isEmpty()) listOf(seedPane(tab.id)) else merged
-            tabLayouts[tab.id] = PaneLayout(floatingPanes = final)
-            // Re-engage the persisted layout preset (if any) so Auto
-            // re-tile fires on the next pane add/remove without the
-            // user having to re-pick from the dropdown.
-            val preset = tab.layoutPreset
-                ?.let { LayoutPreset.fromKey(it) }
-                ?.takeIf { it != LayoutPreset.Custom }
-            if (preset != null) activePresetByTab[tab.id] = preset
-        }
-
-        val activeId = seeded.activeTabId ?: seeded.tabs.first().id
-        return seeded.copy(activeTabId = activeId)
+        // Toolkit's mountAppShell owns runtime layout (preset enforcement,
+        // re-tile on add/remove). Notegrow only persists tab/pane identity
+        // and pushes a fresh snapshot through [persistLayoutState].
     }
 
     /**
      * Walk a persisted [PaneNodeJson] tree and turn each leaf into a
-     * [FloatingPaneSpec]. The first leaf becomes the "primary" full-bleed
-     * maximised pane; subsequent leaves are stacked in cascade positions
-     * with ascending z-index so the user sees them all without manual
-     * positioning right after the migration. They are de-maximised so
-     * the cascade actually shows.
+     * [FloatingPaneSpec]. Used by [hydrateLayoutState] to migrate any
+     * legacy split tree on disk into the floats-only runtime model.
+     * The first leaf becomes the "primary" full-bleed maximised pane;
+     * subsequent leaves cascade with ascending z-index.
      */
     private fun collectTreeLeafSpecs(
         tree: se.soderbjorn.darkness.store.PaneNodeJson,
@@ -2755,11 +1861,13 @@ ${HotkeysModal.STYLESHEET}
         }
     }
 
+    /**
+     * Snapshot the in-memory tab + float layout into [layoutState]'s
+     * persistable shape, write through the toolkit [Persister]
+     * (Electron-IPC or localStorage), and notify the toolkit-shell tab
+     * source so its rendered chrome catches up.
+     */
     private fun persistLayoutState() {
-        // Snapshot the in-memory layout into the persistable state. The
-        // tree field is always written as null in the floats-only model;
-        // every pane lives in floatingPanes so it can survive an Electron
-        // reload with full geometry preserved.
         val snapTabs = layoutState.tabs.map { tab ->
             val layout = tabLayouts[tab.id]
             if (layout == null) tab
@@ -2779,57 +1887,16 @@ ${HotkeysModal.STYLESHEET}
                         isMinimized = f.isMinimized,
                     )
                 },
-                // Persist the active preset so reloads re-engage Auto
-                // re-tile without requiring the user to re-pick.
                 layoutPreset = activePresetByTab[tab.id]?.key,
             )
         }
-        layoutState = layoutState.copy(
-            tabs = snapTabs,
-            rightSidebar = layoutState.rightSidebar.copy(visible = isThemeManagerSidebarOpen()),
-        )
-
-        val api = js("globalThis.darknessApi") ?: return
-        val write = js("api && api.writeLayoutState") ?: return
-        if (js("typeof write !== 'function'") as Boolean) return
+        layoutState = layoutState.copy(tabs = snapTabs)
         val json = layoutState.toJsonString()
-        js("write.call(api, json)")
-    }
-
-    /**
-     * Seed [topBarController] / [bottomBarController] from the
-     * notegrow-private localStorage slot, then wire their
-     * `onVisibilityChanged` callbacks back to the same slot so
-     * subsequent drag-to-hide / "Show … bar" toggles round-trip.
-     *
-     * Each app picks its own substrate — termtastic, for example, will
-     * push these flags through its server-side state — so the toolkit's
-     * [BarController] is intentionally ignorant of where the bytes go.
-     */
-    private fun seedBarControllers() {
-        val raw = window.localStorage.getItem(BAR_VISIBILITY_KEY)
-        if (raw != null) {
-            // Format: "<topVisible>:<bottomVisible>" with bools rendered
-            // as "1" / "0". Hand-rolled instead of JSON-encoded so a
-            // corrupt slot never trips the parser — only an explicit "0"
-            // hides the bar; anything else (including a corrupt empty
-            // string) falls through to the default visible=true branch.
-            val parts = raw.split(":")
-            topBarController.setInitial(parts.getOrNull(0) != "0")
-            bottomBarController.setInitial(parts.getOrNull(1) != "0")
-        }
-        topBarController.onVisibilityChanged = { persistBarVisibility() }
-        bottomBarController.onVisibilityChanged = { persistBarVisibility() }
-    }
-
-    private fun persistBarVisibility() {
-        val top = if (topBarController.isVisible) "1" else "0"
-        val bot = if (bottomBarController.isVisible) "1" else "0"
-        window.localStorage.setItem(BAR_VISIBILITY_KEY, "$top:$bot")
+        scope.launch { persister.write(PersistKeys.LAYOUT, json) }
+        notifyToolkitTabs?.invoke()
     }
 
     companion object {
-        private const val BAR_VISIBILITY_KEY: String = "notegrow.barVisibility.v1"
         /** Three-stripe palette glyph — opens the ThemeManager. */
         private const val ICON_PALETTE: String =
             "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +

@@ -6,6 +6,9 @@ import dev.zacsweers.metro.SingleIn
 import dev.zacsweers.metro.createGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.GlobalScope
+import se.soderbjorn.darkness.core.Persister
+import se.soderbjorn.darkness.web.LocalStoragePersister
+import se.soderbjorn.darkness.web.tryElectronIpcPersister
 import se.soderbjorn.notegrow.data.NoteRepository
 import se.soderbjorn.notegrow.main.DocumentRegistry
 import se.soderbjorn.notegrow.platform.FileSystem
@@ -30,9 +33,23 @@ interface JsAppGraph {
      */
     val documentRegistry: DocumentRegistry
 
+    /**
+     * Durable KV bridge for theme / layout / ui-settings. Backed by
+     * Electron IPC when running inside the desktop wrapper (the preload
+     * script installs `globalThis.darknessApi`); falls back to
+     * namespaced `localStorage` in a plain browser. Same shape the
+     * darkness-toolkit demo uses.
+     */
+    val persister: Persister
+
     @SingleIn(AppScope::class)
     @Provides
     fun provideCoroutineScope(): CoroutineScope = GlobalScope
+
+    @SingleIn(AppScope::class)
+    @Provides
+    fun providePersister(): Persister =
+        tryElectronIpcPersister() ?: LocalStoragePersister(namespace = "notegrow")
 
     @SingleIn(AppScope::class)
     @Provides

@@ -635,17 +635,6 @@ fun ensureStyles() {
             font-style: italic;
             color: var(--t-text-tertiary, #7a7a7a);
         }
-        /* Notegrow-only: bump the navigation (left) sidebar rows so pane
-           labels read at a comfortable size. Scoped via the toolkit's
-           left-sidebar wrapper class so this stylesheet (loaded only by
-           the notegrow bundle) does not affect any other toolkit-based
-           app such as termtastic, which has its own bundle. */
-        .dt-app-frame-sidebar-left .dt-sidebar-row {
-            font-size: 14px;
-        }
-        .dt-app-frame-sidebar-left .dt-sidebar-section-header {
-            font-size: 13px;
-        }
         /* WYSIWYG markdown styles: the marker characters (**, *, <u>, ~~,
            `) are not in the DOM at all, so styling here only affects the
            rendered text. The underlying model line still contains the
@@ -767,92 +756,6 @@ fun ensureStyles() {
             border: 0;
             border-top: 1px solid var(--t-border-strong, #3a3a3a);
             margin: 4px 0;
-        }
-        /* Repaint the 4px ring `.dt-app-frame-main` draws around the
-           main pane to match the topbar / bottombar surface, so the
-           band reads as a continuation of the chrome above and below
-           rather than a third tone (toolkit default is
-           `--t-surface-sunken` — the "panes float on a recessed body"
-           look that termtastic uses but notegrow's single-pane layout
-           doesn't benefit from). */
-        .dt-app-frame .dt-app-frame-main {
-            background: var(--t-surface-base, #1e1e1e) !important;
-        }
-        /* Resize handles (sidebar / topbar / bottombar) paint a 1px
-           hairline on hover, drag, and the collapsed-bar restore cue
-           — too noisy for notegrow's flat chrome. Force every visible
-           state to stay transparent so the gutter blends into the
-           surrounding chrome. The handles still receive pointer
-           events; only the paint goes away. */
-        .dt-app-frame .dt-sidebar-resize-handle:hover::after,
-        .dt-app-frame .dt-sidebar-resize-handle.dt-dragging::after,
-        .dt-app-frame .dt-sidebar-collapsed > .dt-sidebar-resize-handle::after,
-        .dt-app-frame .dt-bar-resize-handle:hover::after,
-        .dt-app-frame .dt-bar-resize-handle.dt-dragging::after,
-        .dt-app-frame .dt-bar-collapsed > .dt-bar-resize-handle::after {
-            background: transparent !important;
-        }
-        /* Chrome separator borders (topbar bottom, bottombar top,
-           sidebar inner edges) paint a 1px hairline that reads as a
-           visible "sizing line" between the pane and surrounding
-           chrome. Notegrow's chrome is flat enough that the surfaces
-           themselves provide adequate delineation; drop the lines. */
-        .dt-app-frame .dt-topbar {
-            border-bottom-color: transparent !important;
-            box-shadow: none !important;
-        }
-        .dt-app-frame .dt-bottombar {
-            border-top-color: transparent !important;
-        }
-        .dt-app-frame .dt-sidebar-left {
-            border-right-color: transparent !important;
-        }
-        .dt-app-frame .dt-sidebar-right {
-            border-left-color: transparent !important;
-        }
-        /* Sidebar nav tree: drop both the active row's filled
-           background AND the active section-header's filled
-           background. The accent text colour + 1px inset ring
-           inherited from the toolkit's `.dt-sidebar-row.dt-active`
-           rule still mark the active row; nothing in the toolkit
-           paints a ring on the section header so the accent text is
-           the sole indicator there. The pane's own focus ring
-           (`.dt-pane-focused`) is unaffected — different selector. */
-        .dt-app-frame .dt-sidebar-row.dt-active,
-        .dt-app-frame .dt-sidebar-section.active-tab > .dt-sidebar-section-header {
-            background: transparent !important;
-        }
-        /* Topbar tabs: round all four corners on inactive tabs so they
-           read as pills rather than file-folder tabs. Toolkit defaults
-           give them `border-radius: 6px 6px 0 0` + `margin-bottom: -1px`
-           + `border-bottom: none` so the active tab visually merges
-           into the content area underneath (termtastic chrome).
-           Notegrow's topbar doesn't have a connected content seam, so
-           the tab look is unmotivated — flatten to fully-rounded pills.
-           Active (`.dt-selected`) tabs already use `border-radius: 6px`
-           and need no change.
-
-           Bump font-size from the toolkit's 13px to 14px so tab labels
-           read at the same weight as the rest of notegrow's chrome
-           text. */
-        .dt-app-frame .dt-tab {
-            border-radius: 6px !important;
-            border-bottom: 1px solid var(--t-border-subtle,
-                rgba(255, 255, 255, 0.10)) !important;
-            margin-bottom: 0 !important;
-            font-size: 14px !important;
-        }
-        /* A bit more breathing room above the tab strip. Toolkit
-           default is `padding: 0 20px` (no vertical padding); add a
-           small top inset so the tabs don't crowd the chrome edge. */
-        .dt-app-frame .dt-topbar {
-            padding-top: 6px !important;
-        }
-        /* Wider gap between adjacent tabs. Toolkit default is 4px,
-           which packs the pills tightly enough that adjacent tabs
-           visually fuse on schemes with low border contrast. */
-        .dt-app-frame .dt-tabbar-strip {
-            gap: 14px !important;
         }
     """.trimIndent()
     document.head?.appendChild(style)

@@ -8,11 +8,18 @@ import se.soderbjorn.notegrow.main.AppShell
 
 /**
  * Web entry point. Builds the DI graph and mounts the [AppShell] into the
- * `<div id="app">` host element.
+ * `<div id="app">` host element via the toolkit's `mountAppShell`
+ * assembler.
  *
- * The shell wraps the existing note editor inside the toolkit's windowing
- * system and applies the active darkness theme to `document.documentElement`
- * before any content is painted.
+ * Notegrow consumes the toolkit's chrome end-to-end: the top bar, tab
+ * strip, kebab menu, left sidebar's tabs→panes tree, layout renderer,
+ * theme manager sidebar, and bottom bar all come from the toolkit.
+ * The notegrow side contributes only the per-pane note editor
+ * (rendered via [AppShell.renderPaneContent]), the typed
+ * `LayoutState` source ([NotegrowTabSource]), and a handful of
+ * notegrow-specific topbar buttons + keyboard shortcuts; persistence
+ * routes through the toolkit's `Persister` (Electron-IPC when present,
+ * `localStorage` otherwise) provided by [createJsAppGraph].
  */
 fun main() {
     window.onload = {
@@ -22,6 +29,7 @@ fun main() {
         AppShell(
             scope = graph.coroutineScope,
             documentRegistry = graph.documentRegistry,
+            persister = graph.persister,
         ).render(app)
     }
 }

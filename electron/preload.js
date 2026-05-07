@@ -32,6 +32,16 @@ if (layoutArg) {
   contextBridge.exposeInMainWorld("__darknessLayoutState", value);
 }
 
+// Same boot-snapshot mechanism for the toolkit-owned layout state
+// (per-tab pane geometry, layout preset, paneOrder — all under
+// `PersistKeys.LAYOUT_STATE`). Distinct from `__darknessLayoutState`,
+// which carries notegrow's typed tab list under `PersistKeys.LAYOUT`.
+const layoutToolkitArg = (process.argv || []).find(a => a && a.startsWith("--darkness-layout-toolkit-state="));
+if (layoutToolkitArg) {
+  const value = decodeURIComponent(layoutToolkitArg.substring("--darkness-layout-toolkit-state=".length));
+  contextBridge.exposeInMainWorld("__darknessLayoutToolkitState", value);
+}
+
 contextBridge.exposeInMainWorld("darknessApi", {
   /** Persist UI settings JSON to the shared darkness location. */
   writeUiSettings: (json) => ipcRenderer.invoke("darkness:writeUiSettings", json),
@@ -70,6 +80,25 @@ contextBridge.exposeInMainWorld("darknessApi", {
    * @returns {Promise<string|null>} the JSON, or null
    */
   readLayoutState: () => ipcRenderer.invoke("darkness:readLayoutState"),
+
+  /**
+   * Persist the toolkit-owned layout state JSON (per-tab pane geometry,
+   * layout preset, paneOrder — see `PersistedLayoutState` in
+   * `toolkit-web`). Stored separately from `writeLayoutState` because
+   * notegrow's typed tab list (`LAYOUT`) and the toolkit's geometry
+   * snapshot (`LAYOUT_STATE`) have independent shapes and lifecycles.
+   *
+   * @param {string} json a complete LAYOUT_STATE JSON document
+   */
+  writeLayoutToolkitState: (json) => ipcRenderer.invoke("darkness:writeLayoutToolkitState", json),
+  /**
+   * Read the toolkit-owned layout state JSON, or null on first launch.
+   * `globalThis.__darknessLayoutToolkitState` carries the boot snapshot;
+   * this IPC read is for late re-loads only.
+   *
+   * @returns {Promise<string|null>} the JSON, or null
+   */
+  readLayoutToolkitState: () => ipcRenderer.invoke("darkness:readLayoutToolkitState"),
 
   /**
    * Subscribe to "show hotkeys" requests dispatched from the application

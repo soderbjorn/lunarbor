@@ -20,7 +20,8 @@
       "main.js",
       "preload.js",
       "package.json",
-      "resources/web/**/*"
+      "resources/web/**/*",
+      "resources/main/**/*"
     ],
     "directories": {
       "output": "dist"
