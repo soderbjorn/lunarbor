@@ -20,6 +20,15 @@ import se.soderbjorn.darkness.web.shell.PaneSnapshotEntry
 import se.soderbjorn.darkness.web.shell.TabListSnapshot
 import se.soderbjorn.darkness.web.shell.TabSnapshotEntry
 import se.soderbjorn.darkness.web.shell.TabSource
+import se.soderbjorn.darkness.web.util.PaneSlotAssigner
+
+/**
+ * Process-global pane-slot assigner backing the encircled-digit / letter
+ * badge rendered on every pane header and sidebar row. Sticky 1-based
+ * indices: a pane keeps the same slot from open until close. Updated by
+ * [NotegrowTabSource.notify] on every layout-state mutation.
+ */
+internal val notegrowPaneAssigner: PaneSlotAssigner = PaneSlotAssigner()
 
 /**
  * Stateful adapter producing a [TabSource] for notegrow's
@@ -91,6 +100,17 @@ class NotegrowTabSource(
      * sidebar tree mirrors what the user actually sees.
      */
     fun notify(layoutState: LayoutState) {
+        // Reconcile the pane-slot assigner with EVERY pane in the model
+        // (including hidden tabs and minimized panes), not just the
+        // visible subset rendered below. Sticky-slot semantics demand
+        // that a pane's number doesn't shift when its tab is hidden or
+        // when it's minimized — when it comes back into view the slot
+        // it previously held is still there. Order: tabs in tab order,
+        // panes in their tab order — the canonical global enumeration.
+        val livePaneIds = layoutState.tabs.flatMap { tab ->
+            tab.floatingPanes.map { it.id }
+        }
+        notegrowPaneAssigner.syncTo(livePaneIds)
         val snapshot = TabListSnapshot(
             tabs = layoutState.tabs
                 .filterNot { it.isHidden }

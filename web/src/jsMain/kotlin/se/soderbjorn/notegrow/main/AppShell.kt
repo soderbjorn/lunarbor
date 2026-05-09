@@ -328,6 +328,12 @@ class AppShell(
                 paneLabel = { _, paneId -> paneSidebarLabel(paneId) },
                 paneIcon = { _, _ -> ICON_NOTE },
                 paneActions = { _, paneId -> buildPaneNavActions(paneId) },
+                // Sticky pane-slot index — `①..⑨`, `Ⓐ..Ⓩ` rendered as a
+                // trailing badge on both pane header and sidebar row.
+                // Kept in sync with the live pane set by
+                // `NotegrowTabSource.notify`, which calls
+                // `notegrowPaneAssigner.syncTo(...)` on every push.
+                paneIndex = { _, paneId -> notegrowPaneAssigner.indexOf(paneId) },
                 extraTopbarBeforeStandard = listOf(
                     TopbarAction(
                         id = "notegrow-topbar-starred",
