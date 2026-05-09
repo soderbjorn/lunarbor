@@ -23,6 +23,7 @@ kotlin {
     sourceSets {
         jsMain.dependencies {
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.darkness.core)
         }
     }
 }

@@ -36,8 +36,14 @@ package se.soderbjorn.notegrow.main
  * @property editorPaddingRightPx Inner padding to the right of every row.
  */
 data class EditorStyle(
+    /**
+     * CSS font-family stack. Defaults to a `var(--dt-font-prop, …)` chain
+     * so the editor follows the user's choice in the toolkit Settings
+     * sidebar (Proportional section); falls back to the OS UI stack when
+     * no override is set.
+     */
     val fontFamily: String =
-        "system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif",
+        "var(--dt-font-prop, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif)",
     val fontSize: Int = 17,
     val lineHeightPx: Int = 25,
     val indentStepPx: Int = 14,

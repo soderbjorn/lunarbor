@@ -1,10 +1,13 @@
 /* ElectronMain.kt — Electron main process, written in Kotlin/JS.
  *
  * Direct port of the previous electron/main.js. Owns:
- *  - Per-OS persistence path resolution (per-app `Library/Application
- *    Support/Darkness/Notegrow/`-style directories).
- *  - Atomic JSON I/O (write-tmp + rename) for `ui-settings.json` and
- *    `layout-state.json`.
+ *  - Per-OS persistence path resolution. UI settings split across the
+ *    cross-app `<DarknessDir>/themes.json` (theme/scheme definitions
+ *    shared with every Darkness app) and the per-app
+ *    `<DarknessDir>/notegrow.json` (selections + UI prefs). Layout
+ *    state stays per-app under `<DarknessDir>/Notegrow/`.
+ *  - Atomic JSON I/O (write-tmp + rename) for both UI-settings files
+ *    plus `layout-state.json` and `layout-toolkit-state.json`.
  *  - `darkness:*` IPC handlers (`readUiSettings` / `writeUiSettings` /
  *    `readLayoutState` / `writeLayoutState`).
  *  - File-watcher on the shared darkness ui-settings file, debounced
@@ -33,29 +36,45 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.await
 import kotlinx.coroutines.promise
 import kotlin.js.Promise
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import se.soderbjorn.darkness.core.SHARED_THEMES_KEYS
+import se.soderbjorn.darkness.core.mergeSharedThemes
 
 private const val APP_NAME = "Notegrow"
+
+/**
+ * App-name stem for the per-app UI-settings file. Lives at
+ * `<Darkness>/notegrow.json` next to the cross-app `themes.json`.
+ * Lower-kebab-case to match the toolkit's `defaultAppUiSettingsPath`
+ * convention (used by termtastic too).
+ */
+private const val APP_NAME_KEBAB = "notegrow"
 
 private var mainWindow: BrowserWindow? = null
 
 /**
- * Bytes most recently written by this Electron process to the shared
- * `ui-settings.json`. Compared against fresh reads from
- * [installSharedThemesWatcher] so self-induced fs.watch events don't
- * loop back to the renderer as "external" changes. `null` until the
- * first write (the watcher tolerates that — first write wins).
+ * Bytes most recently written by this Electron process to the per-app
+ * UI-settings file (`notegrow.json`). Compared against fresh reads
+ * from [installSharedThemesWatcher] so self-induced fs.watch events
+ * don't loop back to the renderer as "external" changes. `null` until
+ * the first write (the watcher tolerates that — first write wins).
  */
-private var lastWrittenUiSettings: dynamic = null
+private var lastWrittenAppUiSettings: dynamic = null
 
-/** Active fs.watch handle, kept so window re-creation doesn't leak. */
+/** Active fs.watch handle for the cross-app `themes.json`. */
 private var sharedThemesWatcher: FsWatcher? = null
+/** Active fs.watch handle for the per-app `<appName>.json`. */
+private var appUiSettingsWatcher: FsWatcher? = null
 
 /**
- * Coalesce timer for the fs.watch debounce. Some editors fire `change`
- * twice per save; we collapse all events inside a 200 ms window into
- * one read+broadcast cycle.
+ * Coalesce timers for the two fs.watch debounces. Some editors fire
+ * `change` twice per save; we collapse all events inside a 200 ms
+ * window into one read+broadcast cycle. Separate timers per file so
+ * the two watch streams don't smother each other.
  */
 private var sharedThemesDebounce: dynamic = null
+private var appUiSettingsDebounce: dynamic = null
 
 fun main() {
     app.setName(APP_NAME)
@@ -85,9 +104,53 @@ fun main() {
 
 /* --- Path resolution -------------------------------------------------- */
 
-/** Per-app darkness ui-settings file path. */
-private fun defaultDarknessSettingsPath(): String =
-    perAppPath("ui-settings.json")
+/**
+ * Cross-app shared darkness themes file path: holds custom themes,
+ * custom schemes, and favorites — read/written by every Darkness app
+ * on this machine. Lives directly under the Darkness data dir, *not*
+ * under any per-app sub-directory.
+ */
+private fun sharedThemesPath(): String =
+    sharedDarknessPath("themes.json")
+
+/**
+ * Per-app UI-settings file path: holds notegrow's selected theme slots,
+ * appearance, fonts, sizes, app-specific toggles. Sibling of
+ * [sharedThemesPath] (flat in the Darkness data dir, not under a
+ * per-app sub-directory) so it lines up with what termtastic and the
+ * toolkit's `defaultAppUiSettingsPath("notegrow")` would resolve to.
+ */
+private fun appUiSettingsPath(): String =
+    sharedDarknessPath("$APP_NAME_KEBAB.json")
+
+/**
+ * Resolve a path relative to the OS-conventional Darkness data
+ * directory (the same root every Darkness app on this machine uses).
+ *
+ * - macOS: `~/Library/Application Support/Darkness/<filename>`
+ * - Windows: `%APPDATA%\Darkness\<filename>`
+ * - Linux: `$XDG_CONFIG_HOME/darkness/<filename>` (defaults to
+ *   `~/.config/darkness/`).
+ */
+private fun sharedDarknessPath(filename: String): String {
+    val home = osModule.homedir()
+    return when (process.platform) {
+        "darwin" ->
+            pathModule.join(home, "Library", "Application Support", "Darkness", filename)
+        "win32" -> {
+            val appData = (process.env.APPDATA as String?)
+                ?.takeIf { it.isNotEmpty() }
+                ?: pathModule.join(home, "AppData", "Roaming")
+            pathModule.join(appData, "Darkness", filename)
+        }
+        else -> {
+            val xdg = (process.env.XDG_CONFIG_HOME as String?)
+                ?.takeIf { it.isNotEmpty() }
+                ?: pathModule.join(home, ".config")
+            pathModule.join(xdg, "darkness", filename)
+        }
+    }
+}
 
 /** Per-app darkness layout-state file path. */
 private fun defaultAppLayoutStatePath(): String =
@@ -131,8 +194,92 @@ private fun readSyncOrNull(p: String): String? = try {
     null
 }
 
+/**
+ * Synchronously read both the cross-app shared themes file and the
+ * per-app UI-settings file and return a merged JSON-object string. The
+ * per-app file's keys win on collisions — they're notegrow-local
+ * choices that should not be overwritten by another Darkness app's
+ * edits.
+ *
+ * Returns null if both files are missing/empty so the renderer can
+ * fall back to defaults.
+ */
+private fun readMergedUiSettingsJsonSync(): String? {
+    val sharedRaw = readSyncOrNull(sharedThemesPath())
+    val appRaw = readSyncOrNull(appUiSettingsPath())
+    if (sharedRaw == null && appRaw == null) return null
+    val sharedObj: dynamic = parseJsonObjectOrEmpty(sharedRaw)
+    val perAppObj: dynamic = parseJsonObjectOrEmpty(appRaw)
+    val merged: dynamic = js("({})")
+    val sharedKeys: Array<String> = js("Object.keys(sharedObj)") as Array<String>
+    for (k in sharedKeys) merged[k] = sharedObj[k]
+    val perAppKeys: Array<String> = js("Object.keys(perAppObj)") as Array<String>
+    for (k in perAppKeys) merged[k] = perAppObj[k]
+    return js("JSON.stringify(merged)") as String
+}
+
+/**
+ * Parse [raw] as a JSON object, or return an empty object on null /
+ * blank / parse error. Returns a plain JS object (used here as a
+ * dictionary).
+ */
+private fun parseJsonObjectOrEmpty(raw: String?): dynamic {
+    if (raw.isNullOrBlank()) return js("({})")
+    return try {
+        val parsed: dynamic = js("JSON.parse(raw)")
+        if (parsed != null && (js("typeof parsed === 'object'") as Boolean) &&
+            !(js("Array.isArray(parsed)") as Boolean)
+        ) parsed else js("({})")
+    } catch (_: Throwable) {
+        js("({})")
+    }
+}
+
+/**
+ * Partition a complete UI-settings JSON object into (sharedThemes,
+ * appUiSettings) sub-objects according to the toolkit's
+ * [SHARED_THEMES_KEYS] classification. Both halves are returned as
+ * JSON object strings ready for atomic write. Either may be `"{}"` if
+ * the corresponding bucket is empty after partitioning.
+ */
+/**
+ * Per-key merge the outgoing shared-themes JSON string with whatever
+ * is currently on disk and return the JSON string ready for an atomic
+ * write. Delegates to the toolkit's [mergeSharedThemes] for the actual
+ * merge logic — this wrapper just bridges between the JS-side string
+ * representation used at the IPC boundary and kotlinx-serialization
+ * [JsonObject] inputs.
+ */
+private fun mergeSharedThemesAtomically(outgoing: String): String {
+    val outgoingObj = parseKxJsonObject(outgoing) ?: return outgoing
+    val onDiskRaw = readSyncOrNull(sharedThemesPath())
+    val onDiskObj = parseKxJsonObject(onDiskRaw) ?: JsonObject(emptyMap())
+    val merged = mergeSharedThemes(outgoingObj, onDiskObj)
+    return Json.encodeToString(JsonObject.serializer(), merged)
+}
+
+private fun parseKxJsonObject(raw: String?): JsonObject? {
+    if (raw.isNullOrBlank()) return null
+    return runCatching { Json.parseToJsonElement(raw) as? JsonObject }.getOrNull()
+}
+
+private fun partitionUiSettingsJson(json: String): Pair<String, String> {
+    val parsed: dynamic = parseJsonObjectOrEmpty(json)
+    val sharedOut: dynamic = js("({})")
+    val perAppOut: dynamic = js("({})")
+    val keys: Array<String> = js("Object.keys(parsed)") as Array<String>
+    for (k in keys) {
+        if (SHARED_THEMES_KEYS.contains(k)) {
+            sharedOut[k] = parsed[k]
+        } else {
+            perAppOut[k] = parsed[k]
+        }
+    }
+    return (js("JSON.stringify(sharedOut)") as String) to (js("JSON.stringify(perAppOut)") as String)
+}
+
 private fun createWindow() {
-    val settingsJson = readSyncOrNull(defaultDarknessSettingsPath())
+    val settingsJson = readMergedUiSettingsJsonSync()
     val layoutJson = readSyncOrNull(defaultAppLayoutStatePath())
     val layoutToolkitJson = readSyncOrNull(defaultAppLayoutToolkitStatePath())
     val additionalArguments = mutableListOf<String>()
@@ -208,13 +355,35 @@ private suspend fun atomicWriteUtf8(target: String, json: String): dynamic {
 
 private fun registerIpcHandlers() {
     // ── darkness:* (toolkit-canonical persistence channels) ─────
+    //
+    // The renderer treats UI settings as a single blob, but on disk we
+    // split it across the cross-app shared `themes.json` and the
+    // per-app `notegrow.json` so theme/scheme *definitions* can be
+    // reused across apps while *selections* (slot picks, fonts, etc.)
+    // stay app-local. Partition logic lives in toolkit-core's
+    // [SHARED_THEMES_KEYS]; we mirror it here at the disk boundary.
     ipcMain.handle("darkness:writeUiSettings") { _, json ->
         GlobalScope.promise {
-            lastWrittenUiSettings = atomicWriteUtf8(defaultDarknessSettingsPath(), json as String)
+            val (sharedJson, perAppJson) = partitionUiSettingsJson(json as String)
+            // Read-merge-write on `themes.json`: re-read disk and
+            // per-key merge before atomically writing, so a peer
+            // Darkness app's additions survive even if our file watcher
+            // missed the announcement (Node fs.watch occasionally drops
+            // events on macOS).
+            val sharedFinal = mergeSharedThemesAtomically(sharedJson)
+            atomicWriteUtf8(sharedThemesPath(), sharedFinal)
+            val bytes = atomicWriteUtf8(appUiSettingsPath(), perAppJson)
+            // Track the per-app bytes for the file watcher's
+            // self-write suppression — most renderer-driven writes
+            // touch per-app keys (selected theme slot, fonts, …), so
+            // suppressing the per-app bounce is what matters in
+            // practice. Cross-app theme/scheme definition writes are
+            // rarer and a one-event self-bounce on those is harmless.
+            lastWrittenAppUiSettings = bytes
         }
     }
     ipcMain.handle("darkness:readUiSettings") { _, _ ->
-        readJsonOrNull(defaultDarknessSettingsPath())
+        GlobalScope.promise<String?> { readMergedUiSettingsJsonSync() }
     }
     ipcMain.handle("darkness:writeLayoutState") { _, json ->
         GlobalScope.promise {
@@ -337,56 +506,83 @@ private fun readJsonOrNull(path: String): Promise<String?> = GlobalScope.promise
 /* --- Shared-themes file watcher --------------------------------------- */
 
 /**
- * Watches the directory that holds the shared darkness ui-settings file.
- * On each (debounced) change that doesn't match this process's last
- * write, broadcasts the freshly-read JSON to the renderer over
- * `darkness:uiSettingsChanged`. Idempotent: closes any prior watcher
- * before installing a fresh one.
+ * Watches both the cross-app shared `themes.json` and the per-app
+ * `notegrow.json`. On each (debounced) change, re-reads both files,
+ * merges them, and broadcasts the merged JSON to the renderer over
+ * `darkness:uiSettingsChanged`. Skips broadcasts whose per-app bytes
+ * match what this process just wrote (self-write suppression).
+ * Idempotent: closes any prior watchers before installing fresh ones.
  *
- * Some filesystems / sandbox configs reject `fs.watch`; in that case the
- * renderer simply doesn't get live updates (boot-time read still works).
+ * Some filesystems / sandbox configs reject `fs.watch`; in that case
+ * the renderer simply doesn't get live updates (boot-time read still
+ * works).
  */
 private fun installSharedThemesWatcher() {
     sharedThemesWatcher?.let {
         try { it.close() } catch (_: Throwable) { /* already closed */ }
         sharedThemesWatcher = null
     }
-    val target = defaultDarknessSettingsPath()
-    val dir = pathModule.dirname(target)
-    val fname = pathModule.basename(target)
+    appUiSettingsWatcher?.let {
+        try { it.close() } catch (_: Throwable) { /* already closed */ }
+        appUiSettingsWatcher = null
+    }
+    val sharedTarget = sharedThemesPath()
+    val appTarget = appUiSettingsPath()
+    val dir = pathModule.dirname(sharedTarget)
+    val sharedName = pathModule.basename(sharedTarget)
+    val appName = pathModule.basename(appTarget)
     try {
         val mkdirOpts: dynamic = js("({})")
         mkdirOpts.recursive = true
         fsSync.mkdirSync(dir, mkdirOpts)
     } catch (_: Throwable) { /* dir already exists */ }
-    val onDebouncedChange: () -> Unit = {
-        sharedThemesDebounce = null
-        val bytes: dynamic = try {
-            fsSync.readFileSync(target)
-        } catch (_: Throwable) {
-            null
-        }
-        if (bytes != null) {
-            val last = lastWrittenUiSettings
-            val sameAsSelf = last != null && (bytes.equals(last) as Boolean)
-            if (!sameAsSelf) {
-                val w = mainWindow
-                if (w != null && !w.isDestroyed()) {
-                    w.webContents.send("darkness:uiSettingsChanged", bytes.toString("utf8"))
-                }
+
+    val broadcastMerged: () -> Unit = {
+        val merged = readMergedUiSettingsJsonSync()
+        if (merged != null) {
+            val w = mainWindow
+            if (w != null && !w.isDestroyed()) {
+                w.webContents.send("darkness:uiSettingsChanged", merged)
             }
         }
     }
-    try {
-        sharedThemesWatcher = fsSync.watch(dir) { _, changedName ->
-            if (changedName != fname) return@watch
-            val pending = sharedThemesDebounce
-            if (pending != null) js("clearTimeout")(pending)
-            sharedThemesDebounce = js("setTimeout")(onDebouncedChange, 200)
-        }
-    } catch (_: Throwable) {
-        sharedThemesWatcher = null
+
+    val onSharedChange: () -> Unit = {
+        sharedThemesDebounce = null
+        // Cross-app shared writes don't have a self-bounce track here
+        // (rare path; another Darkness app wrote them). Always broadcast.
+        broadcastMerged()
     }
+    val onAppChange: () -> Unit = appChange@{
+        appUiSettingsDebounce = null
+        // Suppress self-bounces on the per-app file (the common case
+        // for renderer-driven writes).
+        val bytes: dynamic = try { fsSync.readFileSync(appTarget) } catch (_: Throwable) { null }
+        if (bytes != null) {
+            val last = lastWrittenAppUiSettings
+            val sameAsSelf = last != null && (bytes.equals(last) as Boolean)
+            if (sameAsSelf) return@appChange
+        }
+        broadcastMerged()
+    }
+
+    val watchOne = { fname: String, debounceVar: () -> dynamic, setDebounce: (dynamic) -> Unit, onChange: () -> Unit ->
+        // We watch the directory and filter by filename; one watcher
+        // can serve both files, but we use two so each can be torn
+        // down independently and so the debounce timers don't collide.
+        try {
+            fsSync.watch(dir) { _, changedName ->
+                if (changedName != fname) return@watch
+                val pending = debounceVar()
+                if (pending != null) js("clearTimeout")(pending)
+                setDebounce(js("setTimeout")(onChange, 200))
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+    sharedThemesWatcher = watchOne(sharedName, { sharedThemesDebounce }, { sharedThemesDebounce = it }, onSharedChange)
+    appUiSettingsWatcher = watchOne(appName, { appUiSettingsDebounce }, { appUiSettingsDebounce = it }, onAppChange)
 }
 
 /* --- App menu --------------------------------------------------------- */
