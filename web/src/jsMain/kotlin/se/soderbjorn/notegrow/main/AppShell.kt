@@ -225,10 +225,11 @@ class AppShell(
      *  shell host (idempotency guard). */
     private var paletteShortcutHandler: ((Event) -> Unit)? = null
 
-    /** Document-level Cmd/Ctrl+/ listener installed in [render]. Mirrors
-     *  the Electron menu accelerator so the cheatsheet is reachable both
-     *  ways (the menu only fires when the platform actually has one). */
-    private var hotkeysShortcutHandler: ((Event) -> Unit)? = null
+    // The legacy document-level Cmd/Ctrl+/ listener is gone — the
+    // toolkit's [HotkeyRegistry] (via [installCheatsheetHotkey]) owns
+    // the binding now. The Electron `notegrow:show-hotkeys` menu bridge
+    // still exists in [installHotkeysMenuBridge] for the macOS menu
+    // accelerator path.
 
     /** Document-level Cmd/Ctrl+O listener installed in [render] — opens
      *  the Navigate-to modal for the focused pane. Tracked so the
@@ -256,9 +257,17 @@ class AppShell(
      * Singleton hotkeys cheatsheet modal. Opened from the macOS
      * application menu (`Notegrow → Hotkeys…`) via the `notegrow:show-hotkeys`
      * IPC bridge installed in [render], or from the in-app `Cmd+/`
-     * shortcut. Lazily constructed.
+     * shortcut bound through [installCheatsheetHotkey].
+     *
+     * Modal shell is owned by the toolkit; notegrow only supplies the
+     * curated [HotkeysModalSpec] via [notegrowHotkeysSpec]. Lazy so the
+     * app doesn't pay the construction cost on boots that never open it.
      */
-    private val hotkeysModal: HotkeysModal by lazy { HotkeysModal() }
+    private val hotkeysModal: se.soderbjorn.darkness.web.hotkey.ToolkitHotkeysModal by lazy {
+        se.soderbjorn.darkness.web.hotkey.ToolkitHotkeysModal().apply {
+            setContent(notegrowHotkeysSpec())
+        }
+    }
 
     /**
      * Boots the shell into [root]. Safe to call once.
@@ -312,7 +321,9 @@ class AppShell(
                 }
             },
         )
-        notifyToolkitTabs = { tabSource.notify(layoutState) }
+        notifyToolkitTabs = {
+            tabSource.notify(layoutState, activePaneByTab = lastFocusedPaneIdByTab)
+        }
 
         shellHandle = mountAppShell(
             AppShellSpec(
@@ -386,25 +397,13 @@ class AppShell(
     }
 
     /**
-     * Document-level Cmd/Ctrl+/ listener that opens [hotkeysModal]. Capture
-     * phase so the editor's own keydown handler doesn't swallow it inside
-     * a focused contenteditable. Mirrors the macOS application menu
-     * accelerator built in `electron/main.js`. Idempotent.
+     * Bind `Cmd/Ctrl+/` to open [hotkeysModal] through the toolkit's
+     * shared [HotkeyRegistry]. Idempotent — the registry's
+     * replace-on-register semantics mean re-installing on a subsequent
+     * boot pass overwrites the previous binding.
      */
     private fun installHotkeysShortcut() {
-        if (hotkeysShortcutHandler != null) return
-        val handler: (Event) -> Unit = lambda@{ e ->
-            val ke = e as? org.w3c.dom.events.KeyboardEvent ?: return@lambda
-            val isHotkeysChord = (ke.metaKey || ke.ctrlKey) &&
-                !ke.altKey && !ke.shiftKey &&
-                ke.key == "/"
-            if (!isHotkeysChord) return@lambda
-            ke.preventDefault()
-            ke.stopPropagation()
-            hotkeysModal.open()
-        }
-        hotkeysShortcutHandler = handler
-        document.addEventListener("keydown", handler, /* capture = */ true)
+        se.soderbjorn.darkness.web.hotkey.installCheatsheetHotkey(hotkeysModal)
     }
 
     /**
@@ -1542,7 +1541,8 @@ class AppShell(
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
-${HotkeysModal.STYLESHEET}
+            /* Hotkeys-modal stylesheet ships with the toolkit's
+               [ToolkitHotkeysModal]; no app-side injection needed. */
             /* Keyboard-focus highlight on the layout-preset tiles — same
                surface as :hover so mouse + keyboard agree. */
             .dt-layout-preset-tile.is-focused,
@@ -1671,6 +1671,12 @@ ${HotkeysModal.STYLESHEET}
         if (parentPaneId != null && parentPaneId != newId) {
             parentByPane[newId] = parentPaneId
         }
+        // Promote the new pane to "focused" before persistLayoutState's
+        // toolkit-notify fires, so the resulting snapshot's activePaneId
+        // points at the new pane and the renderer's focus class lands
+        // there. Setting it after the persist call would land the focus
+        // on the old pane until the next mutation.
+        lastFocusedPaneIdByTab[tabId] = newId
         persistLayoutState()
         return newId
     }

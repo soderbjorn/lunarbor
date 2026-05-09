@@ -113,4 +113,27 @@ contextBridge.exposeInMainWorld("darknessApi", {
     ipcRenderer.on("notegrow:show-hotkeys", handler);
     return () => ipcRenderer.removeListener("notegrow:show-hotkeys", handler);
   },
+
+  /**
+   * Subscribe to native macOS fullscreen state changes on the current
+   * BrowserWindow. The callback receives `true` on `enter-full-screen`,
+   * `false` on `leave-full-screen`, and once at boot reflecting the
+   * window's initial fullscreen state (macOS may relaunch directly into
+   * a restored fullscreen Space).
+   *
+   * Used by the renderer to toggle the toolkit's `dt-mac-fullscreen`
+   * body class via `setDtMacFullscreenBodyClass`, which suppresses the
+   * 80 px traffic-light reservation on `.dt-topbar` for the duration of
+   * the fullscreen state (the OS hides the traffic-light cluster).
+   *
+   * @param {(enabled: boolean) => void} cb
+   * @returns {() => void} unsubscribe
+   */
+  onFullscreenChange: (cb) => {
+    const handler = (_event, enabled) => {
+      try { cb(enabled === true); } catch (_) { /* swallow */ }
+    };
+    ipcRenderer.on("fullscreen-changed", handler);
+    return () => ipcRenderer.removeListener("fullscreen-changed", handler);
+  },
 });

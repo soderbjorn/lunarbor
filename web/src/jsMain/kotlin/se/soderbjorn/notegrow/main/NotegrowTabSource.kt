@@ -98,8 +98,16 @@ class NotegrowTabSource(
      * are translated to [PaneSnapshotEntry] with full geometry; minimised
      * panes are kept in the model but excluded from the snapshot so the
      * sidebar tree mirrors what the user actually sees.
+     *
+     * @param activePaneByTab per-tab last-focused pane id, used to
+     *   populate [TabSnapshotEntry.activePaneId] so the toolkit lands
+     *   the focus ring on whichever pane the host considers active.
+     *   Without this, the snapshot reports `activePaneId = null` and
+     *   the toolkit falls back to whatever pane was previously active
+     *   on its `LayoutController`, which leaves a freshly-spawned pane
+     *   un-focused even though the host just moved focus to it.
      */
-    fun notify(layoutState: LayoutState) {
+    fun notify(layoutState: LayoutState, activePaneByTab: Map<String, String> = emptyMap()) {
         // Reconcile the pane-slot assigner with EVERY pane in the model
         // (including hidden tabs and minimized panes), not just the
         // visible subset rendered below. Sticky-slot semantics demand
@@ -115,13 +123,15 @@ class NotegrowTabSource(
             tabs = layoutState.tabs
                 .filterNot { it.isHidden }
                 .map { tab ->
+                    val visiblePaneIds = tab.floatingPanes
+                        .filterNot { it.isMinimized }
+                        .map { it.id }
+                    val active = activePaneByTab[tab.id]?.takeIf { it in visiblePaneIds }
                     TabSnapshotEntry(
                         id = tab.id,
                         label = tab.title,
-                        panes = tab.floatingPanes
-                            .filterNot { it.isMinimized }
-                            .map { p -> PaneSnapshotEntry(id = p.id) },
-                        activePaneId = null,
+                        panes = visiblePaneIds.map { id -> PaneSnapshotEntry(id = id) },
+                        activePaneId = active,
                     )
                 },
             activeTabId = layoutState.activeTabId,

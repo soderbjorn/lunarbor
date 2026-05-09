@@ -334,6 +334,26 @@ private fun createWindow() {
 
     w.loadFile(pathModule.join(moduleDir, "..", "web", "index.html"))
 
+    // Forward macOS native fullscreen state to the renderer so the
+    // toolkit can drop its 80 px traffic-light reservation while the
+    // OS hides the traffic-light cluster (see
+    // `setDtMacFullscreenBodyClass` in darkness-toolkit). Listeners are
+    // attached on the BrowserWindow itself so they're tied to the
+    // window's lifetime.
+    w.asDynamic().on("enter-full-screen") {
+        if (!w.isDestroyed()) w.webContents.send("fullscreen-changed", true)
+    }
+    w.asDynamic().on("leave-full-screen") {
+        if (!w.isDestroyed()) w.webContents.send("fullscreen-changed", false)
+    }
+    // Initial-state emit: macOS may relaunch directly into a restored
+    // fullscreen Space, so wait for the renderer to be ready and push
+    // the current value once. Subsequent changes flow via the events
+    // above.
+    w.webContents.asDynamic().on("did-finish-load") {
+        if (!w.isDestroyed()) w.webContents.send("fullscreen-changed", w.isFullScreen())
+    }
+
     installSharedThemesWatcher()
 }
 

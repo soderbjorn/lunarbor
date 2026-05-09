@@ -35,6 +35,7 @@ external class BrowserWindow(options: dynamic = definedExternally) {
     val webContents: WebContents
     fun isDestroyed(): Boolean
     fun isMinimized(): Boolean
+    fun isFullScreen(): Boolean
     fun restore()
     fun focus()
     fun loadFile(filePath: String): Promise<Unit>
