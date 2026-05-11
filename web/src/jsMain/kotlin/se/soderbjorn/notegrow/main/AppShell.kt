@@ -332,6 +332,20 @@ class AppShell(
                 persister = persister,
                 paneContent = { paneId ->
                     val container = document.createElement("div") as HTMLElement
+                    // The toolkit's `.dt-pane-content` is a flex column;
+                    // without explicit flex sizing this wrapper would
+                    // collapse to content height and the inner
+                    // `renderPaneContent` container's `height: 100%` would
+                    // resolve against an indeterminate parent — breaking
+                    // the editor's scroll wrapper (no bounded height ⇒
+                    // `overflow-y: auto` never triggers).
+                    container.style.apply {
+                        setProperty("flex", "1 1 auto")
+                        setProperty("min-height", "0")
+                        setProperty("min-width", "0")
+                        setProperty("display", "flex")
+                        setProperty("flex-direction", "column")
+                    }
                     renderPaneContent(paneId, container)
                     container
                 },
@@ -1595,8 +1609,13 @@ class AppShell(
     private fun renderPaneContent(id: String, slot: HTMLElement) {
         val container = document.createElement("div") as HTMLElement
         container.style.apply {
-            width = "100%"
-            height = "100%"
+            // Flex item in the outer pane-content wrapper. `flex: 1 1 auto`
+            // + `min-height: 0` is what lets the editor's scroll wrapper
+            // (a flex child further down) actually overflow and scroll
+            // instead of growing the chain to content height.
+            setProperty("flex", "1 1 auto")
+            setProperty("min-height", "0")
+            setProperty("min-width", "0")
             background = "var(--t-terminal-bg, #1e1e1e)"
             color = "var(--t-terminal-fg, #e6e6e6)"
             setProperty("overflow", "hidden")

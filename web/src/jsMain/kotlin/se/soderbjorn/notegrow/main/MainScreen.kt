@@ -1274,7 +1274,7 @@ class MainScreen(
             paddingBottom = "${style.editorPaddingBottomPx}px"
             paddingLeft = "${style.editorPaddingLeftPx}px"
             fontFamily = style.fontFamily
-            fontSize = "${style.fontSize}px"
+            fontSize = style.fontSize
             setProperty("line-height", "${style.lineHeightPx}px")
             // Browser-native wrap: long lines break on word boundaries,
             // explicit newlines split rows (each row is its own div anyway).
@@ -1302,7 +1302,7 @@ class MainScreen(
             paddingBottom = "${style.editorPaddingBottomPx + 32}px"
             paddingLeft = "${style.editorPaddingLeftPx}px"
             fontFamily = style.fontFamily
-            fontSize = "${style.fontSize}px"
+            fontSize = style.fontSize
             setProperty("line-height", "${style.lineHeightPx}px")
             setProperty("white-space", "pre-wrap")
             setProperty("word-break", "break-word")

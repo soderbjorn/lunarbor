@@ -64,6 +64,13 @@ internal class TextEditingViewModel(
         if (!state.isLoaded) return
         deleteSelectionIfAny()
 
+        // Empty leaf bullet: Enter "exits the list" by stripping the `"* "`
+        // marker in place, leaving any indent and parking the caret at the
+        // indent column. Mirrors the backspace-on-empty-bullet escape in
+        // [backspace], on the more natural key. Refuse on non-leaf bullets
+        // (orphans children) — fall through to normal continuation.
+        if (exitListOnEmptyBulletIfAny()) return
+
         // Three cases for inline-style preservation across the line break:
         //
         //   (1) Caret strictly inside an existing tokenized span — e.g.
@@ -164,6 +171,34 @@ internal class TextEditingViewModel(
                 pendingInlineStyles = pending,
             )
         }
+    }
+
+    /**
+     * If the caret sits on an empty leaf bullet (line is just indent +
+     * `"* "` with no descendants), strip the marker so the row becomes a
+     * plain (possibly indented) blank line and the caret lands at the
+     * indent column. Returns `true` when it consumed the Enter; `false`
+     * when the line isn't an empty leaf bullet and normal newline handling
+     * should run.
+     *
+     * Symmetric with the backspace-on-empty-bullet branch in [backspace]:
+     * the same children-check guards against orphaning a subtree.
+     */
+    private fun exitListOnEmptyBulletIfAny(): Boolean {
+        val s = state
+        val line = s.lines[s.cursorRow]
+        if (!DocumentLayout.isEmptyBulletLine(line)) return false
+        val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+        if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return false
+        document.delete(s.cursorRow, bulletCol, s.cursorRow, line.length)
+        patch {
+            it.copy(
+                cursorCol = bulletCol,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+        return true
     }
 
     /** Case (3): no inline styles at the caret. Plain newline + bullet continuation. */

@@ -18,10 +18,13 @@ package se.soderbjorn.notegrow.main
  * @property fontFamily CSS font-family stack used everywhere in the editor.
  *   Defaults to the OS UI font so the note reads like native prose rather
  *   than code.
- * @property fontSize Pixel font size for body text.
- * @property lineHeightPx Per-row pixel height; matches [fontSize] plus
- *   leading. Used as a CSS line-height value for both bullet and plain
- *   rows so they share a uniform baseline.
+ * @property fontSize CSS `font-size` value for body text. Defaults to
+ *   `var(--dt-font-prop-size, 17px)` so the editor follows the user's
+ *   choice in the toolkit Settings sidebar (Proportional section); falls
+ *   back to `17px` when no override is set.
+ * @property lineHeightPx Per-row pixel height; sized to comfortably fit
+ *   the default proportional font plus leading. Used as a CSS line-height
+ *   value for both bullet and plain rows so they share a uniform baseline.
  * @property indentStepPx Horizontal pixel offset added per nesting level.
  *   A bullet at indent column `c` shifts right by `(c / TAB_SIZE) *
  *   indentStepPx` pixels via CSS `padding-left`. Mirrors the legacy
@@ -44,7 +47,7 @@ data class EditorStyle(
      */
     val fontFamily: String =
         "var(--dt-font-prop, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif)",
-    val fontSize: Int = 17,
+    val fontSize: String = "var(--dt-font-prop-size, 17px)",
     val lineHeightPx: Int = 25,
     val indentStepPx: Int = 14,
     val editorPaddingTopPx: Int = 12,
