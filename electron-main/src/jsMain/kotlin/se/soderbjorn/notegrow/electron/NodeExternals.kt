@@ -31,6 +31,7 @@ external interface FsPromises {
 external interface FsSync {
     fun readFileSync(path: String, encoding: String): String
     fun readFileSync(path: String): dynamic
+    fun writeFileSync(path: String, data: String)
     fun mkdirSync(path: String, options: dynamic = definedExternally)
     fun watch(path: String, listener: (eventType: String, filename: String?) -> Unit): FsWatcher
 }

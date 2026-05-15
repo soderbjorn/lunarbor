@@ -368,6 +368,11 @@ class AppShell(
                     )
                 ),
                 appPanes = notegrowPanes,
+                // The Settings sidebar's "Custom title bar" toggle only
+                // makes sense in Electron — gate it on the preload-injected
+                // `darknessApi`. In a plain browser this resolves to
+                // `undefined` and the toggle stays hidden.
+                isElectron = (js("typeof globalThis !== 'undefined' && globalThis.darknessApi != null") as Boolean),
             ),
             scope = scope,
         )

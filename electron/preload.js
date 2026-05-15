@@ -101,6 +101,29 @@ contextBridge.exposeInMainWorld("darknessApi", {
   readLayoutToolkitState: () => ipcRenderer.invoke("darkness:readLayoutToolkitState"),
 
   /**
+   * Toggle the custom (themed) title bar on the Electron main window.
+   *
+   * `titleBarStyle` is a creation-time BrowserWindow option in Electron
+   * and cannot be mutated on an existing window, so the main process
+   * destroys the current window and creates a new one with the requested
+   * style. All renderer state reloads from disk (themes, layout, notes),
+   * so the reload is purely visual.
+   *
+   * The value is cached in `<userData>/electron-chrome.json` so the next
+   * cold start opens the window with the right chrome without a round
+   * trip to the renderer.
+   *
+   * Called by the toolkit's renderer subscriber (`AppShellMount`) when
+   * the user toggles the setting in the Settings sidebar.
+   *
+   * @param {boolean} enabled `true` to hide the native title bar and
+   *   render the themed window chrome, `false` to show the native OS
+   *   title bar.
+   * @returns {Promise<void>}
+   */
+  setCustomTitleBar: (enabled) => ipcRenderer.invoke("darkness:setCustomTitleBar", enabled),
+
+  /**
    * Subscribe to "show hotkeys" requests dispatched from the application
    * menu (macOS: Notegrow → Hotkeys…). The callback is invoked once per
    * menu activation. Returns an unsubscribe function.

@@ -37,20 +37,18 @@ fun main() {
 }
 
 /**
- * Adds the toolkit's `dt-electron-mac` and `dt-custom-titlebar` opt-in
- * classes to `<body>` when the renderer is an Electron BrowserWindow on
- * macOS.
+ * Adds the toolkit's `dt-electron-mac` body class when the renderer is
+ * an Electron BrowserWindow on macOS. The companion `dt-custom-titlebar`
+ * class is no longer set here — it's driven by the toolkit's
+ * `AppShellMount` subscriber off the persisted
+ * `ThemeSnapshot.useCustomTitleBar` value, so it tracks the Settings
+ * sidebar toggle (and the corresponding `electron-chrome.json` cache the
+ * main process keeps for boot-time `titleBarStyle`).
  *
- * Notegrow's Electron main process always opens windows with
- * `titleBarStyle: "hiddenInset"` so the themed titlebar bleeds through;
- * the OS traffic-light buttons still float over the upper-left corner.
- * The toolkit's stylesheet pads `.dt-topbar` left by ~80 px when both
- * `dt-electron-mac` and `dt-custom-titlebar` are present on `<body>`,
- * so the first interactive item never sits under a traffic-light.
- * Notegrow has no runtime toggle — `hiddenInset` is permanent — so we
- * set both classes unconditionally here. Non-mac Electron puts window
- * controls on the right and needs no padding; the `dt-electron-mac`
- * gate keeps the rule from firing there.
+ * `dt-electron-mac` gates the toolkit's 80 px traffic-light reservation
+ * rule on `.dt-topbar`, which only fires when both classes are present
+ * — non-mac Electron puts window controls on the right and needs no
+ * padding.
  */
 private fun tagBodyForElectronMac() {
     val ua = window.navigator.userAgent
@@ -58,7 +56,6 @@ private fun tagBodyForElectronMac() {
     val isMac = ua.contains("Mac OS X", ignoreCase = true)
     if (isElectron && isMac) {
         document.body?.classList?.add("dt-electron-mac")
-        document.body?.classList?.add("dt-custom-titlebar")
     }
 }
 

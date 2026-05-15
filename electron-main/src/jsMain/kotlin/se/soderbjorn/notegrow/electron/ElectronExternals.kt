@@ -19,6 +19,7 @@ external interface ElectronApp {
     fun quit()
     fun on(event: String, listener: (dynamic, dynamic) -> Unit): ElectronApp
     fun whenReady(): Promise<Unit>
+    fun getPath(name: String): String
 }
 
 external interface IpcMain {
@@ -39,6 +40,7 @@ external class BrowserWindow(options: dynamic = definedExternally) {
     fun restore()
     fun focus()
     fun loadFile(filePath: String): Promise<Unit>
+    fun destroy()
 }
 
 external interface WebContents {

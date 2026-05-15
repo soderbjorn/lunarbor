@@ -54,6 +54,59 @@ private const val APP_NAME_KEBAB = "notegrow"
 private var mainWindow: BrowserWindow? = null
 
 /**
+ * Cached window-chrome preference (custom title bar on/off). Read once
+ * from disk at startup so [createWindow] can pick the right
+ * `titleBarStyle` synchronously, and updated by the
+ * `darkness:setCustomTitleBar` IPC handler on toggle. Defaults to
+ * `false` (native OS title bar) on first launch.
+ *
+ * Stored on disk at `<userData>/electron-chrome.json` — Electron's
+ * per-app `userData` directory, distinct from the cross-app
+ * `themes.json` / `notegrow.json` since this is a window-cosmetic
+ * concern that must be readable *before* the renderer comes up
+ * (`titleBarStyle` is fixed at BrowserWindow construction).
+ */
+private var chromePrefs: ChromePrefs = ChromePrefs(customTitleBar = false)
+
+private data class ChromePrefs(val customTitleBar: Boolean)
+
+private fun chromePrefsPath(): String =
+    pathModule.join(app.getPath("userData"), "electron-chrome.json")
+
+/**
+ * Read `electron-chrome.json` synchronously. Returns a default
+ * (`customTitleBar = false`) on any failure — missing file, parse
+ * error, permissions — since a cosmetic preference should never block
+ * window creation.
+ */
+private fun loadChromePrefs(): ChromePrefs = try {
+    val raw = fsSync.readFileSync(chromePrefsPath(), "utf8")
+    val parsed: dynamic = js("JSON.parse(raw)")
+    ChromePrefs(customTitleBar = parsed.customTitleBar == true)
+} catch (_: Throwable) {
+    ChromePrefs(customTitleBar = false)
+}
+
+/**
+ * Write [prefs] to `electron-chrome.json`. Silently swallows errors —
+ * if the cache write fails the value still drives the current session
+ * via the in-memory [chromePrefs] and the next launch falls back to the
+ * default (matches termtastic's tolerance for the same case).
+ */
+private fun saveChromePrefs(prefs: ChromePrefs) {
+    try {
+        val opts: dynamic = js("({})")
+        opts.recursive = true
+        fsSync.mkdirSync(pathModule.dirname(chromePrefsPath()), opts)
+        val payload: dynamic = js("({})")
+        payload.customTitleBar = prefs.customTitleBar
+        fsSync.writeFileSync(chromePrefsPath(), js("JSON.stringify(payload)") as String)
+    } catch (_: Throwable) {
+        // Cosmetic; the next launch just forgets the preference.
+    }
+}
+
+/**
  * Bytes most recently written by this Electron process to the per-app
  * UI-settings file (`notegrow.json`). Compared against fresh reads
  * from [installSharedThemesWatcher] so self-induced fs.watch events
@@ -97,6 +150,10 @@ fun main() {
     app.on("window-all-closed") { _, _ -> app.quit() }
 
     app.whenReady().then {
+        // Load the window-chrome cache so [createWindow] picks the right
+        // `titleBarStyle` synchronously. Deferred until `whenReady`
+        // because `app.getPath("userData")` is only valid afterwards.
+        chromePrefs = loadChromePrefs()
         buildAppMenu()
         createWindow()
     }
@@ -297,6 +354,14 @@ private fun createWindow() {
     options.width = 1024
     options.height = 720
     options.title = APP_NAME
+    // Honour the persisted window-chrome preference. `hiddenInset` lets
+    // the themed top-bar bleed across the title bar on macOS (with the
+    // OS traffic-light cluster still floating over the corner); the
+    // default style restores the native OS title bar. `titleBarStyle`
+    // is immutable post-creation — toggling at runtime destroys this
+    // window and creates a new one (see the `darkness:setCustomTitleBar`
+    // IPC handler in [registerIpcHandlers]).
+    options.titleBarStyle = if (chromePrefs.customTitleBar) "hiddenInset" else "default"
     val webPreferences: dynamic = js("({})")
     webPreferences.contextIsolation = true
     webPreferences.nodeIntegration = false
@@ -420,6 +485,24 @@ private fun registerIpcHandlers() {
     }
     ipcMain.handle("darkness:readLayoutToolkitState") { _, _ ->
         readJsonOrNull(defaultAppLayoutToolkitStatePath())
+    }
+
+    // Toggle the custom (themed) title bar. `titleBarStyle` is
+    // immutable post-creation, so we persist the new value and
+    // recreate the BrowserWindow with the requested style. All
+    // in-renderer state is reconstructed from disk (`themes.json`,
+    // `notegrow.json`, layout-state files) so the reload is purely
+    // visual. Idempotent — calls with the unchanged value short-circuit.
+    ipcMain.handle("darkness:setCustomTitleBar") { _, enabled ->
+        val next = enabled == true
+        if (next != chromePrefs.customTitleBar) {
+            chromePrefs = ChromePrefs(customTitleBar = next)
+            saveChromePrefs(chromePrefs)
+            val old = mainWindow
+            createWindow()
+            if (old != null && !old.isDestroyed()) old.destroy()
+        }
+        Unit
     }
 
     // ── notegrow:* (renderer-side FileSystem operations) ────────
