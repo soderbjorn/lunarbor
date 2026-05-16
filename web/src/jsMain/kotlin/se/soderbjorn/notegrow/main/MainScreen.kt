@@ -22,9 +22,11 @@ package se.soderbjorn.notegrow.main
 import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.await
 import kotlinx.coroutines.launch
 import org.w3c.dom.Element
 import org.w3c.dom.HTMLElement
+import org.w3c.dom.HTMLImageElement
 import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
@@ -100,7 +102,7 @@ class MainScreen(
     /**
      * Headline element rendered above the editor that shows the leaf title
      * of the current zoom target — i.e. the deepest segment of the
-     * breadcrumb path the pane chrome displays. Falls back to "Root" when
+     * breadcrumb path the pane chrome displays. Falls back to "Home" when
      * the document is not zoomed. Updated on every state emission.
      */
     private var titleElement: HTMLElement? = null
@@ -350,6 +352,11 @@ class MainScreen(
             val me = event as MouseEvent
             if (handleExternalLinkMouseDown(me)) return@addEventListener
             if (handleNotegrowLinkMouseDown(me)) return@addEventListener
+            // Resize-handle drag has to win against the click-popover
+            // handler since the handle sits inside the image span; the
+            // popover only opens when the press lands on the image body.
+            if (handleImageResizeMouseDown(me)) return@addEventListener
+            if (handleImageMouseDown(me)) return@addEventListener
             maybeBeginGutterDrag(editor, me)
         })
         editor.addEventListener("copy", { event ->
@@ -360,6 +367,20 @@ class MainScreen(
         })
         editor.addEventListener("paste", { event ->
             handlePaste(editor, event.unsafeCast<dynamic>())
+        })
+        // Drag-and-drop image files from the OS into the editor. Same
+        // pipeline as paste — the only difference is the data source
+        // (`dataTransfer` vs `clipboardData`). We need both `dragover`
+        // (to allow the drop at all — without preventing the default
+        // there, the browser refuses the drop) and `drop`.
+        editor.addEventListener("dragover", { event ->
+            val dt = (event.asDynamic().dataTransfer)
+            if (dt != null && carriesDroppableImage(dt)) {
+                event.preventDefault()
+            }
+        })
+        editor.addEventListener("drop", { event ->
+            handleDrop(editor, event.unsafeCast<dynamic>())
         })
         // Sync model selection from DOM on mouse interactions so any
         // selection-aware intent (cut, indent) sees the user's intent.
@@ -627,12 +648,139 @@ class MainScreen(
         event.preventDefault()
     }
 
-    /** Cmd-V: route paste data through `viewModel.insertText`. */
+    /**
+     * Cmd-V: route paste data through `viewModel.insertText`, or — when
+     * an image is on the clipboard — through `viewModel.onImagePasted`.
+     *
+     * Image MIME inspection happens *before* the plain-text fallback so
+     * an OS screenshot tool that also offers a `text/plain` filename
+     * doesn't accidentally insert that filename as text. When the
+     * clipboard carries both an image and selected text, the image wins
+     * — that's the case the user usually means by Cmd-C → Cmd-V from a
+     * screenshot tool.
+     */
     private fun handlePaste(editor: HTMLElement, event: dynamic) {
         event.preventDefault()
         if (!syncSelectionFromDom(editor)) return
+        if (consumeClipboardImage(event)) return
         val text = event.clipboardData?.getData("text/plain")?.unsafeCast<String?>()
         if (!text.isNullOrEmpty()) viewModel.insertText(text)
+    }
+
+    /**
+     * Look through `clipboardData.items` for an image; if one is found,
+     * read its bytes asynchronously and route through
+     * `viewModel.onImagePasted`. Returns `true` when an image was
+     * consumed (caller should not fall through to text paste).
+     *
+     * The filename is generated from the current wall clock so two
+     * pastes in the same second still produce distinct filenames after
+     * the repository's collision-suffix logic. Extension is chosen from
+     * the MIME — falling back to `.png` since that's what every common
+     * screenshot tool emits.
+     */
+    private fun consumeClipboardImage(event: dynamic): Boolean {
+        val items = event.clipboardData?.items ?: return false
+        val length = (items.length as? Int) ?: return false
+        for (i in 0 until length) {
+            val item = items[i]
+            val kind = item.kind as? String
+            val type = item.type as? String
+            if (kind != "file" || type == null || !type.startsWith("image/")) continue
+            val file = item.getAsFile() ?: continue
+            val suggested = buildPastedImageName(type)
+            scope.launch {
+                val buffer = (file.arrayBuffer() as kotlin.js.Promise<dynamic>).await()
+                val bytes = uint8ArrayToByteArray(js("new Uint8Array(buffer)"))
+                viewModel.onImagePasted(suggested, bytes)
+            }
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Build a stable filename of the form `Pasted-YYYY-MM-DD-HH-MM-SS.<ext>`
+     * for a clipboard image MIME like `image/png`. The repository adds a
+     * `-2`/`-3`/… suffix on collision.
+     */
+    private fun buildPastedImageName(mime: String): String {
+        val ext = when (mime.lowercase()) {
+            "image/png" -> ".png"
+            "image/jpeg", "image/jpg" -> ".jpg"
+            "image/gif" -> ".gif"
+            "image/webp" -> ".webp"
+            "image/svg+xml" -> ".svg"
+            else -> ".png"
+        }
+        val now: dynamic = js("new Date()")
+        fun two(v: Int): String = if (v < 10) "0$v" else v.toString()
+        val stamp = "" +
+            (now.getFullYear() as Int) + "-" +
+            two((now.getMonth() as Int) + 1) + "-" +
+            two(now.getDate() as Int) + "-" +
+            two(now.getHours() as Int) + "-" +
+            two(now.getMinutes() as Int) + "-" +
+            two(now.getSeconds() as Int)
+        return "Pasted-$stamp$ext"
+    }
+
+    /**
+     * Drop handler for image files dragged from the OS. Shares the
+     * filename generation + bytes-to-disk pipeline with paste. Drops
+     * are routed through the cursor position the browser placed before
+     * the drop event fired, so the markdown lands where the user aimed.
+     */
+    private fun handleDrop(editor: HTMLElement, event: dynamic) {
+        val dt = event.dataTransfer ?: return
+        val files = dt.files ?: return
+        val length = (files.length as? Int) ?: return
+        if (length == 0) return
+        var consumedAny = false
+        for (i in 0 until length) {
+            val file = files[i]
+            val type = file.type as? String ?: continue
+            if (!type.startsWith("image/")) continue
+            consumedAny = true
+            val suggested = buildPastedImageName(type)
+            scope.launch {
+                val buffer = (file.arrayBuffer() as kotlin.js.Promise<dynamic>).await()
+                val bytes = uint8ArrayToByteArray(js("new Uint8Array(buffer)"))
+                viewModel.onImagePasted(suggested, bytes)
+            }
+        }
+        if (consumedAny) {
+            event.preventDefault()
+            syncSelectionFromDom(editor)
+        }
+    }
+
+    /** Returns `true` when [dataTransfer] carries at least one file-typed
+     *  entry advertised as an image. Inspected during `dragover` so we
+     *  can call `preventDefault` only for image drops (other drops keep
+     *  their default behavior). */
+    private fun carriesDroppableImage(dataTransfer: dynamic): Boolean {
+        val items = dataTransfer.items ?: return false
+        val length = (items.length as? Int) ?: return false
+        for (i in 0 until length) {
+            val item = items[i]
+            val kind = item.kind as? String
+            val type = item.type as? String
+            if (kind == "file" && type != null && type.startsWith("image/")) return true
+        }
+        return false
+    }
+
+    /** Copy a JS Uint8Array's bytes into a Kotlin ByteArray. */
+    private fun uint8ArrayToByteArray(u8: dynamic): ByteArray {
+        val len = (u8.length as Int)
+        val out = ByteArray(len)
+        for (i in 0 until len) {
+            // JS uint range 0..255; Kotlin Byte is signed -128..127.
+            val b = (u8[i] as Int) and 0xFF
+            out[i] = b.toByte()
+        }
+        return out
     }
 
     // ------------------------------------------------------- selection sync
@@ -813,6 +961,107 @@ class MainScreen(
             viewModel.navigateToLink(href)
         }
         return true
+    }
+
+    /**
+     * Single image-resize popover owned by this editor instance. Reused
+     * across image clicks — opening on a new image swaps the anchor.
+     */
+    private val imageResizePopover: ImageResizePopover by lazy {
+        ImageResizePopover(onApply = { newWidth ->
+            val anchor = pendingResizeAnchor ?: return@ImageResizePopover
+            val src = anchor.getAttribute("data-img-src") ?: return@ImageResizePopover
+            val row = ancestorRowDiv(anchor)?.getAttribute("data-row")?.toIntOrNull()
+                ?: return@ImageResizePopover
+            pendingResizeAnchor = null
+            viewModel.setImageWidth(row, src, newWidth)
+        })
+    }
+
+    /** Anchor element captured when opening the popover so the apply
+     *  callback can look up its row/src without another DOM walk. */
+    private var pendingResizeAnchor: HTMLElement? = null
+
+    /**
+     * If [ev] hit an inline image span (carrying `data-img-src`), open
+     * the resize popover and suppress default caret placement. Returns
+     * `true` when the event was handled.
+     */
+    private fun handleImageMouseDown(ev: MouseEvent): Boolean {
+        if (ev.button.toInt() != 0) return false
+        val target = ev.target as? Node ?: return false
+        val imgSpan = ancestorImageSpan(target) ?: return false
+        ev.preventDefault()
+        ev.stopPropagation()
+        pendingResizeAnchor = imgSpan
+        val current = imgSpan.getAttribute("data-img-width")?.toIntOrNull()
+        imageResizePopover.open(imgSpan, current)
+        return true
+    }
+
+    /**
+     * If [ev] hit an image's resize-handle, begin a document-level
+     * drag that previews the new width on the `<img>` style and
+     * commits the final width to the markdown source on mouseup.
+     * Returns `true` when the event was consumed.
+     */
+    private fun handleImageResizeMouseDown(ev: MouseEvent): Boolean {
+        if (ev.button.toInt() != 0) return false
+        val target = ev.target as? Element ?: return false
+        if (!target.classList.contains("notegrow-image-resize-handle")) return false
+        val span = ancestorImageSpan(target) ?: return false
+        val img = (span.firstChild as? HTMLImageElement)
+            ?: return false
+        val src = span.getAttribute("data-img-src") ?: return false
+        val rowDiv = ancestorRowDiv(span) ?: return false
+        val row = rowDiv.getAttribute("data-row")?.toIntOrNull() ?: return false
+        ev.preventDefault()
+        ev.stopPropagation()
+
+        val startX = ev.clientX.toDouble()
+        val startWidth = img.getBoundingClientRect().width
+        span.classList.add("is-resizing")
+
+        var moveHandler: ((Event) -> Unit)? = null
+        var upHandler: ((Event) -> Unit)? = null
+
+        val onMove: (Event) -> Unit = { e ->
+            val me = e as MouseEvent
+            val dx = me.clientX.toDouble() - startX
+            // Clamp so the user can't drag below a sensible minimum
+            // or past anything the screen could plausibly show.
+            val newWidth = (startWidth + dx).coerceIn(20.0, 4000.0)
+            img.style.width = "${newWidth.toInt()}px"
+        }
+        val onUp: (Event) -> Unit = onUp@{ _ ->
+            document.removeEventListener("mousemove", moveHandler!!, /* capture = */ true)
+            document.removeEventListener("mouseup", upHandler!!, /* capture = */ true)
+            span.classList.remove("is-resizing")
+            val finalWidth = img.getBoundingClientRect().width.toInt()
+            // No-op if the user didn't actually drag (single click on
+            // the handle); the popover-click branch handles intentional
+            // pixel-perfect input.
+            if (kotlin.math.abs(finalWidth - startWidth.toInt()) < 2) return@onUp
+            viewModel.setImageWidth(row, src, finalWidth)
+        }
+        moveHandler = onMove
+        upHandler = onUp
+        // Capture-phase listeners on the document so the drag survives
+        // mouse motion outside the editor (e.g. dragging across the
+        // app chrome to make the image very wide).
+        document.addEventListener("mousemove", onMove, /* capture = */ true)
+        document.addEventListener("mouseup", onUp, /* capture = */ true)
+        return true
+    }
+
+    /** Walk up from [node] to the nearest `notegrow-md-image` span. */
+    private fun ancestorImageSpan(node: Node): HTMLElement? {
+        var n: Node? = node
+        while (n != null) {
+            if (n is Element && n.hasAttribute("data-img-src")) return n as HTMLElement
+            n = n.parentNode
+        }
+        return null
     }
 
     private fun isExternalUrl(href: String): Boolean {
@@ -1106,6 +1355,10 @@ class MainScreen(
             return
         }
         for (run in tokenized.runs) {
+            if (run.imageSrc != null) {
+                parent.appendChild(createImageRunElement(run, baseRunClass = baseRunClass))
+                continue
+            }
             val span = document.createElement("span") as HTMLElement
             val classes = inlineRunCssClasses(
                 run.styles,

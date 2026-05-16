@@ -237,17 +237,17 @@ class InlineMarkdownTokenizerTest {
 
     @Test
     fun plain_link_strips_syntax_and_carries_href() {
-        val t = tokenize("[Title](Root.md)")
+        val t = tokenize("[Title](Home.md)")
         assertEquals("Title", t.displayText)
         assertEquals(1, t.runs.size)
         val run = t.runs[0]
         assertEquals("Title", run.text)
-        assertEquals("Root.md", run.linkHref)
+        assertEquals("Home.md", run.linkHref)
         assertEquals(emptySet(), run.styles)
         // The label runs over model cols 1..6; everything else is markers.
         assertEquals(1, run.modelStart)
         assertEquals(6, run.modelEnd)
-        // `[` at 0, `]` at 6, `(` at 7, `R o o t . m d` at 8..14, `)` at 15.
+        // `[` at 0, `]` at 6, `(` at 7, `H o m e . m d` at 8..14, `)` at 15.
         for (i in listOf(0, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)) {
             assertTrue(i in t.markerCols, "expected marker at $i")
         }
@@ -306,7 +306,7 @@ class InlineMarkdownTokenizerTest {
 
     @Test
     fun link_column_maps_round_trip() {
-        val t = tokenize("[Title](Root.md)")
+        val t = tokenize("[Title](Home.md)")
         for (displayCol in 0..t.displayText.length) {
             val modelCol = t.domToModel[displayCol]
             assertEquals(displayCol, t.modelToDom[modelCol])
@@ -399,5 +399,89 @@ class InlineMarkdownTokenizerTest {
             val modelCol = t.domToModel[displayCol]
             assertEquals(displayCol, t.modelToDom[modelCol])
         }
+    }
+
+    // ---- images --------------------------------------------------------
+
+    @Test
+    fun image_emits_zero_text_run_with_src_and_marks_full_span() {
+        val t = tokenize("![alt](Images/foo.png)")
+        assertEquals("", t.displayText)
+        assertEquals(1, t.runs.size)
+        assertEquals("", t.runs[0].text)
+        assertEquals("Images/foo.png", t.runs[0].imageSrc)
+        assertEquals("alt", t.runs[0].imageAlt)
+        assertNull(t.runs[0].imageWidthPx)
+        assertEquals((0 until 22).toSet(), t.markerCols)
+    }
+
+    @Test
+    fun image_with_width_suffix_strips_pipe_from_alt() {
+        val t = tokenize("![alt|320](Images/foo.png)")
+        assertEquals(1, t.runs.size)
+        assertEquals("alt", t.runs[0].imageAlt)
+        assertEquals(320, t.runs[0].imageWidthPx)
+        assertEquals("Images/foo.png", t.runs[0].imageSrc)
+    }
+
+    @Test
+    fun image_with_non_numeric_pipe_keeps_alt_verbatim() {
+        val t = tokenize("![logo|primary](Images/foo.png)")
+        assertEquals("logo|primary", t.runs[0].imageAlt)
+        assertNull(t.runs[0].imageWidthPx)
+    }
+
+    @Test
+    fun image_with_angle_bracket_path_handles_spaces() {
+        val t = tokenize("![](<Images/My pic.png>)")
+        assertEquals(1, t.runs.size)
+        assertEquals("", t.runs[0].imageAlt)
+        assertEquals("Images/My pic.png", t.runs[0].imageSrc)
+    }
+
+    @Test
+    fun fully_empty_image_falls_through_to_literal() {
+        val t = tokenize("![]()")
+        // No image consumed → leading `!` is literal text; `[]()` then
+        // fails the link parser (empty label is not a valid link) so it
+        // falls through too. Display should contain at least the `!`.
+        assertTrue(t.runs.any { it.imageSrc == null })
+        assertTrue(t.displayText.startsWith("!"))
+    }
+
+    @Test
+    fun image_in_middle_of_line_keeps_surrounding_text() {
+        val t = tokenize("see ![alt](foo.png) here")
+        // Three runs: "see ", image (empty), " here".
+        assertEquals("see  here", t.displayText)
+        val imgRun = t.runs.single { it.imageSrc != null }
+        assertEquals("foo.png", imgRun.imageSrc)
+    }
+
+    @Test
+    fun image_column_maps_round_trip() {
+        val t = tokenize("a ![alt](x.png) b")
+        for (displayCol in 0..t.displayText.length) {
+            val modelCol = t.domToModel[displayCol]
+            assertEquals(displayCol, t.modelToDom[modelCol])
+        }
+    }
+
+    @Test
+    fun image_does_not_recurse_styles_in_alt() {
+        // Alt is opaque — no bold/italic parsing inside.
+        val t = tokenize("![**alt**](foo.png)")
+        val imgRun = t.runs.single { it.imageSrc != null }
+        assertEquals("**alt**", imgRun.imageAlt)
+    }
+
+    @Test
+    fun image_after_text_does_not_eat_preceding_chars() {
+        // The `!` is part of the image, not the preceding word.
+        val t = tokenize("hey!![x](y.png)")
+        // The first `!` is literal (followed by `!` not `[`); the second
+        // `!` starts the image. Display text should retain the first `!`.
+        assertTrue(t.displayText.startsWith("hey!"))
+        assertEquals(1, t.runs.count { it.imageSrc != null })
     }
 }

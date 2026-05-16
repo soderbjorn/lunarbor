@@ -22,6 +22,10 @@ external interface FsPromises {
     fun writeFile(path: String, data: dynamic): Promise<Unit>
     fun rename(oldPath: String, newPath: String): Promise<Unit>
     fun readFile(path: String, encoding: String): Promise<String>
+    /** Buffer-returning overload — no encoding argument means the
+     *  promise resolves with a Node `Buffer`, suitable for embedding
+     *  in a WHATWG `Response` body (binary assets, etc). */
+    fun readFile(path: String): Promise<dynamic>
     fun unlink(path: String): Promise<Unit>
     fun rmdir(path: String): Promise<Unit>
     fun readdir(path: String): Promise<Array<String>>

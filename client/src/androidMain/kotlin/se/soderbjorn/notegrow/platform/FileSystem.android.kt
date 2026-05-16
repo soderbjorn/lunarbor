@@ -7,6 +7,7 @@ actual class FileSystem actual constructor() {
     actual suspend fun ensureDirectory(path: String) = notImplemented()
     actual suspend fun readFileIfExists(path: String): String? = notImplemented()
     actual suspend fun writeFile(path: String, content: String) = notImplemented()
+    actual suspend fun writeBinary(path: String, bytes: ByteArray) = notImplemented()
     actual suspend fun deleteFile(path: String) = notImplemented()
     actual suspend fun deleteDirectoryIfEmpty(path: String) = notImplemented()
     actual suspend fun moveFile(from: String, to: String) = notImplemented()

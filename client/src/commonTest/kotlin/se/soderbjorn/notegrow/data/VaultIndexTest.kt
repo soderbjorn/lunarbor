@@ -16,7 +16,7 @@ class VaultIndexTest {
      * output) plus its `promotedByRow` map.
      */
     private class FakeVault(
-        val rootFileName: String = "Root.md",
+        val rootFileName: String = "Home.md",
         val files: MutableMap<String, NoteRepository.Loaded> = mutableMapOf(),
     ) {
         fun put(fileRel: String, lines: List<String>, promoted: Map<Int, PromotedRef> = emptyMap()) {
@@ -43,7 +43,7 @@ class VaultIndexTest {
     @Test
     fun search_finds_top_level_bullets_of_root_file() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Inbox",
                 "* Projects",
                 "  * Alpha",
@@ -61,7 +61,7 @@ class VaultIndexTest {
     @Test
     fun search_walks_promoted_ref_boundaries_transparently() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Recipes",
             ), promoted = mapOf(0 to ref("Recipes/Recipes.md")))
             put("Recipes/Recipes.md", listOf(
@@ -81,7 +81,7 @@ class VaultIndexTest {
 
     @Test
     fun search_returns_empty_for_blank_query() = runTest {
-        val vault = FakeVault().apply { put("Root.md", listOf("* Foo")) }
+        val vault = FakeVault().apply { put("Home.md", listOf("* Foo")) }
         val index = vault.newIndex()
         assertTrue(index.search("").isEmpty())
         assertTrue(index.search("   ").isEmpty())
@@ -93,7 +93,7 @@ class VaultIndexTest {
         // empty loose file (external file boundary). Both should
         // surface, with the content page first.
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* leaf"))
+            put("Home.md", listOf("* leaf"))
             put("FooContent.md", listOf(
                 "* a", "* b", "* c", "* d", "* e",
             ))
@@ -111,7 +111,7 @@ class VaultIndexTest {
         // "Foo" inline bullet has zero descendants — should be filtered
         // out. "FooParent" with one child should remain.
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Foo",
                 "* FooParent",
                 "  * leaf",
@@ -128,7 +128,7 @@ class VaultIndexTest {
     @Test
     fun search_marks_promoted_ref_bullets_as_file_boundaries() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* Topic"), promoted = mapOf(0 to ref("Topic/Topic.md")))
+            put("Home.md", listOf("* Topic"), promoted = mapOf(0 to ref("Topic/Topic.md")))
             put("Topic/Topic.md", listOf("* leaf"))
         }
         val index = vault.newIndex()
@@ -145,7 +145,7 @@ class VaultIndexTest {
         // leaf filter — matters here because we're testing position
         // ranking, not the leaf rule.
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* My foo recipe",
                 "  * a",
                 "* Foo",
@@ -164,7 +164,7 @@ class VaultIndexTest {
     @Test
     fun resolve_absolute_walks_from_root() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Recipes",
             ), promoted = mapOf(0 to ref("Recipes/Recipes.md")))
             put("Recipes/Recipes.md", listOf(
@@ -184,7 +184,7 @@ class VaultIndexTest {
     @Test
     fun resolve_absolute_walks_inline_then_promoted_ref_then_inline() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Top",
                 "  * Recipes",   // a promoted-ref nested under "Top"
             ), promoted = mapOf(1 to ref("Recipes/Recipes.md")))
@@ -208,7 +208,7 @@ class VaultIndexTest {
     @Test
     fun resolve_relative_single_segment_finds_sibling() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Inbox",
                 "* Projects",
             ))
@@ -219,14 +219,14 @@ class VaultIndexTest {
             cursorTitlePath = listOf("Projects"),
         )
         assertTrue(res is VaultIndex.Resolution.Found)
-        assertEquals("Root.md", res.fileRel)
+        assertEquals("Home.md", res.fileRel)
         assertEquals(listOf("Inbox"), res.titlePathInFile)
     }
 
     @Test
     fun resolve_relative_with_dotdot_walks_up() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Top",
                 "  * Mid",
                 "    * Leaf",
@@ -246,7 +246,7 @@ class VaultIndexTest {
     @Test
     fun resolve_returns_NotFound_when_path_does_not_match() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* Inbox"))
+            put("Home.md", listOf("* Inbox"))
         }
         val index = vault.newIndex()
         val res = index.resolve(
@@ -259,7 +259,7 @@ class VaultIndexTest {
     @Test
     fun resolve_is_case_insensitive() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* Recipes"))
+            put("Home.md", listOf("* Recipes"))
         }
         val index = vault.newIndex()
         val res = index.resolve(
@@ -271,12 +271,12 @@ class VaultIndexTest {
 
     @Test
     fun resolve_falls_back_to_unique_suffix_match_for_underqualified_url() = runTest {
-        // Mirror the user's vault: Root.md hosts Ämnen, Ämnen.md hosts Teknik,
+        // Mirror the user's vault: Home.md hosts Ämnen, Ämnen.md hosts Teknik,
         // Teknik.md hosts Programmering → Kotlin. The URL omits the leading
         // "Ämnen" segment (a stale link from before reorganisation). With one
         // matching path tail, the fallback should resolve to Kotlin anyway.
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* Ämnen"), promoted = mapOf(0 to ref("Ämnen/Ämnen.md")))
+            put("Home.md", listOf("* Ämnen"), promoted = mapOf(0 to ref("Ämnen/Ämnen.md")))
             put("Ämnen/Ämnen.md", listOf("* Teknik"), promoted = mapOf(0 to ref("Ämnen/Teknik/Teknik.md")))
             put("Ämnen/Teknik/Teknik.md", listOf(
                 "* Programmering",
@@ -297,7 +297,7 @@ class VaultIndexTest {
     @Test
     fun resolve_does_not_fall_back_when_suffix_is_ambiguous() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* A",
                 "  * Leaf",
                 "* B",
@@ -316,7 +316,7 @@ class VaultIndexTest {
     @Test
     fun resolve_picks_first_match_in_document_order_on_collision() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Foo",
                 "  * inner",
                 "* Foo",
@@ -340,9 +340,9 @@ class VaultIndexTest {
 
     @Test
     fun resolve_same_url_works_inline_and_promoted() = runTest {
-        // 1. Inline shape: target lives directly in Root.md.
+        // 1. Inline shape: target lives directly in Home.md.
         val inlineVault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Recipes",
                 "  * Pasta",
             ))
@@ -355,7 +355,7 @@ class VaultIndexTest {
 
         // 2. Promoted shape: same logical tree, but Recipes is now its own file.
         val promotedVault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Recipes",
             ), promoted = mapOf(0 to ref("Recipes/Recipes.md")))
             put("Recipes/Recipes.md", listOf(
@@ -379,7 +379,7 @@ class VaultIndexTest {
     @Test
     fun search_finds_loose_files_not_reachable_from_root() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* Inbox"))
+            put("Home.md", listOf("* Inbox"))
             put("Starred.md", listOf(
                 "* Bookmark",
                 "  * note",
@@ -407,7 +407,7 @@ class VaultIndexTest {
     @Test
     fun resolve_absolute_path_finds_loose_file_root() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* Inbox"))
+            put("Home.md", listOf("* Inbox"))
             put("Starred.md", listOf("* Bookmark"))
         }
         val index = vault.newIndex()
@@ -425,7 +425,7 @@ class VaultIndexTest {
         // Mirrors the user's vault: two `Framna/Framna.md` files in
         // different directories. Each must resolve independently.
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* dummy"))
+            put("Home.md", listOf("* dummy"))
             put("Framna/Framna.md", listOf("* a", "  * note"))
             put("Work/Framna/Framna.md", listOf("* b", "  * note"))
         }
@@ -452,7 +452,7 @@ class VaultIndexTest {
         // "Work" directory node, into the Framna FileRoot, then to the
         // file's top-level bullet "topic".
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* dummy"))
+            put("Home.md", listOf("* dummy"))
             put("Work/Framna/Framna.md", listOf(
                 "* topic",
                 "  * detail",
@@ -476,7 +476,7 @@ class VaultIndexTest {
         // URL `/Framna/1-on-1s` (omitting the leading "Work" segment)
         // would see two matches and bail. Same target → should resolve.
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* dummy"))
+            put("Home.md", listOf("* dummy"))
             put("Work/Framna/Framna.md", listOf(
                 "* 1-on-1s",
                 "  * detail",
@@ -497,7 +497,7 @@ class VaultIndexTest {
     @Test
     fun resolve_walks_into_a_loose_files_bullets() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf("* Inbox"))
+            put("Home.md", listOf("* Inbox"))
             put("Starred.md", listOf(
                 "* Group",
                 "  * Bookmark",
@@ -520,7 +520,7 @@ class VaultIndexTest {
         // Each top-level bullet has a child so it survives the leaf
         // filter — search() needs to surface them for the test.
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* A",
                 "  * a-child",
                 "* B",
@@ -539,7 +539,7 @@ class VaultIndexTest {
         // shorter than the absolute `/Deep/Outer/Target` form, so the
         // shortest-wins choice unambiguously picks the `..` shape.
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* Deep",
                 "  * Outer",
                 "    * Sub",
@@ -560,7 +560,7 @@ class VaultIndexTest {
     @Test
     fun shortestUrlFor_falls_back_to_absolute_for_distant_targets() = runTest {
         val vault = FakeVault().apply {
-            put("Root.md", listOf(
+            put("Home.md", listOf(
                 "* A",
                 "  * B",
                 "    * C",
@@ -584,7 +584,7 @@ class VaultIndexTest {
     fun invalidate_drops_only_the_named_file() = runTest {
         val vault = FakeVault().apply {
             // Promoted ref so the walk actually reaches the child file.
-            put("Root.md", listOf("* A"), promoted = mapOf(0 to ref("A/A.md")))
+            put("Home.md", listOf("* A"), promoted = mapOf(0 to ref("A/A.md")))
             put("A/A.md", listOf("* leaf"))
         }
         val readCounts = HashMap<String, Int>()
@@ -594,23 +594,23 @@ class VaultIndexTest {
                 vault.loadFile(fileRel)
             },
             listAllMdFiles = vault::listAllMdFiles,
-            rootFileName = "Root.md",
+            rootFileName = "Home.md",
             openDocuments = { emptyMap() },
         )
         // Prime the cache for both files.
         index.search("leaf")
-        val priorRoot = readCounts["Root.md"] ?: 0
+        val priorRoot = readCounts["Home.md"] ?: 0
         val priorChild = readCounts["A/A.md"] ?: 0
         assertEquals(1, priorRoot)
         assertEquals(1, priorChild)
         // Re-query: cache should serve everything, no extra reads.
         index.search("leaf")
-        assertEquals(priorRoot, readCounts["Root.md"])
+        assertEquals(priorRoot, readCounts["Home.md"])
         assertEquals(priorChild, readCounts["A/A.md"])
-        // Invalidate only Root.md; querying re-reads it but not the child.
-        index.invalidate("Root.md")
+        // Invalidate only Home.md; querying re-reads it but not the child.
+        index.invalidate("Home.md")
         index.search("leaf")
-        assertEquals(priorRoot + 1, readCounts["Root.md"])
+        assertEquals(priorRoot + 1, readCounts["Home.md"])
         assertEquals(priorChild, readCounts["A/A.md"])
     }
 }

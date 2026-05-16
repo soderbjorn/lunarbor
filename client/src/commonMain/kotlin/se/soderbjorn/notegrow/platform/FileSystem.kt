@@ -46,6 +46,17 @@ expect class FileSystem() {
     /** Writes [content] to [path], creating any missing parent directories. */
     suspend fun writeFile(path: String, content: String)
 
+    /**
+     * Writes raw [bytes] to [path], creating any missing parent
+     * directories. Used by paste-an-image and any future binary asset
+     * write path. Implementations are expected to be atomic enough that
+     * a partial write doesn't leave a half-file on disk (e.g. write to
+     * `path.tmp` then rename); the JS actual relies on Electron's
+     * `fsPromises.writeFile`, which is atomic on a per-file basis on
+     * every supported platform.
+     */
+    suspend fun writeBinary(path: String, bytes: ByteArray)
+
     /** Deletes the file at [path]. No-op if the file does not exist. */
     suspend fun deleteFile(path: String)
 

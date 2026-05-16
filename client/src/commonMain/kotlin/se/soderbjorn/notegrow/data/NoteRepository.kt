@@ -80,14 +80,20 @@ data class PromotedRef(
 
 /**
  * @property fileSystem Platform filesystem used for all I/O.
- * @property rootDirectory Absolute directory under which `Root.md` and the
+ * @property rootDirectory Absolute directory under which `Home.md` and the
  *   nested `<Title>/<Title>.md` tree live.
  * @property rootFileName Filename of the top-level outline. Defaults to
- *   `Root.md`.
+ *   `Home.md`.
  */
 class NoteRepository(
     private val fileSystem: FileSystem,
-    private val rootDirectory: String = DEFAULT_DIRECTORY,
+    /**
+     * Absolute path to the vault root. Public so platform glue (e.g. the
+     * web renderer's image-asset URL builder) can resolve a stored
+     * vault-relative path like `Images/foo.png` against the same root the
+     * repository uses for `.md` I/O.
+     */
+    val rootDirectory: String = DEFAULT_DIRECTORY,
     val rootFileName: String = DEFAULT_FILE_NAME,
 ) {
 
@@ -131,7 +137,7 @@ class NoteRepository(
      * bullet.
      *
      * Missing files return an empty `Loaded` — the editor shows an empty
-     * document. Used for the initial load of `Root.md` and for switching
+     * document. Used for the initial load of `Home.md` and for switching
      * the active document when the user clicks a file in the footer.
      */
     suspend fun loadFile(fileRel: String): Loaded {
@@ -698,6 +704,85 @@ class NoteRepository(
      * @param dirRel Directory path relative to [rootDirectory]. Empty
      *   string means the vault root.
      */
+    /**
+     * Writes the byte contents of a pasted image into the vault under
+     * `Images/`. Returns the vault-relative path actually written
+     * (e.g. `Images/Pasted-2026-05-16-14-32-01.png`) so the caller can
+     * thread it straight into [PaneBackingViewModel.insertImageRef].
+     *
+     * Filename collisions get a `-2`, `-3`, … suffix before the
+     * extension. This is a coarse policy — we don't hash to dedupe
+     * identical bytes (that's deferred to a polish slice; the typical
+     * paste-an-image flow is one-shot and won't collide). Always
+     * ensures `Images/` exists.
+     *
+     * @param suggestedName Filename including extension (no path
+     *   component); typically the timestamp-based name the pane VM
+     *   generates from the clipboard mime.
+     * @param bytes Raw image data, as the renderer received it from the
+     *   `ClipboardEvent`.
+     * @return Vault-relative path written.
+     */
+    suspend fun saveImageBytes(suggestedName: String, bytes: ByteArray): String {
+        val imagesAbs = "$rootDirectory/$IMAGES_DIR"
+        fileSystem.ensureDirectory(imagesAbs)
+        val existing = fileSystem.listDirectory(imagesAbs).toSet()
+        val finalName = uniqueImageFilename(suggestedName, existing)
+        fileSystem.writeBinary("$imagesAbs/$finalName", bytes)
+        return "$IMAGES_DIR/$finalName"
+    }
+
+    /**
+     * Pick a non-colliding name from [suggested] given the [existing]
+     * filenames in the same folder. Appends `-2`, `-3`, … before the
+     * extension until a free slot is found.
+     */
+    private fun uniqueImageFilename(suggested: String, existing: Set<String>): String {
+        if (suggested !in existing) return suggested
+        val dot = suggested.lastIndexOf('.')
+        val stem = if (dot < 0) suggested else suggested.substring(0, dot)
+        val ext = if (dot < 0) "" else suggested.substring(dot)
+        var n = 2
+        while (true) {
+            val candidate = "$stem-$n$ext"
+            if (candidate !in existing) return candidate
+            n++
+        }
+    }
+
+    /**
+     * Lists the image files directly under the vault's `Images/` folder.
+     * Returned paths are vault-root-relative (e.g. `Images/foo.png`),
+     * sorted alphabetically. Returns an empty list when the folder does
+     * not exist or contains no images.
+     *
+     * Filters to the canonical web-supported image extensions —
+     * `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`. Non-image files
+     * (a stray `README.md` etc.) are skipped silently so the palette
+     * never accidentally offers them as image picks. Match is case
+     * insensitive — Windows screenshots often arrive as `.PNG`.
+     *
+     * Not cached: autosave fires every ~5s and writes to the same vault
+     * tree, so a stale list would surface deleted images or miss newly
+     * pasted ones. The `Images/` folder is small in practice and the
+     * cost of a fresh `readdir` per palette open is negligible.
+     */
+    suspend fun listImageFiles(): List<String> {
+        val absPath = "$rootDirectory/$IMAGES_DIR"
+        val names = fileSystem.listDirectory(absPath)
+        if (names.isEmpty()) return emptyList()
+        val out = ArrayList<String>(names.size)
+        for (name in names) {
+            if (name.startsWith(".")) continue
+            val lower = name.lowercase()
+            if (IMAGE_EXTENSIONS.any { lower.endsWith(it) }) {
+                out += "$IMAGES_DIR/$name"
+            }
+        }
+        out.sort()
+        return out
+    }
+
     suspend fun listVaultLevel(dirRel: String): List<VaultEntry> {
         val absPath = if (dirRel.isEmpty()) rootDirectory else "$rootDirectory/$dirRel"
         val raw = fileSystem.listDirectoryEntries(absPath)
@@ -850,7 +935,7 @@ class NoteRepository(
     companion object {
         const val DEFAULT_DIRECTORY: String = "/Users/soderbjorn/notegrow-db"
         const val NOTE_EXTENSION: String = ".md"
-        const val DEFAULT_FILE_NAME: String = "Root$NOTE_EXTENSION"
+        const val DEFAULT_FILE_NAME: String = "Home$NOTE_EXTENSION"
         /**
          * Vault-relative filename for the Starred bookmarks list. Has two
          * roles:
@@ -861,5 +946,21 @@ class NoteRepository(
          */
         const val STARRED_FILE_NAME: String = "Starred$NOTE_EXTENSION"
         private const val TAB_SIZE: Int = 2
+
+        /**
+         * Vault-relative folder where inline images live. Paste-an-image
+         * writes here; `Insert Image` reads from here. Kept under the
+         * vault root so the whole `.md`-plus-assets tree is portable.
+         */
+        const val IMAGES_DIR: String = "Images"
+
+        /**
+         * Case-insensitive extension set used by [listImageFiles] and
+         * the paste handler to decide what counts as an image. Limited
+         * to formats every Chromium-based renderer (Electron's webview)
+         * loads natively without an external decoder.
+         */
+        val IMAGE_EXTENSIONS: List<String> =
+            listOf(".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
     }
 }

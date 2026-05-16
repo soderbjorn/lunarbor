@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("noteApi", {
   ensureDirectory: (path) => ipcRenderer.invoke("notegrow:ensureDirectory", path),
   readFileIfExists: (path) => ipcRenderer.invoke("notegrow:readFileIfExists", path),
   writeFile: (path, content) => ipcRenderer.invoke("notegrow:writeFile", path, content),
+  writeBinary: (path, bytes) => ipcRenderer.invoke("notegrow:writeBinary", path, bytes),
   deleteFile: (path) => ipcRenderer.invoke("notegrow:deleteFile", path),
   deleteDirectoryIfEmpty: (path) => ipcRenderer.invoke("notegrow:deleteDirectoryIfEmpty", path),
   moveFile: (from, to) => ipcRenderer.invoke("notegrow:moveFile", from, to),

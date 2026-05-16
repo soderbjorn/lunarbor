@@ -12,6 +12,33 @@ import kotlin.js.Promise
 external val app: ElectronApp
 external val ipcMain: IpcMain
 external val shell: Shell
+external val protocol: Protocol
+external val net: ElectronNet
+
+external interface Protocol {
+    /**
+     * Declare a custom scheme as privileged before `app.whenReady()`. The
+     * `secure: true, standard: true, supportFetchAPI: true` flag set is
+     * what makes `<img src="notegrow-asset://…">` work the same way an
+     * `https://` URL would: no `webSecurity` blocking, no
+     * mixed-content warnings, fetch+XHR allowed.
+     */
+    fun registerSchemesAsPrivileged(customSchemes: Array<dynamic>)
+
+    /**
+     * Modern Web-Fetch-style protocol handler (Electron 25+). The
+     * handler receives a `Request` and returns a `Response` (or a
+     * Promise resolving to one). Replaces the deprecated
+     * callback-style `registerFileProtocol`.
+     */
+    fun handle(scheme: String, handler: (request: dynamic) -> dynamic)
+}
+
+external interface ElectronNet {
+    /** Web-Fetch-style request executed in the main process. Used in
+     *  [Protocol.handle] handlers to read files via `file://` URLs. */
+    fun fetch(url: String): kotlin.js.Promise<dynamic>
+}
 
 external interface ElectronApp {
     fun setName(name: String)

@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.time.TimeSource
+import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
 import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineStyle
 import se.soderbjorn.notegrow.data.LinkUrl
@@ -84,6 +85,13 @@ class PaneBackingViewModel(
 
     /** App-scoped outline index, exposed for the Insert Link modal's search. */
     val vaultIndex: VaultIndex get() = registry.vaultIndex
+
+    /**
+     * Lists vault image files (vault-relative paths under `Images/`).
+     * Used by the `Insert Image` palette flavour. Suspending because it
+     * crosses the FileSystem expect/actual boundary.
+     */
+    suspend fun listImageFiles(): List<String> = registry.listImageFiles()
 
     /**
      * Immutable snapshot of one pane's state.
@@ -218,7 +226,7 @@ class PaneBackingViewModel(
          * to teach every caller about it.
          *
          * @param rootFileName Vault-relative path of the configured
-         *   root file (typically `Root.md`).
+         *   root file (typically `Home.md`).
          */
         fun anchoredDirectoryOf(rootFileName: String): String? =
             anchoredDirectoryFor(activeFileRel, rootFileName)
@@ -1179,6 +1187,99 @@ class PaneBackingViewModel(
         // — the link carries its own structural syntax and must reach
         // the document verbatim.
         insertLiteralText(markdown)
+    }
+
+    /**
+     * Inserts an inline image reference `![alt](vaultRelPath)` at the
+     * cursor. Mirrors [insertMarkdownLink] — same selection-replacing
+     * literal-insert path so an armed `pendingInlineStyles` doesn't
+     * wrap the image syntax in marker pairs.
+     *
+     * @param vaultRelPath Path to the image relative to the vault root
+     *   (e.g. `Images/foo.png`). Wrapped in `<…>` automatically when it
+     *   contains spaces / parens / angle brackets (CommonMark rule).
+     * @param alt Optional alt text. CommonMark specials are escaped so
+     *   the alt round-trips cleanly.
+     * @param widthPx Optional display width in CSS pixels. When set, the
+     *   width is appended to the alt as `|<digits>` (Obsidian convention)
+     *   so it survives the file → display → file round-trip. Standard
+     *   CommonMark viewers treat the whole `alt|width` as alt text.
+     */
+    fun insertImageRef(vaultRelPath: String, alt: String = "", widthPx: Int? = null) {
+        val sizedAlt = if (widthPx != null && widthPx > 0) "$alt|$widthPx" else alt
+        val markdown = "![" + SubtreeCodec.escapeLabel(sizedAlt) + "](" +
+            SubtreeCodec.formatLinkUrlForLabel(vaultRelPath) + ")"
+        insertLiteralText(markdown)
+    }
+
+    /**
+     * Handles a pasted image. Writes [bytes] into the vault's `Images/`
+     * folder under [suggestedName] (with `-2`, `-3`, … suffix on
+     * collision) and inserts a `![](Images/<final-name>)` reference at
+     * the current cursor. No-op when the active document hasn't
+     * finished loading — the cursor isn't trustworthy yet.
+     *
+     * Suspends across the disk write. The caller is expected to launch
+     * this on the pane's scope so paste latency doesn't block the UI
+     * thread; the markdown insert that follows the write goes through
+     * the standard undoable path, so an undo after paste removes the
+     * `![…]` (the file on disk is left as an orphan — a Phase-5 reaper
+     * task; deleting eagerly would surprise users who paste the same
+     * screenshot into multiple notes).
+     *
+     * @param suggestedName Filename including extension. Generated at
+     *   the platform layer (where `Date.now()` / equivalents live) so
+     *   commonMain stays clock-agnostic.
+     * @param bytes Raw image data from the clipboard.
+     */
+    suspend fun onImagePasted(suggestedName: String, bytes: ByteArray) {
+        if (!_stateFlow.value.isLoaded) return
+        val rel = registry.saveImageBytes(suggestedName, bytes)
+        insertImageRef(rel)
+    }
+
+    /**
+     * Rewrites the inline image at [row] whose source path equals
+     * [imageSrc] so it carries [widthPx] as its sizing suffix
+     * (`alt|widthPx`). Passing `null` strips the existing suffix.
+     *
+     * The scan locates the image by tokenizing the row and finding the
+     * single image run with a matching `imageSrc`; if no such run
+     * exists (the user must have edited the line between the click and
+     * the apply) the call is a no-op. The resulting edit is undoable
+     * via the standard edit pipeline.
+     */
+    fun setImageWidth(row: Int, imageSrc: String, widthPx: Int?) {
+        val state = _stateFlow.value
+        if (!state.isLoaded) return
+        val lines = state.documentState?.lines ?: return
+        if (row !in lines.indices) return
+        val line = lines[row]
+        val tokenized = InlineMarkdownTokenizer.tokenize(line)
+        // Image runs have `text == ""` and a span that's entirely in
+        // markerCols. We locate the run via imageSrc + recover the
+        // source span by scanning markerCols outward from modelStart.
+        val targetRun = tokenized.runs.firstOrNull {
+            it.imageSrc == imageSrc
+        } ?: return
+        val syntaxStart = targetRun.modelStart  // position of `!`
+        // The closing `)` is the last contiguous marker char after
+        // modelStart. Walk forward through markerCols.
+        var syntaxEnd = syntaxStart
+        while (syntaxEnd < line.length && syntaxEnd in tokenized.markerCols) syntaxEnd++
+        if (syntaxEnd <= syntaxStart) return
+        // Rebuild the markdown with the new width.
+        val newAlt = if (widthPx != null && widthPx > 0)
+            "${targetRun.imageAlt.orEmpty()}|$widthPx"
+        else
+            (targetRun.imageAlt.orEmpty())
+        val newMarkdown = "![" + SubtreeCodec.escapeLabel(newAlt) + "](" +
+            SubtreeCodec.formatLinkUrlForLabel(imageSrc) + ")"
+        recordEdit(FrameKind.OTHER) {
+            val d = currentDocument()
+            d.delete(row, syntaxStart, row, syntaxEnd)
+            d.insertText(row, syntaxStart, newMarkdown)
+        }
     }
 
     /**

@@ -2,6 +2,8 @@ package se.soderbjorn.notegrow.platform
 
 import kotlinx.browser.window
 import kotlinx.coroutines.await
+import org.khronos.webgl.Int8Array
+import org.khronos.webgl.Uint8Array
 import kotlin.js.Promise
 
 actual class FileSystem actual constructor() {
@@ -25,6 +27,15 @@ actual class FileSystem actual constructor() {
 
     actual suspend fun writeFile(path: String, content: String) {
         (api.writeFile(path, content) as Promise<Unit>).await()
+    }
+
+    actual suspend fun writeBinary(path: String, bytes: ByteArray) {
+        // ByteArray on Kotlin/JS compiles to an Int8Array; the Electron
+        // bridge expects Uint8Array (signed/unsigned reinterpretation of
+        // the same buffer). Sharing the buffer avoids a copy.
+        val int8 = bytes.unsafeCast<Int8Array>()
+        val uint8 = Uint8Array(int8.buffer, int8.byteOffset, int8.length)
+        (api.writeBinary(path, uint8) as Promise<Unit>).await()
     }
 
     actual suspend fun deleteFile(path: String) {

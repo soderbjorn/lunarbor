@@ -99,6 +99,30 @@ data class StyledRun(
      * `**…**` carries [InlineStyle.BOLD] and remains a tag).
      */
     val isTag: Boolean = false,
+    /**
+     * When non-null, this run is the placeholder for a markdown inline
+     * image `![alt](src)`. Image runs always carry empty [text] — the
+     * entire source span (from `!` through the closing `)`) is folded
+     * into [TokenizedLine.markerCols] so the caret skips past the image
+     * just as it skips past style markers. The renderer is expected to
+     * emit a replacement element (e.g. an `<img>`) when it encounters
+     * a run whose [imageSrc] is non-null.
+     *
+     * The source path is stored verbatim — vault-root-relative for paths
+     * created by Notegrow (e.g. `Images/Foo.png`), or whatever the user
+     * typed for hand-edited references. Angle-bracket wrapping for paths
+     * with spaces (e.g. `<Images/My pic.png>`) is supported on read.
+     *
+     * [imageAlt] is the alt text minus any trailing `|<digits>` width
+     * suffix. [imageWidthPx] is set when the alt ended with `|<digits>`
+     * (Obsidian convention) — the trailing `|N` is stripped from
+     * [imageAlt] in that case. Width is null when no suffix was present.
+     */
+    val imageSrc: String? = null,
+    /** Alt text with any trailing `|<width>` stripped; null for non-image runs. */
+    val imageAlt: String? = null,
+    /** Image width in CSS pixels parsed from `|<digits>` at the end of the alt. */
+    val imageWidthPx: Int? = null,
 )
 
 /**
@@ -207,6 +231,11 @@ private class Parser(val text: String) {
                 appendLiteralChar()
                 continue
             }
+
+            // 0a. Markdown inline image `![alt](src)` — checked before the
+            //     link branch so the leading `!` is consumed by the image
+            //     path rather than falling through as a literal char.
+            if (text[pos] == '!' && pos + 1 < text.length && text[pos + 1] == '[' && tryConsumeImage()) continue
 
             // 0. Markdown inline link `[label](href)` — checked before
             //    style openers so a `[` that begins a link is consumed by
@@ -340,41 +369,8 @@ private class Parser(val text: String) {
      */
     private fun tryConsumeLink(): Boolean {
         if (pos >= text.length || text[pos] != '[') return false
-        // 1. Walk to the matching `]`. Honor `\]`/`\[`. CommonMark forbids
-        //    nested unescaped `[…]` in link labels.
-        var i = pos + 1
-        while (i < text.length) {
-            val c = text[i]
-            if (c == '\\' && i + 1 < text.length) { i += 2; continue }
-            if (c == ']') break
-            if (c == '[') return false
-            i++
-        }
-        if (i >= text.length || text[i] != ']') return false
-        val labelEnd = i  // index of `]`
-        // 2. Require an immediate `(` to start the destination.
-        if (labelEnd + 1 >= text.length || text[labelEnd + 1] != '(') return false
-        val urlOpen = labelEnd + 2
-        // 3. Parse destination — either `<…>` or bare run up to `)`.
-        val urlContentStart: Int
-        val urlContentEnd: Int   // exclusive
-        val closingParen: Int
-        if (urlOpen < text.length && text[urlOpen] == '<') {
-            val angleEnd = text.indexOf('>', urlOpen + 1)
-            if (angleEnd < 0) return false
-            if (angleEnd + 1 >= text.length || text[angleEnd + 1] != ')') return false
-            urlContentStart = urlOpen + 1
-            urlContentEnd = angleEnd
-            closingParen = angleEnd + 1
-        } else {
-            val parenEnd = text.indexOf(')', urlOpen)
-            if (parenEnd < 0) return false
-            urlContentStart = urlOpen
-            urlContentEnd = parenEnd
-            closingParen = parenEnd
-        }
-        val href = text.substring(urlContentStart, urlContentEnd)
-        // 4. Commit. Close out any pending plain run first.
+        val parsed = parseLinkSyntaxAt(pos) ?: return false
+        // Commit. Close out any pending plain run first.
         flushRun()
         // Mark `[` as marker.
         markMarker(pos, 1)
@@ -383,7 +379,7 @@ private class Parser(val text: String) {
         runStart = labelStart
         val styles = activeStyles.toSet()
         pos = labelStart
-        while (pos < labelEnd) {
+        while (pos < parsed.labelEnd) {
             appendLiteralChar()
         }
         // Emit the link run with the captured href.
@@ -393,15 +389,129 @@ private class Parser(val text: String) {
                 styles = styles,
                 modelStart = runStart,
                 modelEnd = pos,
-                linkHref = href,
+                linkHref = parsed.destination,
             )
         }
         runStart = pos
         // Mark `]`, `(`, optional `<`, href chars, optional `>`, `)` as markers.
-        markMarker(labelEnd, closingParen + 1 - labelEnd)
-        pos = closingParen + 1
+        markMarker(parsed.labelEnd, parsed.closingParen + 1 - parsed.labelEnd)
+        pos = parsed.closingParen + 1
         runStart = pos
         return true
+    }
+
+    /**
+     * Try to consume a markdown inline image starting at [pos]. Expects
+     * `pos` to point at the leading `!` (with `[` immediately after).
+     * Returns `true` and advances `pos` past the closing `)` when the
+     * syntax matches `![alt](src)`; returns `false` otherwise so the `!`
+     * falls through as a literal character.
+     *
+     * Image runs differ from link runs in two ways:
+     *
+     * 1. **All source chars are markers.** The entire span from `!`
+     *    through `)` is added to [markerCols] and contributes zero
+     *    display characters. The renderer is expected to emit a
+     *    replacement element (e.g. `<img>`) when it sees an image run.
+     * 2. **Alt text may carry a width suffix.** Obsidian uses
+     *    `![alt|300](src)` for sizing; this parser strips the trailing
+     *    `|<digits>` and exposes it as [StyledRun.imageWidthPx]. If the
+     *    suffix is absent or non-numeric, the whole alt is kept verbatim
+     *    in [StyledRun.imageAlt].
+     *
+     * The fully-empty form `![]()` is rejected (returns `false`).
+     */
+    private fun tryConsumeImage(): Boolean {
+        if (pos >= text.length || text[pos] != '!') return false
+        if (pos + 1 >= text.length || text[pos + 1] != '[') return false
+        val bracketStart = pos + 1
+        val parsed = parseLinkSyntaxAt(bracketStart) ?: return false
+        val rawAlt = text.substring(bracketStart + 1, parsed.labelEnd)
+        // Reject the fully-empty `![]()` form so a stray `!` followed by
+        // empty brackets doesn't render as a placeholder image.
+        if (rawAlt.isEmpty() && parsed.destination.isEmpty()) return false
+        val (alt, width) = splitAltAndWidth(rawAlt)
+        // Commit.
+        flushRun()
+        val totalLen = parsed.closingParen + 1 - pos
+        // Image run carries no visible characters — pin modelStart at
+        // the leading `!` so highlight tooling can map back to source.
+        runs += StyledRun(
+            text = "",
+            styles = activeStyles.toSet(),
+            modelStart = pos,
+            modelEnd = pos,
+            imageSrc = parsed.destination,
+            imageAlt = alt,
+            imageWidthPx = width,
+        )
+        // Fold every source char of the image into markerCols.
+        markMarker(pos, totalLen)
+        pos += totalLen
+        runStart = pos
+        return true
+    }
+
+    /** Parsed shape of a `[label](dest)` form. `labelEnd` is the index of
+     *  `]`; `closingParen` is the index of the final `)`. */
+    private data class LinkSyntax(val labelEnd: Int, val closingParen: Int, val destination: String)
+
+    /**
+     * Pure structural parse of `[label](dest)` starting at the `[` at
+     * [bracketPos]. Honors backslash escapes inside the label and
+     * `<…>` wrapping for the destination. Returns `null` if the syntax
+     * doesn't match. Shared by [tryConsumeLink] and [tryConsumeImage].
+     */
+    private fun parseLinkSyntaxAt(bracketPos: Int): LinkSyntax? {
+        if (bracketPos >= text.length || text[bracketPos] != '[') return null
+        var i = bracketPos + 1
+        while (i < text.length) {
+            val c = text[i]
+            if (c == '\\' && i + 1 < text.length) { i += 2; continue }
+            if (c == ']') break
+            if (c == '[') return null
+            i++
+        }
+        if (i >= text.length || text[i] != ']') return null
+        val labelEnd = i
+        if (labelEnd + 1 >= text.length || text[labelEnd + 1] != '(') return null
+        val urlOpen = labelEnd + 2
+        val urlContentStart: Int
+        val urlContentEnd: Int
+        val closingParen: Int
+        if (urlOpen < text.length && text[urlOpen] == '<') {
+            val angleEnd = text.indexOf('>', urlOpen + 1)
+            if (angleEnd < 0) return null
+            if (angleEnd + 1 >= text.length || text[angleEnd + 1] != ')') return null
+            urlContentStart = urlOpen + 1
+            urlContentEnd = angleEnd
+            closingParen = angleEnd + 1
+        } else {
+            val parenEnd = text.indexOf(')', urlOpen)
+            if (parenEnd < 0) return null
+            urlContentStart = urlOpen
+            urlContentEnd = parenEnd
+            closingParen = parenEnd
+        }
+        return LinkSyntax(
+            labelEnd = labelEnd,
+            closingParen = closingParen,
+            destination = text.substring(urlContentStart, urlContentEnd),
+        )
+    }
+
+    /**
+     * Split `"alt|300"` into `("alt", 300)` and `"plain"` into
+     * `("plain", null)`. Only a trailing `\|\d+` is honored; anything
+     * else leaves the alt verbatim and width null.
+     */
+    private fun splitAltAndWidth(rawAlt: String): Pair<String, Int?> {
+        val pipe = rawAlt.lastIndexOf('|')
+        if (pipe < 0 || pipe == rawAlt.length - 1) return rawAlt to null
+        val tail = rawAlt.substring(pipe + 1)
+        if (tail.isEmpty() || !tail.all { it.isDigit() }) return rawAlt to null
+        val width = tail.toIntOrNull() ?: return rawAlt to null
+        return rawAlt.substring(0, pipe) to width
     }
 
     /**

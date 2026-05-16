@@ -282,6 +282,21 @@ class MainViewModel(
     fun insertMarkdownLink(label: String, url: String) =
         paneBackingViewModel.insertMarkdownLink(label, url)
 
+    /** See `PaneBackingViewModel.insertImageRef`. */
+    fun insertImageRef(vaultRelPath: String, alt: String = "", widthPx: Int? = null) =
+        paneBackingViewModel.insertImageRef(vaultRelPath, alt, widthPx)
+
+    /** See `PaneBackingViewModel.listImageFiles`. */
+    suspend fun listImageFiles(): List<String> = paneBackingViewModel.listImageFiles()
+
+    /** See `PaneBackingViewModel.onImagePasted`. */
+    suspend fun onImagePasted(suggestedName: String, bytes: ByteArray) =
+        paneBackingViewModel.onImagePasted(suggestedName, bytes)
+
+    /** See `PaneBackingViewModel.setImageWidth`. */
+    fun setImageWidth(row: Int, imageSrc: String, widthPx: Int?) =
+        paneBackingViewModel.setImageWidth(row, imageSrc, widthPx)
+
     /** See `PaneBackingViewModel.ensureFolderStub`. */
     suspend fun ensureFolderStub(fileRel: String) =
         paneBackingViewModel.ensureFolderStub(fileRel)

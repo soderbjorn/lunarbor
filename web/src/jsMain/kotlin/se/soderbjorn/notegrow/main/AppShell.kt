@@ -140,6 +140,13 @@ class AppShell(
     private val navigateToModals: MutableMap<String, LinkSearchModal> = mutableMapOf()
 
     /**
+     * Per-pane Insert Image modals ("Insert Image" command). Same lifecycle
+     * pattern as [insertLinkModals]: lazy first-open create, reuse
+     * thereafter, cleared in [closePane].
+     */
+    private val insertImageModals: MutableMap<String, ImageSearchModal> = mutableMapOf()
+
+    /**
      * Singleton Starred-bookmarks modal mounted in the *tab toolbar*
      * (left of the layout dropdown), distinct from the per-pane
      * [starredModals]. Picking a favorite navigates whichever pane is
@@ -670,6 +677,14 @@ class AppShell(
             },
         )
         out += CommandPalette.Command(
+            id = "insert-image",
+            title = "Insert Image",
+            run = {
+                val paneId = focusedPaneId()
+                if (paneId != null) openInsertImageModal(paneId)
+            },
+        )
+        out += CommandPalette.Command(
             id = "open-new-pane",
             title = "Open new pane",
             run = {
@@ -985,7 +1000,7 @@ class AppShell(
      * Returns an empty list when the pane is not zoomed (or the document
      * hasn't loaded yet) so the caller falls back to plain-string title
      * rendering. When zoomed, returns segments in this order:
-     *   1. A leading "Root" segment that clears the zoom on click.
+     *   1. A leading "Home" segment that clears the zoom on click.
      *   2. One segment per ancestor (outer-to-inner), each navigating
      *      via `zoomTo(ancestor.lineId)`.
      *   3. The current zoom target as a leaf segment with no click
@@ -1009,8 +1024,8 @@ class AppShell(
         if (ancestors.isEmpty() && zoom.titleText.isBlank()) return emptyList()
         val segments = mutableListOf<PaneTitleSegment>()
         // Leading segment is the active file's display name. Click clears
-        // the zoom (back to the file's top), matching the old "Root"
-        // behaviour on Root.md but generalising to any file.
+        // the zoom (back to the file's top), matching the old "Home"
+        // behaviour on Home.md but generalising to any file.
         segments += PaneTitleSegment(
             label = activeFileDisplayName(paneId),
             onClick = { vm.zoomTo(null) },
@@ -1122,13 +1137,13 @@ class AppShell(
     /**
      * Display name of the file currently loaded in [paneId] — basename
      * minus `.md`, with the directory path stripped. Falls back to
-     * "Root" when the pane's view model hasn't booted yet.
+     * "Home" when the pane's view model hasn't booted yet.
      */
     private fun activeFileDisplayName(paneId: String): String {
-        val backing = paneViewModels[paneId]?.stateFlow?.value?.backingState ?: return "Root"
+        val backing = paneViewModels[paneId]?.stateFlow?.value?.backingState ?: return "Home"
         val fileRel = backing.activeFileRel
-        if (fileRel.isEmpty()) return "Root"
-        return fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Root" }
+        if (fileRel.isEmpty()) return "Home"
+        return fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Home" }
     }
 
     /**
@@ -1421,6 +1436,23 @@ class AppShell(
     }
 
     /**
+     * Opens the per-pane Insert Image modal. Same lifecycle pattern as
+     * [openInsertLinkModal]: lazy first-open create, reuse thereafter,
+     * cleared in [closePane].
+     */
+    private fun openInsertImageModal(paneId: String) {
+        if (paneViewModels[paneId] == null) return
+        val modal = insertImageModals.getOrPut(paneId) {
+            ImageSearchModal(
+                parentScope = scope,
+                activePaneVmProvider = { paneViewModels[paneId] },
+                onAfterPick = { paneEditors[paneId]?.focusEditor() },
+            )
+        }
+        modal.open()
+    }
+
+    /**
      * Injects notegrow-only chrome styles that aren't part of the toolkit
      * stylesheet: the disabled state for nav buttons (back/forward/up/
      * home stay in place when inert, dimmed instead of removed) and the
@@ -1602,6 +1634,83 @@ class AppShell(
                 overflow: hidden;
                 text-overflow: ellipsis;
             }
+            /* Insert Image modal — thumbnail on the left, filename +
+               vault-relative path on the right. */
+            .notegrow-image-item {
+                display: flex;
+                gap: 12px;
+                align-items: center;
+                padding: 6px 14px;
+                line-height: 1.25;
+            }
+            .notegrow-image-item-thumb {
+                width: 48px;
+                height: 48px;
+                object-fit: cover;
+                border-radius: 4px;
+                background: var(--t-border-strong, rgba(255, 255, 255, 0.06));
+                flex: 0 0 auto;
+            }
+            .notegrow-image-item-meta {
+                min-width: 0;
+                flex: 1 1 auto;
+            }
+            .notegrow-image-item-title {
+                font-size: 14px;
+                font-weight: 500;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .notegrow-image-item-path {
+                font-size: 11px;
+                color: var(--t-text-secondary, rgba(255, 255, 255, 0.40));
+                margin-top: 1px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            /* Inline image resize popover (Slice 4). Floats next to a
+               clicked image; same surface palette as the modals. */
+            .notegrow-image-popover {
+                position: fixed;
+                z-index: 1000;
+                display: flex;
+                gap: 6px;
+                align-items: center;
+                padding: 6px 8px;
+                border-radius: 6px;
+                background: var(--t-surface-overlay, rgba(30, 30, 30, 0.95));
+                border: 1px solid var(--t-border-strong, rgba(255, 255, 255, 0.10));
+                color: var(--t-text-primary, #e6e6e6);
+                font-size: 13px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+            }
+            .notegrow-image-popover-label { color: var(--t-text-secondary, rgba(255, 255, 255, 0.55)); }
+            .notegrow-image-popover-input {
+                width: 80px;
+                padding: 2px 6px;
+                border-radius: 4px;
+                border: 1px solid var(--t-border-strong, rgba(255, 255, 255, 0.15));
+                background: var(--t-surface, rgba(0, 0, 0, 0.30));
+                color: inherit;
+                font: inherit;
+            }
+            .notegrow-image-popover-apply,
+            .notegrow-image-popover-clear {
+                padding: 2px 10px;
+                border-radius: 4px;
+                border: 1px solid var(--t-border-strong, rgba(255, 255, 255, 0.15));
+                background: var(--t-surface, rgba(0, 0, 0, 0.20));
+                color: inherit;
+                font: inherit;
+                cursor: pointer;
+            }
+            .notegrow-image-popover-apply:hover,
+            .notegrow-image-popover-clear:hover {
+                background: var(--t-border-strong, rgba(255, 255, 255, 0.10));
+            }
             /* Hotkeys-modal stylesheet ships with the toolkit's
                [ToolkitHotkeysModal]; no app-side injection needed. */
             /* Keyboard-focus highlight on the layout-preset tiles — same
@@ -1707,7 +1816,7 @@ class AppShell(
         val spec = se.soderbjorn.darkness.web.layout.randomFloatingPaneSpec(
             id = newId,
             // Leave the spec title null so the chrome falls through to
-            // the zoom path / "Root" label. Setting "Untitled" here would
+            // the zoom path / "Home" label. Setting "Untitled" here would
             // pollute the chrome with a placeholder string for every
             // freshly-added pane.
             title = null,
@@ -1871,6 +1980,7 @@ class AppShell(
         starredModals.remove(paneId)?.dispose()
         insertLinkModals.remove(paneId)?.close()
         navigateToModals.remove(paneId)?.close()
+        insertImageModals.remove(paneId)?.close()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
             // Last pane in a non-last tab: cascade to closing the tab.
             closeTab(tabId)

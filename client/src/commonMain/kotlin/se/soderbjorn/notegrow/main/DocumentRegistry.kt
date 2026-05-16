@@ -54,6 +54,11 @@ class DocumentRegistry(
     /** Vault-relative path of the configured root file. */
     val rootFileName: String = repository.rootFileName
 
+    /** Absolute path of the vault root. Platform glue uses this to
+     *  resolve image asset URLs against the same root the repository
+     *  uses for `.md` I/O. */
+    val rootDirectory: String = repository.rootDirectory
+
     /**
      * Live ref-count + [Document] handle. The document is shared among
      * panes for the same `fileRel`; releasing brings the count down,
@@ -219,6 +224,22 @@ class DocumentRegistry(
         refreshLoadedVaultListings()
         vaultIndex.invalidate(fileRel)
     }
+
+    /**
+     * Lists vault images for the `Insert Image` palette. Delegates
+     * straight to [NoteRepository.listImageFiles]; not cached because the
+     * autosave loop can mutate the on-disk tree without notifying us.
+     */
+    suspend fun listImageFiles(): List<String> = repository.listImageFiles()
+
+    /**
+     * Persists a pasted image and returns its vault-relative path.
+     * Delegates to [NoteRepository.saveImageBytes]; exposed on the
+     * registry so panes don't have to know about the repository
+     * directly.
+     */
+    suspend fun saveImageBytes(suggestedName: String, bytes: ByteArray): String =
+        repository.saveImageBytes(suggestedName, bytes)
 
     /**
      * Re-fetches every directory currently in [vaultListingsFlow] and

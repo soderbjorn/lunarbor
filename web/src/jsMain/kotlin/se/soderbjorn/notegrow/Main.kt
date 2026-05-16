@@ -6,6 +6,7 @@ import org.w3c.dom.HTMLElement
 import se.soderbjorn.darkness.web.setDtMacFullscreenBodyClass
 import se.soderbjorn.notegrow.di.createJsAppGraph
 import se.soderbjorn.notegrow.main.AppShell
+import se.soderbjorn.notegrow.main.setNotegrowVaultRoot
 
 /**
  * Web entry point. Builds the DI graph and mounts the [AppShell] into the
@@ -28,6 +29,7 @@ fun main() {
         wireMacFullscreenBodyClass()
         val app = document.getElementById("app") as HTMLElement
         val graph = createJsAppGraph()
+        setNotegrowVaultRoot(graph.documentRegistry.rootDirectory)
         AppShell(
             scope = graph.coroutineScope,
             documentRegistry = graph.documentRegistry,

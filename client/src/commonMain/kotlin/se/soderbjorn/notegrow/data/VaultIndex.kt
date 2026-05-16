@@ -5,7 +5,7 @@
  *
  * Notegrow's "vault" is a tree of `.md` files connected by promoted-ref
  * markdown links (`[Title](path#notegrow)`). Logically, all of those files
- * compose into a single outline tree rooted at `Root.md`: a file's
+ * compose into a single outline tree rooted at `Home.md`: a file's
  * children are its top-level bullets, and a bullet that is a promoted-ref
  * has its children replaced by the linked file's top-level bullets.
  *
@@ -48,9 +48,9 @@ import se.soderbjorn.notegrow.main.DocumentLayout
  *
  * The vault root's logical children are:
  *
- *  1. The configured root file's top-level bullets (Root.md
+ *  1. The configured root file's top-level bullets (Home.md
  *     contributes its bullets directly into the vault root, so a
- *     bullet "Recipes" at Root.md's top level is reachable as
+ *     bullet "Recipes" at Home.md's top level is reachable as
  *     `/Recipes`).
  *  2. Every other `.md` file in the vault, treated as a node whose
  *     title is the file's basename (without `.md`). These "loose"
@@ -63,10 +63,10 @@ import se.soderbjorn.notegrow.main.DocumentLayout
  *   can be exercised without a real filesystem.
  * @param listAllMdFiles Returns every `.md` file in the vault, by
  *   vault-relative path. Used to discover loose files that the
- *   Root.md → promoted-ref walk doesn't reach. Production callers pass
+ *   Home.md → promoted-ref walk doesn't reach. Production callers pass
  *   `repository::listAllMdFiles`; tests pass a list of known fakes.
  * @param rootFileName Vault-relative path of the configured root file
- *   — typically `Root.md`. The vault root's children are this file's
+ *   — typically `Home.md`. The vault root's children are this file's
  *   top-level bullets plus every other `.md` file under the vault.
  * @param openDocuments Snapshot accessor: returns the live `Document`
  *   for each `fileRel` currently held by `DocumentRegistry`. Wired up
@@ -311,7 +311,7 @@ class VaultIndex(
      * are followed transparently; cycles (a malformed vault that links
      * back to itself) are broken by a per-walk visited set on `fileRel`.
      *
-     * After the Root.md walk, every remaining `.md` file in the vault
+     * After the Home.md walk, every remaining `.md` file in the vault
      * is enumerated as a loose file: its file root is emitted as a
      * single hit (title = basename, fileRel = its path,
      * titlePathInFile = empty), then its bullets are walked under
@@ -595,7 +595,7 @@ class VaultIndex(
         val visited = HashSet<String>()
         populateFileMap(rootFileName, fileHostPath = emptyList(), out, visited)
         // Augment with loose files: every `.md` file in the vault that
-        // wasn't reached by the Root.md → promoted-ref walk above. Their
+        // wasn't reached by the Home.md → promoted-ref walk above. Their
         // host path is `[basename]` so bullets inside them resolve with
         // the file's title as the leading vault-root segment.
         for (fileRel in listAllMdFiles()) {

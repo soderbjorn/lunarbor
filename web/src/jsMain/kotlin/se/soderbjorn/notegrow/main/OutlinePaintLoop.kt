@@ -38,11 +38,13 @@ package se.soderbjorn.notegrow.main
 
 import kotlinx.browser.document
 import org.w3c.dom.HTMLElement
+import org.w3c.dom.HTMLImageElement
 import org.w3c.dom.events.MouseEvent
 import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
 import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineMarkdownPrefix
 import se.soderbjorn.notegrow.data.LineStyle
+import se.soderbjorn.notegrow.data.StyledRun
 
 /**
  * Per-row mapping between displayed (markers-stripped) text and the
@@ -313,6 +315,10 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
         wrapper.appendChild(empty)
     } else {
         for (run in tokenized.runs) {
+            if (run.imageSrc != null) {
+                wrapper.appendChild(createImageRunElement(run, baseRunClass = "notegrow-text-run"))
+                continue
+            }
             val span = document.createElement("span") as HTMLElement
             span.className = runClassName(run.styles, isLink = run.linkHref != null, isTag = run.isTag)
             if (run.linkHref != null) {
@@ -341,8 +347,9 @@ internal fun inlineRunCssClasses(
     styles: Set<InlineStyle>,
     isLink: Boolean = false,
     isTag: Boolean = false,
+    isImage: Boolean = false,
 ): List<String> {
-    if (styles.isEmpty() && !isLink && !isTag) return emptyList()
+    if (styles.isEmpty() && !isLink && !isTag && !isImage) return emptyList()
     val out = ArrayList<String>(styles.size + 2)
     if (InlineStyle.BOLD in styles) out += "notegrow-md-bold"
     if (InlineStyle.ITALIC in styles) out += "notegrow-md-italic"
@@ -350,7 +357,102 @@ internal fun inlineRunCssClasses(
     if (InlineStyle.INLINE_CODE in styles) out += "notegrow-md-code"
     if (isLink) out += "notegrow-md-link"
     if (isTag) out += "notegrow-md-tag"
+    if (isImage) out += "notegrow-md-image"
     return out
+}
+
+/**
+ * Absolute path to the vault root, set once at app boot by `Main.kt`
+ * from `DocumentRegistry.rootDirectory`. Used by [notegrowAssetUrl] to
+ * turn a vault-relative image path into an absolute filesystem path that
+ * the Electron `notegrow-asset:` protocol handler can resolve. Defaults
+ * to empty until set — in that state image runs render as broken images,
+ * which is acceptable since the boot wire-up runs before any paint.
+ */
+@Suppress("ObjectPropertyName")
+internal var _notegrowVaultRoot: String = ""
+
+/**
+ * Install the vault root used by [notegrowAssetUrl]. Called once at
+ * app boot from `Main.kt` so the renderer doesn't need to crawl the DI
+ * graph for every image span.
+ */
+fun setNotegrowVaultRoot(rootDir: String) {
+    _notegrowVaultRoot = rootDir
+}
+
+/**
+ * Build a `notegrow-asset:` URL for a vault-root-relative path. Electron
+ * registers the protocol in the main process so the renderer can load
+ * vault assets without `webSecurity` blocking `file://` URLs.
+ *
+ * The URL path encodes the absolute filesystem path so the main-process
+ * handler can pass it straight to `fs` without needing its own copy of
+ * the vault-root configuration.
+ */
+internal fun notegrowAssetUrl(vaultRelPath: String): String {
+    val rel = vaultRelPath.trimStart('/')
+    val abs = if (_notegrowVaultRoot.isEmpty()) "/$rel" else "${_notegrowVaultRoot.trimEnd('/')}/$rel"
+    // Use an explicit `local` placeholder host so Chromium's
+    // standard-scheme URL parser puts the full abs path into the
+    // pathname (`/<abs>`). Without the host, an empty-host URL
+    // (`notegrow-asset:///<abs>`) gets parsed as host=`<first segment>`,
+    // path=`/<rest>` — corrupting the leading directory.
+    return "notegrow-asset://local" + js("encodeURI")(abs)
+}
+
+/**
+ * Create the `<span>` that stands in for an image inline run. The span is
+ * `contenteditable="false"` so caret clicks treat it as an atomic glyph;
+ * it contains a single `<img>` whose width is constrained to the image
+ * run's [StyledRun.imageWidthPx] when present. The span carries
+ * `notegrow-text-run` + `notegrow-md-image` classes so the editor's
+ * column-mapping walker still iterates past it (the inner `<img>` has
+ * empty `textContent`, contributing 0 display columns just as the
+ * tokenizer promised).
+ *
+ * @param run the image run produced by [InlineMarkdownTokenizer].
+ * @param baseRunClass optional base class added before the image-specific
+ *   classes — `notegrow-text-run` in the editor, `null` in the headline.
+ */
+internal fun createImageRunElement(run: StyledRun, baseRunClass: String?): HTMLElement {
+    val src = run.imageSrc ?: error("createImageRunElement called on non-image run")
+    val span = document.createElement("span") as HTMLElement
+    val classes = inlineRunCssClasses(run.styles, isImage = true)
+    val full = if (baseRunClass == null) classes else listOf(baseRunClass) + classes
+    span.className = full.joinToString(" ")
+    span.setAttribute("contenteditable", "false")
+    span.setAttribute("data-img-src", src)
+    run.imageWidthPx?.let { span.setAttribute("data-img-width", it.toString()) }
+    run.imageAlt?.takeIf { it.isNotEmpty() }?.let { span.setAttribute("data-img-alt", it) }
+    val img = document.createElement("img") as HTMLImageElement
+    img.src = notegrowAssetUrl(src)
+    img.alt = run.imageAlt ?: ""
+    img.draggable = false
+    run.imageWidthPx?.let { img.style.width = "${it}px" }
+    // Swap in a "missing image" placeholder when the protocol fails to
+    // resolve (file deleted, path typo). The container retains its
+    // click affordance so the resize popover still opens — the user
+    // might want to fix the size attr or replace the file.
+    img.addEventListener("error", { _ ->
+        if (span.classList.contains("is-broken")) return@addEventListener
+        span.classList.add("is-broken")
+        img.remove()
+        val broken = document.createElement("span") as HTMLElement
+        broken.className = "notegrow-md-image-broken"
+        broken.textContent = "Missing image: $src"
+        span.appendChild(broken)
+    })
+    span.appendChild(img)
+    // Resize handle pinned at the bottom-right corner. Visible only on
+    // hover so it doesn't clutter the read view. The actual drag
+    // behavior lives in `MainScreen.handleImageResizeMouseDown` via
+    // event delegation on the `.notegrow-image-resize-handle` class.
+    val handle = document.createElement("span") as HTMLElement
+    handle.className = "notegrow-image-resize-handle"
+    handle.setAttribute("contenteditable", "false")
+    span.appendChild(handle)
+    return span
 }
 
 /**
@@ -705,6 +807,69 @@ fun ensureStyles() {
             border: 1px solid var(--t-accent, #5ab0ff);
             border-radius: 4px;
             padding: 0 4px;
+        }
+        /* Inline image — replaces the `![alt](src)` syntax span with an
+           atomic non-editable element containing the rendered image. The
+           outer span participates in inline layout; the `<img>` inside is
+           constrained so a giant screenshot doesn't blow up the row. */
+        .notegrow-md-image {
+            display: inline-block;
+            position: relative;
+            vertical-align: middle;
+            user-select: none;
+            cursor: pointer;
+            max-width: 100%;
+        }
+        .notegrow-md-image img {
+            display: block;
+            max-width: 100%;
+            max-height: 600px;
+            border-radius: 4px;
+            -webkit-user-drag: none;
+        }
+        /* Drag-to-resize affordance pinned at the bottom-right corner.
+           Hidden until hover so the read view stays clean. The handle
+           is intentionally large (16 px) with a generous hit area so
+           it's easy to grab; the inner dot draws the accent visual. */
+        .notegrow-image-resize-handle {
+            position: absolute;
+            right: -4px;
+            bottom: -4px;
+            width: 16px;
+            height: 16px;
+            cursor: nwse-resize;
+            opacity: 0;
+            transition: opacity 0.1s;
+            z-index: 2;
+        }
+        .notegrow-image-resize-handle::after {
+            content: "";
+            position: absolute;
+            right: 4px;
+            bottom: 4px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--t-accent, #5ab0ff);
+            border: 2px solid var(--t-surface, #1a1a1a);
+            box-sizing: content-box;
+        }
+        .notegrow-md-image:hover .notegrow-image-resize-handle,
+        .notegrow-md-image.is-resizing .notegrow-image-resize-handle {
+            opacity: 1;
+        }
+        .notegrow-md-image.is-resizing { cursor: nwse-resize; }
+        .notegrow-md-image.is-resizing img { pointer-events: none; }
+        /* Broken-image fallback. Swapped in by OutlinePaintLoop's
+           img `error` handler when the asset URL fails to resolve. */
+        .notegrow-md-image-broken {
+            display: inline-block;
+            padding: 4px 8px;
+            border: 1px dashed var(--t-border-strong, rgba(255, 255, 255, 0.20));
+            border-radius: 4px;
+            color: var(--t-text-secondary, rgba(255, 255, 255, 0.55));
+            font-size: 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }
         .notegrow-text.notegrow-md-h1 {
             font-size: 1.6em;

@@ -51,7 +51,7 @@ import se.soderbjorn.notegrow.data.PromotedRef
  *   [Document] when they view the same file.
  *
  * @property fileRel The vault-relative path of the file this document
- *   represents (e.g. `Root.md`, `Recipes/Quick Granola.md`). Immutable —
+ *   represents (e.g. `Home.md`, `Recipes/Quick Granola.md`). Immutable —
  *   to view a different file, acquire a different [Document] via the
  *   registry.
  * @param repository Persistent storage. Shared across documents — only

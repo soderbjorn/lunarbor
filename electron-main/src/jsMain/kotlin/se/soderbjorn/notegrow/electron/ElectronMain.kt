@@ -137,6 +137,12 @@ fun main() {
         return
     }
 
+    // Privileged-scheme registration must happen before `whenReady`, so
+    // `<img src="notegrow-asset://…">` in the renderer behaves like an
+    // `https://` URL: not blocked by `webSecurity`, no mixed-content
+    // warnings, fetch+XHR work.
+    registerNotegrowAssetScheme()
+
     registerIpcHandlers()
 
     app.on("second-instance") { _, _ ->
@@ -154,8 +160,102 @@ fun main() {
         // `titleBarStyle` synchronously. Deferred until `whenReady`
         // because `app.getPath("userData")` is only valid afterwards.
         chromePrefs = loadChromePrefs()
+        installNotegrowAssetProtocol()
         buildAppMenu()
         createWindow()
+    }
+}
+
+/**
+ * Declare the `notegrow-asset` scheme as privileged. The renderer uses
+ * URLs of the form `notegrow-asset://<absPath>` to load image files
+ * from outside the app bundle — without this declaration, Electron's
+ * `webSecurity` would block the load.
+ */
+private fun registerNotegrowAssetScheme() {
+    val privileges: dynamic = js("({})")
+    privileges.secure = true
+    privileges.standard = true
+    privileges.supportFetchAPI = true
+    privileges.bypassCSP = true
+    val scheme: dynamic = js("({})")
+    scheme.scheme = "notegrow-asset"
+    scheme.privileges = privileges
+    protocol.registerSchemesAsPrivileged(arrayOf(scheme))
+}
+
+/**
+ * Wire `notegrow-asset://<absPath>` URLs to filesystem reads. The
+ * renderer encodes the absolute path of the vault asset into the URL's
+ * pathname component (e.g. `notegrow-asset:///Users/foo/notegrow-db/Images/x.png`),
+ * so this handler URL-decodes the pathname and delegates to Electron's
+ * built-in `net.fetch` against a `file://` URL.
+ *
+ * Uses `protocol.handle` (Web Fetch style, Electron 25+) rather than
+ * the legacy callback-style `protocol.registerFileProtocol`. The
+ * legacy method is deprecated in Electron 25+ and silently fails to
+ * load assets in some configurations on Electron 32.
+ */
+private fun installNotegrowAssetProtocol() {
+    protocol.handle("notegrow-asset") { request ->
+        GlobalScope.promise<dynamic> {
+            val urlString = request.url as String
+            // Chromium's standard-scheme URL parser interprets the
+            // first segment after `//` as the host, so naïve
+            // `notegrow-asset:///abs/path` URLs end up with host=`abs`,
+            // path=`/path` by the time they reach us. Defend against
+            // every parse outcome by reconstructing the absolute path
+            // from both host AND pathname components.
+            //
+            // Renderer constructs URLs as
+            // `notegrow-asset://local/<encoded abs path>` (since the
+            // fix below); for backwards compatibility we also accept
+            // the older `notegrow-asset:///<encoded abs path>` form
+            // by gluing host + path back together when host is empty.
+            val parsed: dynamic = try { js("new URL(urlString)") } catch (_: Throwable) { null }
+            val host = (parsed?.host as? String).orEmpty()
+            val rawPath = (parsed?.pathname as? String).orEmpty()
+            // Strip a leading `/local` placeholder host (or any host)
+            // and treat the remaining pathname as the absolute path.
+            val absPath = try {
+                js("decodeURI")(rawPath) as String
+            } catch (_: Throwable) {
+                rawPath
+            }
+            val mime = mimeForExtension(absPath)
+            console.log("notegrow-asset: url=$urlString host=$host path=$absPath")
+            try {
+                val bytes: dynamic = fsPromises.readFile(absPath).await()
+                val init: dynamic = js("({})")
+                val headers: dynamic = js("({})")
+                headers["Content-Type"] = mime
+                init.headers = headers
+                init.status = 200
+                js("new Response(bytes, init)")
+            } catch (err: Throwable) {
+                val msg = (err.asDynamic().message as? String) ?: err.toString()
+                console.error("notegrow-asset: read failed", absPath, msg)
+                val init: dynamic = js("({})")
+                init.status = 404
+                val headers: dynamic = js("({})")
+                headers["Content-Type"] = "text/plain"
+                init.headers = headers
+                js("new Response('notegrow-asset: failed to read ' + absPath + ' — ' + msg, init)")
+            }
+        }
+    }
+}
+
+/** Map a vault asset path's extension to a sensible Content-Type. */
+private fun mimeForExtension(path: String): String {
+    val lower = path.lowercase()
+    return when {
+        lower.endsWith(".png") -> "image/png"
+        lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+        lower.endsWith(".gif") -> "image/gif"
+        lower.endsWith(".webp") -> "image/webp"
+        lower.endsWith(".svg") -> "image/svg+xml"
+        else -> "application/octet-stream"
     }
 }
 
@@ -522,6 +622,21 @@ private fun registerIpcHandlers() {
             opts.recursive = true
             fsPromises.mkdir(pathModule.dirname(filePath as String), opts).await()
             fsPromises.writeFile(filePath, content).await()
+        }
+    }
+    // Binary write path — used by paste-an-image (the renderer hands us
+    // the clipboard image as a Uint8Array). Crosses the IPC boundary
+    // efficiently because Electron transfers typed arrays as
+    // Buffer-backed ArrayBuffers without re-encoding.
+    ipcMain.handle("notegrow:writeBinary") { _, filePath, bytes ->
+        GlobalScope.promise {
+            val opts: dynamic = js("({})")
+            opts.recursive = true
+            fsPromises.mkdir(pathModule.dirname(filePath as String), opts).await()
+            // `bytes` arrives as a Uint8Array; `fsPromises.writeFile`
+            // accepts that directly (it's a TypedArray, which fs treats
+            // as raw bytes — no encoding parameter needed).
+            fsPromises.writeFile(filePath, bytes).await()
         }
     }
     ipcMain.handle("notegrow:deleteFile") { _, filePath ->
