@@ -26,6 +26,7 @@ external interface FsPromises {
     fun rmdir(path: String): Promise<Unit>
     fun readdir(path: String): Promise<Array<String>>
     fun readdir(path: String, options: dynamic): Promise<Array<dynamic>>
+    fun stat(path: String): Promise<dynamic>
 }
 
 external interface FsSync {

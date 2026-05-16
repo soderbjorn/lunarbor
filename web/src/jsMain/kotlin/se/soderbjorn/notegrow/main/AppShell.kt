@@ -38,7 +38,10 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.browser.window
+import org.w3c.dom.Element
 import org.w3c.dom.HTMLElement
+import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import se.soderbjorn.darkness.core.PersistKeys
 import se.soderbjorn.darkness.core.Persister
@@ -48,7 +51,6 @@ import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
 import se.soderbjorn.darkness.web.layout.FloatingPaneSpec
 import se.soderbjorn.darkness.web.layout.GridSpec
 import se.soderbjorn.darkness.web.layout.LayoutPreset
-import se.soderbjorn.darkness.web.layout.PaneHeaderSpec
 import se.soderbjorn.darkness.web.layout.PaneLayout
 import se.soderbjorn.darkness.web.layout.PaneActions
 import se.soderbjorn.darkness.web.layout.PaneAction
@@ -58,6 +60,7 @@ import se.soderbjorn.darkness.web.shell.AppShellHandle
 import se.soderbjorn.darkness.web.shell.AppShellSpec
 import se.soderbjorn.darkness.web.shell.TopbarAction
 import se.soderbjorn.darkness.web.shell.mountAppShell
+import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
 
 /**
  * Top-level shell that wires the darkness-toolkit windowing system
@@ -153,10 +156,11 @@ class AppShell(
 
     /**
      * Per-pane [MainViewModel] handles, keyed by leaf pane id. Maintained
-     * alongside [paneEditors] so the toolkit-rendered pane header (built by
-     * [buildPaneHeaderSpec], where the [MainScreen] is not directly
-     * accessible) can wire up/home action buttons to the pane's own zoom
-     * state without crossing through the screen.
+     * alongside [paneEditors] so the toolkit-rendered pane chrome
+     * callbacks ([buildPaneNavActions], [paneZoomTitleSegments],
+     * [paneSidebarLabel]) can wire up/home action buttons and the
+     * clickable breadcrumb title to the pane's own zoom state without
+     * crossing through the screen.
      *
      * Populated lazily on first render of each pane in [renderPaneContent];
      * an entry is missing until the pane has rendered at least once, so
@@ -209,6 +213,28 @@ class AppShell(
      * owns runtime preset enforcement.
      */
     private val activePresetByTab: MutableMap<String, LayoutPreset> = mutableMapOf()
+
+    /**
+     * Pane ids whose live DOM selection currently sits on a non-editable
+     * surface of that pane's chrome — the `.notegrow-title` headline
+     * or one of the `.dt-pane-breadcrumb-segment` breadcrumb labels.
+     *
+     * The pane chrome is read-only DOM (no `contenteditable`, no edit
+     * handlers), so the browser still lets the user drag-select text
+     * there. When the user then clicks the Style button, the dropdown
+     * would silently apply the chosen style to the editor's *model*
+     * cursor — invisible from the user's vantage point because they
+     * were addressing the title visually. We gate the Style button on
+     * this set so it dims while such a selection is active, removing
+     * the foot-gun.
+     *
+     * Maintained by [refreshChromeSelectionState], driven by a single
+     * `selectionchange` listener installed in [render].
+     */
+    private val panesWithChromeSelection: MutableSet<String> = mutableSetOf()
+
+    /** Guard so [installChromeSelectionTracker] only attaches its listener once. */
+    private var chromeSelectionTrackerInstalled: Boolean = false
 
     /**
      * Singleton command palette (Cmd-P). Lazily constructed so the
@@ -286,6 +312,7 @@ class AppShell(
         rootEl = root
 
         installPaletteShortcut()
+        installChromeSelectionTracker()
         installHotkeysShortcut()
         installNavigateToShortcut()
         installStarredShortcut()
@@ -353,6 +380,15 @@ class AppShell(
                 paneLabel = { _, paneId -> paneSidebarLabel(paneId) },
                 paneIcon = { _, _ -> ICON_NOTE },
                 paneActions = { _, paneId -> buildPaneNavActions(paneId) },
+                // Clickable breadcrumb segments for the pane title. When
+                // the pane is zoomed into a bullet the toolkit renders
+                // each ancestor as its own clickable span — clicking
+                // jumps the pane to that bullet via `zoomTo(lineId)`.
+                // Returns empty when not zoomed so the title falls back
+                // to plain-string mode (and the inline-rename hover-arm
+                // gesture stays armed for renamed panes that show no
+                // path).
+                paneTitleSegments = { _, paneId -> paneZoomTitleSegments(paneId) },
                 // Sticky pane-slot index — `①..⑨`, `Ⓐ..Ⓩ` rendered as a
                 // trailing badge on both pane header and sidebar row.
                 // Kept in sync with the live pane set by
@@ -943,64 +979,6 @@ class AppShell(
 
     // ── Pane chrome ─────────────────────────────────────────────────
 
-    private fun buildPaneHeaderSpec(
-        paneId: String,
-        paneTitle: String?,
-        tabId: String,
-    ): PaneHeaderSpec {
-        // Make sure the pane has a backing view-model BEFORE we read its
-        // zoom path. Without this, on the very first paneHeader call for
-        // a freshly-added pane (where renderPaneContent has not yet run),
-        // `zoomPathStringForPane` returns null and the chrome falls back
-        // to "Untitled" + no path. Pre-creation is cheap (an empty VM)
-        // and idempotent — `ensurePaneViewModel` is `getOrPut`-style.
-        ensurePaneViewModel(paneId)
-
-        // Pane title shows the current zoom path (root / outer / current)
-        // when the user has zoomed into a bullet; otherwise the pane's own
-        // title. RTL alignment lets long paths clip from the LEFT so the
-        // deepest segment — usually the most informative — stays visible
-        // on the right end of the header.
-        val pathTitle = paneTitleString(paneId, paneTitle)
-
-        // Floats-only model: every pane is a float. The toolkit's
-        // `buildFloatingPane` appends its own min/max/close window-control
-        // strip, so the host only contributes navigation actions
-        // (back/forward + up/home + separator).
-        val actions = buildPaneNavActions(paneId)
-
-        // When the pane is zoomed, surface the breadcrumb as clickable
-        // segments so each ancestor jumps directly to that depth. Leaf
-        // segment carries no `onClick` — clicks on the leaf are no-ops
-        // because the user is already at that zoom level. Plain-mode
-        // (joined-string) title is kept for the unzoomed/no-path case
-        // so existing tooltip + RTL truncation behaviour still applies.
-        val titleSegments = paneZoomTitleSegments(paneId)
-
-        return PaneHeaderSpec(
-            title = pathTitle,
-            // RTL truncation is only meaningful for the plain-string
-            // path. Breadcrumb mode does its own leading-segment
-            // collapse, so don't double-apply.
-            titleAlignRight = titleSegments.isEmpty(),
-            titleSegments = titleSegments,
-            // Same note glyph the sidebar uses, so the pane chrome and the
-            // sidebar row read as "the same thing". Doubles as the
-            // cross-tab drag handle (`isDraggable = true`) — drop it on a
-            // tab in the strip to move the pane.
-            leadingIcon = ICON_NOTE,
-            actions = actions,
-            // Rename is wired in plain-title mode only; the toolkit
-            // ignores `onRename` when `titleSegments` is non-empty
-            // (notegrow renames bullets via the editor body, not the
-            // pane chrome). Kept here so the unzoomed pane title — which
-            // shows the pane's own custom name when set — stays
-            // editable via the toolkit's hover-arm gesture.
-            onRename = { newTitle -> renamePane(tabId, paneId, newTitle) },
-            isDraggable = true,
-        )
-    }
-
     /**
      * Builds the breadcrumb segment list for [paneId]'s pane chrome.
      *
@@ -1014,6 +992,15 @@ class AppShell(
      *      handler (the user is already at that depth).
      */
     private fun paneZoomTitleSegments(paneId: String): List<PaneTitleSegment> {
+        // Ensure the pane's view-model exists before reading its zoom
+        // state. On the very first chrome render for a freshly-added pane
+        // (where `renderPaneContent` hasn't mounted yet) the VM is absent
+        // and we'd return empty — fine for segments, but the same
+        // callback fires after every state change and we want to start
+        // tracking zoom transitions immediately. Pre-creation is cheap
+        // (empty VM) and idempotent — `ensurePaneViewModel` is
+        // `getOrPut`-style.
+        ensurePaneViewModel(paneId)
         val vm = paneViewModels[paneId] ?: return emptyList()
         val state = vm.stateFlow.value
         val backing = state.backingState ?: return emptyList()
@@ -1028,15 +1015,24 @@ class AppShell(
             label = activeFileDisplayName(paneId),
             onClick = { vm.zoomTo(null) },
         )
+        // Line-level markers (`# `, `> `) are already stripped by
+        // `bulletAncestors` / `zoomInfo`. We additionally flatten inline
+        // markers (`**bold**`, `*italic*`, `` `code` ``, `~~strike~~`,
+        // `[label](href)`) via the same tokenizer the editor's paint
+        // loop uses, so the breadcrumb shows clean, plain-text labels
+        // regardless of the underlying bullet's formatting. Navigation
+        // is keyed on `lineId`, so the text-stripping never affects
+        // where a click takes you.
+        fun flat(s: String) = InlineMarkdownTokenizer.tokenize(s).displayText
         for (ancestor in ancestors) {
-            val label = ancestor.titleText.ifBlank { "(untitled)" }
+            val label = flat(ancestor.titleText).ifBlank { "(untitled)" }
             segments += PaneTitleSegment(
                 label = label,
                 onClick = { vm.zoomTo(ancestor.lineId) },
             )
         }
         segments += PaneTitleSegment(
-            label = zoom.titleText.ifBlank { "(untitled)" },
+            label = flat(zoom.titleText).ifBlank { "(untitled)" },
             onClick = null,
         )
         return segments
@@ -1044,9 +1040,10 @@ class AppShell(
 
     /**
      * Lazily creates the pane's [MainViewModel] + [PaneBackingViewModel]
-     * the first time it's needed. Used by both [renderPaneContent] (when
-     * mounting the editor DOM) and [buildPaneHeaderSpec] (when the chrome
-     * needs to read the pane's zoom path before content has mounted).
+     * the first time it's needed. Used by [renderPaneContent] when
+     * mounting the editor DOM, and by the pane-chrome callbacks
+     * ([paneZoomTitleSegments], [paneSidebarLabel]) which need to read
+     * the pane's zoom path before content has mounted.
      *
      * Also installs the per-pane zoom-path collector that triggers a
      * chrome + sidebar refresh on every zoom transition.
@@ -1123,27 +1120,6 @@ class AppShell(
     }
 
     /**
-     * Computes the pane title string used in both the pane chrome header
-     * and the sidebar row for [paneId]. Always presents a path-style
-     * title: when the pane is zoomed, the joined breadcrumb (outer / … /
-     * current); when at document root (or before the document has
-     * loaded), the muted "Root" label so the user reads pane chrome the
-     * same way regardless of zoom state. The pane's own configured
-     * `paneTitle`, if non-blank, prefixes the path so renamed panes can
-     * still surface a custom name.
-     */
-    private fun paneTitleString(paneId: String, paneTitle: String?): String {
-        // "Untitled" is a placeholder a previous version of notegrow
-        // baked into pane creation; treat it as null so the path label
-        // wins on persisted layouts that still carry it.
-        val ownTitle = paneTitle?.ifBlank { null }?.takeUnless { it == "Untitled" }
-        val fileLabel = activeFileDisplayName(paneId)
-        val path = zoomPathStringForPane(paneId)
-        val combined = if (path != null) "$fileLabel / $path" else fileLabel
-        return if (ownTitle != null) "$ownTitle / $combined" else combined
-    }
-
-    /**
      * Display name of the file currently loaded in [paneId] — basename
      * minus `.md`, with the directory path stripped. Falls back to
      * "Root" when the pane's view model hasn't booted yet.
@@ -1164,6 +1140,70 @@ class AppShell(
         val segments = paneViewModels[paneId]?.zoomPathSegments(backing) ?: return null
         if (segments.isEmpty()) return null
         return segments.joinToString(" / ") { it.ifBlank { "(untitled)" } }
+    }
+
+    /**
+     * Installs the global `selectionchange` listener that drives
+     * [panesWithChromeSelection]. Called once from [render]; subsequent
+     * calls are no-ops via [chromeSelectionTrackerInstalled].
+     *
+     * One document-level listener is sufficient because the browser
+     * only maintains a single DOM selection per window — there is no
+     * pane-local selection state to track separately.
+     */
+    private fun installChromeSelectionTracker() {
+        if (chromeSelectionTrackerInstalled) return
+        chromeSelectionTrackerInstalled = true
+        document.addEventListener("selectionchange", { _ -> refreshChromeSelectionState() })
+    }
+
+    /**
+     * Recomputes [panesWithChromeSelection] from the current DOM
+     * selection. If the set changes, refreshes the pane chrome for the
+     * panes whose flag flipped — that re-invokes the toolkit's
+     * `paneActions` callback so the Style button's enabled/disabled
+     * class updates.
+     *
+     * Chrome surfaces considered "non-editable" for this purpose:
+     * - `.notegrow-title` — the big zoom headline above the editor.
+     * - `.dt-pane-breadcrumb-segment` — the clickable breadcrumb labels
+     *   in the pane header (rendered by the toolkit).
+     *
+     * Walks BOTH `anchorNode` and `focusNode` so a drag-select with
+     * either endpoint on the chrome counts.
+     */
+    private fun refreshChromeSelectionState() {
+        // The Kotlin/JS stdlib's `window` doesn't surface `getSelection()`
+        // as a typed property — go through `asDynamic()` (matching the
+        // pattern used throughout MainScreen). Same for the selection's
+        // node accessors.
+        val sel = window.asDynamic().getSelection()
+        val newSet = mutableSetOf<String>()
+        if (sel != null && sel.isCollapsed == false) {
+            val endpoints = listOfNotNull(
+                sel.anchorNode as? Node,
+                sel.focusNode as? Node,
+            )
+            for (node in endpoints) {
+                val startEl: Element? = node as? Element
+                    ?: (node.asDynamic().parentNode as? Element)
+                val chromeEl = startEl?.closest(".notegrow-title, .dt-pane-breadcrumb-segment")
+                    ?: continue
+                val paneEl = chromeEl.closest("[data-pane-id]")
+                val paneId = paneEl?.getAttribute("data-pane-id") ?: continue
+                newSet += paneId
+            }
+        }
+        if (newSet == panesWithChromeSelection) return
+        val toRefresh = (panesWithChromeSelection + newSet) -
+            (panesWithChromeSelection intersect newSet)
+        panesWithChromeSelection.clear()
+        panesWithChromeSelection += newSet
+        if (toRefresh.isNotEmpty()) {
+            // `shellHandle.refresh()` re-invokes `paneActions` for every
+            // pane — cheap, and avoids needing a per-pane refresh API.
+            shellHandle?.refresh()
+        }
     }
 
     /**
@@ -1287,14 +1327,16 @@ class AppShell(
             handler = if (canHome) ({ goPaneHome(paneId) }) else ({}),
             extraClass = "dt-pane-action-home" + if (!canHome) " $DISABLED_CLASS" else "",
         )
-        // Style + starred share the same enable rule as the nav buttons:
-        // available whenever the pane has a VM. We intentionally do NOT
-        // gate on `backing.isLoaded` here — the chrome's distinct-by tuple
-        // in [ensurePaneViewModel] doesn't watch `isLoaded`, so a
-        // first-render-while-loading would otherwise leave the button
-        // stuck disabled until a navigation event happens. The underlying
-        // intents are themselves guarded against unloaded state.
-        val canStyle = paneVm != null
+        // Style is enabled whenever the pane has a VM AND the user
+        // does not currently have a live DOM selection on a read-only
+        // chrome surface of this pane (the `.notegrow-title` headline
+        // or one of the `.dt-pane-breadcrumb-segment` labels). In the
+        // latter case the user is visually addressing text they cannot
+        // edit — opening the Style dropdown would silently apply the
+        // chosen style to the editor's stale model cursor, which is
+        // confusing. The chrome-selection flag is maintained by
+        // [refreshChromeSelectionState], wired off `selectionchange`.
+        val canStyle = paneVm != null && paneId !in panesWithChromeSelection
         out += PaneAction(
             iconHtml = StyleDropdownIcons.TOOLBAR_STYLE,
             tooltip = "Style",
@@ -1641,18 +1683,6 @@ class AppShell(
             )
         }
         screen.render(container)
-    }
-
-    /** Updates [paneId]'s title in the float list. */
-    private fun renamePane(tabId: String, paneId: String, newTitle: String) {
-        val cur = tabLayouts[tabId] ?: return
-        tabLayouts[tabId] = cur.copy(
-            floatingPanes = cur.floatingPanes.map { f ->
-                if (f.id == paneId) f.copy(title = newTitle) else f
-            },
-        )
-        persistLayoutState()
-        notifyToolkitTabs?.invoke()
     }
 
     /**

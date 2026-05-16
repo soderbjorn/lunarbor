@@ -64,6 +64,18 @@ internal class TextEditingViewModel(
         if (!state.isLoaded) return
         deleteSelectionIfAny()
 
+        // Zoom view, empty leaf bullet: drop the row entirely and land the
+        // caret at the start of the next visible row's editable text. The
+        // strip-in-place "exit the list" behavior used at root level reads
+        // as awkward inside a zoom — an indented blank row looks like it's
+        // still part of the bullet list. Users expect the empty bullet to
+        // vanish so they're on the row below ready to keep going. Only
+        // applies when the next visible row is the immediately-adjacent
+        // row (so we never silently merge across a folded subtree) and
+        // there is one (so we don't strand the caret past end-of-zoom);
+        // anything else falls through to the canonical strip path below.
+        if (deleteEmptyBulletInZoomIfAny()) return
+
         // Empty leaf bullet: Enter "exits the list" by stripping the `"* "`
         // marker in place, leaving any indent and parking the caret at the
         // indent column. Mirrors the backspace-on-empty-bullet escape in
@@ -184,6 +196,44 @@ internal class TextEditingViewModel(
      * Symmetric with the backspace-on-empty-bullet branch in [backspace]:
      * the same children-check guards against orphaning a subtree.
      */
+    /**
+     * Zoom-only counterpart to [exitListOnEmptyBulletIfAny]. When the
+     * caret sits on an empty leaf bullet inside a zoom and there is a
+     * directly-adjacent visible row to fall onto, deletes the empty
+     * bullet's whole line (including its trailing newline) and parks the
+     * caret at [DocumentLayout.caretStartCol] of what is now the cursor
+     * row (previously the next row). Returns `true` when it consumed
+     * the Enter; `false` otherwise so the caller can fall through to
+     * the canonical [exitListOnEmptyBulletIfAny] strip path.
+     *
+     * The "next visible row must equal row + 1" guard avoids silently
+     * pulling content out of a folded subtree the user can't see;
+     * the "must be inside the zoom region" guard (implicit in
+     * [nextVisibleRow]) avoids landing the caret past `endRowInclusive`
+     * where reconcile's zoom clamp would then yank it back up.
+     */
+    private fun deleteEmptyBulletInZoomIfAny(): Boolean {
+        val s = state
+        if (zoomInfoOf(s) == null) return false
+        val line = s.lines[s.cursorRow]
+        if (!DocumentLayout.isEmptyBulletLine(line)) return false
+        val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+        if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return false
+        val next = nextVisibleRow(s, s.cursorRow) ?: return false
+        if (next != s.cursorRow + 1) return false
+        document.delete(s.cursorRow, 0, s.cursorRow + 1, 0)
+        val newLine = state.lines[s.cursorRow]
+        val newCol = DocumentLayout.caretStartCol(newLine)
+        patch {
+            it.copy(
+                cursorCol = newCol,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+        return true
+    }
+
     private fun exitListOnEmptyBulletIfAny(): Boolean {
         val s = state
         val line = s.lines[s.cursorRow]
@@ -236,6 +286,40 @@ internal class TextEditingViewModel(
         if (!state.isLoaded) return
         deleteSelectionIfAny()
         insertWithPendingStyles(text)
+    }
+
+    /**
+     * Inserts [text] at the caret verbatim, **without** wrapping it in
+     * markers for any armed [PaneBackingViewModel.State.pendingInlineStyles].
+     * Used for structural insertions that carry their own syntax — most
+     * notably the markdown link emitted by Insert Link — where the standard
+     * typing path's "wrap the next run in pending markers" behaviour would
+     * embed the structural text inside (say) `` ` … ` `` and silently turn
+     * it into an inline code span.
+     *
+     * The pending style set is cleared in the same patch: those styles
+     * were conceptually armed for "the next thing the user inserts", and a
+     * structural insert is reasonable to count as that input. Leaving them
+     * armed would wrap the *next* typed character — more surprising than
+     * clearing.
+     *
+     * @param text Literal text to insert at the caret. Must not contain
+     *   any markup the caller doesn't intend to land in the document.
+     */
+    fun insertLiteralText(text: String) {
+        if (!state.isLoaded) return
+        deleteSelectionIfAny()
+        val s = state
+        val result = document.insertText(s.cursorRow, s.cursorCol, text)
+        patch {
+            it.copy(
+                cursorRow = result.endRow,
+                cursorCol = result.endCol,
+                anchorRow = null,
+                anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
     }
 
     /**
@@ -317,13 +401,17 @@ internal class TextEditingViewModel(
                     // Removing the `"* "` marker would orphan any subtree this bullet anchors.
                     // Only allow it when the bullet is a leaf — otherwise the user must remove
                     // the children first (deliberate action, no accidental detachment).
-                    val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
-                    if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return
                     // Leaf bullet (empty or not): fall through to remove just the `"* "`
                     // marker, leaving any indent and trailing content intact and the cursor
                     // at the indent column. This gives the user a way to "exit" a bullet
                     // list by pressing backspace on an empty bullet — the row stays put as
                     // a plain (possibly indented) line instead of collapsing upward.
+                    // Works the same inside a zoom: the zoom region (computed via
+                    // [DocumentLayout.zoomSubtreeEnd]) includes non-bullet prose rows, so
+                    // the just-stripped row stays inside `endRowInclusive` and reconcile's
+                    // zoom clamp leaves the cursor where it is.
+                    val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+                    if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return
                 }
                 val removed = when {
                     isAtBulletMarkerEnd(line, s.cursorCol) -> 2
@@ -339,9 +427,19 @@ internal class TextEditingViewModel(
                 if (zoom != null && s.cursorRow <= zoom.startRow) {
                     return
                 }
-                val previousLen = s.lines[s.cursorRow - 1].length
-                document.delete(s.cursorRow - 1, previousLen, s.cursorRow, 0)
-                patch { it.copy(cursorRow = s.cursorRow - 1, cursorCol = previousLen) }
+                // Refuse to merge across a hidden row: the array-adjacent row may
+                // sit inside a collapsed subtree or folded promoted-ref, in which
+                // case the merge would silently pull content into a row the user
+                // can't see *and* strand the caret on a row the paint loop won't
+                // emit — `applyDomSelection` then can't anchor, the browser is
+                // left with a dangling caret, and the next Backspace falls back
+                // to its default history-back behavior (which navigates the SPA
+                // to the parent file). Make the user expand the parent first.
+                val prevVisible = prevVisibleRow(s, s.cursorRow) ?: return
+                if (prevVisible != s.cursorRow - 1) return
+                val previousLen = s.lines[prevVisible].length
+                document.delete(prevVisible, previousLen, s.cursorRow, 0)
+                patch { it.copy(cursorRow = prevVisible, cursorCol = previousLen) }
             }
         }
     }

@@ -12,7 +12,7 @@
 > shape, and the frontmatter marker when reading. Promotion mechanics,
 > stable-id renames, the row→dirRel map, and the resolver/composer
 > structure are unchanged. See `SubtreeCodec.kt`, `NoteRepository.kt`,
-> and `dynalist_to_notegrow.py` for the current shape.
+> and `scripts/dynalist_to_notegrow.py` for the current shape.
 
 ## Context
 

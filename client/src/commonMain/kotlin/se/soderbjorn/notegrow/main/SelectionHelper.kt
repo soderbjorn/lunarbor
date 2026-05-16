@@ -13,6 +13,10 @@
 
 package se.soderbjorn.notegrow.main
 
+import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
+import se.soderbjorn.notegrow.data.LineMarkdownPrefix
+import se.soderbjorn.notegrow.data.LineStyle
+
 /**
  * Word-character predicate used by word movement and word selection.
  */
@@ -114,12 +118,21 @@ internal fun prevVisibleRow(state: PaneBackingViewModel.State, fromRow: Int): In
  *
  * @property lineId    stable id of the ancestor bullet — pass to
  *   [PaneBackingViewModel.zoomTo] to navigate there.
- * @property titleText display text of the bullet with leading indent
- *   and the `"* "` marker stripped. Empty when the bullet has no text.
+ * @property titleText display text of the bullet with the leading indent,
+ *   the `"* "` bullet marker, AND any line-level markdown prefix (e.g.
+ *   `# `, `> `) stripped. Inline markers (`**`, `*`, `` ` ``, etc.) are
+ *   left intact — consumers that want a flat label should run the text
+ *   through [se.soderbjorn.notegrow.data.InlineMarkdownTokenizer]. Empty
+ *   when the bullet has no text beyond its markers.
+ * @property style detected line-level style for this bullet (heading
+ *   level or quote), or `null` when the bullet is plain text. The
+ *   breadcrumb currently ignores this; it exists so future renderers
+ *   could decorate ancestor segments with the style without re-parsing.
  */
 data class BreadcrumbAncestor(
     val lineId: LineId,
     val titleText: String,
+    val style: LineStyle? = null,
 )
 
 /**
@@ -159,8 +172,14 @@ internal fun bulletAncestorsOf(
         val line = lines[row]
         val indent = DocumentLayout.bulletAsteriskColumn(line)
         if (indent in 0 until lookingFor) {
-            val title = line.substring(minOf(indent + 2, line.length))
-            collected += BreadcrumbAncestor(lineId = ids[row], titleText = title)
+            val rawTitle = line.substring(minOf(indent + 2, line.length))
+            val prefix = LineMarkdownPrefix.detect(rawTitle, 0)
+            val title = rawTitle.substring(prefix.markerEnd)
+            collected += BreadcrumbAncestor(
+                lineId = ids[row],
+                titleText = title,
+                style = prefix.style,
+            )
             lookingFor = indent
         }
         row--
@@ -184,14 +203,26 @@ internal fun zoomInfoOf(
     if (row !in lines.indices) return null
     val indent = DocumentLayout.bulletAsteriskColumn(lines[row])
     if (indent < 0) return null
-    val end = DocumentLayout.subtreeEnd(lines, row, indent)
-    val titleText = lines[row].substring(minOf(indent + 2, lines[row].length))
+    val baseEnd = DocumentLayout.zoomSubtreeEnd(lines, row, indent)
+    // Always extend the region to cover the caret's current row (when it
+    // sits after the zoom row and inside the document). Without this,
+    // any edit that pushes the caret onto an unindented prose row — e.g.
+    // typing into an empty mixed-block line in the zoom — would land
+    // the row outside `zoomSubtreeEnd` and trigger reconcile's zoom
+    // clamp, yanking the caret back up. Extending the region keeps the
+    // user's active row visible and editable in the zoom view.
+    val cursorRow = state.cursorRow
+    val end = if (cursorRow in (row + 1)..lines.lastIndex) maxOf(baseEnd, cursorRow) else baseEnd
+    val rawTitle = lines[row].substring(minOf(indent + 2, lines[row].length))
+    val prefix = LineMarkdownPrefix.detect(rawTitle, 0)
+    val titleText = rawTitle.substring(prefix.markerEnd)
     return PaneBackingViewModel.ZoomInfo(
         zoomRow = row,
         zoomIndent = indent,
         startRow = row + 1,
         endRowInclusive = end,
-        titleText = titleText
+        titleText = titleText,
+        style = prefix.style,
     )
 }
 
@@ -214,7 +245,12 @@ internal fun zoomPathSegmentsOf(
 ): List<String> {
     val zoom = zoomInfoOf(state) ?: return emptyList()
     val ancestors = bulletAncestorsOf(state)
-    return ancestors.map { it.titleText } + zoom.titleText
+    // Each segment's source text has line-level markers stripped already
+    // (by `bulletAncestorsOf` / `zoomInfoOf`). Run it through the inline
+    // tokenizer so `**bold**`, `[label](href)`, `#tag`, etc. collapse to
+    // their visible text — the sidebar pane label shows a clean string.
+    return (ancestors.map { it.titleText } + zoom.titleText)
+        .map { InlineMarkdownTokenizer.tokenize(it).displayText }
 }
 
 /**

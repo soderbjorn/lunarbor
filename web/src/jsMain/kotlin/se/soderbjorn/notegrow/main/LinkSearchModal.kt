@@ -245,7 +245,11 @@ internal class LinkSearchModal private constructor(
             }
             val pathEl = document.createElement("div") as HTMLElement
             pathEl.className = "notegrow-link-item-path"
-            pathEl.textContent = hit.fileRel
+            // Folder stubs name a directory whose anchor file does not
+            // exist yet — make that obvious so picking the row isn't
+            // surprising when it creates a new file on disk.
+            pathEl.textContent = if (hit.isFolderStub) "${hit.fileRel} (new folder page)"
+                                 else hit.fileRel
             row.appendChild(pathEl)
 
             row.addEventListener("mousemove", { _ ->
@@ -307,6 +311,13 @@ internal class LinkSearchModal private constructor(
             placeholder = "Find a note or bullet to link…",
             action = Action { vm, hit, ctx ->
                 parentScope.launch {
+                    // A folder-stub hit names a directory that has no
+                    // anchor file yet — materialise it before the
+                    // resolver tries to walk to it. Subsequent calls
+                    // are no-ops once the file exists.
+                    if (hit.isFolderStub) {
+                        vm.ensureFolderStub(hit.fileRel)
+                    }
                     val cursorFullPath =
                         vm.vaultIndex.fullPathFor(ctx.activeFileRel, ctx.cursorInFilePath)
                             ?: emptyList()
@@ -345,10 +356,18 @@ internal class LinkSearchModal private constructor(
                 // load, cursor placement), so calling onAfterPick before
                 // the coroutine finishes would focus an editor that's
                 // about to be reconciled with new content, losing focus.
-                vm.navigateToLink(
-                    LinkUrl.format(hit.titlePathFromRoot, isAbsolute = true),
-                    onComplete = onAfterPick,
-                )
+                val targetUrl = LinkUrl.format(hit.titlePathFromRoot, isAbsolute = true)
+                if (hit.isFolderStub) {
+                    // The anchor file doesn't exist yet — materialise it
+                    // first so the resolver can walk to a real file root
+                    // when navigateToLink runs.
+                    parentScope.launch {
+                        vm.ensureFolderStub(hit.fileRel)
+                        vm.navigateToLink(targetUrl, onComplete = onAfterPick)
+                    }
+                } else {
+                    vm.navigateToLink(targetUrl, onComplete = onAfterPick)
+                }
             },
         )
     }

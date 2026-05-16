@@ -189,6 +189,10 @@ class MainViewModel(
     /** See `PaneBackingViewModel.zoomInfo`. */
     fun zoomInfo(state: PaneBackingViewModel.State) = paneBackingViewModel.zoomInfo(state)
 
+    /** See `PaneBackingViewModel.zoomedPromotedRefFileRel`. */
+    fun zoomedPromotedRefFileRel(state: PaneBackingViewModel.State): String? =
+        paneBackingViewModel.zoomedPromotedRefFileRel(state)
+
     /** See `PaneBackingViewModel.bulletAncestors`. */
     fun bulletAncestors(state: PaneBackingViewModel.State) =
         paneBackingViewModel.bulletAncestors(state)
@@ -254,11 +258,17 @@ class MainViewModel(
     /** See `PaneBackingViewModel.toggleVaultFooter`. */
     fun toggleVaultFooter() = paneBackingViewModel.toggleVaultFooter()
 
+    /** See `PaneBackingViewModel.cycleFilesSort`. */
+    fun cycleFilesSort(mode: FilesSortMode) = paneBackingViewModel.cycleFilesSort(mode)
+
     /** See `PaneBackingViewModel.toggleVaultFolder`. */
     fun toggleVaultFolder(dirRel: String) = paneBackingViewModel.toggleVaultFolder(dirRel)
 
     /** See `PaneBackingViewModel.navigateToVaultFile`. */
     fun navigateToVaultFile(pathRel: String) = paneBackingViewModel.navigateToVaultFile(pathRel)
+
+    /** See `PaneBackingViewModel.ensureVaultListing`. */
+    fun ensureVaultListing(dirRel: String) = paneBackingViewModel.ensureVaultListing(dirRel)
 
     // ---- link intents ---------------------------------------------------
 
@@ -271,6 +281,10 @@ class MainViewModel(
     /** See `PaneBackingViewModel.insertMarkdownLink`. */
     fun insertMarkdownLink(label: String, url: String) =
         paneBackingViewModel.insertMarkdownLink(label, url)
+
+    /** See `PaneBackingViewModel.ensureFolderStub`. */
+    suspend fun ensureFolderStub(fileRel: String) =
+        paneBackingViewModel.ensureFolderStub(fileRel)
 
     /** See `PaneBackingViewModel.navigateToLink`. */
     fun navigateToLink(url: String, onComplete: () -> Unit = {}) =

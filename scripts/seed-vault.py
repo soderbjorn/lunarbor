@@ -17,18 +17,16 @@ Generates:
     Click in the footer should adopt them as Notegrow promoted refs.
 
 Usage:
-  python3 seed-vault.py                  # writes to default vault path
-  python3 seed-vault.py /custom/path     # writes to a custom path
-  python3 seed-vault.py --wipe           # clears the vault first
+  python3 seed-vault.py            # writes to $HOME/notegrow-db
+  python3 seed-vault.py --wipe     # clears the vault first
 """
 
 import argparse
-import os
 import shutil
 import sys
 from pathlib import Path
 
-DEFAULT_VAULT = Path.home() / "notegrow-db"
+VAULT = Path.home() / "notegrow-db"
 
 
 def write_notegrow(path: Path, body: str) -> None:
@@ -298,19 +296,12 @@ Some thoughts looking back at the quarter.
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "vault",
-        nargs="?",
-        type=Path,
-        default=DEFAULT_VAULT,
-        help=f"Vault directory (default: {DEFAULT_VAULT})",
-    )
-    parser.add_argument(
         "--wipe",
         action="store_true",
         help="Delete the vault directory first (destructive).",
     )
     args = parser.parse_args()
-    seed(args.vault, args.wipe)
+    seed(VAULT, args.wipe)
     return 0
 
 

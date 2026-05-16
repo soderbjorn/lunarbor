@@ -104,6 +104,61 @@ object DocumentLayout {
     }
 
     /**
+     * Zoom-tolerant variant of [subtreeEnd]. Walks downward from [row]
+     * and returns the last row that should be considered "inside" the
+     * zoom region rooted at [row].
+     *
+     * Unlike [subtreeEnd], a non-bullet prose line does not automatically
+     * terminate the walk — it's included when its leading indent (or, for
+     * an all-whitespace line, its length) is strictly greater than
+     * [parentIndent]. This keeps Notegrow's always-supported mixed bullet
+     * / non-bullet blocks visible inside a zoom view, and in particular
+     * lets the user strip the `"* "` from an empty leaf bullet without
+     * the resulting all-whitespace row falling outside the region (which
+     * would trigger `reconcile`'s zoom clamp and yank the caret).
+     *
+     * Termination conditions, in order:
+     *   - sibling or shallower bullet (`bulletAsteriskColumn ≤ parentIndent`)
+     *   - non-bullet prose row whose leading indent ≤ [parentIndent]
+     *     (catches root-level prose that doesn't belong to this zoom)
+     *   - end of document
+     *
+     * A truly empty row (length 0) is treated as a neutral spacer: it
+     * neither extends the meaningful end of the zoom nor terminates the
+     * walk, but it IS included so the caret can sit there after pressing
+     * Enter on a previous in-region row. Without this carve-out, the
+     * fresh blank row from `insertNewlinePlain` would fall outside the
+     * region and reconcile's zoom clamp would yank the caret back up.
+     *
+     * @return [row] itself when no rows belong to the zoom region.
+     */
+    fun zoomSubtreeEnd(lines: List<String>, row: Int, parentIndent: Int): Int {
+        var end = row
+        var i = row + 1
+        while (i <= lines.lastIndex) {
+            val line = lines[i]
+            val col = bulletAsteriskColumn(line)
+            if (col >= 0) {
+                if (col <= parentIndent) break
+                end = i
+                i++
+                continue
+            }
+            if (line.isEmpty()) {
+                end = i
+                i++
+                continue
+            }
+            val firstNonSpace = line.indexOfFirst { it != ' ' }
+            val effectiveIndent = if (firstNonSpace >= 0) firstNonSpace else line.length
+            if (effectiveIndent <= parentIndent) break
+            end = i
+            i++
+        }
+        return end
+    }
+
+    /**
      * `true` when [row] in [lines] is a bullet whose immediate next line is
      * also a bullet at strictly greater indent than [indent]. [indent] should
      * be the bullet column of [row] (i.e. [bulletAsteriskColumn] of that line);

@@ -48,6 +48,14 @@ import se.soderbjorn.notegrow.data.VaultEntry
 import se.soderbjorn.notegrow.data.VaultIndex
 
 /**
+ * Sort modes the vault footer's "Files" list can be in. Direction
+ * (ascending vs descending) is tracked separately per mode in
+ * [PaneBackingViewModel.State] so toggling modes preserves each side's
+ * preferred direction.
+ */
+enum class FilesSortMode { NAME, EDITED }
+
+/**
  * Per-pane backing view-model. Mirrors the active [Document]'s content
  * and adds cursor, selection, zoom, file navigation, undo/redo, and
  * per-pane fold state on top.
@@ -132,6 +140,17 @@ class PaneBackingViewModel(
      *   filesystem-tree footer.
      * @property expandedVaultPaths Per-pane open folders in the
      *   filesystem-tree footer.
+     * @property filesSortMode Active sort mode for the vault footer's
+     *   "Files" listing. [FilesSortMode.NAME] sorts alphabetically by
+     *   display name (case-insensitive); [FilesSortMode.EDITED] sorts by
+     *   the file's last-modified timestamp. Directories always come
+     *   first regardless of mode.
+     * @property filesSortNameDescending Direction for [FilesSortMode.NAME].
+     *   Remembered across mode switches so toggling Edited → Name returns
+     *   to the user's last-used name direction. Defaults to ascending.
+     * @property filesSortEditedDescending Direction for [FilesSortMode.EDITED].
+     *   Defaults to descending — most-recent-edit first matches the usual
+     *   "what did I touch last" intuition.
      * @property pendingInlineStyles Inline styles armed via Cmd-B / etc
      *   while the caret was collapsed.
      */
@@ -154,6 +173,9 @@ class PaneBackingViewModel(
         internal val seenLineIds: Set<LineId> = emptySet(),
         val isVaultFooterExpanded: Boolean = true,
         val expandedVaultPaths: Set<String> = emptySet(),
+        val filesSortMode: FilesSortMode = FilesSortMode.NAME,
+        val filesSortNameDescending: Boolean = false,
+        val filesSortEditedDescending: Boolean = true,
         val pendingInlineStyles: Set<InlineStyle> = emptySet(),
     ) {
         /** `true` once the document has loaded from disk at least once. */
@@ -175,6 +197,54 @@ class PaneBackingViewModel(
          */
         fun isAtRootFile(rootFileName: String): Boolean =
             activeFileRel == rootFileName
+
+        /**
+         * The vault-relative directory that [activeFileRel] is the
+         * "anchor" for, or `null` when the active file is not a
+         * directory anchor.
+         *
+         * A file is the anchor for a directory in two cases:
+         *
+         *  - The active file is the configured root file — it anchors
+         *    the vault root (returns `""`).
+         *  - The active file's path has the doubled-name shape
+         *    `<dir>/<basename>.md` where the last directory segment
+         *    equals the file's basename without `.md` (returns
+         *    `<dir>` — the full directory path from the vault root).
+         *
+         * Used by the filesystem-tree footer to decide whether to
+         * render — and, when rendering, which directory to scope the
+         * listing to. The root case is special-cased so we don't have
+         * to teach every caller about it.
+         *
+         * @param rootFileName Vault-relative path of the configured
+         *   root file (typically `Root.md`).
+         */
+        fun anchoredDirectoryOf(rootFileName: String): String? =
+            anchoredDirectoryFor(activeFileRel, rootFileName)
+
+        /**
+         * Same anchor logic as [anchoredDirectoryOf], but resolved against
+         * an arbitrary [fileRel] instead of [activeFileRel]. Used by the
+         * footer when the pane is zoomed into a promoted-ref bullet whose
+         * subtree *is* a doubled-name anchor file — in that case the
+         * footer should render the child file's directory listing, not
+         * the active file's.
+         *
+         * @param fileRel Vault-relative path of the candidate anchor file.
+         * @param rootFileName Vault-relative path of the configured root.
+         */
+        fun anchoredDirectoryFor(fileRel: String, rootFileName: String): String? {
+            if (fileRel == rootFileName) return ""
+            if (!fileRel.endsWith(".md")) return null
+            val basename = fileRel.substringAfterLast('/').removeSuffix(".md")
+            if (basename.isEmpty()) return null
+            val parentDir = fileRel.substringBeforeLast('/', missingDelimiterValue = "")
+            if (parentDir.isEmpty()) return null
+            val lastSegment = parentDir.substringAfterLast('/')
+            if (!lastSegment.equals(basename, ignoreCase = false)) return null
+            return parentDir
+        }
     }
 
     /**
@@ -189,12 +259,25 @@ class PaneBackingViewModel(
      * the current zoom id and document state — never stored, so it
      * cannot go stale.
      */
+    /**
+     * Resolved zoom geometry plus the leaf node's text and style.
+     *
+     * @property titleText the bullet's display text with leading indent,
+     *   the `"* "` bullet marker, AND any line-level markdown prefix
+     *   (e.g. `# `, `> `) stripped. Inline markers are left intact;
+     *   consumers that need a flat label run this through
+     *   [se.soderbjorn.notegrow.data.InlineMarkdownTokenizer].
+     * @property style the line-level style detected on the zoomed bullet
+     *   (heading level or quote), or `null` for plain text. Renderers use
+     *   this to apply heading/quote visual styling to the zoom headline.
+     */
     data class ZoomInfo(
         val zoomRow: Int,
         val zoomIndent: Int,
         val startRow: Int,
         val endRowInclusive: Int,
         val titleText: String,
+        val style: LineStyle? = null,
     ) {
         /** `true` when the zoom target has at least one descendant bullet. */
         val hasVisibleRows: Boolean get() = startRow <= endRowInclusive
@@ -558,6 +641,15 @@ class PaneBackingViewModel(
         }
     }
 
+    /** See [TextEditingViewModel.insertLiteralText]. */
+    fun insertLiteralText(text: String) {
+        recordEdit(FrameKind.OTHER) {
+            commitPlaceholderIfAny()
+            textEditing.insertLiteralText(text)
+            if ('\n' in text || '\r' in text) revealAncestors(_stateFlow.value.cursorRow)
+        }
+    }
+
     /** See [TextEditingViewModel.backspace]. */
     fun backspace() {
         recordEdit(FrameKind.BACKSPACE) {
@@ -763,6 +855,27 @@ class PaneBackingViewModel(
     /** See [ZoomNavigation.zoomInfo]. */
     fun zoomInfo(state: State = _stateFlow.value): ZoomInfo? = zoomNavigation.zoomInfo(state)
 
+    /**
+     * When this pane is zoomed into a bullet that is a promoted-ref
+     * (i.e. its subtree's content lives in another file), returns that
+     * child file's vault-relative path. Returns `null` when there is no
+     * zoom, the zoomed bullet is a plain inline bullet, or the zoomed
+     * row can't be resolved in the current document.
+     *
+     * The footer uses this to decide whether the visible zoom region
+     * "really belongs to" a child anchor file — if so, the footer
+     * renders that child's directory listing instead of staying hidden.
+     */
+    fun zoomedPromotedRefFileRel(state: State = _stateFlow.value): String? {
+        val zoomedId = state.zoomedLineId ?: return null
+        val doc = document ?: return null
+        if (!doc.isPromotedRef(zoomedId)) return null
+        val docState = doc.stateFlow.value
+        val row = docState.lineIds.indexOf(zoomedId)
+        if (row < 0) return null
+        return doc.promotedByRow()[row]?.fileRel
+    }
+
     /** See [ZoomNavigation.bulletAncestors]. */
     fun bulletAncestors(state: State = _stateFlow.value): List<BreadcrumbAncestor> =
         zoomNavigation.bulletAncestors(state)
@@ -899,6 +1012,56 @@ class PaneBackingViewModel(
     }
 
     /**
+     * Toggles the vault footer's file-list sort. Clicking the icon for
+     * the currently-active [mode] flips that mode's direction; clicking
+     * the icon for the inactive mode switches to it (keeping that mode's
+     * remembered direction). The per-mode direction memory means the
+     * UI feels like "two sticky toggles" rather than a single carousel.
+     */
+    fun cycleFilesSort(mode: FilesSortMode) {
+        patch {
+            if (it.filesSortMode != mode) {
+                it.copy(filesSortMode = mode)
+            } else when (mode) {
+                FilesSortMode.NAME ->
+                    it.copy(filesSortNameDescending = !it.filesSortNameDescending)
+                FilesSortMode.EDITED ->
+                    it.copy(filesSortEditedDescending = !it.filesSortEditedDescending)
+            }
+        }
+    }
+
+    /**
+     * Materialises the doubled-name anchor file for a folder picked
+     * from the Insert Link modal's folder-stub results. Delegates to
+     * [DocumentRegistry.ensureFolderStub].
+     *
+     * Suspends so the Insert Link pick handler can `await` the file
+     * creation before computing the link URL via
+     * [se.soderbjorn.notegrow.data.VaultIndex.shortestUrlFor] — the
+     * resolver only sees the new anchor once it exists on disk.
+     */
+    suspend fun ensureFolderStub(fileRel: String) {
+        registry.ensureFolderStub(fileRel)
+    }
+
+    /**
+     * Fire-and-forget request that the registry populate
+     * [DocumentRegistry.vaultListingsFlow] with the entries under
+     * [dirRel] if they are not already cached. Used by the
+     * filesystem-tree footer when the active file is a directory
+     * anchor whose folder hasn't yet been visited via
+     * [toggleVaultFolder] (so the lazy expand never fired). The
+     * registry's own [DocumentRegistry.ensureVaultListing] is a no-op
+     * when the entry is already present, so calling this repeatedly
+     * on every repaint is safe.
+     */
+    fun ensureVaultListing(dirRel: String) {
+        if (_stateFlow.value.vaultListings[dirRel] != null) return
+        scope.launch { registry.ensureVaultListing(dirRel) }
+    }
+
+    /**
      * Toggles whether the folder at [dirRel] is open in the
      * filesystem-tree footer. Adding a path also kicks off
      * `DocumentRegistry.ensureVaultListing(dirRel)` so the folder's
@@ -1010,7 +1173,12 @@ class PaneBackingViewModel(
     fun insertMarkdownLink(label: String, url: String) {
         val markdown = "[" + SubtreeCodec.escapeLabel(label) + "](" +
             SubtreeCodec.formatLinkUrlForLabel(url) + ")"
-        insertText(markdown)
+        // Use the literal-insert path so an armed `pendingInlineStyles`
+        // (e.g. inline code from Cmd+E) doesn't wrap the markdown link
+        // in marker pairs and silently turn it into an inline code span
+        // — the link carries its own structural syntax and must reach
+        // the document verbatim.
+        insertLiteralText(markdown)
     }
 
     /**

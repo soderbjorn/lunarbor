@@ -26,8 +26,15 @@ package se.soderbjorn.notegrow.platform
  *
  * @property name Basename of the entry (no leading path).
  * @property isDirectory `true` for subdirectories, `false` for regular files.
+ * @property lastModifiedMs Last-modified timestamp in milliseconds since the
+ *   Unix epoch. `0` when the platform cannot provide one (or for directories
+ *   where the timestamp is not meaningful for sort purposes).
  */
-data class VaultDirectoryEntry(val name: String, val isDirectory: Boolean)
+data class VaultDirectoryEntry(
+    val name: String,
+    val isDirectory: Boolean,
+    val lastModifiedMs: Long = 0L,
+)
 
 expect class FileSystem() {
     /** Creates [path] (and any missing ancestors); no-op if it already exists. */

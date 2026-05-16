@@ -143,6 +143,15 @@ class VaultIndex(
      *   in its own right: a loose file root, or a promoted-ref bullet
      *   whose subtree lives in a separate file. Drives the
      *   "external files rank above sparse bullets" tier.
+     * @property isFolderStub `true` when this hit represents a vault
+     *   directory that does **not yet** have its own doubled-name anchor
+     *   file `<dir>/<dir>.md`. [fileRel] is the would-be path of that
+     *   anchor; the caller must materialise it before treating the hit
+     *   as a real link target (see `DocumentRegistry.ensureFolderStub`).
+     *   Mutually exclusive with [isFileBoundary] in practice — once the
+     *   anchor file exists the directory ceases to be a stub and the
+     *   loose-file enumeration produces a normal file-boundary hit
+     *   instead.
      */
     data class SearchHit(
         val title: String,
@@ -151,6 +160,7 @@ class VaultIndex(
         val titlePathInFile: List<String>,
         val descendantCount: Int = 0,
         val isFileBoundary: Boolean = false,
+        val isFolderStub: Boolean = false,
     )
 
     /** One file's parsed view, used as input to every other walker. */
@@ -306,6 +316,12 @@ class VaultIndex(
      * single hit (title = basename, fileRel = its path,
      * titlePathInFile = empty), then its bullets are walked under
      * that title.
+     *
+     * Finally, every vault directory that holds at least one `.md`
+     * descendant but does **not** have its own doubled-name anchor file
+     * is emitted as a "folder stub" hit (`isFolderStub = true`). Picking
+     * one of these in the Insert Link modal materialises the anchor
+     * file on the fly — see `DocumentRegistry.ensureFolderStub`.
      */
     private suspend fun enumerateAllNodes(): List<SearchHit> {
         val out = ArrayList<SearchHit>()
@@ -316,7 +332,8 @@ class VaultIndex(
             visited = visited,
             visit = { out += it },
         )
-        for (fileRel in listAllMdFiles()) {
+        val allMdFiles = listAllMdFiles()
+        for (fileRel in allMdFiles) {
             if (fileRel in visited) continue
             if (fileRel == rootFileName) continue
             val titlePath = titlePathForLooseFile(fileRel)
@@ -335,7 +352,51 @@ class VaultIndex(
                 visit = { out += it },
             )
         }
+        emitFolderStubs(allMdFiles, out)
         return populateDescendantCounts(out)
+    }
+
+    /**
+     * Emits one [SearchHit] per vault directory that lacks its own
+     * doubled-name anchor file. A directory's anchor is
+     * `<dir>/<basename>.md`; when it exists the directory is already
+     * reachable as a loose-file hit via the regular enumeration and a
+     * stub would just duplicate it.
+     *
+     * Directories are derived from [allMdFiles] — every parent segment
+     * of every `.md` file path is a directory that exists on disk. This
+     * misses completely empty folders, which is fine: they have nothing
+     * to surface and the user can still hand-author a link to them if
+     * needed.
+     *
+     * The stub's [SearchHit.fileRel] is the **would-be** anchor path.
+     * It does not exist yet; the Insert Link pick handler must
+     * materialise it before the resolver can walk to it.
+     */
+    private fun emitFolderStubs(allMdFiles: List<String>, out: MutableList<SearchHit>) {
+        val mdFileSet = allMdFiles.toHashSet()
+        val directories = HashSet<String>()
+        for (file in allMdFiles) {
+            var dir = file.substringBeforeLast('/', missingDelimiterValue = "")
+            while (dir.isNotEmpty()) {
+                if (!directories.add(dir)) break
+                dir = dir.substringBeforeLast('/', missingDelimiterValue = "")
+            }
+        }
+        for (dir in directories) {
+            val basename = dir.substringAfterLast('/')
+            val anchorPath = "$dir/$basename.md"
+            if (anchorPath in mdFileSet) continue
+            val titlePath = dir.split('/')
+            out += SearchHit(
+                title = basename,
+                titlePathFromRoot = titlePath,
+                fileRel = anchorPath,
+                titlePathInFile = emptyList(),
+                isFileBoundary = true,
+                isFolderStub = true,
+            )
+        }
     }
 
     /**

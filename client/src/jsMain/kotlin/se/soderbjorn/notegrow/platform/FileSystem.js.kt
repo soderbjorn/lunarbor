@@ -54,7 +54,12 @@ actual class FileSystem actual constructor() {
         for (raw in result) {
             val name = raw.name as String
             val isDir = raw.isDirectory as Boolean
-            out += VaultDirectoryEntry(name = name, isDirectory = isDir)
+            val mtimeMs: Double = (raw.lastModifiedMs as? Double) ?: 0.0
+            out += VaultDirectoryEntry(
+                name = name,
+                isDirectory = isDir,
+                lastModifiedMs = mtimeMs.toLong(),
+            )
         }
         return out
     }

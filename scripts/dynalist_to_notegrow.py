@@ -68,7 +68,7 @@ from pathlib import Path
 
 # --- Config -------------------------------------------------------------------
 
-SOURCE = Path(__file__).resolve().parent / "dynalist-opml-snapshot"
+SOURCE = Path(__file__).resolve().parent.parent / "dynalist-opml-snapshot"
 NOTEGROW_DB = Path("/Users/soderbjorn/notegrow-db")
 IMPORT_NAME = "Dynalist Import"
 IMPORT_DIR = NOTEGROW_DB / IMPORT_NAME

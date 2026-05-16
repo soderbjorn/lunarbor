@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copies an Obsidian vault verbatim into the Notegrow storage directory.
+# Copies the Obsidian vault verbatim into the Notegrow storage directory.
 #
 # No transformation: file contents, names, and directory structure are
 # preserved exactly as-is, including hidden folders such as .obsidian/.
@@ -7,27 +7,21 @@
 #
 # Usage:
 #   ./obsidian_to_notegrow.sh
-#   ./obsidian_to_notegrow.sh /path/to/vault
-#   ./obsidian_to_notegrow.sh /path/to/vault /path/to/dest
-#   ./obsidian_to_notegrow.sh --wipe              # clears destination first
+#   ./obsidian_to_notegrow.sh --wipe   # clears destination first
 
 set -euo pipefail
 
-DEFAULT_SRC="/Users/soderbjorn/Documents/My vault"
-DEFAULT_DEST="$HOME/notegrow-db"
+SRC="/Users/soderbjorn/Documents/My vault"
+DEST="$HOME/notegrow-db"
 
 WIPE=0
-POSITIONAL=()
 for arg in "$@"; do
   case "$arg" in
     --wipe) WIPE=1 ;;
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) POSITIONAL+=("$arg") ;;
+    -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
-
-SRC="${POSITIONAL[0]:-$DEFAULT_SRC}"
-DEST="${POSITIONAL[1]:-$DEFAULT_DEST}"
 
 if [[ ! -d "$SRC" ]]; then
   echo "Source vault does not exist or is not a directory: $SRC" >&2

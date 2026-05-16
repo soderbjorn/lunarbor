@@ -132,10 +132,20 @@ fun paint(
     )
     for (row in visibleRows) {
         val rawLine = state.lines[row]
-        val line = if (viewOriginCol > 0 && rawLine.length >= viewOriginCol)
-            rawLine.substring(viewOriginCol) else rawLine
+        // Only strip the zoom indent when the row actually has at least
+        // `viewOriginCol` leading whitespace chars. A row inside the zoom
+        // region whose content sits at a shallower column (e.g., user-
+        // edited prose at col 0, or the leftover of a stripped bullet)
+        // must display its full content; stripping blindly would chop
+        // real characters and the resulting prefix-len mismatch would
+        // misroute typed input through the model<->DOM caret mapping.
+        val canStrip = viewOriginCol > 0 &&
+            rawLine.length >= viewOriginCol &&
+            (0 until viewOriginCol).all { rawLine[it] == ' ' }
+        val stripPrefix = if (canStrip) viewOriginCol else 0
+        val line = if (stripPrefix > 0) rawLine.substring(stripPrefix) else rawLine
         editor.appendChild(
-            buildRowElement(row, line, viewOriginCol, state, docState, viewModel, style, onBulletMouseDown)
+            buildRowElement(row, line, stripPrefix, state, docState, viewModel, style, onBulletMouseDown)
         )
     }
 }
@@ -316,25 +326,43 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
 }
 
 /**
+ * Map a tokenized inline run's [styles] / link / tag flags to the
+ * `notegrow-md-*` CSS classes the global stylesheet defines. Returns an
+ * empty list when the run carries no formatting. Used by every place
+ * that converts a [StyledRun] into a styled DOM node — the editor's
+ * paint loop ([runClassName]) and the zoom-headline rendering in
+ * `MainScreen.updateTitle`.
+ *
+ * Kept caret-tracking agnostic on purpose: the caller decides whether
+ * to prepend a base class (the editor uses `notegrow-text-run` so its
+ * column-map walks the right spans; the headline needs no base class).
+ */
+internal fun inlineRunCssClasses(
+    styles: Set<InlineStyle>,
+    isLink: Boolean = false,
+    isTag: Boolean = false,
+): List<String> {
+    if (styles.isEmpty() && !isLink && !isTag) return emptyList()
+    val out = ArrayList<String>(styles.size + 2)
+    if (InlineStyle.BOLD in styles) out += "notegrow-md-bold"
+    if (InlineStyle.ITALIC in styles) out += "notegrow-md-italic"
+    if (InlineStyle.STRIKETHROUGH in styles) out += "notegrow-md-strike"
+    if (InlineStyle.INLINE_CODE in styles) out += "notegrow-md-code"
+    if (isLink) out += "notegrow-md-link"
+    if (isTag) out += "notegrow-md-tag"
+    return out
+}
+
+/**
  * Build the CSS class string for a styled run from its [styles] set.
  * Always includes the base `notegrow-text-run` class so global
- * editable-region styles still apply.
+ * editable-region styles still apply. Inline-style classes come from
+ * the shared [inlineRunCssClasses] helper.
  */
 private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false, isTag: Boolean = false): String {
-    if (styles.isEmpty() && !isLink && !isTag) return "notegrow-text-run"
-    val parts = StringBuilder("notegrow-text-run")
-    for (s in styles) {
-        parts.append(' ')
-        parts.append(when (s) {
-            InlineStyle.BOLD -> "notegrow-md-bold"
-            InlineStyle.ITALIC -> "notegrow-md-italic"
-            InlineStyle.STRIKETHROUGH -> "notegrow-md-strike"
-            InlineStyle.INLINE_CODE -> "notegrow-md-code"
-        })
-    }
-    if (isLink) parts.append(" notegrow-md-link")
-    if (isTag) parts.append(" notegrow-md-tag")
-    return parts.toString()
+    val extras = inlineRunCssClasses(styles, isLink, isTag)
+    if (extras.isEmpty()) return "notegrow-text-run"
+    return "notegrow-text-run " + extras.joinToString(" ")
 }
 
 /**
@@ -593,6 +621,19 @@ fun ensureStyles() {
             border-top: 1px solid var(--t-border-strong, #4a4a4a);
             margin-top: 32px;
         }
+        /* When the active file is a directory anchor with nothing to
+           list, `paintVaultFooter` returns without appending any
+           children. The container element itself stays mounted (it's a
+           permanent sibling of the editor host so the paint loop never
+           wipes it), so we strip the divider, margin, and padding here
+           to make the empty footer take zero vertical space. The
+           `!important`s override `buildVaultFooterElement`'s inline
+           padding, which would otherwise win the cascade. */
+        .notegrow-vault-footer:empty {
+            border-top: none !important;
+            margin-top: 0 !important;
+            padding: 0 !important;
+        }
         .notegrow-vault-header {
             display: flex;
             align-items: center;
@@ -702,6 +743,30 @@ fun ensureStyles() {
             padding-left: 8px;
             color: var(--t-text-secondary, #cfcfcf);
             font-style: italic;
+        }
+        /* Zoom headline (the big title above the editor). Base size
+           is set here rather than inline on the element so the
+           per-style overrides below can supersede it. */
+        .notegrow-title {
+            font-size: 32px;
+            font-weight: 600;
+            line-height: 1.2;
+        }
+        .notegrow-title.notegrow-title-h1 { font-size: 36px; font-weight: 700; }
+        .notegrow-title.notegrow-title-h2 { font-size: 30px; font-weight: 700; }
+        .notegrow-title.notegrow-title-h3 { font-size: 26px; font-weight: 600; }
+        .notegrow-title.notegrow-title-h4 { font-size: 22px; font-weight: 600; }
+        .notegrow-title.notegrow-title-h5 { font-size: 20px; font-weight: 600; }
+        .notegrow-title.notegrow-title-h6 {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--t-text-secondary, #cfcfcf);
+        }
+        .notegrow-title.notegrow-title-quote {
+            border-left: 3px solid var(--t-border-strong, #4a4a4a);
+            padding-left: 12px;
+            font-style: italic;
+            color: var(--t-text-secondary, #cfcfcf);
         }
         /* Style dropdown menu (anchored to the Style toolbar button). */
         .notegrow-style-menu {

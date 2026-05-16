@@ -47,11 +47,15 @@ import se.soderbjorn.notegrow.platform.FileSystem
  * @property pathRel Path relative to the vault root.
  * @property isDirectory `true` for subdirectories, `false` for `.md` files.
  *   Files of other extensions are filtered out before reaching this type.
+ * @property lastEditedMs Last-modified timestamp of the underlying file in
+ *   milliseconds since the Unix epoch. `0` for directories and on platforms
+ *   that cannot provide one. Used by the vault footer's last-edit sort mode.
  */
 data class VaultEntry(
     val name: String,
     val pathRel: String,
     val isDirectory: Boolean,
+    val lastEditedMs: Long = 0L,
 )
 
 /**
@@ -686,8 +690,10 @@ class NoteRepository(
      * level at a time. Each subsequent folder click triggers another call
      * with the deeper [dirRel], so deep vaults don't pay an upfront walk.
      *
-     * Sort order: directories first, then files, both alphabetic by name
-     * (case-insensitive) — matches typical file-browser conventions.
+     * Sort order: directories first, then files. Ordering within each group
+     * is the platform filesystem's listing order — the renderer reorders to
+     * honour the user's active sort mode (name/last-edit, ascending/descending),
+     * so doing it here would be wasted work.
      *
      * @param dirRel Directory path relative to [rootDirectory]. Empty
      *   string means the vault root.
@@ -705,6 +711,7 @@ class NoteRepository(
                     name = entry.name,
                     pathRel = pathRel,
                     isDirectory = true,
+                    lastEditedMs = 0L,
                 )
                 continue
             }
@@ -714,12 +721,10 @@ class NoteRepository(
                 name = displayName,
                 pathRel = pathRel,
                 isDirectory = false,
+                lastEditedMs = entry.lastModifiedMs,
             )
         }
-        return out.sortedWith(
-            compareByDescending<VaultEntry> { it.isDirectory }
-                .thenBy { it.name.lowercase() }
-        )
+        return out
     }
 
     /**
@@ -815,6 +820,31 @@ class NoteRepository(
         }
         val nextContent = kept.joinToString("\n")
         fileSystem.writeFile(absPath, nextContent)
+    }
+
+    /**
+     * Writes an empty `.md` file at [fileRel] if and only if no file
+     * already exists at that path. Ensures all parent directories first.
+     * No-op when the file is already present — never overwrites
+     * hand-authored content.
+     *
+     * Used by `DocumentRegistry.ensureFolderStub` to materialise a
+     * folder's doubled-name anchor on demand when the Insert Link modal
+     * picks a folder-stub hit. The created file is genuinely empty
+     * (zero bytes); Notegrow no longer uses any per-file marker — see
+     * the file-level comment for the `#notegrow` URL-fragment rule.
+     *
+     * @return `true` when a new file was written, `false` when the path
+     *   already existed.
+     */
+    suspend fun createEmptyFile(fileRel: String): Boolean {
+        val absPath = "$rootDirectory/$fileRel"
+        if (fileSystem.readFileIfExists(absPath) != null) return false
+        val parentDir = fileRel.substringBeforeLast('/', missingDelimiterValue = "")
+        val absDir = if (parentDir.isEmpty()) rootDirectory else "$rootDirectory/$parentDir"
+        fileSystem.ensureDirectory(absDir)
+        fileSystem.writeFile(absPath, "")
+        return true
     }
 
     companion object {

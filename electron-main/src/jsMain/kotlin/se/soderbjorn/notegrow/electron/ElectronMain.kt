@@ -585,7 +585,22 @@ private fun registerIpcHandlers() {
                     val ed = raw[i]
                     val obj: dynamic = js("({})")
                     obj.name = ed.name
-                    obj.isDirectory = (ed.isDirectory() as Boolean)
+                    val isDir = (ed.isDirectory() as Boolean)
+                    obj.isDirectory = isDir
+                    obj.lastModifiedMs = 0.0
+                    if (!isDir) {
+                        // Stat each file so the renderer can sort by last edit.
+                        // Best-effort — if a file disappears between readdir
+                        // and stat, fall back to 0 rather than failing the
+                        // whole listing.
+                        try {
+                            val full = pathModule.join(dirPath as String, ed.name as String)
+                            val stat = fsPromises.stat(full).await()
+                            obj.lastModifiedMs = (stat.mtimeMs as? Double) ?: 0.0
+                        } catch (_: Throwable) {
+                            obj.lastModifiedMs = 0.0
+                        }
+                    }
                     out.push(obj)
                 }
                 out

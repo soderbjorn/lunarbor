@@ -29,7 +29,9 @@ import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.dom.events.MouseEvent
+import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
 import se.soderbjorn.notegrow.data.InlineStyle
+import se.soderbjorn.notegrow.data.LineStyle
 import kotlin.math.sqrt
 
 /**
@@ -896,8 +898,19 @@ class MainScreen(
             editor.contains(anchorNode)
         }
         if (!ownsFocus && !selectionInsideUs) return
-        val anchor = locateDomPosition(editor, anchorRow, anchorCol) ?: return
-        val focus = locateDomPosition(editor, cursorRow, cursorCol) ?: return
+        // If the requested row isn't currently rendered (e.g. it sits inside
+        // a collapsed subtree the caller didn't reveal), fall back to (0, 0)
+        // rather than early-returning. Leaving the caret wherever the browser
+        // parked it when the previous row's element was removed lets the next
+        // Backspace fall through to the browser default (history.back), which
+        // navigates the SPA out of the current file. Anchoring to a visible
+        // slot keeps the caret inside the contenteditable host.
+        val anchor = locateDomPosition(editor, anchorRow, anchorCol)
+            ?: locateDomPosition(editor, 0, 0)
+            ?: return
+        val focus = locateDomPosition(editor, cursorRow, cursorCol)
+            ?: locateDomPosition(editor, 0, 0)
+            ?: return
         val sel = window.asDynamic().getSelection() ?: return
         try {
             sel.setBaseAndExtent(anchor.first, anchor.second, focus.first, focus.second)
@@ -999,6 +1012,12 @@ class MainScreen(
     private fun buildTitleElement(): HTMLElement {
         val title = document.createElement("div") as HTMLElement
         title.className = "notegrow-title"
+        // Box / typography geometry lives inline because it depends on
+        // the [style] payload (per-app padding + font family). Font
+        // size, weight, and line-height live in CSS (injected by
+        // `ensureStyles` in OutlinePaintLoop) so the line-level style
+        // classes — `notegrow-title-h1` … `notegrow-title-quote` — can
+        // override them per-heading without specificity tricks.
         title.style.apply {
             flex = "0 0 auto"
             paddingTop = "6px"
@@ -1006,9 +1025,6 @@ class MainScreen(
             paddingLeft = "${style.editorPaddingLeftPx}px"
             paddingRight = "${style.editorPaddingRightPx}px"
             fontFamily = style.fontFamily
-            setProperty("font-size", "32px")
-            setProperty("font-weight", "600")
-            setProperty("line-height", "1.2")
             setProperty("white-space", "nowrap")
             setProperty("overflow", "hidden")
             setProperty("text-overflow", "ellipsis")
@@ -1018,28 +1034,116 @@ class MainScreen(
     }
 
     /**
+     * Full set of line-level style classes the headline can wear. Used
+     * by [updateTitle] to clear stale classes before applying the one
+     * matching the current zoom target's style — kept here so additions
+     * to [LineStyle] only need to be reflected in two places (this
+     * companion constant + the `when` in `updateTitle`).
+     */
+    private val titleStyleClasses = listOf(
+        "notegrow-title-h1",
+        "notegrow-title-h2",
+        "notegrow-title-h3",
+        "notegrow-title-h4",
+        "notegrow-title-h5",
+        "notegrow-title-h6",
+        "notegrow-title-quote",
+    )
+
+    /**
      * Refreshes the headline text from [backing]. Shows the leaf segment of
      * the zoom path when zoomed (matching the trailing breadcrumb segment
-     * in the pane chrome), or "Root" when at document root. Renders empty
-     * while the document hasn't loaded yet so the headline doesn't flash
-     * incorrect copy during boot.
+     * in the pane chrome), or the active file name when at document root.
+     * Renders empty while the document hasn't loaded yet so the headline
+     * doesn't flash incorrect copy during boot.
+     *
+     * When zoomed into a bullet that has a line-level style (heading
+     * level or quote), the wrapper gets a corresponding `notegrow-title-*`
+     * class so the headline visually reflects that style. Inline styles
+     * inside the title (`**bold**`, `*italic*`, etc.) are rendered as
+     * styled child spans using the same `notegrow-md-*` classes the
+     * editor's paint loop uses.
      */
     private fun updateTitle(title: HTMLElement, backing: PaneBackingViewModel.State?) {
-        val text = when {
-            backing == null || !backing.isLoaded -> ""
-            else -> {
-                val zoom = viewModel.zoomInfo(backing)
-                if (zoom == null) {
-                    // Show the active file's display name. Strip the
-                    // `.md` extension and the directory path so the
-                    // headline is just `Recipes` for `Recipes/Recipes.md`,
-                    // `links` for `links.md`, etc.
-                    val fileRel = backing.activeFileRel
-                    fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Untitled" }
-                } else zoom.titleText.ifBlank { "(untitled)" }
+        // Resolve text + line-level style. The non-zoomed case shows the
+        // active file's display name (with `.md` + directory stripped);
+        // the zoomed case shows the leaf bullet's prefix-stripped text
+        // plus its line-level style.
+        val (text, style) = when {
+            backing == null || !backing.isLoaded -> "" to null
+            else -> viewModel.zoomInfo(backing)?.let { zoom ->
+                zoom.titleText.ifBlank { "(untitled)" } to zoom.style
+            } ?: run {
+                val fileRel = backing.activeFileRel
+                val fileName = fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Untitled" }
+                fileName to null
             }
         }
-        if (title.textContent != text) title.textContent = text
+        applyTitleStyleClass(title, style)
+        renderInlineRuns(title, text, baseRunClass = null)
+    }
+
+    /**
+     * Tokenizes [text] and rebuilds [parent]'s children so inline markers
+     * (`**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, `[label](href)`,
+     * `#tag`) render as styled spans instead of literal punctuation.
+     * Reuses the global `notegrow-md-*` classes via [inlineRunCssClasses]
+     * so the same stylesheet that drives the editor's paint loop also
+     * drives this rendering — single source of truth for inline styling.
+     *
+     * @param parent     element to clear + repopulate.
+     * @param text       source text (line-level prefix already stripped).
+     * @param baseRunClass optional base class added to every run span. The
+     *   editor uses `notegrow-text-run` so its caret-mapping code can
+     *   walk the spans; the headline passes `null` and just gets the
+     *   style classes.
+     */
+    private fun renderInlineRuns(parent: HTMLElement, text: String, baseRunClass: String?) {
+        val tokenized = InlineMarkdownTokenizer.tokenize(text)
+        parent.innerHTML = ""
+        if (tokenized.runs.isEmpty()) {
+            parent.appendChild(document.createTextNode(tokenized.displayText))
+            return
+        }
+        for (run in tokenized.runs) {
+            val span = document.createElement("span") as HTMLElement
+            val classes = inlineRunCssClasses(
+                run.styles,
+                isLink = run.linkHref != null,
+                isTag = run.isTag,
+            )
+            val full = if (baseRunClass == null) classes
+                else if (classes.isEmpty()) listOf(baseRunClass)
+                else listOf(baseRunClass) + classes
+            if (full.isNotEmpty()) span.className = full.joinToString(" ")
+            span.textContent = run.text
+            parent.appendChild(span)
+        }
+    }
+
+    /**
+     * Replaces [title]'s line-level style class with the one matching
+     * [style] (or none for plain text / non-zoomed). The full set of
+     * candidate classes lives in [titleStyleClasses] so additions to
+     * [LineStyle] only need to be reflected here and in the `when`.
+     */
+    private fun applyTitleStyleClass(title: HTMLElement, style: LineStyle?) {
+        val styleClass = when (style) {
+            LineStyle.HEADING_1 -> "notegrow-title-h1"
+            LineStyle.HEADING_2 -> "notegrow-title-h2"
+            LineStyle.HEADING_3 -> "notegrow-title-h3"
+            LineStyle.HEADING_4 -> "notegrow-title-h4"
+            LineStyle.HEADING_5 -> "notegrow-title-h5"
+            LineStyle.HEADING_6 -> "notegrow-title-h6"
+            LineStyle.QUOTE -> "notegrow-title-quote"
+            null -> null
+        }
+        for (cls in titleStyleClasses) {
+            if (cls != styleClass) title.classList.remove(cls)
+        }
+        if (styleClass != null && !title.classList.contains(styleClass)) {
+            title.classList.add(styleClass)
+        }
     }
 
     /**

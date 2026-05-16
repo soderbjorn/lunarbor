@@ -191,6 +191,36 @@ class DocumentRegistry(
     }
 
     /**
+     * Materialises the doubled-name anchor file `<dir>/<dir>.md` for a
+     * folder picked from the Insert Link modal's folder-stub results.
+     * No-op when the file already exists. After a successful write,
+     * refreshes [vaultListingsFlow] entries that touch the folder so
+     * the new file appears in the filesystem-tree footer without
+     * waiting for an autosave tick.
+     *
+     * The file body is empty — Notegrow no longer uses any per-file
+     * marker. Promoted-ref-ness is per-link via the `#notegrow` URL
+     * fragment in [se.soderbjorn.notegrow.data.SubtreeCodec], so the
+     * link the modal inserts is what carries the semantics.
+     *
+     * Also invalidates the [VaultIndex] cache entries for the new file
+     * and its parent directory so a subsequent `shortestUrlFor` /
+     * `resolve` lookup re-reads from disk and finds the new file.
+     *
+     * @param fileRel Vault-relative path of the anchor file to create
+     *   — must be of the form `<dir>/<basename>.md` (the doubled-name
+     *   shape Notegrow uses for folder anchors). The caller is the
+     *   Insert Link pick handler, which gets this path from the picked
+     *   [se.soderbjorn.notegrow.data.VaultIndex.SearchHit.fileRel].
+     */
+    suspend fun ensureFolderStub(fileRel: String) {
+        val created = repository.createEmptyFile(fileRel)
+        if (!created) return
+        refreshLoadedVaultListings()
+        vaultIndex.invalidate(fileRel)
+    }
+
+    /**
      * Re-fetches every directory currently in [vaultListingsFlow] and
      * replaces each entry with the fresh result. Triggered by
      * [Document]'s `onAfterSave` hook after every save tick so files
