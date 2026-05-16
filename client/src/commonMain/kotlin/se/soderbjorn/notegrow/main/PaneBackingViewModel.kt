@@ -1173,10 +1173,18 @@ class PaneBackingViewModel(
      * Other panes are unaffected — this is genuinely pane-local now.
      * Two panes pointed at the same file share one [Document] so their
      * edits show up in each other live.
+     *
+     * The leading guard accepts a pane that has either a loaded document
+     * or is currently in image-view (in which case [State.documentState]
+     * is intentionally `null`). Without the image-view branch the
+     * parent / home toolbar buttons would silently no-op while an image
+     * is on screen, even though `fileHistory` and the AppShell handlers
+     * are perfectly happy to navigate away from one.
      */
     fun navigateToVaultFile(pathRel: String) {
-        if (!_stateFlow.value.isLoaded) return
-        val currentFile = _stateFlow.value.activeFileRel
+        val current = _stateFlow.value
+        if (!current.isLoaded && !current.isImageView) return
+        val currentFile = current.activeFileRel
         if (currentFile == pathRel) return
         scope.launch {
             switchActiveFile(pathRel)
