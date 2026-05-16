@@ -187,6 +187,18 @@ private fun buildRowElement(
     val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
     val rowId = if (absoluteRow in docState.lineIds.indices) docState.lineIds[absoluteRow] else null
 
+    // Inline-image rows are much taller than a text-only line, which
+    // makes a baseline-aligned bullet visually float in the vertical
+    // middle of the image. The `has-image` class swaps to top
+    // alignment so the bullet sits next to the first line of text.
+    // Cheap heuristic — exact detection would re-tokenize, but any
+    // line carrying both `![` and `](` is virtually certain to hold a
+    // markdown image; a false positive just changes alignment of a
+    // row that doesn't need it, which is harmless.
+    if (lineLooksLikeImageRow(line)) {
+        rowDiv.classList.add("notegrow-row-has-image")
+    }
+
     if (bulletCol >= 0) {
         // Visually indent the row by its bullet depth via padding-left, so the
         // bullet glyph itself sits at a depth-appropriate offset without
@@ -329,6 +341,23 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
         }
     }
     return wrapper
+}
+
+/**
+ * Cheap row-level test for "this line contains a markdown image."
+ * The painter adds a `notegrow-row-has-image` class when this fires
+ * so the bullet glyph can align to the top of the (much taller) row
+ * instead of floating in the vertical middle of the image.
+ *
+ * A full re-tokenize would be more precise, but two `indexOf` scans
+ * on a short line are essentially free and the false-positive cost
+ * is zero — the class only affects vertical alignment of a bullet
+ * on a row that's already showing whatever the user typed.
+ */
+private fun lineLooksLikeImageRow(line: String): Boolean {
+    val bang = line.indexOf("![")
+    if (bang < 0) return false
+    return line.indexOf("](", startIndex = bang + 2) >= 0
 }
 
 /**
@@ -642,6 +671,30 @@ fun ensureStyles() {
         .notegrow-bullet-prefix {
             display: inline;
             cursor: grab;
+        }
+        /* When the row contains an inline image, the row is much
+           taller than a text-only line. The default baseline
+           alignment of the bullet ends up centered in the middle of
+           the image; switching the row's children to top alignment
+           puts the bullet next to the first line of text instead.
+           The bullet-prefix needs an explicit `inline-block` for
+           vertical-align to apply, and a small top inset matches
+           the visual line position of the surrounding text. */
+        .notegrow-row-has-image > .notegrow-bullet-prefix {
+            display: inline-block;
+            vertical-align: top;
+            line-height: var(--notegrow-line-height, normal);
+        }
+        .notegrow-row-has-image > .notegrow-text {
+            vertical-align: top;
+        }
+        /* Chevron normally fills the row height (`height: 100%`) and
+           centers its glyph via flex — fine for text rows, but on an
+           image row that centers the chevron in the middle of the
+           image. Constrain the chevron's box to the first line so
+           the glyph sits next to the bullet. */
+        .notegrow-row-has-image > .notegrow-chevron {
+            height: 1.5em;
         }
         .notegrow-bullet-prefix:active {
             cursor: grabbing;
