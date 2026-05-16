@@ -44,6 +44,7 @@ import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
 import se.soderbjorn.notegrow.data.InlineStyle
 import se.soderbjorn.notegrow.data.LineStyle
 import se.soderbjorn.notegrow.data.LinkUrl
+import se.soderbjorn.notegrow.data.NoteRepository
 import se.soderbjorn.notegrow.data.SubtreeCodec
 import se.soderbjorn.notegrow.data.VaultEntry
 import se.soderbjorn.notegrow.data.VaultIndex
@@ -190,6 +191,16 @@ class PaneBackingViewModel(
         val isLoaded: Boolean get() = documentState?.isLoaded == true
 
         /**
+         * `true` when the pane's active location is an image rather than a
+         * markdown document. The pane VM treats image paths as a "special
+         * case of document view": the navigation primitives (fileHistory,
+         * fileBack, fileForward, parent/root chrome) work as usual; the
+         * editor surface in the view layer swaps to a read-only image
+         * viewer and `documentState` stays `null` for the duration.
+         */
+        val isImageView: Boolean get() = NoteRepository.isImagePath(activeFileRel)
+
+        /**
          * `true` while the document is mid-save on a tick that
          * promotes or demotes a subtree across the per-file boundary
          * — see [Document.State.isRestructuring].
@@ -244,6 +255,14 @@ class PaneBackingViewModel(
          */
         fun anchoredDirectoryFor(fileRel: String, rootFileName: String): String? {
             if (fileRel == rootFileName) return ""
+            // Image paths anchor on their containing directory — viewing
+            // an image keeps the Files footer scoped to the folder the
+            // image lives in, so the user can navigate to its siblings.
+            // A top-level image (no `/` in its path) anchors the vault
+            // root, same as the configured root file.
+            if (NoteRepository.isImagePath(fileRel)) {
+                return fileRel.substringBeforeLast('/', missingDelimiterValue = "")
+            }
             if (!fileRel.endsWith(".md")) return null
             val basename = fileRel.substringAfterLast('/').removeSuffix(".md")
             if (basename.isEmpty()) return null
@@ -386,16 +405,25 @@ class PaneBackingViewModel(
      * [fileBack], [fileForward]) push / pop those stacks themselves.
      */
     private suspend fun switchActiveFile(fileRel: String) {
-        if (_stateFlow.value.activeFileRel == fileRel && document != null) return
+        val current = _stateFlow.value
+        if (current.activeFileRel == fileRel &&
+            (document != null || NoteRepository.isImagePath(fileRel))
+        ) return
         // Strip any throwaway placeholder before swapping the active
         // document — otherwise an empty placeholder bullet inserted by a
         // leaf-zoom on the outgoing file would persist into the next
         // autosave tick on that file.
         cleanupEmptyPlaceholderIfAny()
         val outgoing = document
-        val outgoingFile = _stateFlow.value.activeFileRel
-        val outgoingExpansions = _stateFlow.value.expandedRefIdsLocal
-        val incoming = registry.acquire(fileRel)
+        val outgoingFile = current.activeFileRel
+        val outgoingExpansions = current.expandedRefIdsLocal
+        val targetIsImage = NoteRepository.isImagePath(fileRel)
+        // Acquire the incoming document up front so the registry refcount
+        // is bumped before we release the outgoing one — keeps a shared
+        // [Document] alive across a same-file navigation without an
+        // extra disk round-trip. For image targets we skip the registry
+        // entirely; the pane simply has no document for the duration.
+        val incoming = if (targetIsImage) null else registry.acquire(fileRel)
         documentCollectorJob?.cancelAndJoin()
         documentCollectorJob = null
         document = incoming
@@ -407,7 +435,7 @@ class PaneBackingViewModel(
             for (id in outgoingExpansions) outgoing.releaseExpansion(id)
         }
         // Reset per-pane state tied to the outgoing file.
-        _stateFlow.value = _stateFlow.value.copy(
+        _stateFlow.value = current.copy(
             activeFileRel = fileRel,
             documentState = null,
             cursorRow = 0,
@@ -427,7 +455,7 @@ class PaneBackingViewModel(
         // document; they would corrupt the new one if applied.
         undoStack.clear()
         redoStack.clear()
-        startDocumentCollector(incoming)
+        if (incoming != null) startDocumentCollector(incoming)
         if (outgoing != null && outgoingFile.isNotEmpty() && outgoingFile != fileRel) {
             registry.release(outgoingFile)
         }

@@ -816,8 +816,7 @@ class NoteRepository(
                 )
                 continue
             }
-            val lowerName = entry.name.lowercase()
-            if (IMAGE_EXTENSIONS.any { lowerName.endsWith(it) }) {
+            if (isImagePath(entry.name)) {
                 out += VaultEntry(
                     name = entry.name,
                     pathRel = pathRel,
@@ -980,5 +979,18 @@ class NoteRepository(
          */
         val IMAGE_EXTENSIONS: List<String> =
             listOf(".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+
+        /**
+         * `true` when [pathRel] points at a file whose extension is one of
+         * [IMAGE_EXTENSIONS]. The pane VM and the web view layer use this
+         * to branch on file kind — markdown navigation acquires a
+         * [Document]; image navigation skips the registry, sets
+         * `documentState = null`, and lets the editor surface swap to a
+         * read-only image viewer instead.
+         */
+        fun isImagePath(pathRel: String): Boolean {
+            val lower = pathRel.lowercase()
+            return IMAGE_EXTENSIONS.any { lower.endsWith(it) }
+        }
     }
 }

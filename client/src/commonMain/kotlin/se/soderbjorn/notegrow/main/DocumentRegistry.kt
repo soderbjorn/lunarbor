@@ -131,6 +131,13 @@ class DocumentRegistry(
      * instance — concurrent edits show up in both.
      */
     suspend fun acquire(fileRel: String): Document = slotsLock.withLock {
+        // The registry only owns markdown documents — image paths are
+        // viewed via the read-only image view, which bypasses the
+        // registry entirely (`PaneBackingViewModel.switchActiveFile`
+        // skips this call). Fail loudly if a future caller forgets.
+        require(!NoteRepository.isImagePath(fileRel)) {
+            "DocumentRegistry.acquire called with an image path: $fileRel"
+        }
         val existing = slots[fileRel]
         if (existing != null) {
             existing.refCount++

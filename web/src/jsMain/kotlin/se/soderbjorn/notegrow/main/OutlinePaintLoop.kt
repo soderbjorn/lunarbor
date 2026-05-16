@@ -949,6 +949,31 @@ fun ensureStyles() {
             font-size: 12px;
             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         }
+        /* Pane-level read-only image view (see ImageViewer.kt). Shown in
+           place of the contenteditable editor whenever the pane's active
+           file is an image. Centered with a generous gutter so the image
+           sits on the same content axis as the editor's text. */
+        .notegrow-image-viewer {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 50vh;
+        }
+        .notegrow-image-viewer-img {
+            max-width: 100%;
+            max-height: 80vh;
+            object-fit: contain;
+            user-select: none;
+            -webkit-user-drag: none;
+            border-radius: 4px;
+        }
+        .notegrow-image-viewer-broken {
+            padding: 8px 12px;
+            border: 1px dashed var(--t-border-strong, rgba(255, 255, 255, 0.20));
+            border-radius: 4px;
+            color: var(--t-text-secondary, rgba(255, 255, 255, 0.55));
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
         .notegrow-text.notegrow-md-h1 {
             font-size: 1.6em;
             font-weight: 700;

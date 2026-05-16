@@ -92,6 +92,16 @@ class MainScreen(
     private var vaultFooterElement: HTMLElement? = null
 
     /**
+     * Sibling div positioned next to [editorElement] inside the shared
+     * scroll container, shown only when the pane is in image view
+     * (`state.isImageView`). Hosts the read-only image viewer (see
+     * `ImageViewer.paintImageViewer`). Distinct from the editor so
+     * neither host wipes the other's DOM, and so the contenteditable
+     * surface stays detached while the user is viewing an image.
+     */
+    private var imageViewerElement: HTMLElement? = null
+
+    /**
      * Wrapper element that owns the page's vertical scroll. Holds the
      * editor and the vault footer as siblings so they scroll together.
      * The editor itself no longer scrolls — its content height grows as
@@ -167,8 +177,10 @@ class MainScreen(
         val existingScroll = scrollWrapperElement
         val existingEditor = editorElement
         val existingBanner = restructureBannerElement
+        val existingImageViewer = imageViewerElement
         if (existingTitle != null && existingScroll != null &&
-            existingEditor != null && existingBanner != null
+            existingEditor != null && existingBanner != null &&
+            existingImageViewer != null
         ) {
             // Idempotent re-mount: AppShell rebuilds the pane chrome on
             // every navigation transition (back/forward stack changes
@@ -205,6 +217,10 @@ class MainScreen(
         val vaultFooter = buildVaultFooterElement()
         scrollWrapper.appendChild(vaultFooter)
         vaultFooterElement = vaultFooter
+
+        val imageViewer = buildImageViewerElement()
+        scrollWrapper.appendChild(imageViewer)
+        imageViewerElement = imageViewer
 
         val restructureBanner = buildRestructureBanner()
         root.appendChild(restructureBanner)
@@ -252,12 +268,24 @@ class MainScreen(
                 // unchanged means the overlay sits over an identical copy
                 // of itself; the next emission (isLoaded=true) repaints
                 // to the new content and the fade dissolves into it.
+                // Image view is "ready to paint" as soon as the new
+                // activeFileRel lands — there is no Document load step to
+                // wait on — so it bypasses the loading-skip and the
+                // crossfade also dissolves on the first emission that
+                // points at the image.
                 val skipPaint = pendingCrossfadeOverlay != null &&
-                    backing != null && !backing.isLoaded
+                    backing != null && !backing.isLoaded && !backing.isImageView
                 if (!skipPaint) {
                     if (backing == null) {
                         paintLoading(editor)
+                    } else if (backing.isImageView) {
+                        editor.style.display = "none"
+                        imageViewer.style.display = "flex"
+                        paintImageViewer(imageViewer, backing.activeFileRel)
+                        paintVaultFooter(vaultFooter, backing, viewModel, style)
                     } else {
+                        imageViewer.style.display = "none"
+                        editor.style.display = ""
                         reconcile(editor, backing)
                         paintVaultFooter(vaultFooter, backing, viewModel, style)
                     }
@@ -265,7 +293,9 @@ class MainScreen(
                     updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
                 }
                 val pending = pendingCrossfadeOverlay
-                if (pending != null && backing != null && backing.isLoaded) {
+                if (pending != null && backing != null &&
+                    (backing.isLoaded || backing.isImageView)
+                ) {
                     playCrossfade(pending)
                     pendingCrossfadeOverlay = null
                 }
@@ -1028,19 +1058,25 @@ class MainScreen(
     private var pendingResizeAnchor: HTMLElement? = null
 
     /**
-     * If [ev] hit an inline image span (carrying `data-img-src`), open
-     * the resize popover and suppress default caret placement. Returns
-     * `true` when the event was handled.
+     * If [ev] hit an inline image span (carrying `data-img-src`),
+     * navigate the pane to the image's read-only viewer instead of
+     * placing the caret. Returns `true` when the event was handled.
+     *
+     * The earlier `handleImageResizeMouseDown` dispatch (line ~358) wins
+     * for events that land on the bottom-right resize handle, so
+     * dragging to resize still works. Pixel-perfect resize via the
+     * popover is no longer reachable from a plain click; the popover
+     * machinery is left parked in case a future affordance wants to
+     * reopen it.
      */
     private fun handleImageMouseDown(ev: MouseEvent): Boolean {
         if (ev.button.toInt() != 0) return false
         val target = ev.target as? Node ?: return false
         val imgSpan = ancestorImageSpan(target) ?: return false
+        val src = imgSpan.getAttribute("data-img-src") ?: return false
         ev.preventDefault()
         ev.stopPropagation()
-        pendingResizeAnchor = imgSpan
-        val current = imgSpan.getAttribute("data-img-width")?.toIntOrNull()
-        imageResizePopover.open(imgSpan, current)
+        viewModel.navigateToVaultFile(src)
         return true
     }
 
@@ -1385,7 +1421,16 @@ class MainScreen(
         // the zoomed case shows the leaf bullet's prefix-stripped text
         // plus its line-level style.
         val (text, style) = when {
-            backing == null || !backing.isLoaded -> "" to null
+            backing == null -> "" to null
+            // Image view has no document to draw a title from — show
+            // the image filename (extension included so the user can
+            // tell `photo.png` from `photo.jpg`).
+            backing.isImageView -> {
+                val fileRel = backing.activeFileRel
+                val fileName = fileRel.substringAfterLast('/').ifBlank { "Untitled" }
+                fileName to null
+            }
+            !backing.isLoaded -> "" to null
             else -> viewModel.zoomInfo(backing)?.let { zoom ->
                 zoom.titleText.ifBlank { "(untitled)" } to zoom.style
             } ?: run {
@@ -1732,6 +1777,27 @@ class MainScreen(
             color = "var(--t-terminal-fg, #e6e6e6)"
         }
         return footer
+    }
+
+    /**
+     * Builds the sibling div that hosts the read-only image viewer (see
+     * `ImageViewer.paintImageViewer`). Hidden at mount; the state
+     * collector toggles `display` based on `state.isImageView`. Padding
+     * mirrors the editor's so the image sits in the same content gutter
+     * the user is used to.
+     */
+    private fun buildImageViewerElement(): HTMLElement {
+        val viewer = document.createElement("div") as HTMLElement
+        viewer.className = "notegrow-image-viewer"
+        viewer.setAttribute("contenteditable", "false")
+        viewer.style.apply {
+            display = "none"
+            paddingTop = "${style.editorPaddingTopPx}px"
+            paddingRight = "${style.editorPaddingRightPx}px"
+            paddingBottom = "${style.editorPaddingBottomPx}px"
+            paddingLeft = "${style.editorPaddingLeftPx}px"
+        }
+        return viewer
     }
 
     /**

@@ -73,8 +73,11 @@ fun paintVaultFooter(
     style: EditorStyle,
 ) {
     container.innerHTML = ""
-    if (!state.isLoaded) return
-    if (state.documentState == null) return
+    // The footer stays visible while the pane is in image view even
+    // though `isLoaded` is false (no document is loaded) — its whole
+    // job in that mode is to let the user navigate to a sibling file.
+    if (!state.isLoaded && !state.isImageView) return
+    if (state.documentState == null && !state.isImageView) return
     // Effective anchor file: when zoomed into a promoted-ref bullet, the
     // visible content belongs to the child file — use *that* as the
     // candidate anchor so the footer reflects what the user is actually
@@ -382,24 +385,23 @@ private fun buildEntryRow(
         rowDiv.appendChild(buildBulletGlyph(isFolder = false))
         rowDiv.appendChild(buildEntryLabel(entry.name))
 
-        if (entry.isImage) {
-            // Images aren't loadable as documents — render the row but
-            // skip the click handler so a tap doesn't trip switchActiveFile.
-            rowDiv.title = entry.pathRel
-        } else {
-            val navigate: (org.w3c.dom.events.Event) -> Unit = { event ->
-                val me = event as MouseEvent
-                me.stopPropagation()
-                me.preventDefault()
-                viewModel.navigateToVaultFile(entry.pathRel)
-            }
-            rowDiv.addEventListener("mousedown", { event ->
-                val me = event as MouseEvent
-                me.stopPropagation()
-                me.preventDefault()
-            })
-            rowDiv.addEventListener("click", navigate)
+        // Image entries route through the same `navigateToVaultFile`
+        // intent as notes — the pane VM detects the extension and skips
+        // the document-registry acquire, leaving the editor surface to
+        // swap to the read-only image viewer.
+        if (entry.isImage) rowDiv.title = entry.pathRel
+        val navigate: (org.w3c.dom.events.Event) -> Unit = { event ->
+            val me = event as MouseEvent
+            me.stopPropagation()
+            me.preventDefault()
+            viewModel.navigateToVaultFile(entry.pathRel)
         }
+        rowDiv.addEventListener("mousedown", { event ->
+            val me = event as MouseEvent
+            me.stopPropagation()
+            me.preventDefault()
+        })
+        rowDiv.addEventListener("click", navigate)
     }
     return rowDiv
 }

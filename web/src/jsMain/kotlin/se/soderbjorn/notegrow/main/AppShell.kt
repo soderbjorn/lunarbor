@@ -61,6 +61,7 @@ import se.soderbjorn.darkness.web.shell.AppShellSpec
 import se.soderbjorn.darkness.web.shell.TopbarAction
 import se.soderbjorn.darkness.web.shell.mountAppShell
 import se.soderbjorn.notegrow.data.InlineMarkdownTokenizer
+import se.soderbjorn.notegrow.data.NoteRepository
 
 /**
  * Top-level shell that wires the darkness-toolkit windowing system
@@ -1285,6 +1286,17 @@ class AppShell(
      */
     private fun parentFileOf(fileRel: String, rootFileName: String): String? {
         if (fileRel == rootFileName) return null
+        // Images don't follow the doubled-name convention — they sit
+        // directly inside whatever directory the user dropped them in
+        // and have no "own" folder to skip past. "Up" means the anchor
+        // file of the directory they live in, or the root file when
+        // the image is at the vault root.
+        if (NoteRepository.isImagePath(fileRel)) {
+            val parentDir = fileRel.substringBeforeLast('/', "")
+            if (parentDir.isEmpty()) return rootFileName
+            val parentName = parentDir.substringAfterLast('/')
+            return "$parentDir/$parentName.md"
+        }
         val withoutFile = fileRel.substringBeforeLast('/', "")
         if (withoutFile.isEmpty()) return null
         val parentFolder = withoutFile.substringBeforeLast('/', "")
