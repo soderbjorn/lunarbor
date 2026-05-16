@@ -123,6 +123,15 @@ data class StyledRun(
     val imageAlt: String? = null,
     /** Image width in CSS pixels parsed from `|<digits>` at the end of the alt. */
     val imageWidthPx: Int? = null,
+    /**
+     * For image runs, the number of source characters the
+     * `![…](…)` syntax occupies, starting at [modelStart]. The
+     * renderer attaches this to the image span as a `data-*`
+     * attribute so click-to-cursor mapping can step *past* the
+     * image (treating it as one atomic glyph) rather than collapsing
+     * to the same model column as a click before it.
+     */
+    val imageSourceLen: Int? = null,
 )
 
 /**
@@ -203,6 +212,68 @@ object InlineMarkdownTokenizer {
             markerCols = parser.markerCols,
         )
     }
+
+    /**
+     * If a markdown image `![alt](src)` starts at [pos] in [text],
+     * return the position one past the closing `)` (i.e. the exclusive
+     * source end of the image syntax). Returns `null` when the
+     * substring at [pos] does not start a well-formed image.
+     *
+     * Used by the editor's `backspace` to detect "cursor is just after
+     * an image" so a single press can delete the whole syntax atomically
+     * rather than the dangling `)` that a one-char delete would leave
+     * behind.
+     */
+    fun imageEndAt(text: String, pos: Int): Int? {
+        if (pos < 0 || pos >= text.length) return null
+        if (text[pos] != '!') return null
+        if (pos + 1 >= text.length || text[pos + 1] != '[') return null
+        val syntax = parseLinkSyntaxAtTopLevel(text, pos + 1) ?: return null
+        return syntax.closingParen + 1
+    }
+}
+
+/** File-private helper used by both the [Parser] class and the
+ *  [InlineMarkdownTokenizer.imageEndAt] entry point. Pure structural
+ *  parse of `[label](dest)` starting at the `[` at [bracketPos]. */
+internal data class TopLevelLinkSyntax(val labelEnd: Int, val closingParen: Int, val destination: String)
+
+internal fun parseLinkSyntaxAtTopLevel(text: String, bracketPos: Int): TopLevelLinkSyntax? {
+    if (bracketPos >= text.length || text[bracketPos] != '[') return null
+    var i = bracketPos + 1
+    while (i < text.length) {
+        val c = text[i]
+        if (c == '\\' && i + 1 < text.length) { i += 2; continue }
+        if (c == ']') break
+        if (c == '[') return null
+        i++
+    }
+    if (i >= text.length || text[i] != ']') return null
+    val labelEnd = i
+    if (labelEnd + 1 >= text.length || text[labelEnd + 1] != '(') return null
+    val urlOpen = labelEnd + 2
+    val urlContentStart: Int
+    val urlContentEnd: Int
+    val closingParen: Int
+    if (urlOpen < text.length && text[urlOpen] == '<') {
+        val angleEnd = text.indexOf('>', urlOpen + 1)
+        if (angleEnd < 0) return null
+        if (angleEnd + 1 >= text.length || text[angleEnd + 1] != ')') return null
+        urlContentStart = urlOpen + 1
+        urlContentEnd = angleEnd
+        closingParen = angleEnd + 1
+    } else {
+        val parenEnd = text.indexOf(')', urlOpen)
+        if (parenEnd < 0) return null
+        urlContentStart = urlOpen
+        urlContentEnd = parenEnd
+        closingParen = parenEnd
+    }
+    return TopLevelLinkSyntax(
+        labelEnd = labelEnd,
+        closingParen = closingParen,
+        destination = text.substring(urlContentStart, urlContentEnd),
+    )
 }
 
 private class Parser(val text: String) {
@@ -444,6 +515,7 @@ private class Parser(val text: String) {
             imageSrc = parsed.destination,
             imageAlt = alt,
             imageWidthPx = width,
+            imageSourceLen = totalLen,
         )
         // Fold every source char of the image into markerCols.
         markMarker(pos, totalLen)
@@ -452,53 +524,12 @@ private class Parser(val text: String) {
         return true
     }
 
-    /** Parsed shape of a `[label](dest)` form. `labelEnd` is the index of
-     *  `]`; `closingParen` is the index of the final `)`. */
-    private data class LinkSyntax(val labelEnd: Int, val closingParen: Int, val destination: String)
-
-    /**
-     * Pure structural parse of `[label](dest)` starting at the `[` at
-     * [bracketPos]. Honors backslash escapes inside the label and
-     * `<…>` wrapping for the destination. Returns `null` if the syntax
-     * doesn't match. Shared by [tryConsumeLink] and [tryConsumeImage].
-     */
-    private fun parseLinkSyntaxAt(bracketPos: Int): LinkSyntax? {
-        if (bracketPos >= text.length || text[bracketPos] != '[') return null
-        var i = bracketPos + 1
-        while (i < text.length) {
-            val c = text[i]
-            if (c == '\\' && i + 1 < text.length) { i += 2; continue }
-            if (c == ']') break
-            if (c == '[') return null
-            i++
-        }
-        if (i >= text.length || text[i] != ']') return null
-        val labelEnd = i
-        if (labelEnd + 1 >= text.length || text[labelEnd + 1] != '(') return null
-        val urlOpen = labelEnd + 2
-        val urlContentStart: Int
-        val urlContentEnd: Int
-        val closingParen: Int
-        if (urlOpen < text.length && text[urlOpen] == '<') {
-            val angleEnd = text.indexOf('>', urlOpen + 1)
-            if (angleEnd < 0) return null
-            if (angleEnd + 1 >= text.length || text[angleEnd + 1] != ')') return null
-            urlContentStart = urlOpen + 1
-            urlContentEnd = angleEnd
-            closingParen = angleEnd + 1
-        } else {
-            val parenEnd = text.indexOf(')', urlOpen)
-            if (parenEnd < 0) return null
-            urlContentStart = urlOpen
-            urlContentEnd = parenEnd
-            closingParen = parenEnd
-        }
-        return LinkSyntax(
-            labelEnd = labelEnd,
-            closingParen = closingParen,
-            destination = text.substring(urlContentStart, urlContentEnd),
-        )
-    }
+    /** Parsed shape of a `[label](dest)` form — typealias of the
+     *  file-private [TopLevelLinkSyntax] so the Parser can reuse the
+     *  shared [parseLinkSyntaxAtTopLevel] helper without duplicating
+     *  its parsing logic. */
+    private fun parseLinkSyntaxAt(bracketPos: Int): TopLevelLinkSyntax? =
+        parseLinkSyntaxAtTopLevel(text, bracketPos)
 
     /**
      * Split `"alt|300"` into `("alt", 300)` and `"plain"` into

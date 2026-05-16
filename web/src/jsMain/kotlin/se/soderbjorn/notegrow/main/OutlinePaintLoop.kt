@@ -339,6 +339,28 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
             span.textContent = run.text
             wrapper.appendChild(span)
         }
+        // When every run is zero-width (e.g. the line contains only an
+        // inline image, since image runs carry empty text), the wrapper
+        // has no text node the browser can paint a caret next to.
+        // Chromium quietly refuses to draw a caret anchored "between
+        // two inline elements" — the symptom is "no visible cursor
+        // until you type a character." The fix is a placeholder text
+        // node containing a single zero-width space (U+200B). Anchoring
+        // the caret inside that text node gives Chromium an explicit
+        // glyph-position anchor; the ZWSP itself is invisible.
+        //
+        // Column math elsewhere (`displayColForDomPosition`,
+        // `imageSourceColsPastOffset`, `locateDomPosition`) treats the
+        // placeholder as a normal trailing run — it contributes 1
+        // character to source length but, since `displayText` is
+        // empty by construction, no `domToModel` entries reference
+        // it, so it never falsifies the click→model mapping.
+        if (tokenized.displayText.isEmpty()) {
+            val empty = document.createElement("span") as HTMLElement
+            empty.className = "notegrow-text-run notegrow-caret-placeholder"
+            empty.appendChild(document.createTextNode("​"))
+            wrapper.appendChild(empty)
+        }
     }
     return wrapper
 }
@@ -454,6 +476,9 @@ internal fun createImageRunElement(run: StyledRun, baseRunClass: String?): HTMLE
     span.setAttribute("data-img-src", src)
     run.imageWidthPx?.let { span.setAttribute("data-img-width", it.toString()) }
     run.imageAlt?.takeIf { it.isNotEmpty() }?.let { span.setAttribute("data-img-alt", it) }
+    // Source-side `![…](…)` length, so the click→cursor mapper can
+    // step past this atomic glyph instead of collapsing to its start.
+    run.imageSourceLen?.let { span.setAttribute("data-img-source-len", it.toString()) }
     val img = document.createElement("img") as HTMLImageElement
     img.src = notegrowAssetUrl(src)
     img.alt = run.imageAlt ?: ""

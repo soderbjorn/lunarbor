@@ -42,11 +42,16 @@ import se.soderbjorn.notegrow.platform.FileSystem
 /**
  * One entry in the filesystem-tree footer's lazy-loaded directory listing.
  *
- * @property name Display name. For files this is the basename minus `.md`;
- *   for directories it's the directory name.
+ * @property name Display name. For `.md` files this is the basename minus
+ *   the extension; for image files it's the full basename including the
+ *   extension (so `.png` and `.jpg` siblings of the same stem don't
+ *   collide visually); for directories it's the directory name.
  * @property pathRel Path relative to the vault root.
- * @property isDirectory `true` for subdirectories, `false` for `.md` files.
- *   Files of other extensions are filtered out before reaching this type.
+ * @property isDirectory `true` for subdirectories, `false` for files.
+ * @property isImage `true` when [pathRel] points at an image file
+ *   (extension in [NoteRepository.IMAGE_EXTENSIONS]). The footer renders
+ *   image rows with an image glyph and no navigation handler — images
+ *   can't be loaded as documents, so clicking is a no-op.
  * @property lastEditedMs Last-modified timestamp of the underlying file in
  *   milliseconds since the Unix epoch. `0` for directories and on platforms
  *   that cannot provide one. Used by the vault footer's last-edit sort mode.
@@ -55,6 +60,7 @@ data class VaultEntry(
     val name: String,
     val pathRel: String,
     val isDirectory: Boolean,
+    val isImage: Boolean = false,
     val lastEditedMs: Long = 0L,
 )
 
@@ -800,14 +806,26 @@ class NoteRepository(
                 )
                 continue
             }
-            if (!entry.name.endsWith(NOTE_EXTENSION)) continue
-            val displayName = entry.name.removeSuffix(NOTE_EXTENSION)
-            out += VaultEntry(
-                name = displayName,
-                pathRel = pathRel,
-                isDirectory = false,
-                lastEditedMs = entry.lastModifiedMs,
-            )
+            if (entry.name.endsWith(NOTE_EXTENSION)) {
+                val displayName = entry.name.removeSuffix(NOTE_EXTENSION)
+                out += VaultEntry(
+                    name = displayName,
+                    pathRel = pathRel,
+                    isDirectory = false,
+                    lastEditedMs = entry.lastModifiedMs,
+                )
+                continue
+            }
+            val lowerName = entry.name.lowercase()
+            if (IMAGE_EXTENSIONS.any { lowerName.endsWith(it) }) {
+                out += VaultEntry(
+                    name = entry.name,
+                    pathRel = pathRel,
+                    isDirectory = false,
+                    isImage = true,
+                    lastEditedMs = entry.lastModifiedMs,
+                )
+            }
         }
         return out
     }

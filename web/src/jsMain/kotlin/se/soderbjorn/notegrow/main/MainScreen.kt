@@ -844,7 +844,52 @@ class MainScreen(
             val clamped = displayCol.coerceIn(0, rowMap.domToModel.size - 1)
             rowMap.domToModel[clamped]
         } else displayCol
-        return row to (prefixLen + editableCol)
+        // Inline images render as zero-display-char atoms, so a click
+        // *past* an image collapses to the same display column as a
+        // click *before* it — model col would land at the leading `!`
+        // either way. Add up the source-side length of every image
+        // child the click skipped over so the caret lands after the
+        // closing `)` instead.
+        val imagePastCols = imageSourceColsPastOffset(textSpan, node, offset)
+        return row to (prefixLen + editableCol + imagePastCols)
+    }
+
+    /**
+     * Sum the `data-img-source-len` of every image child the click
+     * landed past. Returns 0 when the click was inside a non-image
+     * run (the existing display→model machinery is fully correct in
+     * that case).
+     *
+     * "Past" means: the [node] is the `.notegrow-text` wrapper itself
+     * and [offset] is a child index that includes one or more image
+     * spans, OR the [node] is an inline-style run that follows an
+     * image in the wrapper.
+     */
+    private fun imageSourceColsPastOffset(textSpan: HTMLElement, node: Node, offset: Int): Int {
+        val children = textSpan.children
+        // Determine the upper bound (exclusive) of children we walked
+        // past. When the click target is the wrapper, that's the
+        // offset itself. When the click target is a child run, it's
+        // the index of that child.
+        val cap: Int = if (node === textSpan) {
+            offset.coerceAtMost(children.length)
+        } else {
+            var found = -1
+            for (i in 0 until children.length) {
+                val child = children.item(i) ?: continue
+                if (child === node || child.contains(node)) { found = i; break }
+                // Anchor sometimes lands on a deeper descendant; the
+                // outer iteration's `contains` check catches it.
+            }
+            if (found < 0) return 0 else found
+        }
+        var sum = 0
+        for (i in 0 until cap) {
+            val child = children.item(i) as? Element ?: continue
+            val len = child.getAttribute("data-img-source-len")?.toIntOrNull() ?: continue
+            sum += len
+        }
+        return sum
     }
 
     /**
@@ -1197,41 +1242,62 @@ class MainScreen(
         val prefixLen = rowDiv.getAttribute("data-prefix-len")?.toIntOrNull() ?: 0
         val textSpan = rowDiv.querySelector(".notegrow-text") as? HTMLElement ?: return null
         val editableCol = (col - prefixLen).coerceAtLeast(0)
-        val rowMap = rowColumnMapOf(rowDiv)
-        val displayCol = if (rowMap != null) {
-            val clamped = editableCol.coerceIn(0, rowMap.modelToDom.size - 1)
-            rowMap.modelToDom[clamped]
-        } else editableCol
 
-        // Walk run-span children until we find the one that contains displayCol.
+        // Walk run-span children by SOURCE column rather than display
+        // column. Most runs contribute `textContent.length` source
+        // chars (since hidden markers like `**…**` fold their length
+        // into surrounding runs), but inline-image runs contribute
+        // their `data-img-source-len` despite carrying zero display
+        // chars. Walking by display col would always match the first
+        // image span at offset 0 — collapsing into the
+        // contenteditable=false element where the browser refuses to
+        // draw a caret.
         val children = textSpan.children
         var consumed = 0
         for (i in 0 until children.length) {
             val child = children.item(i) as? HTMLElement ?: continue
-            val len = child.textContent?.length ?: 0
-            if (displayCol <= consumed + len) {
-                // Empty run spans (blank rows) carry a `<br>` placeholder so
-                // the browser can find them during ArrowUp/ArrowDown — but
-                // anchoring the selection on the `<br>` itself is fragile.
-                // Anchor on the run span instead at offset 0.
+            val isImage = child.hasAttribute("data-img-source-len")
+            val sourceLen = if (isImage)
+                child.getAttribute("data-img-source-len")?.toIntOrNull() ?: 0
+            else
+                child.textContent?.length ?: 0
+            val remaining = editableCol - consumed
+            if (isImage) {
+                // Image atoms can't host a caret inside. If the target
+                // column falls strictly inside the image's source span,
+                // anchor on the wrapper at this child's index (before
+                // the image). Otherwise consume the image and let the
+                // next iteration anchor in a sibling — important
+                // because Chromium will refuse to paint a caret at
+                // "wrapper offset i+1" when child `i+1` lacks a text
+                // node; falling through lets us anchor INSIDE the
+                // zero-width-space placeholder when present.
+                if (remaining < sourceLen) return textSpan to i
+                consumed += sourceLen
+                continue
+            }
+            if (remaining <= sourceLen) {
                 val textNode = child.firstChild?.takeIf { it.nodeType.toInt() == 3 }
                 return if (textNode != null) {
-                    textNode to (displayCol - consumed).coerceAtLeast(0)
+                    textNode to remaining.coerceAtLeast(0)
                 } else {
+                    // Empty run span (blank-row `<br>` placeholder).
+                    // Anchor on the span itself.
                     child to 0
                 }
             }
-            consumed += len
+            consumed += sourceLen
         }
-        // Past the end — drop to the last text node, or the wrapper if there are no children.
+        // Past the end — drop to the last text node, or the wrapper.
         val lastChild = textSpan.lastElementChild
         val lastTextNode = lastChild?.firstChild?.takeIf { it.nodeType.toInt() == 3 }
         return if (lastTextNode != null) {
             lastTextNode to (lastTextNode.nodeValue?.length ?: 0)
-        } else if (lastChild != null) {
-            lastChild to 0
         } else {
-            textSpan to 0
+            // Anchor on the wrapper at the very end. With our trailing
+            // `<br>` placeholder this gives the browser a caret slot
+            // past every image / atomic glyph on the line.
+            textSpan to children.length.toInt()
         }
     }
 

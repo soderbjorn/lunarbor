@@ -658,12 +658,57 @@ class PaneBackingViewModel(
         }
     }
 
-    /** See [TextEditingViewModel.backspace]. */
+    /** See [TextEditingViewModel.backspace].
+     *
+     *  Adds one image-specific behavior: when the caret sits immediately
+     *  after a markdown image `![…](…)` (no selection, same row), a
+     *  single backspace deletes the entire image syntax atomically.
+     *  Otherwise it falls through to the standard character-by-character
+     *  deletion path. Without this special case the user would have to
+     *  press backspace once for every char of `![alt](path)` because
+     *  the syntax has no visible characters — the first press would
+     *  silently delete `)` and leave the image visually intact but
+     *  syntactically broken. */
     fun backspace() {
+        if (tryBackspaceImage()) return
         recordEdit(FrameKind.BACKSPACE) {
             commitPlaceholderIfAny()
             textEditing.backspace()
         }
+    }
+
+    /** Returns `true` and performs an atomic image-syntax deletion when
+     *  the caret is positioned at the source-end of an inline image on
+     *  the current row with no active selection. */
+    private fun tryBackspaceImage(): Boolean {
+        val state = _stateFlow.value
+        if (state.anchorRow != null) return false
+        val docState = state.documentState ?: return false
+        if (!docState.isLoaded) return false
+        val row = state.cursorRow
+        if (row !in docState.lines.indices) return false
+        val col = state.cursorCol
+        if (col <= 0) return false
+        val line = docState.lines[row]
+        // Walk through every `![` in the line — for each, check whether
+        // its parsed source-end equals the cursor column. Cheap because
+        // most lines have at most one image; the tokenizer would be
+        // overkill compared to a direct `imageEndAt` probe.
+        var probe = line.indexOf("![")
+        while (probe >= 0) {
+            val end = InlineMarkdownTokenizer.imageEndAt(line, probe)
+            if (end != null && end == col) {
+                recordEdit(FrameKind.OTHER) {
+                    commitPlaceholderIfAny()
+                    val d = currentDocument()
+                    d.delete(row, probe, row, end)
+                    patch { it.copy(cursorCol = probe, anchorRow = null, anchorCol = null) }
+                }
+                return true
+            }
+            probe = line.indexOf("![", startIndex = probe + 2)
+        }
+        return false
     }
 
     /** See [TextEditingViewModel.indentLine]. */

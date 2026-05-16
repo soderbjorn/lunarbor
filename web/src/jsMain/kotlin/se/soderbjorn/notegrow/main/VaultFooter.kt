@@ -375,25 +375,31 @@ private fun buildEntryRow(
         })
         rowDiv.addEventListener("click", toggle)
     } else {
-        val fileIcon = buildVaultFileIcon()
+        val fileIcon = if (entry.isImage) buildVaultImageIcon() else buildVaultFileIcon()
         fileIcon.style.left = "${depth * style.indentStepPx - 22}px"
         rowDiv.appendChild(fileIcon)
 
         rowDiv.appendChild(buildBulletGlyph(isFolder = false))
         rowDiv.appendChild(buildEntryLabel(entry.name))
 
-        val navigate: (org.w3c.dom.events.Event) -> Unit = { event ->
-            val me = event as MouseEvent
-            me.stopPropagation()
-            me.preventDefault()
-            viewModel.navigateToVaultFile(entry.pathRel)
+        if (entry.isImage) {
+            // Images aren't loadable as documents — render the row but
+            // skip the click handler so a tap doesn't trip switchActiveFile.
+            rowDiv.title = entry.pathRel
+        } else {
+            val navigate: (org.w3c.dom.events.Event) -> Unit = { event ->
+                val me = event as MouseEvent
+                me.stopPropagation()
+                me.preventDefault()
+                viewModel.navigateToVaultFile(entry.pathRel)
+            }
+            rowDiv.addEventListener("mousedown", { event ->
+                val me = event as MouseEvent
+                me.stopPropagation()
+                me.preventDefault()
+            })
+            rowDiv.addEventListener("click", navigate)
         }
-        rowDiv.addEventListener("mousedown", { event ->
-            val me = event as MouseEvent
-            me.stopPropagation()
-            me.preventDefault()
-        })
-        rowDiv.addEventListener("click", navigate)
     }
     return rowDiv
 }
@@ -495,6 +501,38 @@ private fun buildVaultFileIcon(): HTMLElement {
         "stroke-linejoin=\"round\" style=\"pointer-events: none;\">" +
         "<path d=\"M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z\"/>" +
         "<polyline points=\"14 3 14 9 20 9\"/></svg>"
+    return target
+}
+
+/**
+ * Leading icon for an image-file row. Same 22px slot and styling as
+ * [buildVaultFileIcon] so image rows line up with note rows. Uses the
+ * standard "picture-frame with mountain + sun" glyph so the file kind is
+ * legible at a glance. The row carries no click listener — images are
+ * not loadable as Notegrow documents.
+ */
+private fun buildVaultImageIcon(): HTMLElement {
+    val target = document.createElement("div") as HTMLElement
+    target.className = "notegrow-vault-file-icon notegrow-vault-image-icon"
+    target.setAttribute("contenteditable", "false")
+    target.style.apply {
+        setProperty("position", "absolute")
+        top = "0"
+        width = "22px"
+        height = "100%"
+        display = "flex"
+        alignItems = "center"
+        justifyContent = "center"
+        color = "var(--t-text-tertiary, #7a7a7a)"
+        setProperty("user-select", "none")
+        setProperty("pointer-events", "none")
+    }
+    target.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"11\" height=\"11\" fill=\"none\" " +
+        "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
+        "stroke-linejoin=\"round\" style=\"pointer-events: none;\">" +
+        "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/>" +
+        "<circle cx=\"8.5\" cy=\"9.5\" r=\"1.5\"/>" +
+        "<polyline points=\"3 17 9 12 13 16 17 12 21 16\"/></svg>"
     return target
 }
 
