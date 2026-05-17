@@ -43,7 +43,28 @@ if (layoutToolkitArg) {
   contextBridge.exposeInMainWorld("__darknessLayoutToolkitState", value);
 }
 
+// Authoritative window-chrome flag passed by main.js, sourced from the
+// cached `electron-chrome.json`. The toolkit's
+// `autoApplyCustomTitleBarBodyClass` reads this to toggle the
+// `dt-custom-titlebar` body class synchronously, so the 80 px
+// traffic-light reservation on `.dt-topbar` applies on the very first
+// frame (the stock `ElectronIpcPersister` doesn't round-trip
+// THEME_SNAPSHOT, so the async snapshot read can't deliver this).
+const customTitleBarArg = (process.argv || []).find(a => a && a.startsWith("--darkness-custom-titlebar="));
+const customTitleBarBoot = customTitleBarArg
+  ? customTitleBarArg.substring("--darkness-custom-titlebar=".length) === "true"
+  : false;
+
 contextBridge.exposeInMainWorld("darknessApi", {
+  /**
+   * Boot-time custom-titlebar flag from the main process's
+   * `electron-chrome.json` cache. Consumed by darkness-toolkit's
+   * `autoApplyCustomTitleBarBodyClass` to set `dt-custom-titlebar`
+   * before the async persister read completes.
+   *
+   * @type {boolean}
+   */
+  customTitleBar: customTitleBarBoot,
   /** Persist UI settings JSON to the shared darkness location. */
   writeUiSettings: (json) => ipcRenderer.invoke("darkness:writeUiSettings", json),
   /** Read UI settings JSON from the shared darkness location, or null. */

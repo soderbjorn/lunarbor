@@ -449,6 +449,13 @@ private fun createWindow() {
     if (layoutToolkitJson != null) {
         additionalArguments += "--darkness-layout-toolkit-state=${js("encodeURIComponent")(layoutToolkitJson)}"
     }
+    // Authoritative window-chrome flag from `electron-chrome.json`. The
+    // renderer can't recover this from the toolkit's `ThemeSnapshot` —
+    // the stock `ElectronIpcPersister` doesn't round-trip THEME_SNAPSHOT,
+    // so the boolean would otherwise be lost across restarts. The toolkit's
+    // `autoApplyCustomTitleBarBodyClass` consumes this preload-exposed
+    // value to set `dt-custom-titlebar` synchronously on the first frame.
+    additionalArguments += "--darkness-custom-titlebar=${chromePrefs.customTitleBar}"
 
     val options: dynamic = js("({})")
     options.width = 1024
