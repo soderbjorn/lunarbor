@@ -23,7 +23,7 @@ These were the first suspects; all check out in source:
 
 ### H1 — Stale Electron bundle (most likely)
 
-`runClean.sh` builds the web JS and copies it to `electron/resources/web/web.js`. If the user is running Electron from a previously-built bundle from before the most recent paint/wireInputListeners fixes (the last few WIP commits did touch both), they would see old broken behavior even though `git diff` shows working code.
+`scripts/runClean.sh` builds the web JS and copies it to `electron/resources/web/web.js`. If the user is running Electron from a previously-built bundle from before the most recent paint/wireInputListeners fixes (the last few WIP commits did touch both), they would see old broken behavior even though `git diff` shows working code.
 
 **Diagnostic:** check the mtime of `electron/resources/web/web.js` vs the most recent edits to `OutlinePaintLoop.kt` / `MainScreen.kt`. Sample command:
 ```bash
@@ -31,7 +31,7 @@ stat -f "%Sm %N" electron/resources/web/web.js \
   web/src/jsMain/kotlin/se/soderbjorn/notegrow/main/OutlinePaintLoop.kt \
   web/src/jsMain/kotlin/se/soderbjorn/notegrow/main/MainScreen.kt
 ```
-If the bundle is older than the .kt files, run `./runClean.sh` and re-launch.
+If the bundle is older than the .kt files, run `./scripts/runClean.sh` and re-launch.
 
 ### H2 — Pane container clobbers the editor mid-mount
 
@@ -80,7 +80,7 @@ The fbdcec6 WIP removed several `.dt-app-frame …` override blocks from `ensure
 
 ## Suggested fix order
 
-1. **Rebuild and relaunch** (`./runClean.sh && open electron/...`). Rule out H1 entirely before code-diving.
+1. **Rebuild and relaunch** (`./scripts/runClean.sh && open electron/...`). Rule out H1 entirely before code-diving.
 2. **DOM sanity in dev tools** — `document.querySelectorAll('.notegrow-editor').length`, computed style of `.notegrow-editor`, presence of `.notegrow-bullet` spans for known bullet lines. Catches H2, H5, H6 in seconds.
 3. **Console-log `mousedown` and `beforeinput` at the editor element** (see H3, H4 snippets). Catches H3 and H4.
 4. **If H2 confirmed**: add a guard to `MainScreen.render` that compares the incoming `root` to `rootElement` and replaces children atomically rather than relying on the four-element null check. Also clear `editorElement = null` whenever the editor is intentionally detached (e.g. AppShell drops the pane).
