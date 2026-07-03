@@ -1,4 +1,4 @@
-rootProject.name = "Notegrow"
+rootProject.name = "TreeFacts"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {
@@ -26,7 +26,7 @@ dependencyResolutionManagement {
         }
         mavenCentral()
         // Committed file-Maven-repo holding darkness-toolkit artifacts. Lets
-        // notegrow build with no darkness-toolkit checkout on disk. Refresh
+        // treefacts build with no darkness-toolkit checkout on disk. Refresh
         // from the toolkit checkout with `./gradlew publishAllToLibsRepo`.
         maven {
             name = "darknessLibsLocal"
@@ -36,7 +36,7 @@ dependencyResolutionManagement {
 }
 
 // Auto-detect a sibling darkness-toolkit checkout. When present, switch to a
-// Gradle composite build so toolkit edits flow into notegrow with no extra
+// Gradle composite build so toolkit edits flow into treefacts with no extra
 // steps. Pass -Pdarkness.toolkit.useArtifacts=true to force resolution from
 // the committed libs-repo even when sources are present (verifies published
 // artifacts). Pass -Pdarkness.toolkit.path=… to point at an explicit checkout.

@@ -1,11 +1,11 @@
 # Promotion policy — scalability analysis
 
-Notes on how `PromotionPolicy` behaves when a single Notegrow tree is used as
+Notes on how `PromotionPolicy` behaves when a single TreeFacts tree is used as
 the user's entire knowledge base, and what to do about it.
 
 ## The current rules
 
-From `client/src/commonMain/kotlin/se/soderbjorn/notegrow/data/PromotionPolicy.kt`:
+From `client/src/commonMain/kotlin/se/soderbjorn/treefacts/data/PromotionPolicy.kt`:
 
 **Promote** (`shouldPromote`) requires *all* of:
 

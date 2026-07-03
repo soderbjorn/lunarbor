@@ -44,7 +44,7 @@ kotlin {
 }
 
 android {
-    namespace = "se.soderbjorn.notegrow.client"
+    namespace = "se.soderbjorn.treefacts.client"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

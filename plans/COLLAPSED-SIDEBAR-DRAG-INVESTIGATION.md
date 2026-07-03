@@ -2,15 +2,15 @@
 
 ## Symptom
 
-In **notegrow** (Electron dev mode, macOS), when the left sidebar is fully collapsed (drag-to-close → 0-width placeholder), the user cannot grab the resize handle to drag it back open. They report seeing the macOS native window-resize cursor instead, suggesting the OS window-edge resize gutter is winning the events.
+In **treefacts** (Electron dev mode, macOS), when the left sidebar is fully collapsed (drag-to-close → 0-width placeholder), the user cannot grab the resize handle to drag it back open. They report seeing the macOS native window-resize cursor instead, suggesting the OS window-edge resize gutter is winning the events.
 
 Two iterations of CSS fixes were applied with **no observable difference**, even after a confirmed full Gradle rebuild + Electron restart by the user.
 
 ## What we know about the system
 
-### Sidebar mount path (notegrow)
+### Sidebar mount path (treefacts)
 
-- `notegrow/develop/web/src/jsMain/kotlin/se/soderbjorn/notegrow/main/AppShell.kt:596-636` calls `leftSidebarController.mountSidebarOrPlaceholder(...)`.
+- `treefacts/develop/web/src/jsMain/kotlin/se/soderbjorn/treefacts/main/AppShell.kt:596-636` calls `leftSidebarController.mountSidebarOrPlaceholder(...)`.
 - When the controller's `isOpen` is `false`, `mountSidebarOrPlaceholder` (in `darkness-toolkit/develop/toolkit-web/src/jsMain/kotlin/se/soderbjorn/darkness/web/shell/SidebarController.kt:260-306`) builds a placeholder `<aside>` with `width: 0`, `min-width: 0`, and adds the class `dt-sidebar-collapsed`. The resize handle from `attachSidebarResizeHandle` (in `Sidebar.kt:192-269`) is appended to it.
 
 So the placeholder + handle should exist in the DOM when "collapsed."
@@ -20,11 +20,11 @@ So the placeholder + handle should exist in the DOM when "collapsed."
 - Source CSS lives at `darkness-toolkit/develop/toolkit-web/src/jsMain/resources/darkness-toolkit.css`.
 - `darkness-toolkit/develop/toolkit-web/build.gradle.kts:25-54` defines `generateDarknessToolkitCssKt`, which reads the CSS and writes it as a Kotlin raw-string into `build/generated/source/darknessToolkitCss/jsMain/kotlin/se/soderbjorn/darkness/web/DarknessToolkitCssBundle.kt`. `inputs.file(cssFile)` is declared, so Gradle should re-run on CSS changes.
 - `AppShell.kt:46` (toolkit) calls `injectDarknessToolkitStyles()`, which appends a `<style>` tag with `DARKNESS_TOOLKIT_CSS_BUNDLE` to `document.head`.
-- notegrow consumes the toolkit via Gradle composite include — `notegrow/develop/settings.gradle.kts:53` does `includeBuild("../../darkness-toolkit/develop")` when the sibling exists.
+- treefacts consumes the toolkit via Gradle composite include — `treefacts/develop/settings.gradle.kts:53` does `includeBuild("../../darkness-toolkit/develop")` when the sibling exists.
 
-### Electron config (notegrow)
+### Electron config (treefacts)
 
-- `notegrow/develop/electron/main.js:111-122` creates a vanilla `BrowserWindow` — no `frame: false`, no `titleBarStyle`, no transparency. The OS provides standard chrome and the OS native resize gutter is in play at the window edges.
+- `treefacts/develop/electron/main.js:111-122` creates a vanilla `BrowserWindow` — no `frame: false`, no `titleBarStyle`, no transparency. The OS provides standard chrome and the OS native resize gutter is in play at the window edges.
 
 ### Layout structure (relevant z/painting)
 
@@ -97,7 +97,7 @@ getComputedStyle(document.querySelector('.dt-sidebar-collapsed > .dt-sidebar-res
 
 ### H2 — The collapsed-state DOM isn't what we think
 
-Maybe notegrow's collapse path doesn't actually mount the placeholder, or doesn't add `dt-sidebar-collapsed`, or removes the sidebar element entirely under some condition. The code path *looks* right (`AppShell.kt:596-636` → `mountSidebarOrPlaceholder`) but we haven't observed the live DOM.
+Maybe treefacts's collapse path doesn't actually mount the placeholder, or doesn't add `dt-sidebar-collapsed`, or removes the sidebar element entirely under some condition. The code path *looks* right (`AppShell.kt:596-636` → `mountSidebarOrPlaceholder`) but we haven't observed the live DOM.
 
 Diagnostic:
 ```js
@@ -117,7 +117,7 @@ Possibilities not investigated:
 - A renderer-level pointer-events listener or drag region.
 - The handle's `mousedown` listener fires on a parent that calls `stopPropagation` somewhere we haven't found.
 - A wrapping Compose/HTML element with `pointer-events: none` that we missed (grep showed none on the sidebar's ancestors, but not exhaustively).
-- An Electron preload script hooking mouse events. Worth grepping `notegrow/develop/electron/preload.js`.
+- An Electron preload script hooking mouse events. Worth grepping `treefacts/develop/electron/preload.js`.
 
 ## What we still have not done
 
@@ -127,7 +127,7 @@ These are the gaps. **Do these before the next code change.**
 2. **Inspect the live DOM** for the `.dt-sidebar-collapsed` element and its computed `getBoundingClientRect`.
 3. **Run `document.elementFromPoint(x, y)`** at the position the user is actually trying to grab. This separates "handle is missing" from "handle is covered" from "handle is present but you're aiming somewhere else."
 4. **Try grabbing 30-50px in from the window edge** to test H3.
-5. **Read `notegrow/develop/electron/preload.js`** for any mouse-event interference (H4).
+5. **Read `treefacts/develop/electron/preload.js`** for any mouse-event interference (H4).
 6. **Verify `frame: true` macOS resize-gutter width** — search Electron source or test with a contrived page that has a colored 1px-wide bar at varying x offsets to find empirically where OS resize stops winning.
 
 ## File pointers (current code)
@@ -136,14 +136,14 @@ These are the gaps. **Do these before the next code change.**
 - CSS codegen — `/Users/soderbjorn/repo/darkness/darkness-toolkit/develop/toolkit-web/build.gradle.kts:25-54`
 - Toolkit handle JS — `/Users/soderbjorn/repo/darkness/darkness-toolkit/develop/toolkit-web/src/jsMain/kotlin/se/soderbjorn/darkness/web/shell/Sidebar.kt:192-269`
 - Toolkit controller — `/Users/soderbjorn/repo/darkness/darkness-toolkit/develop/toolkit-web/src/jsMain/kotlin/se/soderbjorn/darkness/web/shell/SidebarController.kt:260-306`
-- notegrow shell — `/Users/soderbjorn/repo/darkness/notegrow/develop/web/src/jsMain/kotlin/se/soderbjorn/notegrow/main/AppShell.kt:596-636`
-- notegrow electron — `/Users/soderbjorn/repo/darkness/notegrow/develop/electron/main.js:111-122`
-- notegrow toolkit dep wiring — `/Users/soderbjorn/repo/darkness/notegrow/develop/settings.gradle.kts:38-53`
+- treefacts shell — `/Users/soderbjorn/repo/darkness/treefacts/develop/web/src/jsMain/kotlin/se/soderbjorn/treefacts/main/AppShell.kt:596-636`
+- treefacts electron — `/Users/soderbjorn/repo/darkness/treefacts/develop/electron/main.js:111-122`
+- treefacts toolkit dep wiring — `/Users/soderbjorn/repo/darkness/treefacts/develop/settings.gradle.kts:38-53`
 - Plan file (iteration 3) — `/Users/soderbjorn/.claude/plans/hidden-whistling-starlight.md`
 
 ## Wondering / loose threads
 
-- Does termtastic exhibit the same bug, or only notegrow? Termtastic uses `titleBarStyle: 'hiddenInset'` (when its custom title-bar pref is on) — different OS hit-zone behavior. Cross-checking would isolate whether this is notegrow-specific or toolkit-wide.
+- Does termtastic exhibit the same bug, or only treefacts? Termtastic uses `titleBarStyle: 'hiddenInset'` (when its custom title-bar pref is on) — different OS hit-zone behavior. Cross-checking would isolate whether this is treefacts-specific or toolkit-wide.
 - Is the visible hairline actually visible at all? `--t-border-default` defaulting to `#444` on a near-black editor background may be effectively invisible. Could be a hidden contributor to H3 — user can't *see* where to grab, so they default to the window edge.
 - The original handle (iteration 0) had `width: 8px; right: -3px` — handle at x: `[5, 13]` when expanded near edge. That nominally overlaps the OS gutter too, yet expanded-sidebar resize works. Why does the OS gutter only "win" when collapsed? Theory: when expanded, the sidebar has visible chrome that the user clicks into; when collapsed, the sidebar's visible footprint is gone and the user's aim drifts to the window edge. Supports H3.
 - Are there OTHER consumers of the toolkit CSS that we'd want to verify against? darkness-toolkit's own theme-editor preview window etc.

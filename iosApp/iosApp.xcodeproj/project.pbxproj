@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		C6A3B0A0045F71ADC3A0DD84 /* Notegrow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Notegrow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C6A3B0A0045F71ADC3A0DD84 /* TreeFacts.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TreeFacts.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -59,7 +59,7 @@
 		6FD99F0061FB15DC0498171B /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				C6A3B0A0045F71ADC3A0DD84 /* Notegrow.app */,
+				C6A3B0A0045F71ADC3A0DD84 /* TreeFacts.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -87,7 +87,7 @@
 			packageProductDependencies = (
 			);
 			productName = iosApp;
-			productReference = C6A3B0A0045F71ADC3A0DD84 /* Notegrow.app */;
+			productReference = C6A3B0A0045F71ADC3A0DD84 /* TreeFacts.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */

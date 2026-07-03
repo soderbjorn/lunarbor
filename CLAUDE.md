@@ -1,6 +1,6 @@
-# Notegrow — Architectural Guidelines
+# TreeFacts — Architectural Guidelines
 
-Notegrow is a Kotlin Multiplatform project. It follows a strict layered architecture modeled after the `framnafolk` and `almedalen` codebases. Keep the layers tight; don't blur responsibilities.
+TreeFacts is a Kotlin Multiplatform project. It follows a strict layered architecture modeled after the `framnafolk` and `almedalen` codebases. Keep the layers tight; don't blur responsibilities.
 
 ## The layers (outside → in)
 
@@ -124,11 +124,11 @@ Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppSc
 
 ## On-disk format
 
-Notes are persisted as plain CommonMark `.md` files. A Notegrow-managed file always starts with a YAML frontmatter marker:
+Notes are persisted as plain CommonMark `.md` files. A TreeFacts-managed file always starts with a YAML frontmatter marker:
 
 ```
 ---
-notegrow: true
+treefacts: true
 ---
 * A bullet
 * [Recipes](Recipes/Recipes.md)
@@ -137,7 +137,7 @@ notegrow: true
 
 - **Bullets**: `* ` followed by the title; nested bullets indent by 2 spaces per level (CommonMark-compatible).
 - **Promoted-subtree refs**: a bullet whose entire content is a CommonMark inline link `* [Title](Title/Title.md)`. The link target is always relative to the parent file's directory and follows the doubled-name `<Name>/<Name>.md` shape so root, child, and grandchild files all use the same resolution rule. Paths containing spaces (or `(`, `)`, `<`, `>`) are wrapped in angle brackets — `* [Shopping list](<Shopping list/Shopping list.md>)` — per CommonMark.
-- **Frontmatter as Notegrow marker**: `NoteRepository` only treats a markdown link as a promoted-subtree ref when the link's target file exists *and* has the `notegrow: true` marker. Files without it are treated as opaque foreign Markdown — Notegrow displays the bullet's link text verbatim, never auto-splices the file's content, and never rewrites the file. This is what makes it safe to drop a Notegrow tree into an Obsidian vault that already contains hand-authored notes.
+- **Frontmatter as TreeFacts marker**: `NoteRepository` only treats a markdown link as a promoted-subtree ref when the link's target file exists *and* has the `treefacts: true` marker. Files without it are treated as opaque foreign Markdown — TreeFacts displays the bullet's link text verbatim, never auto-splices the file's content, and never rewrites the file. This is what makes it safe to drop a TreeFacts tree into an Obsidian vault that already contains hand-authored notes.
 - **Parser/codec**: `client/src/commonMain/.../data/SubtreeCodec.kt` is the single place that parses and emits the link form; `NoteRepository.kt` owns the frontmatter and is the only thing that touches `FileSystem`.
 
 ## Zoom navigation

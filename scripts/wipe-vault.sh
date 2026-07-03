@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Deletes the Notegrow on-disk database at $HOME/notegrow-db.
+# Deletes the TreeFacts on-disk database at $HOME/treefacts-db.
 
 set -euo pipefail
 
-VAULT="$HOME/notegrow-db"
+VAULT="$HOME/treefacts-db"
 
 if [[ ! -e "$VAULT" ]]; then
   echo "Nothing to delete: $VAULT does not exist."

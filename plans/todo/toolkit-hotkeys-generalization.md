@@ -1,7 +1,7 @@
 # Toolkit Hotkeys — Generalization Plan
 
 Move generic keyboard-shortcut concerns into `darkness-toolkit` so all
-darkness apps (notegrow, termtastic, …) share one hotkey mechanism.
+darkness apps (treefacts, termtastic, …) share one hotkey mechanism.
 
 ## TL;DR
 
@@ -20,13 +20,13 @@ darkness apps (notegrow, termtastic, …) share one hotkey mechanism.
   like duplication are stale unused imports in `WindowConnection.kt`.
 - The remaining generic chord that *isn't* yet in the toolkit is
   `Cmd/Ctrl+/` — open the hotkeys cheatsheet — plus the modal it opens.
-  Today it lives in notegrow's `HotkeysModal.kt`.
+  Today it lives in treefacts's `HotkeysModal.kt`.
 - Apps already *can* extend the registry with custom chords —
   `HotkeyRegistry.register` is public.
 - The cheatsheet **content stays handpicked per app** — no auto-derive
   from the registry. Toolkit ships the modal shell (rendering,
   styling, `Cmd/Ctrl+/` binding, close behavior); each app passes in
-  its own list of groups/entries. Notegrow keeps its four groups
+  its own list of groups/entries. TreeFacts keeps its four groups
   (Outline navigation, Editor, Panes & tabs, App); termtastic supplies
   a smaller list. Toolkit also exports the canonical chord labels for
   `StandardHotkeys` so apps don't have to rewrite "Ctrl+Alt+→" by hand.
@@ -55,7 +55,7 @@ termtastic/web/.../main.kt                 ── bootViaToolkitShell()
 ```
 
 That last line is the toolkit's pane/tab-nav installer firing for
-termtastic, the exact same way it fires for notegrow.
+termtastic, the exact same way it fires for treefacts.
 
 What looks like duplication is purely cosmetic:
 
@@ -129,7 +129,7 @@ Auto-wiring sites:
 Both fire for **both** apps because both go through `mountAppShell`
 + `LayoutRenderer` + `renderTabBar`.
 
-### Notegrow
+### TreeFacts
 
 - Gets pane-nav and tab-nav for free via the toolkit.
 - App-only chords as document-level `keydown` listeners in
@@ -138,12 +138,12 @@ Both fire for **both** apps because both go through `mountAppShell`
   - `installNavigateToShortcut` — `Cmd/Ctrl+O` opens "Navigate to file".
   - `installStarredShortcut` — `Cmd/Ctrl+S` opens Starred bookmarks.
   - `installHotkeysShortcut` — `Cmd/Ctrl+/` opens `HotkeysModal`.
-- `HotkeysModal.kt` — notegrow-local cheatsheet modal listing every
+- `HotkeysModal.kt` — treefacts-local cheatsheet modal listing every
   chord. Data source is the in-file `HOTKEY_GROUPS` constant —
   hand-maintained, not driven by the registry, so it can drift.
 - Outline-zoom (`Opt+Cmd+Enter/↑/←/→`, `Esc`) and editor chords
   (`Cmd+B/I/A/Z`, `Tab`, `Shift+Tab`) live inside
-  `MainScreen.handleKey`. Notegrow-specific; not toolkit candidates.
+  `MainScreen.handleKey`. TreeFacts-specific; not toolkit candidates.
 
 ### Termtastic
 
@@ -165,10 +165,10 @@ Both fire for **both** apps because both go through `mountAppShell`
 | `Ctrl+Alt+Shift+←/→` | Previous / Next tab | **Toolkit** — already there, both apps |
 | `Cmd/Ctrl+/` | Open hotkeys cheatsheet | **Toolkit** — promote modal |
 | `Cmd/Ctrl+P` | Command palette | App — palette content is app-specific |
-| `Cmd/Ctrl+O` | Navigate to file | App — notegrow-specific |
-| `Cmd/Ctrl+S` | Starred bookmarks | App — notegrow-specific |
-| `Opt+Cmd+Enter/↑/←/→`, `Esc` | Outline zoom | App — notegrow-specific |
-| `Cmd+B/I/A/Z`, `Tab/Shift+Tab` | Inline markdown / indent | App — notegrow editor |
+| `Cmd/Ctrl+O` | Navigate to file | App — treefacts-specific |
+| `Cmd/Ctrl+S` | Starred bookmarks | App — treefacts-specific |
+| `Opt+Cmd+Enter/↑/←/→`, `Esc` | Outline zoom | App — treefacts-specific |
+| `Cmd+B/I/A/Z`, `Tab/Shift+Tab` | Inline markdown / indent | App — treefacts editor |
 
 Pane-nav, tab-nav, and "open the cheatsheet" are the three chords
 that belong in the toolkit. Everything else stays in the app it
@@ -180,7 +180,7 @@ appears in the cheatsheet too.
 ### 1. Promote the hotkeys cheatsheet shell into the toolkit
 
 **Why:** `Cmd+/` → "show me what shortcuts exist" is generic UX.
-Every darkness app should have it. Today only notegrow does, and the
+Every darkness app should have it. Today only treefacts does, and the
 ~600 lines that implement it would otherwise be copy-pasted on the
 next app to want one.
 
@@ -258,16 +258,16 @@ behalf.
 
 ### 2. Wire each app's handpicked content
 
-**Notegrow:**
+**TreeFacts:**
 - Keep the existing four-group structure (Outline navigation, Editor,
   Panes & tabs, App) as the source of truth — *move* it from the
   doomed `HotkeysModal.kt` to a small new file like
-  `main/NotegrowHotkeysContent.kt` that builds a `HotkeysModalSpec`.
+  `main/TreeFactsHotkeysContent.kt` that builds a `HotkeysModalSpec`.
 - For the "Panes & tabs" group, prefer `StandardHotkeys.*.toChordLabel()`
   over hardcoded glyph lists so the labels stay in sync with the
   toolkit's chord constants.
 - In `AppShell` boot: construct `ToolkitHotkeysModal()`, call
-  `setContent(notegrowHotkeysSpec())`, call
+  `setContent(treefactsHotkeysSpec())`, call
   `installCheatsheetHotkey(modal)`. Keep the electron menu-item
   bridge but point it at the toolkit modal's `open()`.
 - *Delete* `main/HotkeysModal.kt`, the `installHotkeysShortcut`
@@ -287,14 +287,14 @@ behalf.
     `StandardHotkeys.NextTab` (chord labels via `toChordLabel`).
   - "Dialogs": Esc to dismiss, Enter to confirm — these are
     convention-level entries the user expects to see.
-- In `TermtasticToolkitBootstrap.kt`: same three lines as notegrow
+- In `TermtasticToolkitBootstrap.kt`: same three lines as treefacts
   (construct modal, `setContent`, `installCheatsheetHotkey`).
 - Wire `onFloatingMaximizeCleared` alongside the existing
   `PaneCallbacks` — push a fresh tab snapshot via
   `TermtasticTabSource` with the flag cleared so the toolkit
   animates the unmaximize.
 
-**Outcome:** notegrow's modal shows the exact same content the user
+**Outcome:** treefacts's modal shows the exact same content the user
 sees today. Termtastic gets a (smaller) modal it didn't have before.
 Neither modal is auto-populated; both are explicit lists the
 maintainer can curate without surprises.
@@ -417,7 +417,7 @@ of the hotkey path — so it covers:
 
 **Host-side wiring.**
 
-- **Notegrow:** wire `onFloatingMaximizeCleared = { paneId ->
+- **TreeFacts:** wire `onFloatingMaximizeCleared = { paneId ->
   layout flips that pane's `isMaximized = false` and re-renders
   }`. Same shape as the existing `onFloatingMaximizeToggled` —
   one new closure in the `PaneCallbacks` construction site.
@@ -460,10 +460,10 @@ in the same branch or separately. All confirmed unused by grep.
   one-line comment on `renderConfig` itself ("post-migration:
   toolkit owns chrome rebuild") and drop the rest.
 
-**Notegrow — superseded by §1/§2:**
+**TreeFacts — superseded by §1/§2:**
 
 - `web/src/jsMain/.../main/HotkeysModal.kt` — entire file deleted
-  once the toolkit modal lands and `NotegrowHotkeysContent.kt`
+  once the toolkit modal lands and `TreeFactsHotkeysContent.kt`
   takes over content authorship. The CSS string baked into this
   file (referenced from `AppShell.kt:1545`) follows the same path —
   the toolkit modal supplies its own stylesheet.
@@ -498,16 +498,16 @@ out of scope for this plan unless we find more during execution.
   `TabBar.kt` — pane-nav and tab-nav fire correctly; no
   descriptor mechanism is being added.
 
-### `notegrow/develop/web/src/jsMain/.../`
+### `treefacts/develop/web/src/jsMain/.../`
 
-- *(new)* `main/NotegrowHotkeysContent.kt` — builds the
-  `HotkeysModalSpec` listing notegrow's four groups (Outline
+- *(new)* `main/TreeFactsHotkeysContent.kt` — builds the
+  `HotkeysModalSpec` listing treefacts's four groups (Outline
   navigation, Editor, Panes & tabs, App). Source of truth for
   cheatsheet content; mirrors today's `HOTKEY_GROUPS` constant.
 - `main/AppShell.kt` — replace `installHotkeysShortcut` +
   `hotkeysShortcutHandler` + `hotkeysModal` lazy + the
   `${HotkeysModal.STYLESHEET}` injection at line 1545 with: build a
-  `ToolkitHotkeysModal()`, call `setContent(notegrowHotkeysSpec())`,
+  `ToolkitHotkeysModal()`, call `setContent(treefactsHotkeysSpec())`,
   call `installCheatsheetHotkey(modal)`. Point the electron
   menu-item bridge at the toolkit modal's `open()`.
 - *(delete)* `main/HotkeysModal.kt` — superseded.
@@ -545,7 +545,7 @@ Manual, both apps, both macOS modifier maps:
   tab-nav guaranteed; any app-side `register(... descriptor = …)`
   calls show too). `Esc` closes it. Re-opening works. Modal is
   themed.
-- **Notegrow regression:** Cmd+P, Cmd+O, Cmd+S continue to work
+- **TreeFacts regression:** Cmd+P, Cmd+O, Cmd+S continue to work
   after the cheatsheet swap.
 - **Termtastic edge:** open a focused contenteditable (e.g. the
   worktree-dialog input) — confirm it does not eat
@@ -588,11 +588,11 @@ Manual, both apps, both macOS modifier maps:
   list lives next to the registration site so they're easy to keep
   in sync.
 - **Not promoting Cmd+P / Cmd+O / Cmd+S to the toolkit.** Their
-  semantics are notegrow-specific. Per the "Minimal solution first"
+  semantics are treefacts-specific. Per the "Minimal solution first"
   preference, not introducing a toolkit "command palette"
   abstraction now.
 - **No backwards-compat layer for `HotkeysModal` removal** —
-  only consumer is notegrow's own `AppShell`. Per the "no
+  only consumer is treefacts's own `AppShell`. Per the "no
   persistence compat" preference, dropped without a transitional
   shim.
 - **xterm.js focus is the most likely smoke-test failure.** If it
@@ -604,7 +604,7 @@ Manual, both apps, both macOS modifier maps:
 
 - Refactoring the editor / outline keydown handler in
   `MainScreen.handleKey` to flow through `HotkeyRegistry`. The
-  editor chords are correct as-is, and notegrow's cheatsheet
+  editor chords are correct as-is, and treefacts's cheatsheet
   already lists them via the handpicked content spec — no extra
   plumbing needed.
 - Auto-deriving cheatsheet entries from the registry. Explicitly

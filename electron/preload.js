@@ -1,16 +1,16 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("noteApi", {
-  ensureDirectory: (path) => ipcRenderer.invoke("notegrow:ensureDirectory", path),
-  readFileIfExists: (path) => ipcRenderer.invoke("notegrow:readFileIfExists", path),
-  writeFile: (path, content) => ipcRenderer.invoke("notegrow:writeFile", path, content),
-  writeBinary: (path, bytes) => ipcRenderer.invoke("notegrow:writeBinary", path, bytes),
-  deleteFile: (path) => ipcRenderer.invoke("notegrow:deleteFile", path),
-  deleteDirectoryIfEmpty: (path) => ipcRenderer.invoke("notegrow:deleteDirectoryIfEmpty", path),
-  moveFile: (from, to) => ipcRenderer.invoke("notegrow:moveFile", from, to),
-  moveDirectory: (from, to) => ipcRenderer.invoke("notegrow:moveDirectory", from, to),
-  listDirectory: (path) => ipcRenderer.invoke("notegrow:listDirectory", path),
-  listDirectoryEntries: (path) => ipcRenderer.invoke("notegrow:listDirectoryEntries", path),
+  ensureDirectory: (path) => ipcRenderer.invoke("treefacts:ensureDirectory", path),
+  readFileIfExists: (path) => ipcRenderer.invoke("treefacts:readFileIfExists", path),
+  writeFile: (path, content) => ipcRenderer.invoke("treefacts:writeFile", path, content),
+  writeBinary: (path, bytes) => ipcRenderer.invoke("treefacts:writeBinary", path, bytes),
+  deleteFile: (path) => ipcRenderer.invoke("treefacts:deleteFile", path),
+  deleteDirectoryIfEmpty: (path) => ipcRenderer.invoke("treefacts:deleteDirectoryIfEmpty", path),
+  moveFile: (from, to) => ipcRenderer.invoke("treefacts:moveFile", from, to),
+  moveDirectory: (from, to) => ipcRenderer.invoke("treefacts:moveDirectory", from, to),
+  listDirectory: (path) => ipcRenderer.invoke("treefacts:listDirectory", path),
+  listDirectoryEntries: (path) => ipcRenderer.invoke("treefacts:listDirectoryEntries", path),
 });
 
 // Hand off the shared darkness ui-settings JSON, parsed out of the
@@ -36,7 +36,7 @@ if (layoutArg) {
 // Same boot-snapshot mechanism for the toolkit-owned layout state
 // (per-tab pane geometry, layout preset, paneOrder — all under
 // `PersistKeys.LAYOUT_STATE`). Distinct from `__darknessLayoutState`,
-// which carries notegrow's typed tab list under `PersistKeys.LAYOUT`.
+// which carries treefacts's typed tab list under `PersistKeys.LAYOUT`.
 const layoutToolkitArg = (process.argv || []).find(a => a && a.startsWith("--darkness-layout-toolkit-state="));
 if (layoutToolkitArg) {
   const value = decodeURIComponent(layoutToolkitArg.substring("--darkness-layout-toolkit-state=".length));
@@ -107,7 +107,7 @@ contextBridge.exposeInMainWorld("darknessApi", {
    * Persist the toolkit-owned layout state JSON (per-tab pane geometry,
    * layout preset, paneOrder — see `PersistedLayoutState` in
    * `toolkit-web`). Stored separately from `writeLayoutState` because
-   * notegrow's typed tab list (`LAYOUT`) and the toolkit's geometry
+   * treefacts's typed tab list (`LAYOUT`) and the toolkit's geometry
    * snapshot (`LAYOUT_STATE`) have independent shapes and lifecycles.
    *
    * @param {string} json a complete LAYOUT_STATE JSON document
@@ -147,7 +147,7 @@ contextBridge.exposeInMainWorld("darknessApi", {
 
   /**
    * Subscribe to "show hotkeys" requests dispatched from the application
-   * menu (macOS: Notegrow → Hotkeys…). The callback is invoked once per
+   * menu (macOS: TreeFacts → Hotkeys…). The callback is invoked once per
    * menu activation. Returns an unsubscribe function.
    *
    * @param {() => void} cb invoked once per menu activation
@@ -155,8 +155,8 @@ contextBridge.exposeInMainWorld("darknessApi", {
    */
   onShowHotkeys: (cb) => {
     const handler = () => { try { cb(); } catch (_) { /* swallow */ } };
-    ipcRenderer.on("notegrow:show-hotkeys", handler);
-    return () => ipcRenderer.removeListener("notegrow:show-hotkeys", handler);
+    ipcRenderer.on("treefacts:show-hotkeys", handler);
+    return () => ipcRenderer.removeListener("treefacts:show-hotkeys", handler);
   },
 
   /**

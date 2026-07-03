@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Opens the Notegrow on-disk database at $HOME/notegrow-db in Zed.
+# Opens the TreeFacts on-disk database at $HOME/treefacts-db in Zed.
 
 set -euo pipefail
 
-VAULT="$HOME/notegrow-db"
+VAULT="$HOME/treefacts-db"
 
 if [[ ! -d "$VAULT" ]]; then
   echo "Vault directory does not exist: $VAULT" >&2

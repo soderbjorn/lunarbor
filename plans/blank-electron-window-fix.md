@@ -12,7 +12,7 @@ bs
   at Object.i (web.js:1:1027446)      ← Metro DependencyGraph.kt vicinity
   at 888 (web.js:1:1031979)           ← Metro module top-level eval
   at n (web.js:1:1051449)             ← __webpack_require__
-  at 568 (web.js:1:872154)            ← Notegrow:web entry
+  at 568 (web.js:1:872154)            ← TreeFacts:web entry
   ...
 ```
 
@@ -28,7 +28,7 @@ bump, the freshly compiled JS lands in `compileSync` but the
 check on `jsProductionExecutableCompileSync` doesn't always notice the
 divergence.
 
-The stale file at `build/js/packages/Notegrow-web/kotlin/metro-runtime-js.js`
+The stale file at `build/js/packages/TreeFacts-web/kotlin/metro-runtime-js.js`
 (385 lines) was from an older Metro build that imported
 
 ```js
@@ -88,7 +88,7 @@ different Kotlin runtime version than the bundled stdlib.
 Quick sanity check:
 
 ```sh
-md5 build/js/packages/Notegrow-web/kotlin/metro-runtime-js.js \
+md5 build/js/packages/TreeFacts-web/kotlin/metro-runtime-js.js \
     web/build/compileSync/js/main/productionExecutable/kotlin/metro-runtime-js.js
 ```
 

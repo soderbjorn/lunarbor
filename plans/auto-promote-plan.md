@@ -4,15 +4,15 @@
 > switched from `.nogr` files with a trailing `[[<Title>/<Title>.nogr]]`
 > reference suffix to plain `.md` files with a CommonMark inline link
 > bullet `* [Title](Title/Title.md)` (paths with spaces use the
-> `<…>` form). Every Notegrow-managed file now starts with a
-> `---\nnotegrow: true\n---\n` YAML frontmatter block; files without
+> `<…>` form). Every TreeFacts-managed file now starts with a
+> `---\ntreefacts: true\n---\n` YAML frontmatter block; files without
 > that marker are treated as foreign Markdown and never auto-spliced
 > or rewritten. The text below describes the original `.nogr` design
 > for historical context — substitute `.md`, the markdown-link bullet
 > shape, and the frontmatter marker when reading. Promotion mechanics,
 > stable-id renames, the row→dirRel map, and the resolver/composer
 > structure are unchanged. See `SubtreeCodec.kt`, `NoteRepository.kt`,
-> and `scripts/dynalist_to_notegrow.py` for the current shape.
+> and `scripts/dynalist_to_treefacts.py` for the current shape.
 
 ## Context
 
@@ -25,7 +25,7 @@ The **key design decision**: splitting is a **persistence concern only**. The in
 The directory tree mirrors the outline tree. There is **no wrapper folder** — `root.nogr` sits alongside the directories of its promoted children. Each promoted bullet creates a sibling `<Title>/` directory containing `<Title>.nogr` plus, recursively, the directories of its further-promoted descendants.
 
 ```
-notegrow-db/
+treefacts-db/
     root.nogr
     Shopping list/
         Shopping list.nogr
@@ -210,21 +210,21 @@ Parser can detect a trailing `[[…]]` and render the title with a small muted s
 - **No new layer between view and document.** The promise "children are just another file" is kept at the repo boundary, where it belongs.
 - **Cursor/selection/zoom untouched.** The composed `lines` list is what the editor has always worked with.
 - **External editors see exactly one truth.** Open `root.nogr` in another tool — readable outline with `[[<Title>/<Title>.nogr]]` pointers. Click into the directory; the file with the same name has the content; sibling sub-directories are further-promoted descendants. The file system tree is a faithful map of the outline tree.
-- **No magic top-level wrapper.** `root.nogr` lives next to its promoted children's directories — no `notegrow/` enclosure to reason about.
+- **No magic top-level wrapper.** `root.nogr` lives next to its promoted children's directories — no `treefacts/` enclosure to reason about.
 - **Symmetric ref paths.** A file's refs always point at `<Title>/<Title>.nogr` relative to the file's own directory, so the resolution rule is the same at every level.
 - **Idempotent.** A save that doesn't cross a threshold produces byte-identical files.
 - **Reversible.** Demotion is just the reverse traversal; removing all promotion metadata yields today's single-file behaviour.
 
 ## Critical files
 
-- `client/src/commonMain/kotlin/se/soderbjorn/notegrow/data/NoteRepository.kt` — biggest change (split/compose logic).
-- `client/src/commonMain/kotlin/se/soderbjorn/notegrow/data/SubtreeCodec.kt` — new.
-- `client/src/commonMain/kotlin/se/soderbjorn/notegrow/data/PromotionPolicy.kt` — new.
-- `client/src/commonMain/kotlin/se/soderbjorn/notegrow/platform/FileSystem.kt` — add `deleteFile` / `listDirectory`.
-- `client/src/jsMain/kotlin/se/soderbjorn/notegrow/platform/FileSystem.js.kt` — actual impls (add to `window.noteApi` bridge too).
-- `client/src/commonMain/kotlin/se/soderbjorn/notegrow/main/DocumentBackingViewModel.kt` — carry `promotedSubtrees` across save/load; pass `lineIds` to repo.
-- `client/src/commonMain/kotlin/se/soderbjorn/notegrow/main/DocumentLayout.kt` — expose `subtreeEnd` / an indent-range helper (currently private to the view VM) for reuse by `SubtreeCodec`.
-- `web/src/jsMain/kotlin/se/soderbjorn/notegrow/main/MainScreen.kt` — optional muted rendering of ref suffix.
+- `client/src/commonMain/kotlin/se/soderbjorn/treefacts/data/NoteRepository.kt` — biggest change (split/compose logic).
+- `client/src/commonMain/kotlin/se/soderbjorn/treefacts/data/SubtreeCodec.kt` — new.
+- `client/src/commonMain/kotlin/se/soderbjorn/treefacts/data/PromotionPolicy.kt` — new.
+- `client/src/commonMain/kotlin/se/soderbjorn/treefacts/platform/FileSystem.kt` — add `deleteFile` / `listDirectory`.
+- `client/src/jsMain/kotlin/se/soderbjorn/treefacts/platform/FileSystem.js.kt` — actual impls (add to `window.noteApi` bridge too).
+- `client/src/commonMain/kotlin/se/soderbjorn/treefacts/main/DocumentBackingViewModel.kt` — carry `promotedSubtrees` across save/load; pass `lineIds` to repo.
+- `client/src/commonMain/kotlin/se/soderbjorn/treefacts/main/DocumentLayout.kt` — expose `subtreeEnd` / an indent-range helper (currently private to the view VM) for reuse by `SubtreeCodec`.
+- `web/src/jsMain/kotlin/se/soderbjorn/treefacts/main/MainScreen.kt` — optional muted rendering of ref suffix.
 
 ## Reused utilities
 

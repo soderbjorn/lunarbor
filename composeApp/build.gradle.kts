@@ -50,11 +50,11 @@ kotlin {
 }
 
 android {
-    namespace = "se.soderbjorn.notegrow"
+    namespace = "se.soderbjorn.treefacts"
     compileSdk = libs.versions.android.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "se.soderbjorn.notegrow"
+        applicationId = "se.soderbjorn.treefacts"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1

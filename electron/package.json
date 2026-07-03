@@ -1,11 +1,14 @@
 {
-  "name": "notegrow-electron",
+  "name": "treefacts-electron",
+  "productName": "TreeFacts",
   "version": "0.1.0",
-  "description": "Electron desktop wrapper for the Notegrow web app",
+  "description": "Electron desktop wrapper for the TreeFacts web app",
   "main": "main.js",
   "private": true,
   "scripts": {
+    "prestart": "node scripts/dev-brand.js",
     "start": "electron .",
+    "brand:dev": "node scripts/dev-brand.js",
     "dist": "electron-builder"
   },
   "devDependencies": {
@@ -13,8 +16,8 @@
     "electron-builder": "^25.0.0"
   },
   "build": {
-    "appId": "se.soderbjorn.notegrow",
-    "productName": "Notegrow",
+    "appId": "se.soderbjorn.treefacts",
+    "productName": "TreeFacts",
     "copyright": "Copyright © 2026 Robert Söderbjörn",
     "files": [
       "main.js",
@@ -29,13 +32,16 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
       "identity": null
     },
     "linux": {
-      "target": "AppImage"
+      "target": "AppImage",
+      "icon": "build/icon.png"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
     }
   }
 }
