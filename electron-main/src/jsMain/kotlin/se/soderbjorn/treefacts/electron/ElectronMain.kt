@@ -38,8 +38,8 @@ import kotlinx.coroutines.promise
 import kotlin.js.Promise
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import se.soderbjorn.darkness.core.SHARED_THEMES_KEYS
-import se.soderbjorn.darkness.core.mergeSharedThemes
+import se.soderbjorn.lunula.core.SHARED_THEMES_KEYS
+import se.soderbjorn.lunula.core.mergeSharedThemes
 
 private const val APP_NAME = "TreeFacts"
 
@@ -543,7 +543,7 @@ private fun createWindow() {
     // Forward macOS native fullscreen state to the renderer so the
     // toolkit can drop its 80 px traffic-light reservation while the
     // OS hides the traffic-light cluster (see
-    // `setDtMacFullscreenBodyClass` in darkness-toolkit). Listeners are
+    // `setDtMacFullscreenBodyClass` in lunula). Listeners are
     // attached on the BrowserWindow itself so they're tied to the
     // window's lifetime.
     w.asDynamic().on("enter-full-screen") {

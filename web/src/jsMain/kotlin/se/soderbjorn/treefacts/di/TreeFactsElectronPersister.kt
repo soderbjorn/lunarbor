@@ -31,15 +31,15 @@
  * future toolkit setting persists automatically.
  *
  * jsMain / Electron only. In a plain browser the app uses
- * [se.soderbjorn.darkness.web.LocalStoragePersister] instead (which
+ * [se.soderbjorn.lunula.web.LocalStoragePersister] instead (which
  * already stores every key), wired in `JsAppGraph.providePersister`.
  */
 package se.soderbjorn.treefacts.di
 
 import kotlinx.coroutines.suspendCancellableCoroutine
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.Persister
-import se.soderbjorn.darkness.web.ElectronIpcPersister
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.Persister
+import se.soderbjorn.lunula.web.ElectronIpcPersister
 import kotlin.coroutines.resume
 
 /**

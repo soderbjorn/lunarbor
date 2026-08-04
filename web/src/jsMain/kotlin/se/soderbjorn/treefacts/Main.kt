@@ -24,7 +24,7 @@ import se.soderbjorn.treefacts.main.setTreeFactsVaultRoot
  */
 fun main() {
     // Body-class wiring (dt-electron-mac + dt-mac-fullscreen) used to live
-    // here, but darkness-toolkit's `injectDarknessToolkitStyles` — called
+    // here, but lunula's `injectLunulaStyles` — called
     // from `mountAppShell`, which `AppShell.render` ultimately invokes —
     // now does both pieces itself via `autoApplyElectronMacBodyClass` and
     // `autoWireMacFullscreenBodyClass`. The latter subscribes to

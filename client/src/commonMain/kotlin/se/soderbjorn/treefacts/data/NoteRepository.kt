@@ -55,6 +55,26 @@ import se.soderbjorn.treefacts.platform.FileSystem
  * @property lastEditedMs Last-modified timestamp of the underlying file in
  *   milliseconds since the Unix epoch. `0` for directories and on platforms
  *   that cannot provide one. Used by the vault footer's last-edit sort mode.
+ * @property hasAnchor `true` for a directory that contains its own
+ *   doubled-name anchor file (`<dir>/<dir>.md`) — the shape every
+ *   TreeFacts-managed tree has, whether auto-promoted or hand-created.
+ *   Always `false` for files. The footer uses this to distinguish
+ *   TreeFacts page-folders from foreign directories.
+ * @property isSpace `true` for a directory whose anchor ([hasAnchor])
+ *   carries the `treefacts-space: true` marker (see [SpaceMetadata]) — a
+ *   declared *space*: a structural boundary that never auto-demotes and
+ *   can hold its own settings. Position-free: a space may live at any
+ *   depth, not just the vault root. For backward compatibility a
+ *   root-level anchored tree the root file never references is still
+ *   recognized as a legacy (marker-less) space. Spaces are structurally
+ *   invisible to the auto-demote logic, so their content can never
+ *   migrate back into a parent file; the footer gives them a dedicated
+ *   icon. Always `false` for files and for promoted trees.
+ * @property aiAllowed `true` when the space's anchor frontmatter carries
+ *   the `treefacts-ai: allowed` opt-in (see [SpaceMetadata]). Only ever
+ *   `true` for entries with [isSpace]; the footer renders it as a badge
+ *   on the space icon. Fail-closed: missing file, missing frontmatter,
+ *   or any other value all read as `false`.
  */
 data class VaultEntry(
     val name: String,
@@ -62,6 +82,9 @@ data class VaultEntry(
     val isDirectory: Boolean,
     val isImage: Boolean = false,
     val lastEditedMs: Long = 0L,
+    val hasAnchor: Boolean = false,
+    val isSpace: Boolean = false,
+    val aiAllowed: Boolean = false,
 )
 
 /**
@@ -262,10 +285,20 @@ class NoteRepository(
      *   but *not* in this set are file boundaries the user has folded —
      *   their children are absent from [lines] and must be left untouched
      *   on disk.
+     * @param deletedRefFiles [PromotedRef.fileRel]s of promoted refs whose
+     *   bullet rows were deleted from the outline since the last save. They
+     *   appear in neither [promotedByRow] nor [lines], so the step-4 orphan
+     *   sweep can't discover them on its own; passing them here gets their
+     *   on-disk files (and empty parent dirs) deleted. `Document` computes
+     *   this set at save time and already excludes adopted-foreign refs
+     *   ([PromotedRef.noAutoPromote]) — deleting the bullet of an adopted
+     *   file only unlinks it, never deletes it. A path that a promotion in
+     *   *this* save re-claims is kept, not deleted.
      * @param onPhaseChange Invoked with `true` immediately before the save
      *   begins fanning out file writes/deletes for a *restructuring* tick
-     *   (one that promotes a fresh subtree or demotes a previously promoted
-     *   one), and with `false` once those writes complete.
+     *   (one that promotes a fresh subtree, demotes a previously promoted
+     *   one, or deletes files for [deletedRefFiles]), and with `false` once
+     *   those writes complete.
      * @return The new row→[PromotedRef] map, ready to be stashed in the
      *   document VM for the next save.
      */
@@ -274,6 +307,7 @@ class NoteRepository(
         lines: List<String>,
         promotedByRow: Map<Int, PromotedRef>,
         expandedRefRows: Set<Int> = promotedByRow.keys,
+        deletedRefFiles: Collection<String> = emptyList(),
         onPhaseChange: (Boolean) -> Unit = {},
     ): Map<Int, PromotedRef> {
         fileSystem.ensureDirectory(rootDirectory)
@@ -323,7 +357,7 @@ class NoteRepository(
         // phase signal entirely.
         val willPromote = promotedRowsOut.any { it !in promotedByRow }
         val willDemote = promotedByRow.keys.any { it !in promotedRowsOut }
-        val isRestructuring = willPromote || willDemote
+        val isRestructuring = willPromote || willDemote || deletedRefFiles.isNotEmpty()
 
         if (isRestructuring) onPhaseChange(true)
         try {
@@ -370,12 +404,15 @@ class NoteRepository(
                 fileSystem.writeFile(absFile, frontmatter + body)
             }
 
-            // Step 4: collect orphaned old paths (files registered in
+            // Step 4: collect orphaned old paths — files registered in
             // promotedByRow whose fileRel is no longer used by any current
-            // promotion). These are demoted or renamed-and-moved subtrees.
+            // promotion (demoted or renamed-and-moved subtrees), plus files
+            // whose ref bullets were deleted outright ([deletedRefFiles]).
+            // The keptFiles filter protects both kinds from a same-tick
+            // promotion that re-claims the path (e.g. delete + undo landing
+            // a fresh promotion on the same title).
             val keptFiles = newPromotedByRow.values.map { it.fileRel }.toHashSet()
-            val orphanedFiles = promotedByRow.values
-                .map { it.fileRel }
+            val orphanedFiles = (promotedByRow.values.map { it.fileRel } + deletedRefFiles)
                 .filter { it !in keptFiles }
                 .toHashSet()
 
@@ -793,16 +830,51 @@ class NoteRepository(
         val absPath = if (dirRel.isEmpty()) rootDirectory else "$rootDirectory/$dirRel"
         val raw = fileSystem.listDirectoryEntries(absPath)
         if (raw.isEmpty()) return emptyList()
+        // Promoted-ref targets of the vault's root file, fetched lazily on
+        // the first directory entry of a root-level listing. Used to split
+        // anchored root dirs into promoted trees (referenced from the root
+        // file, can auto-demote back into it) vs spaces (loose, can't).
+        var rootRefs: Set<String>? = null
         val out = ArrayList<VaultEntry>(raw.size)
         for (entry in raw) {
             if (entry.name.startsWith(".")) continue
             val pathRel = if (dirRel.isEmpty()) entry.name else "$dirRel/${entry.name}"
             if (entry.isDirectory) {
+                val anchorRel = "$pathRel/${entry.name}$NOTE_EXTENSION"
+                val hasAnchor = fileSystem
+                    .listDirectory("$rootDirectory/$pathRel")
+                    .contains("${entry.name}$NOTE_EXTENSION")
+                // Read the anchor's frontmatter once and derive both the
+                // space marker and (for spaces) the AI opt-in from it — one
+                // file read instead of the previous two.
+                var isSpace = false
+                var aiAllowed = false
+                if (hasAnchor) {
+                    val fm = splitFrontmatter(
+                        fileSystem.readFileIfExists("$rootDirectory/$anchorRel") ?: "",
+                    ).first
+                    // A space is declared explicitly by the anchor's
+                    // `treefacts-space: true` marker. Legacy fallback: spaces
+                    // created before the marker existed are root-level
+                    // anchored trees the root file never references — keep
+                    // recognizing them so existing vaults don't lose their
+                    // space status. New spaces always carry the marker.
+                    val marked = SpaceMetadata.isSpaceOf(fm)
+                    val legacy = !marked && dirRel.isEmpty() && run {
+                        val refs = rootRefs ?: rootPromotedRefPaths().also { rootRefs = it }
+                        anchorRel !in refs
+                    }
+                    isSpace = marked || legacy
+                    aiAllowed = isSpace && SpaceMetadata.aiAllowedOf(fm)
+                }
                 out += VaultEntry(
                     name = entry.name,
                     pathRel = pathRel,
                     isDirectory = true,
                     lastEditedMs = 0L,
+                    hasAnchor = hasAnchor,
+                    isSpace = isSpace,
+                    aiAllowed = aiAllowed,
                 )
                 continue
             }
@@ -827,6 +899,123 @@ class NoteRepository(
             }
         }
         return out
+    }
+
+    /**
+     * The vault-root-relative file paths of every `#treefacts`
+     * promoted-ref link in the vault's root file. Used by
+     * [listVaultLevel] to classify root-level anchored directories:
+     * a tree whose anchor appears here was auto-promoted out of the
+     * root file (and can auto-demote back into it); a tree whose
+     * anchor does not is a loose *space*.
+     *
+     * Only the root file is scanned. Auto-promotion is the sole
+     * producer of `#treefacts` refs, and for root-level trees it only
+     * ever writes them into the root file — a hand-authored ref to a
+     * root-level tree from some deeper file would be missed here, but
+     * nothing in the app creates that shape. Missing root file means
+     * no refs.
+     */
+    private suspend fun rootPromotedRefPaths(): Set<String> {
+        val text = fileSystem.readFileIfExists("$rootDirectory/$rootFileName")
+            ?: return emptySet()
+        val (_, body) = splitFrontmatter(text)
+        val out = HashSet<String>()
+        for (line in body.split("\n")) {
+            val ref = SubtreeCodec.parseRef(line) ?: continue
+            // The root file lives at the vault root, so its refs are
+            // already vault-root-relative.
+            out += ref.refPath
+        }
+        return out
+    }
+
+    // ------------------------------------------------------ space metadata
+
+    /**
+     * Reads the AI opt-in from the frontmatter of the space anchor at
+     * [fileRel]. Returns `null` when no file exists at that path — the
+     * caller (typically the Space settings modal) uses this to tell
+     * "space with AI denied" apart from "not a space at all".
+     *
+     * @param fileRel Vault-relative path of the space's anchor file,
+     *   e.g. `Work/Work.md`.
+     */
+    suspend fun readSpaceAiAllowed(fileRel: String): Boolean? {
+        val text = fileSystem.readFileIfExists("$rootDirectory/$fileRel") ?: return null
+        return SpaceMetadata.aiAllowedOf(splitFrontmatter(text).first)
+    }
+
+    /**
+     * Sets the AI opt-in in the frontmatter of the space anchor at
+     * [fileRel], preserving every other user-authored frontmatter line
+     * (see [SpaceMetadata.withAiAllowed]). Creates the file when it is
+     * missing (the New space flow writes metadata right after
+     * [createEmptyFile]).
+     *
+     * Also updates the [frontmatterByFile] cache so a currently-open
+     * [se.soderbjorn.treefacts.main.Document]'s next autosave re-prepends
+     * the *new* frontmatter instead of clobbering the edit with a stale
+     * cached block.
+     *
+     * Known benign race: the body written here is the current *on-disk*
+     * body. If the document is open with unflushed edits, disk briefly
+     * regresses to the last-saved body — the next autosave tick (≤ 5s)
+     * rewrites it from memory, now with the updated frontmatter from the
+     * cache. No user content is lost.
+     *
+     * @param fileRel Vault-relative path of the space's anchor file.
+     * @param allowed `true` writes `treefacts-ai: allowed`; `false`
+     *   removes the key (and drops the whole block when nothing else
+     *   is in it).
+     */
+    suspend fun writeSpaceAiAllowed(fileRel: String, allowed: Boolean) {
+        val absPath = "$rootDirectory/$fileRel"
+        val text = fileSystem.readFileIfExists(absPath) ?: ""
+        val (frontmatter, body) = splitFrontmatter(text)
+        val newFrontmatter = SpaceMetadata.withAiAllowed(frontmatter, allowed)
+        if (newFrontmatter != null) frontmatterByFile[fileRel] = newFrontmatter
+        else frontmatterByFile.remove(fileRel)
+        fileSystem.writeFile(absPath, (newFrontmatter ?: "") + body)
+    }
+
+    /**
+     * Reads the `treefacts-space: true` marker from the frontmatter of the
+     * anchor at [fileRel]. Returns `null` when no file exists at that path.
+     * See [SpaceMetadata.isSpaceOf] for semantics.
+     *
+     * @param fileRel Vault-relative path of the folder's anchor file,
+     *   e.g. `Work/Work.md`.
+     */
+    suspend fun readSpaceMarker(fileRel: String): Boolean? {
+        val text = fileSystem.readFileIfExists("$rootDirectory/$fileRel") ?: return null
+        return SpaceMetadata.isSpaceOf(splitFrontmatter(text).first)
+    }
+
+    /**
+     * Sets (or clears) the `treefacts-space` marker in the anchor at
+     * [fileRel], preserving every other user-authored frontmatter line
+     * (see [SpaceMetadata.withSpaceMarker]). Creates the file when it is
+     * missing — the New space flow calls this right after
+     * [createEmptyFile] to stamp the freshly created anchor.
+     *
+     * Also updates the [frontmatterByFile] cache so a currently-open
+     * `Document`'s next autosave re-prepends the *new* frontmatter, exactly
+     * as [writeSpaceAiAllowed] does; the same benign disk-regression race
+     * applies and self-heals on the next tick.
+     *
+     * @param fileRel Vault-relative path of the folder's anchor file.
+     * @param isSpace `true` writes `treefacts-space: true`; `false` removes
+     *   the key (and drops the whole block when nothing else is in it).
+     */
+    suspend fun writeSpaceMarker(fileRel: String, isSpace: Boolean) {
+        val absPath = "$rootDirectory/$fileRel"
+        val text = fileSystem.readFileIfExists(absPath) ?: ""
+        val (frontmatter, body) = splitFrontmatter(text)
+        val newFrontmatter = SpaceMetadata.withSpaceMarker(frontmatter, isSpace)
+        if (newFrontmatter != null) frontmatterByFile[fileRel] = newFrontmatter
+        else frontmatterByFile.remove(fileRel)
+        fileSystem.writeFile(absPath, (newFrontmatter ?: "") + body)
     }
 
     /**

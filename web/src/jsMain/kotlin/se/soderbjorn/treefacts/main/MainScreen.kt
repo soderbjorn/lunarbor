@@ -228,6 +228,24 @@ class MainScreen(
 
         wireInputListeners(editor)
 
+        // Click-anywhere-to-type. The editor is only as tall as its
+        // content, so the scroll wrapper's background below the rows is
+        // dead space to the browser's caret placement. Route a click that
+        // lands on the wrapper (or the editor host's own empty area — not
+        // a row, footer, link, or bullet) to "caret at end of document"
+        // so a fresh/empty vault isn't an un-clickable black void.
+        scrollWrapper.addEventListener("mousedown", { event ->
+            val me = event as MouseEvent
+            val target = me.target
+            // `editor.style.display == "none"` in image view — the pane is
+            // showing the image viewer, not an editable document, so leave
+            // the click alone.
+            if ((target === scrollWrapper || target === editor) && editor.style.display != "none") {
+                me.preventDefault()
+                focusEditorAtLastRow()
+            }
+        })
+
         editor.focus()
 
         scope.launch {
@@ -845,6 +863,40 @@ class MainScreen(
     }
 
     /**
+     * Focuses the editor and drops the caret at the end of the last
+     * visible row, then syncs that position back into the model.
+     *
+     * ### Callers
+     * The scroll-wrapper `mousedown` handler wired in [render], fired when
+     * the user clicks the empty background *below* the rows. The editor is
+     * only as tall as its content, so on a short (or empty, single-blank-
+     * line) document the pane is mostly non-editable scroll region:
+     * native `contenteditable` caret placement only fires for clicks that
+     * land on a row, so those clicks would otherwise do nothing and leave
+     * the user with no caret and no obvious way to start typing. This
+     * routes "click the dead space" to "put the caret at the end of the
+     * document", matching the behaviour of every other text editor.
+     */
+    private fun focusEditorAtLastRow() {
+        val editor = editorElement ?: return
+        editor.focus()
+        val rows = editor.querySelectorAll("[data-row]")
+        val lastRow = if (rows.length > 0) rows.item(rows.length - 1) as? HTMLElement else null
+        // Prefer the editable text span so the caret lands in a real caret
+        // slot (empty rows carry a `<br>`/ZWSP placeholder run inside it).
+        val target: Node = (lastRow?.querySelector(".treefacts-text") as? HTMLElement) ?: lastRow ?: editor
+        // `getSelection`/`Selection` aren't in the Kotlin/JS window binding
+        // used here, so go dynamic — same approach as syncSelectionFromDom.
+        val sel = window.asDynamic().getSelection() ?: return
+        val range = document.createRange()
+        range.selectNodeContents(target)
+        range.collapse(false)
+        sel.removeAllRanges()
+        sel.addRange(range)
+        syncSelectionFromDom(editor)
+    }
+
+    /**
      * Walks up from [node] to its enclosing `data-row` div and translates
      * the in-row DOM offset into a model column. Snaps any caret position
      * inside the non-editable bullet prefix to the start of the editable
@@ -1279,50 +1331,38 @@ class MainScreen(
         val textSpan = rowDiv.querySelector(".treefacts-text") as? HTMLElement ?: return null
         val editableCol = (col - prefixLen).coerceAtLeast(0)
 
-        // Walk run-span children by SOURCE column rather than display
-        // column. Most runs contribute `textContent.length` source
-        // chars (since hidden markers like `**…**` fold their length
-        // into surrounding runs), but inline-image runs contribute
-        // their `data-img-source-len` despite carrying zero display
-        // chars. Walking by display col would always match the first
-        // image span at offset 0 — collapsing into the
-        // contenteditable=false element where the browser refuses to
-        // draw a caret.
+        // Walk run spans by their `data-src-start`/`data-src-end` range
+        // (editable-relative SOURCE columns, stamped by the paint loop).
+        // Hidden marker chars (`**`, a link's `](href)` tail, a line
+        // prefix like `# `) belong to no run, so they live in the gaps
+        // between consecutive ranges — a model column inside a gap
+        // anchors at the start of the next run, mirroring how
+        // `RowColumnMap.modelToDom` collapses marker columns. Walking by
+        // `textContent.length` instead would treat model columns as
+        // display columns and paint the caret shifted right by every
+        // hidden marker char to its left.
+        //
+        // Inline-image runs carry zero display chars but a wide source
+        // range. A column inside (or in the gap before) an image anchors
+        // on the wrapper at the image's child index — image atoms can't
+        // host a caret. A column at/past the image's source end falls
+        // through to the next sibling, which matters because Chromium
+        // refuses to paint a caret at "wrapper offset i+1" when child
+        // `i+1` lacks a text node; falling through lets us anchor INSIDE
+        // the zero-width-space placeholder when present.
         val children = textSpan.children
-        var consumed = 0
         for (i in 0 until children.length) {
             val child = children.item(i) as? HTMLElement ?: continue
-            val isImage = child.hasAttribute("data-img-source-len")
-            val sourceLen = if (isImage)
-                child.getAttribute("data-img-source-len")?.toIntOrNull() ?: 0
-            else
-                child.textContent?.length ?: 0
-            val remaining = editableCol - consumed
-            if (isImage) {
-                // Image atoms can't host a caret inside. If the target
-                // column falls strictly inside the image's source span,
-                // anchor on the wrapper at this child's index (before
-                // the image). Otherwise consume the image and let the
-                // next iteration anchor in a sibling — important
-                // because Chromium will refuse to paint a caret at
-                // "wrapper offset i+1" when child `i+1` lacks a text
-                // node; falling through lets us anchor INSIDE the
-                // zero-width-space placeholder when present.
-                if (remaining < sourceLen) return textSpan to i
-                consumed += sourceLen
-                continue
-            }
-            if (remaining <= sourceLen) {
-                val textNode = child.firstChild?.takeIf { it.nodeType.toInt() == 3 }
-                return if (textNode != null) {
-                    textNode to remaining.coerceAtLeast(0)
-                } else {
-                    // Empty run span (blank-row `<br>` placeholder).
-                    // Anchor on the span itself.
-                    child to 0
-                }
-            }
-            consumed += sourceLen
+            val srcStart = child.getAttribute("data-src-start")?.toIntOrNull() ?: continue
+            val srcEnd = child.getAttribute("data-src-end")?.toIntOrNull() ?: continue
+            if (editableCol >= srcEnd) continue
+            if (child.hasAttribute("data-img-source-len")) return textSpan to i
+            val textNode = child.firstChild?.takeIf { it.nodeType.toInt() == 3 }
+                // Empty run span (blank-row `<br>` placeholder).
+                // Anchor on the span itself.
+                ?: return child to 0
+            val maxOffset = textNode.nodeValue?.length ?: 0
+            return textNode to (editableCol - srcStart).coerceIn(0, maxOffset)
         }
         // Past the end — drop to the last text node, or the wrapper.
         val lastChild = textSpan.lastElementChild

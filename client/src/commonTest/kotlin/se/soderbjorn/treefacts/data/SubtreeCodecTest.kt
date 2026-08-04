@@ -71,12 +71,23 @@ class SubtreeCodecTest {
     }
 
     @Test
-    fun parseRef_returns_null_for_empty_label_or_url() {
-        assertNull(SubtreeCodec.parseRef("* [](X/X.md#treefacts)"))
+    fun parseRef_returns_null_for_empty_url() {
         assertNull(SubtreeCodec.parseRef("* [Title]()"))
         assertNull(SubtreeCodec.parseRef("* [Title](<>)"))
         // URL with only the fragment has empty refPath after stripping.
         assertNull(SubtreeCodec.parseRef("* [Title](#treefacts)"))
+    }
+
+    @Test
+    fun parseRef_accepts_empty_label() {
+        // Clearing a collapsed ref's title in the editor saves the
+        // degenerate `* [](path#treefacts)` form. It must still parse as
+        // a ref on the next load: rejecting it severs the association and
+        // the child file becomes a permanent orphan that no later row
+        // deletion can clean up.
+        val ref = SubtreeCodec.parseRef("* [](X/X.md#treefacts)")
+        assertEquals("* ", ref?.bulletText)
+        assertEquals("X/X.md", ref?.refPath)
     }
 
     // ---- formatRef + round-trip --------------------------------------------

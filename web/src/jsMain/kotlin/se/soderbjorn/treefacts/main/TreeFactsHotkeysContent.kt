@@ -15,11 +15,11 @@
  */
 package se.soderbjorn.treefacts.main
 
-import se.soderbjorn.darkness.web.hotkey.HotkeyEntry
-import se.soderbjorn.darkness.web.hotkey.HotkeyGroup
-import se.soderbjorn.darkness.web.hotkey.HotkeysModalSpec
-import se.soderbjorn.darkness.web.hotkey.StandardHotkeys
-import se.soderbjorn.darkness.web.hotkey.toChordLabel
+import se.soderbjorn.lunula.web.hotkey.HotkeyEntry
+import se.soderbjorn.lunula.web.hotkey.HotkeyGroup
+import se.soderbjorn.lunula.web.hotkey.HotkeysModalSpec
+import se.soderbjorn.lunula.web.hotkey.StandardHotkeys
+import se.soderbjorn.lunula.web.hotkey.toChordLabel
 
 /**
  * Build treefacts's cheatsheet spec. Pure — no DOM access, no state.

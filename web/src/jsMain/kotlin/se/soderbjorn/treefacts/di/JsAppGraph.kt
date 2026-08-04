@@ -6,8 +6,8 @@ import dev.zacsweers.metro.SingleIn
 import dev.zacsweers.metro.createGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.GlobalScope
-import se.soderbjorn.darkness.core.Persister
-import se.soderbjorn.darkness.web.LocalStoragePersister
+import se.soderbjorn.lunula.core.Persister
+import se.soderbjorn.lunula.web.LocalStoragePersister
 import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.main.DocumentRegistry
 import se.soderbjorn.treefacts.platform.FileSystem

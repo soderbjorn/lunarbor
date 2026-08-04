@@ -7,10 +7,22 @@
  * contenteditable editor host (see `MainScreen`) so its DOM is never wiped by
  * the editor's paint loop and never participates in caret/selection mapping.
  *
- * Visual continuity with the document outline is intentional: the same bullet
- * glyph and chevron classes (`treefacts-bullet`, `treefacts-chevron`) are
- * reused so the footer reads as "another outline beneath the document".
- * Folders use their basename; files render with their display name.
+ * Visual continuity with the document outline is intentional: the row wrapper
+ * (`treefacts-bullet-prefix`), bullet dot (`treefacts-bullet`), and chevron
+ * (`treefacts-chevron`) classes are reused so the footer reads as "another
+ * outline beneath the document". This bullet-first styling is deliberate — it
+ * lets a vault dropped in from Obsidian or Dynalist read as a seamless
+ * continuation of the outline rather than a separate file browser.
+ *
+ * The bullet slot therefore shows the same dot as the outline for ordinary
+ * note files and folders. Two exceptions carry a real type glyph instead:
+ * *spaces* (see [VaultEntry.isSpace]) show the dedicated padlock so a
+ * structural boundary is recognizable at a glance, and image files show a
+ * picture glyph since they aren't outline content. Files are leaves (a bullet,
+ * no chevron); folders and spaces are expandable (a bullet-or-padlock plus a
+ * disclosure chevron) — exactly the parent/leaf distinction the outline draws.
+ * Clicking a file's bullet (via the row listener) navigates to it. Folders use
+ * their basename; files render with their display name.
  *
  * Every footer row carries a `data-vault-path` (or `data-vault-dir`) data
  * attribute instead of `data-row` so any DOM walker that filters on
@@ -362,7 +374,7 @@ private fun buildEntryRow(
         chevron.style.left = "${depth * style.indentStepPx - 22}px"
         rowDiv.appendChild(chevron)
 
-        rowDiv.appendChild(buildBulletGlyph(isFolder = true))
+        rowDiv.appendChild(buildVaultFolderGlyph(entry))
         rowDiv.appendChild(buildEntryLabel(entry.name))
 
         val toggle: (org.w3c.dom.events.Event) -> Unit = { event ->
@@ -378,11 +390,11 @@ private fun buildEntryRow(
         })
         rowDiv.addEventListener("click", toggle)
     } else {
-        val fileIcon = if (entry.isImage) buildVaultImageIcon() else buildVaultFileIcon()
-        fileIcon.style.left = "${depth * style.indentStepPx - 22}px"
-        rowDiv.appendChild(fileIcon)
-
-        rowDiv.appendChild(buildBulletGlyph(isFolder = false))
+        // The document (or image) icon replaces the bullet entirely and is
+        // itself the affordance: clicking it navigates to the file. Sits in
+        // the same inline slot as a folder row's folder icon so file and
+        // folder labels line up in one column.
+        rowDiv.appendChild(buildVaultFileGlyph(entry.isImage))
         rowDiv.appendChild(buildEntryLabel(entry.name))
 
         // Image entries route through the same `navigateToVaultFile`
@@ -407,25 +419,102 @@ private fun buildEntryRow(
 }
 
 /**
- * The bullet glyph used by every footer row. Mirrors the outline's
- * `.treefacts-bullet-prefix` shape (non-editable bullet + trailing space) so
- * the visual reads identical to a document bullet.
+ * The glyph used by file footer rows. Ordinary note files get the outline's
+ * bullet dot (via [buildVaultBulletGlyph]) so imported content reads as a
+ * continuation of the document outline; image files keep a distinct picture
+ * glyph because they aren't outline content. Either way the glyph *is* the
+ * navigation affordance — clicking it (via the parent row's listener) opens
+ * the file. Keeps the same `.treefacts-bullet-prefix` wrapper + trailing
+ * space as [buildVaultFolderGlyph] so file and folder labels line up in one
+ * column. File rows have no chevron, so the leading 22px slot stays empty and
+ * the glyph sits where a document bullet does.
  *
- * @param isFolder When `true`, an additional class marks the bullet as a
- *   folder so CSS can render it differently (a slightly larger or hollow
- *   dot, etc.). For now both share the same dot — visual differentiation
- *   comes from the chevron.
+ * @param isImage Selects the picture-frame glyph over the plain bullet. Image
+ *   rows navigate through the same `navigateToVaultFile` intent, which routes
+ *   them to the read-only image viewer.
  */
-private fun buildBulletGlyph(isFolder: Boolean): HTMLElement {
+private fun buildVaultFileGlyph(isImage: Boolean): HTMLElement {
+    if (!isImage) return buildVaultBulletGlyph()
     val prefix = document.createElement("span") as HTMLElement
-    prefix.className = "treefacts-bullet-prefix"
+    prefix.className = "treefacts-bullet-prefix treefacts-vault-file-prefix"
     prefix.setAttribute("contenteditable", "false")
     prefix.style.apply {
         setProperty("user-select", "none")
         cursor = "pointer"
     }
     val glyph = document.createElement("span") as HTMLElement
-    glyph.className = if (isFolder) "treefacts-bullet treefacts-vault-folder" else "treefacts-bullet"
+    glyph.className = "treefacts-vault-file-glyph"
+    glyph.innerHTML = VAULT_IMAGE_SVG
+    prefix.appendChild(glyph)
+    val space = document.createElement("span") as HTMLElement
+    space.textContent = " "
+    prefix.appendChild(space)
+    return prefix
+}
+
+/**
+ * The outline's bullet dot, reused for footer rows that should read as plain
+ * outline nodes: ordinary note files and non-space folders. Mirrors
+ * `OutlinePaintLoop.buildBulletPrefix` exactly — the `.treefacts-bullet`
+ * glyph (a CSS-drawn dot) inside a `.treefacts-bullet-prefix` wrapper with a
+ * trailing space — so the footer bullet is pixel-identical to a document
+ * bullet and the two outlines flow together. Inert: click handling lives on
+ * the parent row (navigate for files, toggle for folders).
+ */
+private fun buildVaultBulletGlyph(): HTMLElement {
+    val prefix = document.createElement("span") as HTMLElement
+    prefix.className = "treefacts-bullet-prefix treefacts-vault-bullet-prefix"
+    prefix.setAttribute("contenteditable", "false")
+    prefix.style.apply {
+        setProperty("user-select", "none")
+        cursor = "pointer"
+    }
+    val glyph = document.createElement("span") as HTMLElement
+    glyph.className = "treefacts-bullet"
+    prefix.appendChild(glyph)
+    val space = document.createElement("span") as HTMLElement
+    space.textContent = " "
+    prefix.appendChild(space)
+    return prefix
+}
+
+/**
+ * The glyph used by folder footer rows. Ordinary folders — whether foreign
+ * directories or anchored TreeFacts trees — get the outline's bullet dot
+ * (via [buildVaultBulletGlyph]) so the footer reads as one continuous
+ * outline. Only a **space** (see [VaultEntry.isSpace]) breaks that
+ * uniformity: it renders the dedicated padlock ([vaultSpaceSvg]) so a
+ * structural boundary — a self-contained tree that never auto-demotes and
+ * carries its own settings — is recognizable at a glance.
+ *
+ * (The disclosure chevron in the leading 22px slot, [buildVaultChevron],
+ * already tells folders apart from files, so anchored vs. foreign folders no
+ * longer need distinct body glyphs.)
+ *
+ * Keeps the same `.treefacts-bullet-prefix` wrapper + trailing space as
+ * [buildVaultFileGlyph] so folder and file rows share identical horizontal
+ * metrics and every glyph aligns in one column.
+ *
+ * Inert: click handling lives on the parent row, which toggles the folder's
+ * expand state — the glyph inherits the row's pointer cursor.
+ */
+private fun buildVaultFolderGlyph(entry: VaultEntry): HTMLElement {
+    if (!entry.isSpace) return buildVaultBulletGlyph()
+    val prefix = document.createElement("span") as HTMLElement
+    prefix.className = "treefacts-bullet-prefix treefacts-vault-folder-prefix"
+    prefix.setAttribute("contenteditable", "false")
+    prefix.style.apply {
+        setProperty("user-select", "none")
+        cursor = "pointer"
+    }
+    val glyph = document.createElement("span") as HTMLElement
+    glyph.className = "treefacts-vault-folder-glyph"
+    glyph.innerHTML = vaultSpaceSvg(entry.aiAllowed)
+    prefix.title = if (entry.aiAllowed) {
+        "Space — AI access allowed"
+    } else {
+        "Space — a self-contained top-level tree (no AI access)"
+    }
     prefix.appendChild(glyph)
     val space = document.createElement("span") as HTMLElement
     space.textContent = " "
@@ -468,75 +557,60 @@ private fun buildVaultChevron(isExpanded: Boolean): HTMLElement {
         setProperty("user-select", "none")
     }
     val rotation = if (isExpanded) "none" else "rotate(-90deg)"
-    target.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\" stroke=\"currentColor\" " +
+    target.innerHTML = "<span class=\"treefacts-chevron-hit\">" +
+        "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\" stroke=\"currentColor\" " +
         "stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
         "style=\"transform: $rotation; transition: transform 120ms ease; pointer-events: none;\">" +
-        "<polyline points=\"4,6 8,10 12,6\"></polyline></svg>"
+        "<polyline points=\"4,6 8,10 12,6\"></polyline></svg></span>"
     return target
 }
 
 /**
- * Leading document-icon for a standalone-file row. Positioned in the same
- * 22px-wide slot used by [buildVaultChevron] on folder rows, so file rows
- * line up horizontally with folder rows in the tree. Inert: the icon does
- * not handle clicks itself — the parent row's listener navigates to the
- * file. The page-with-fold glyph mirrors `AppShell.ICON_NOTE`.
+ * Dedicated space glyph: a padlock — solid body, stroked shackle.
+ * Deliberately a different silhouette family from the folder and page
+ * icons so a space is recognizable at a glance in the footer — it
+ * marks a root-level loose tree, i.e. a stable sensitivity domain
+ * whose content can never auto-demote out of its folder.
+ *
+ * Earlier revisions tried a ringed planet (read as an eye/blob) and a
+ * safe with dial + feet (read as an insect). At 13 px in a single dim
+ * colour, only glyphs with a bold, detail-free silhouette survive; the
+ * padlock is the shape browsers have proven at this size in the URL
+ * bar. Keep it free of internal detail (no keyhole).
+ *
+ * @param aiAllowed When `true` (the space's anchor frontmatter carries
+ *   the `treefacts-ai: allowed` opt-in, see [VaultEntry.aiAllowed]), a
+ *   small accent-tinted four-point sparkle is drawn at the padlock's
+ *   upper right — the badge that marks the space as AI-eligible.
+ *   Fail-closed spaces (the default) render the bare padlock.
  */
-private fun buildVaultFileIcon(): HTMLElement {
-    val target = document.createElement("div") as HTMLElement
-    target.className = "treefacts-vault-file-icon"
-    target.setAttribute("contenteditable", "false")
-    target.style.apply {
-        setProperty("position", "absolute")
-        top = "0"
-        width = "22px"
-        height = "100%"
-        display = "flex"
-        alignItems = "center"
-        justifyContent = "center"
-        color = "var(--t-text-dim, #7a7a7a)"
-        setProperty("user-select", "none")
-        setProperty("pointer-events", "none")
+private fun vaultSpaceSvg(aiAllowed: Boolean): String {
+    val sparkle = if (aiAllowed) {
+        "<path fill=\"var(--t-accent, #7aa2f7)\" stroke=\"none\" " +
+            "d=\"M19 0.5 L20.1 3.4 L23 4.5 L20.1 5.6 L19 8.5 L17.9 5.6 L15 4.5 L17.9 3.4 Z\"/>"
+    } else {
+        ""
     }
-    target.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"11\" height=\"11\" fill=\"none\" " +
-        "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
-        "stroke-linejoin=\"round\" style=\"pointer-events: none;\">" +
-        "<path d=\"M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z\"/>" +
-        "<polyline points=\"14 3 14 9 20 9\"/></svg>"
-    return target
+    return "<svg viewBox=\"0 0 24 24\" width=\"13\" height=\"13\" style=\"pointer-events: none;\">" +
+        "<path d=\"M8 11V7.5a4 4 0 0 1 8 0V11\" fill=\"none\" stroke=\"currentColor\" " +
+        "stroke-width=\"2.2\"/>" +
+        "<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10.5\" rx=\"2\" fill=\"currentColor\" " +
+        "stroke=\"none\"/>" +
+        sparkle +
+        "</svg>"
 }
 
 /**
- * Leading icon for an image-file row. Same 22px slot and styling as
- * [buildVaultFileIcon] so image rows line up with note rows. Uses the
- * standard "picture-frame with mountain + sun" glyph so the file kind is
- * legible at a glance. The row carries no click listener — images are
- * not loadable as TreeFacts documents.
+ * Picture-frame-with-mountain glyph for image rows, rendered inline inside
+ * [buildVaultFileGlyph] so the file kind is legible at a glance.
  */
-private fun buildVaultImageIcon(): HTMLElement {
-    val target = document.createElement("div") as HTMLElement
-    target.className = "treefacts-vault-file-icon treefacts-vault-image-icon"
-    target.setAttribute("contenteditable", "false")
-    target.style.apply {
-        setProperty("position", "absolute")
-        top = "0"
-        width = "22px"
-        height = "100%"
-        display = "flex"
-        alignItems = "center"
-        justifyContent = "center"
-        color = "var(--t-text-dim, #7a7a7a)"
-        setProperty("user-select", "none")
-        setProperty("pointer-events", "none")
-    }
-    target.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"11\" height=\"11\" fill=\"none\" " +
+private const val VAULT_IMAGE_SVG =
+    "<svg viewBox=\"0 0 24 24\" width=\"12\" height=\"12\" fill=\"none\" " +
         "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
         "stroke-linejoin=\"round\" style=\"pointer-events: none;\">" +
         "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/>" +
         "<circle cx=\"8.5\" cy=\"9.5\" r=\"1.5\"/>" +
         "<polyline points=\"3 17 9 12 13 16 17 12 21 16\"/></svg>"
-    return target
-}
 
 /**
  * Placeholder row shown beneath an expanded folder while its listing is in

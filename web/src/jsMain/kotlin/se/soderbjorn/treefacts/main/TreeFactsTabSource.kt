@@ -1,6 +1,6 @@
 /* TreeFactsTabSource.kt (jsMain)
  * Adapter that exposes treefacts's typed [LayoutState] as a
- * darkness-toolkit [TabSource]. The toolkit's `mountAppShell`
+ * lunula [TabSource]. The toolkit's `mountAppShell`
  * subscribes to the push channel and renders whatever tabs / panes
  * treefacts's current `LayoutState` describes; user gestures
  * (select / close / rename / reorder / pane move/resize/maximize)
@@ -15,12 +15,12 @@
  * `LayoutState` mutation. */
 package se.soderbjorn.treefacts.main
 
-import se.soderbjorn.darkness.store.LayoutState
-import se.soderbjorn.darkness.web.shell.PaneSnapshotEntry
-import se.soderbjorn.darkness.web.shell.TabListSnapshot
-import se.soderbjorn.darkness.web.shell.TabSnapshotEntry
-import se.soderbjorn.darkness.web.shell.TabSource
-import se.soderbjorn.darkness.web.util.PaneSlotAssigner
+import se.soderbjorn.lunula.store.LayoutState
+import se.soderbjorn.lunula.web.shell.PaneSnapshotEntry
+import se.soderbjorn.lunula.web.shell.TabListSnapshot
+import se.soderbjorn.lunula.web.shell.TabSnapshotEntry
+import se.soderbjorn.lunula.web.shell.TabSource
+import se.soderbjorn.lunula.web.util.PaneSlotAssigner
 
 /**
  * Process-global pane-slot assigner backing the encircled-digit / letter
@@ -47,7 +47,7 @@ internal val treefactsPaneAssigner: PaneSlotAssigner = PaneSlotAssigner()
  *
  * Pane geometry callbacks (move/resize/maximize) used to live here but
  * were lifted into the toolkit alongside [TreeFactsTabSource]'s adapter
- * to [se.soderbjorn.darkness.web.shell.TabSource]. Pane geometry now
+ * to [se.soderbjorn.lunula.web.shell.TabSource]. Pane geometry now
  * lives entirely in the toolkit's `PersistKeys.LAYOUT_STATE`, written
  * through [toolkitPersister]; treefacts doesn't have to mirror it.
  */
@@ -65,7 +65,7 @@ class TreeFactsTabSource(
     private var lastSnapshot: TabListSnapshot = TabListSnapshot(emptyList(), null)
 
     /**
-     * The [TabSource] to hand to [se.soderbjorn.darkness.web.shell.AppShellSpec].
+     * The [TabSource] to hand to [se.soderbjorn.lunula.web.shell.AppShellSpec].
      */
     val tabSource: TabSource = TabSource(
         subscribe = { p ->

@@ -145,8 +145,12 @@ object SubtreeCodec {
      * you only want promoted refs.
      *
      * Returns `null` when the line is not a markdown-link bullet at all
-     * (plain bullets, non-bullet lines, malformed link syntax, empty
-     * label, or empty URL).
+     * (plain bullets, non-bullet lines, malformed link syntax, or empty
+     * URL). An *empty label* is accepted: clearing a collapsed promoted
+     * ref's title in the editor saves the degenerate `* [](path#treefacts)`
+     * form, and rejecting it here would silently sever the ref on the next
+     * load — the child file would become a permanent orphan that no later
+     * row deletion could ever clean up.
      */
     fun parseAnyLinkBullet(line: String): LinkBullet? {
         val indent = DocumentLayout.bulletAsteriskColumn(line)
@@ -195,8 +199,6 @@ object SubtreeCodec {
         if (url.isBlank()) return null
 
         val label = labelBuilder.toString()
-        if (label.isEmpty()) return null
-
         val bulletText = " ".repeat(indent) + "* " + label
         return LinkBullet(indent = indent, bulletText = bulletText, url = url)
     }

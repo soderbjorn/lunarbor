@@ -1,12 +1,13 @@
 /*
  * AppShell.kt (jsMain)
  * --------------------
- * Top-level shell for the treefacts web app, built on darkness-toolkit.
+ * Top-level shell for the treefacts web app, built on lunula.
  *
  * The chrome — top bar, tab strip, kebab menu, left sidebar's
- * tabs→panes tree, layout renderer, theme manager sidebar, bottom
- * bar — comes from the toolkit's `mountAppShell(AppShellSpec(...))`
- * one-call assembler. TreeFacts contributes:
+ * tabs→panes tree, layout renderer, theme manager sidebar — comes
+ * from the toolkit's `mountAppShell(AppShellSpec(...))` one-call
+ * assembler (the toolkit bottom bar is disabled). TreeFacts
+ * contributes:
  *
  *  - The per-pane note editor (rendered through [renderPaneContent]).
  *  - A typed `LayoutState` source ([TreeFactsTabSource]) for tab +
@@ -23,7 +24,7 @@
  * toolkit's `mountAppShell` owns the whole theme/settings surface.
  *
  * Persistence — theme, ui settings, layout — routes through the
- * darkness-toolkit `Persister` injected by [JsAppGraph]: Electron
+ * lunula `Persister` injected by [JsAppGraph]: Electron
  * IPC when `globalThis.darknessApi` is present, namespaced
  * `localStorage` otherwise.
  *
@@ -44,28 +45,28 @@ import org.w3c.dom.Element
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.Node
 import org.w3c.dom.events.Event
-import se.soderbjorn.darkness.core.PersistKeys
-import se.soderbjorn.darkness.core.Persister
-import se.soderbjorn.darkness.store.LayoutState
-import se.soderbjorn.darkness.store.TabState
-import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
-import se.soderbjorn.darkness.web.layout.FloatingPaneSpec
-import se.soderbjorn.darkness.web.layout.GridSpec
-import se.soderbjorn.darkness.web.layout.LayoutPreset
-import se.soderbjorn.darkness.web.layout.PaneLayout
-import se.soderbjorn.darkness.web.layout.PaneActions
-import se.soderbjorn.darkness.web.layout.PaneAction
-import se.soderbjorn.darkness.web.layout.PaneTitleSegment
-import se.soderbjorn.darkness.web.layout.withNoneMaximized
-import se.soderbjorn.darkness.web.shell.AppShellHandle
-import se.soderbjorn.darkness.web.shell.AppShellSpec
-import se.soderbjorn.darkness.web.shell.TopbarAction
-import se.soderbjorn.darkness.web.shell.mountAppShell
+import se.soderbjorn.lunula.core.PersistKeys
+import se.soderbjorn.lunula.core.Persister
+import se.soderbjorn.lunula.store.LayoutState
+import se.soderbjorn.lunula.store.TabState
+import se.soderbjorn.lunula.web.injectLunulaStyles
+import se.soderbjorn.lunula.web.layout.FloatingPaneSpec
+import se.soderbjorn.lunula.web.layout.GridSpec
+import se.soderbjorn.lunula.web.layout.LayoutPreset
+import se.soderbjorn.lunula.web.layout.PaneLayout
+import se.soderbjorn.lunula.web.layout.PaneActions
+import se.soderbjorn.lunula.web.layout.PaneAction
+import se.soderbjorn.lunula.web.layout.PaneTitleSegment
+import se.soderbjorn.lunula.web.layout.withNoneMaximized
+import se.soderbjorn.lunula.web.shell.AppShellHandle
+import se.soderbjorn.lunula.web.shell.AppShellSpec
+import se.soderbjorn.lunula.web.shell.TopbarAction
+import se.soderbjorn.lunula.web.shell.mountAppShell
 import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.NoteRepository
 
 /**
- * Top-level shell that wires the darkness-toolkit windowing system
+ * Top-level shell that wires the lunula windowing system
  * around the treefacts editor. One instance per app startup;
  * instantiated in [se.soderbjorn.treefacts.Main].
  *
@@ -97,7 +98,7 @@ class AppShell(
      * changes back to the toolkit so the per-pane chrome (action
      * button enabled state, breadcrumb title) refreshes when the
      * pane's zoom history / active file changes. See
-     * [se.soderbjorn.darkness.web.shell.AppShellHandle.refresh].
+     * [se.soderbjorn.lunula.web.shell.AppShellHandle.refresh].
      */
     private var shellHandle: AppShellHandle? = null
 
@@ -149,6 +150,19 @@ class AppShell(
     private val insertImageModals: MutableMap<String, ImageSearchModal> = mutableMapOf()
 
     /**
+     * Per-pane New-space modals ("New space" command). Same lifecycle
+     * pattern as [insertLinkModals]: lazy first-open create, reuse
+     * thereafter, cleared in [closePane].
+     */
+    private val newSpaceModals: MutableMap<String, NewSpaceModal> = mutableMapOf()
+
+    /**
+     * Per-pane Space-settings modals ("Space settings" command). Same
+     * lifecycle pattern as [newSpaceModals].
+     */
+    private val spaceSettingsModals: MutableMap<String, SpaceSettingsModal> = mutableMapOf()
+
+    /**
      * Singleton Starred-bookmarks modal mounted in the *tab toolbar*
      * (left of the layout dropdown), distinct from the per-pane
      * [starredModals]. Picking a favorite navigates whichever pane is
@@ -188,7 +202,7 @@ class AppShell(
     private var layoutState: LayoutState = LayoutState.defaults()
 
     /**
-     * Pushes a fresh [se.soderbjorn.darkness.web.shell.TabListSnapshot]
+     * Pushes a fresh [se.soderbjorn.lunula.web.shell.TabListSnapshot]
      * to the toolkit shell when treefacts's [LayoutState] mutates.
      * Captured by [render] when it constructs the [TreeFactsTabSource].
      */
@@ -298,8 +312,8 @@ class AppShell(
      * curated [HotkeysModalSpec] via [treefactsHotkeysSpec]. Lazy so the
      * app doesn't pay the construction cost on boots that never open it.
      */
-    private val hotkeysModal: se.soderbjorn.darkness.web.hotkey.ToolkitHotkeysModal by lazy {
-        se.soderbjorn.darkness.web.hotkey.ToolkitHotkeysModal().apply {
+    private val hotkeysModal: se.soderbjorn.lunula.web.hotkey.ToolkitHotkeysModal by lazy {
+        se.soderbjorn.lunula.web.hotkey.ToolkitHotkeysModal().apply {
             setContent(treefactsHotkeysSpec())
         }
     }
@@ -309,14 +323,16 @@ class AppShell(
      *
      * TreeFacts contributes the persistence-aware [LayoutState] (tabs +
      * floating panes), per-pane editor body, palette button, and
-     * treefacts-only keyboard shortcuts. Everything else — top bar,
-     * tab strip, kebab menu, layout dropdown, new-pane button,
-     * appearance toggle, theme manager sidebar, layout renderer,
-     * pane chrome, bottom bar — comes from
-     * [se.soderbjorn.darkness.web.shell.mountAppShell].
+     * treefacts-only keyboard shortcuts, plus the sidebar brand logo
+     * ([buildAppLogo]) whose dot pulses while unsaved edits pend.
+     * Everything else — top bar, tab strip, kebab menu, layout
+     * dropdown, new-pane button, appearance toggle, theme manager
+     * sidebar, layout renderer, pane chrome — comes from
+     * [se.soderbjorn.lunula.web.shell.mountAppShell] (the toolkit
+     * bottom bar is disabled; the brand lives in the sidebar logo).
      */
     fun render(root: HTMLElement) {
-        injectDarknessToolkitStyles()
+        injectLunulaStyles()
         ensureTreeFactsChromeStyles()
         rootEl = root
 
@@ -412,6 +428,16 @@ class AppShell(
                         onActivate = { topbarStarredModal.open() },
                     )
                 ),
+                // Brand logo (dot + "treefacts" wordmark, termtastic-style)
+                // pinned to the top of the left sidebar. The factory returns
+                // a cached element so toolkit rerenders re-parent the same
+                // node and the dot's save-state pulse survives rebuilds.
+                sidebarHeader = { buildAppLogo() },
+                // No bottom bar: its only content in treefacts was the
+                // toolkit's default app-name label (the tiny "TreeFacts"
+                // in the lower right). The brand moved to the sidebar
+                // logo above, so the strip earns nothing.
+                showBottomBar = false,
                 // The Settings sidebar's "Custom title bar" toggle only
                 // makes sense in Electron — gate it on the preload-injected
                 // `darknessApi`. In a plain browser this resolves to
@@ -430,8 +456,27 @@ class AppShell(
         // here.
         scope.launch {
             val raw = persister.read(PersistKeys.LAYOUT)
-            layoutState = if (raw == null) LayoutState.defaults() else hydrateLayoutState(raw)
+            // First run (`raw == null`) must go through hydrateLayoutState
+            // too: `LayoutState.defaults()` ships one tab with ZERO panes,
+            // and hydration is what seeds the initial pane (and tabLayouts)
+            // for pane-less tabs. Taking defaults() directly renders a tab
+            // with no panes — an empty window with no editor anywhere.
+            // `fromJsonString("")` resolves to defaults(), so the empty
+            // string routes the first run through the same seeding path.
+            layoutState = hydrateLayoutState(raw ?: "")
             tabSource.notify(layoutState)
+        }
+
+        // Drive the sidebar logo's save-state dot: pulse while any open
+        // document holds unflushed edits, steady light once everything
+        // is on disk. The registry aggregates per-document dirty flags,
+        // so this is one collector for the whole app regardless of how
+        // many panes/files are open.
+        scope.launch {
+            documentRegistry.unsavedFilesFlow
+                .map { it.isNotEmpty() }
+                .distinctUntilChanged()
+                .collect { unsaved -> setAppLogoUnsaved(unsaved) }
         }
     }
 
@@ -466,7 +511,7 @@ class AppShell(
      * boot pass overwrites the previous binding.
      */
     private fun installHotkeysShortcut() {
-        se.soderbjorn.darkness.web.hotkey.installCheatsheetHotkey(hotkeysModal)
+        se.soderbjorn.lunula.web.hotkey.installCheatsheetHotkey(hotkeysModal)
     }
 
     /**
@@ -678,6 +723,22 @@ class AppShell(
             },
         )
         out += CommandPalette.Command(
+            id = "new-space",
+            title = "New space",
+            run = {
+                val paneId = focusedPaneId()
+                if (paneId != null) openNewSpaceModal(paneId)
+            },
+        )
+        out += CommandPalette.Command(
+            id = "space-settings",
+            title = "Space settings",
+            run = {
+                val paneId = focusedPaneId()
+                if (paneId != null) openSpaceSettingsModal(paneId)
+            },
+        )
+        out += CommandPalette.Command(
             id = "insert-image",
             title = "Insert Image",
             run = {
@@ -773,7 +834,7 @@ class AppShell(
      * path so each row reads like `"My Note / Recipes / Pasta"`.
      *
      * Called by the [paneLabel] lambda passed to
-     * [se.soderbjorn.darkness.web.shell.AppShellSpec]; the toolkit
+     * [se.soderbjorn.lunula.web.shell.AppShellSpec]; the toolkit
      * looks it up once per pane on every sidebar re-render.
      */
     private fun paneSidebarLabel(paneId: String): String {
@@ -840,7 +901,7 @@ class AppShell(
             val layout = tabLayouts[tab.id] ?: return@map tab
             tab.copy(
                 floatingPanes = layout.floatingPanes.map { f ->
-                    se.soderbjorn.darkness.store.FloatingPaneJson(
+                    se.soderbjorn.lunula.store.FloatingPaneJson(
                         id = f.id,
                         title = f.title,
                         xPct = f.xPct,
@@ -1465,6 +1526,40 @@ class AppShell(
     }
 
     /**
+     * Opens the per-pane New-space modal — a single name input that
+     * creates a fresh top-level tree (`<Name>/<Name>.md`) and navigates
+     * the pane into it. Same lifecycle pattern as [openInsertLinkModal]:
+     * lazy first-open create, reuse thereafter, cleared in [closePane].
+     */
+    private fun openNewSpaceModal(paneId: String) {
+        if (paneViewModels[paneId] == null) return
+        val modal = newSpaceModals.getOrPut(paneId) {
+            NewSpaceModal(
+                activePaneVmProvider = { paneViewModels[paneId] },
+                onAfterPick = { paneEditors[paneId]?.focusEditor() },
+            )
+        }
+        modal.open()
+    }
+
+    /**
+     * Opens the per-pane Space-settings modal — edits the AI opt-in of
+     * the space containing the pane's active file. Same lifecycle
+     * pattern as [openNewSpaceModal].
+     */
+    private fun openSpaceSettingsModal(paneId: String) {
+        if (paneViewModels[paneId] == null) return
+        val modal = spaceSettingsModals.getOrPut(paneId) {
+            SpaceSettingsModal(
+                parentScope = scope,
+                activePaneVmProvider = { paneViewModels[paneId] },
+                onAfterPick = { paneEditors[paneId]?.focusEditor() },
+            )
+        }
+        modal.open()
+    }
+
+    /**
      * Injects treefacts-only chrome styles that aren't part of the toolkit
      * stylesheet: the disabled state for nav buttons (back/forward/up/
      * home stay in place when inert, dimmed instead of removed) and the
@@ -1480,6 +1575,98 @@ class AppShell(
                 opacity: 0.32;
                 pointer-events: none;
                 cursor: default;
+            }
+            /* ── Modal action button (termtastic-style) ─────────────────
+               Filled accent button for modal dialogs' primary action
+               (Space settings → Save). Mirrors termtastic's
+               .news-update-download pattern: accent fill, 6px radius,
+               bold small label, hover brightens, active presses down.
+               The palette rows are keyboard-highlight driven and have
+               no :hover, so modals need their own button class for a
+               real click affordance. */
+            .treefacts-modal-btn {
+                display: block;
+                margin: 4px 14px 14px;
+                width: calc(100% - 28px);
+                padding: 7px 16px;
+                border: none;
+                border-radius: 6px;
+                background: var(--t-accent, #7aa2f7);
+                color: var(--t-bg, #1b1b1b);
+                font-size: 13px;
+                font-weight: 700;
+                text-align: center;
+                cursor: pointer;
+                transition: filter 100ms ease, transform 60ms ease;
+            }
+            .treefacts-modal-btn:hover {
+                filter: brightness(1.12);
+            }
+            .treefacts-modal-btn:active {
+                filter: brightness(0.92);
+                transform: translateY(1px);
+            }
+            .treefacts-modal-btn:focus-visible {
+                outline: 2px solid var(--t-text, #e6e6e6);
+                outline-offset: 2px;
+            }
+            /* ── Sidebar brand logo (termtastic-style) ──────────────────
+               Status dot + lowercase "treefacts" wordmark in the left
+               sidebar's header slot (built in AppLogo.kt). The dot shows
+               SAVE state: steady = everything flushed to disk, breathing
+               (JS rAF-driven opacity, not a CSS animation — a re-parented
+               element would restart a keyframe and snap to full
+               brightness) = unsaved edits pending autosave. */
+            .app-logo {
+                display: flex;
+                align-items: center;
+                user-select: none;
+            }
+            /* The dot and wordmark share one horizontal row. */
+            .app-logo-row {
+                display: flex;
+                align-items: center;
+                gap: 9px;
+            }
+            .app-logo-wordmark {
+                /* Monospaced wordmark so the brand reads terminal-style
+                   lowercase, matching the termtastic sibling app. */
+                font-family: var(--dt-font-mono, 'JetBrains Mono', ui-monospace, monospace);
+                font-size: 15px;
+                font-weight: 700;
+                letter-spacing: 0.3px;
+                /* The toolkit's .dt-sidebar-header slot forces uppercase;
+                   override back so the wordmark reads "treefacts". */
+                text-transform: none;
+                /* Theme's main foreground token, not the header slot's
+                   dimmed color, so the brand reads as a wordmark. */
+                color: var(--t-text, #F5F5F5);
+                line-height: 1;
+            }
+            /* The save-state bead: painted in the theme foreground so it
+               meshes with any theme. Base rule = steady "all saved"
+               light; .state-unsaved makes it breathe via the JS pulse. */
+            .app-logo-dot {
+                display: inline-block;
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                background: var(--t-text, #f5f5f5);
+                /* Steady glow in the same foreground colour; color-mix
+                   keeps the halo tied to --t-text. */
+                box-shadow: 0 0 8px color-mix(in srgb, var(--t-text, #f5f5f5) 55%, transparent),
+                            0 0 16px color-mix(in srgb, var(--t-text, #f5f5f5) 28%, transparent);
+                flex-shrink: 0;
+            }
+            .app-logo-dot.state-unsaved {
+                /* Opacity driven by the JS pulse loop (AppLogo.kt). Own
+                   compositor layer while pulsing so per-frame repaints
+                   stay inside the bead's backing store (termtastic#37:
+                   at fractional device-pixel-ratios the repaint otherwise
+                   bleeds into the chrome seams and flickers). */
+                will-change: opacity;
+                transform: translateZ(0);
+                backface-visibility: hidden;
             }
             @keyframes treefacts-nav-fade-in {
                 from { opacity: 0; transform: translateY(2px); }
@@ -1825,7 +2012,7 @@ class AppShell(
             newId = "$tabId-pane-$n"
         }
         val topZ = cur.floatingPanes.maxOfOrNull { it.zIndex } ?: 0
-        val spec = se.soderbjorn.darkness.web.layout.randomFloatingPaneSpec(
+        val spec = se.soderbjorn.lunula.web.layout.randomFloatingPaneSpec(
             id = newId,
             // Leave the spec title null so the chrome falls through to
             // the zoom path / "Home" label. Setting "Untitled" here would
@@ -1993,6 +2180,8 @@ class AppShell(
         insertLinkModals.remove(paneId)?.close()
         navigateToModals.remove(paneId)?.close()
         insertImageModals.remove(paneId)?.close()
+        newSpaceModals.remove(paneId)?.close()
+        spaceSettingsModals.remove(paneId)?.close()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
             // Last pane in a non-last tab: cascade to closing the tab.
             closeTab(tabId)
@@ -2016,14 +2205,14 @@ class AppShell(
      * subsequent leaves cascade with ascending z-index.
      */
     private fun collectTreeLeafSpecs(
-        tree: se.soderbjorn.darkness.store.PaneNodeJson,
+        tree: se.soderbjorn.lunula.store.PaneNodeJson,
     ): List<FloatingPaneSpec> {
         val collected = mutableListOf<Pair<String, String?>>()
-        fun walk(n: se.soderbjorn.darkness.store.PaneNodeJson) {
+        fun walk(n: se.soderbjorn.lunula.store.PaneNodeJson) {
             when (n) {
-                is se.soderbjorn.darkness.store.PaneNodeJson.Leaf ->
+                is se.soderbjorn.lunula.store.PaneNodeJson.Leaf ->
                     collected += n.id to n.title
-                is se.soderbjorn.darkness.store.PaneNodeJson.Split -> {
+                is se.soderbjorn.lunula.store.PaneNodeJson.Split -> {
                     walk(n.first); walk(n.second)
                 }
             }
@@ -2063,7 +2252,7 @@ class AppShell(
                 tree = null,
                 expandedLeafId = null,
                 floatingPanes = layout.floatingPanes.map { f ->
-                    se.soderbjorn.darkness.store.FloatingPaneJson(
+                    se.soderbjorn.lunula.store.FloatingPaneJson(
                         id = f.id,
                         title = f.title,
                         xPct = f.xPct,

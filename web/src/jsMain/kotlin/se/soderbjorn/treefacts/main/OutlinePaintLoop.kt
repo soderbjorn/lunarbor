@@ -150,6 +150,23 @@ fun paint(
             buildRowElement(row, line, stripPrefix, state, docState, viewModel, style, onBulletMouseDown)
         )
     }
+
+    // Empty-document affordance. A fresh/empty vault loads as a single
+    // blank line; without a cue the pane looks like a dead black area
+    // (there is no "create your first note" flow — you type into the
+    // root document directly). Overlay a faint, non-editable, click-
+    // through hint on the blank row. The first keystroke repaints and it
+    // vanishes. Guarded to the unzoomed root-empty case so it never
+    // covers real content.
+    if (zoom == null && docState.lines.size == 1 && docState.lines[0].isEmpty()) {
+        (editor.firstElementChild as? HTMLElement)?.let { firstRow ->
+            val hint = document.createElement("span") as HTMLElement
+            hint.className = "treefacts-empty-hint"
+            hint.textContent = "Type here to start your outline…"
+            hint.setAttribute("contenteditable", "false")
+            firstRow.appendChild(hint)
+        }
+    }
 }
 
 /**
@@ -323,20 +340,38 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
         // text content, so column math (`textContent.length`) is unaffected.
         val empty = document.createElement("span") as HTMLElement
         empty.className = "treefacts-text-run"
+        // Source range covering every editable column INCLUSIVE of the
+        // end-of-line position (hence the +1), so any caret column on a
+        // blank / markers-only row anchors on this span rather than
+        // falling through to a wrapper offset — Chromium refuses to
+        // paint a caret at wrapper offsets whose child has no text node.
+        empty.setAttribute("data-src-start", "0")
+        empty.setAttribute("data-src-end", (editableLen + 1).toString())
         empty.appendChild(document.createElement("br"))
         wrapper.appendChild(empty)
     } else {
         for (run in tokenized.runs) {
+            val span: HTMLElement
+            val srcEnd: Int
             if (run.imageSrc != null) {
-                wrapper.appendChild(createImageRunElement(run, baseRunClass = "treefacts-text-run"))
-                continue
+                span = createImageRunElement(run, baseRunClass = "treefacts-text-run")
+                srcEnd = run.modelStart + (run.imageSourceLen ?: 0)
+            } else {
+                span = document.createElement("span") as HTMLElement
+                span.className = runClassName(run.styles, isLink = run.linkHref != null, isTag = run.isTag)
+                if (run.linkHref != null) {
+                    span.setAttribute("data-href", run.linkHref!!)
+                }
+                span.textContent = run.text
+                srcEnd = run.modelEnd
             }
-            val span = document.createElement("span") as HTMLElement
-            span.className = runClassName(run.styles, isLink = run.linkHref != null, isTag = run.isTag)
-            if (run.linkHref != null) {
-                span.setAttribute("data-href", run.linkHref!!)
-            }
-            span.textContent = run.text
+            // Editable-relative source span of this run, marker chars
+            // excluded (hidden markers live in the gaps between spans).
+            // `MainScreen.locateDomPosition` walks these to place the
+            // caret for a model column — the model→DOM mirror of
+            // [RowColumnMap.domToModel].
+            span.setAttribute("data-src-start", (lineMarkerLen + run.modelStart).toString())
+            span.setAttribute("data-src-end", (lineMarkerLen + srcEnd).toString())
             wrapper.appendChild(span)
         }
         // When every run is zero-width (e.g. the line contains only an
@@ -613,10 +648,11 @@ private fun buildChevron(
         setProperty("user-select", "none")
     }
     val rotation = if (isCollapsed) "rotate(-90deg)" else "none"
-    target.innerHTML = "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\" stroke=\"currentColor\" " +
+    target.innerHTML = "<span class=\"treefacts-chevron-hit\">" +
+        "<svg viewBox=\"0 0 16 16\" width=\"10\" height=\"10\" stroke=\"currentColor\" " +
         "stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" fill=\"none\" " +
         "style=\"transform: $rotation; transition: transform 120ms ease; pointer-events: none;\">" +
-        "<polyline points=\"4,6 8,10 12,6\"></polyline></svg>"
+        "<polyline points=\"4,6 8,10 12,6\"></polyline></svg></span>"
     target.addEventListener("mousedown", { event ->
         val me = event as MouseEvent
         me.stopPropagation()
@@ -693,6 +729,22 @@ fun ensureStyles() {
         .treefacts-editor ::selection {
             background: var(--t-accent-soft, rgba(90, 176, 255, 0.30));
         }
+        /* Onboarding affordance for an empty document (fresh vault). The
+           blank root line is otherwise invisible, so the pane reads as
+           "nothing to write in". This faint, click-through hint sits on
+           the empty row and disappears on the first keystroke. It is not
+           part of the model — `pointer-events: none` lets clicks fall
+           through to place the caret, and `user-select: none` keeps it
+           out of copy/selection. */
+        .treefacts-empty-hint {
+            position: absolute;
+            left: 0;
+            top: 0;
+            pointer-events: none;
+            user-select: none;
+            opacity: 0.4;
+            font-style: italic;
+        }
         .treefacts-bullet-prefix {
             display: inline;
             cursor: grab;
@@ -755,15 +807,27 @@ fun ensureStyles() {
         }
         .treefacts-chevron {
             opacity: 0.85;
-            border-radius: 4px;
-            transition: background 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out;
+            transition: color 120ms ease-out, opacity 120ms ease-out;
         }
         .treefacts-chevron:hover {
             color: var(--t-text, #e6e6e6);
             opacity: 1;
+        }
+        /* The hover highlight lives on this inner pill, not the full 22px
+           chevron hit-box, so it hugs the arrow and never slides under the
+           neighbouring promoted-ref icon (which hangs just to its left). */
+        .treefacts-chevron-hit {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2px;
+            border-radius: 4px;
+            transition: background 120ms ease-out;
+        }
+        .treefacts-chevron:hover .treefacts-chevron-hit {
             background: var(--t-border, rgba(255, 255, 255, 0.10));
         }
-        .treefacts-chevron:active {
+        .treefacts-chevron:active .treefacts-chevron-hit {
             background: var(--t-border, rgba(255, 255, 255, 0.14));
         }
         @keyframes treefacts-spinner-rotate { to { transform: rotate(360deg); } }
@@ -850,6 +914,25 @@ fun ensureStyles() {
         }
         .treefacts-vault-folder {
             opacity: 0.85;
+        }
+        /* Footer rows use an icon in place of the bullet dot: a folder icon
+           for folders, a document/image icon for files. Both sit inline
+           where a document bullet would, so file and folder labels line up
+           in one column. */
+        .treefacts-vault-folder-glyph,
+        .treefacts-vault-file-glyph {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 0.15em;
+            vertical-align: -0.15em;
+            color: var(--t-text-dim, #7a7a7a);
+            transition: color 120ms ease-out, transform 120ms ease-out;
+        }
+        .treefacts-vault-folder-prefix:hover .treefacts-vault-folder-glyph,
+        .treefacts-vault-file-prefix:hover .treefacts-vault-file-glyph {
+            color: var(--t-text, #e6e6e6);
+            transform: scale(1.1);
         }
         .treefacts-vault-loading {
             opacity: 0.5;

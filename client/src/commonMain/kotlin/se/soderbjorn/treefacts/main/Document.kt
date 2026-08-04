@@ -116,6 +116,23 @@ class Document(
      */
     val stateFlow: StateFlow<State> = _stateFlow.asStateFlow()
 
+    private val _dirtyFlow = MutableStateFlow(false)
+
+    /**
+     * `true` while this document holds edits the autosave loop has not
+     * yet flushed to disk — i.e. exactly when the next autosave tick
+     * would write. Recomputed on every [stateFlow] emission (via the
+     * watcher started in [start]) and after every save tick, using the
+     * same current-text vs last-saved-text comparison the autosave loop
+     * itself uses, so the flag can never disagree with what a save
+     * would do.
+     *
+     * Collected by [DocumentRegistry], which aggregates the per-file
+     * flags into `unsavedFilesFlow` for app-chrome indicators (the
+     * sidebar logo's unsaved-changes dot on the web).
+     */
+    val dirtyFlow: StateFlow<Boolean> = _dirtyFlow.asStateFlow()
+
     private var lastSavedText: String = ""
     private var nextIdValue: Long = 1L
 
@@ -124,6 +141,14 @@ class Document(
      * [LineId]s correspond to subtrees the repository has split into
      * their own `.md` files, and the [PromotedRef] each currently has.
      * Populated on load and updated on every save tick.
+     *
+     * An entry whose id has vanished from `lineIds` (its ref bullet was
+     * deleted) is deliberately kept until the next save tick: [delete]
+     * does not touch this map, so an undo restoring the old ids
+     * resurrects the association intact. [runOneSave] treats entries
+     * still dead at save time as deleted refs — their child files are
+     * removed from disk (adopted-foreign refs are only unlinked) and the
+     * entries purged.
      */
     private val promotedSubtrees: MutableMap<LineId, PromotedRef> = mutableMapOf()
 
@@ -153,6 +178,7 @@ class Document(
 
     private var loadJob: Job? = null
     private var autoSaveJob: Job? = null
+    private var dirtyWatchJob: Job? = null
 
     /**
      * Schedules the initial disk read and starts the autosave loop on
@@ -163,6 +189,11 @@ class Document(
         if (loadJob != null) return
         loadJob = scope.launch { loadFromDisk() }
         autoSaveJob = scope.launch { runAutoSaveLoop() }
+        // Every edit lands as a stateFlow emission, so collecting it is
+        // sufficient to keep dirtyFlow current for content changes. The
+        // other half — lastSavedText moving without a state emission —
+        // is covered by the explicit recomputeDirty() in runOneSave.
+        dirtyWatchJob = scope.launch { _stateFlow.collect { recomputeDirty() } }
     }
 
     /**
@@ -175,6 +206,8 @@ class Document(
         autoSaveJob = null
         loadJob?.cancelAndJoin()
         loadJob = null
+        dirtyWatchJob?.cancelAndJoin()
+        dirtyWatchJob = null
         saveLock.withLock {
             val state = _stateFlow.value
             if (!state.isLoaded) return@withLock
@@ -183,6 +216,21 @@ class Document(
                 runOneSave(state)
             }
         }
+        // The watcher is already cancelled, so drop the flag explicitly:
+        // the final flush above (or the no-op path) leaves nothing unsaved.
+        _dirtyFlow.value = false
+    }
+
+    /**
+     * Recomputes [dirtyFlow] from the current state: dirty ⇔ loaded and
+     * the joined text differs from what the last save wrote. This is the
+     * same check [runAutoSaveLoop] performs, so "dirty" always means
+     * "the next autosave tick would write". The join is O(document
+     * size) per emission — fine for note-sized files.
+     */
+    private fun recomputeDirty() {
+        val state = _stateFlow.value
+        _dirtyFlow.value = state.isLoaded && state.lines.joinToString("\n") != lastSavedText
     }
 
     /**
@@ -222,6 +270,33 @@ class Document(
 
     /** Convenience for `insertText(row, col, "\n")`. */
     fun insertNewline(row: Int, col: Int): InsertResult = insertText(row, col, "\n")
+
+    /**
+     * Inserts [content] as a whole new line at index [row], shifting the
+     * existing row at [row] and everything below it down by one. The new
+     * row gets a fresh [LineId]; every existing row keeps its id.
+     *
+     * This is NOT expressible via [insertText]: a col-0 split leaves the
+     * *original* id on the first resulting row, so inserting a line's
+     * worth of text plus `"\n"` at `(row, 0)` would hand row [row]'s
+     * identity — fold state, zoom target, promoted-ref association — to
+     * the newly inserted line. Called by
+     * `TextEditingViewModel.insertSiblingAboveAtTextStartIfAny` (Enter at
+     * the start of a bullet's text), which must leave the caret row's
+     * identity untouched.
+     *
+     * @param content Full line content including any indent and bullet
+     *   marker. Must not contain `"\n"`.
+     */
+    fun insertLine(row: Int, content: String) {
+        val state = _stateFlow.value
+        if (!state.isLoaded) return
+        val newLines = state.lines.toMutableList()
+        val newIds = state.lineIds.toMutableList()
+        newLines.add(row, content)
+        newIds.add(row, allocateId())
+        _stateFlow.value = state.copy(lines = newLines, lineIds = newIds)
+    }
 
     /**
      * Deletes the run from `(startRow, startCol)` up to but not
@@ -480,8 +555,23 @@ class Document(
             snapshotPromotedIds += id
             if (id in state.expandedRefIds) expandedRefRows += idx
         }
+        // Dead refs: promotedSubtrees entries whose line no longer exists —
+        // the user deleted the ref bullet (e.g. select + delete). Their
+        // child files are orphans the repository's own old-vs-new map diff
+        // can't see, so their fileRels ride along for step-4 deletion.
+        // Detecting this lazily at save time (instead of hooking [delete])
+        // means an undo *before* the tick resurrects the id and nothing is
+        // deleted. Adopted-foreign refs (noAutoPromote) are exempt: their
+        // files are hand-authored, so deleting the bullet only unlinks.
+        // [collapseRefSubtree] never produces dead entries — it removes the
+        // unspliced rows' entries itself, keeping their files untouched.
+        val deadRefs = HashMap<LineId, PromotedRef>()
+        for ((id, ref) in promotedSubtrees) {
+            if (id !in snapshotPromotedIds) deadRefs[id] = ref
+        }
+        val deletedRefFiles = deadRefs.values.filterNot { it.noAutoPromote }.map { it.fileRel }
         val newRowToRef = try {
-            repository.save(fileRel, state.lines, rowToRef, expandedRefRows) { active ->
+            repository.save(fileRel, state.lines, rowToRef, expandedRefRows, deletedRefFiles) { active ->
                 _stateFlow.value = _stateFlow.value.copy(isRestructuring = active)
             }
         } finally {
@@ -501,7 +591,18 @@ class Document(
         for (id in snapshotPromotedIds) {
             if (id !in keptIds) promotedSubtrees.remove(id)
         }
+        // Purge the dead entries whose files this save just deleted (or,
+        // for noAutoPromote refs, just unlinked). Re-check liveness against
+        // the post-save lineIds: an undo that raced the suspended save has
+        // resurrected the id, and dropping the entry then would sever a ref
+        // the outline still shows.
+        for (id in deadRefs.keys) {
+            if (id !in currentLineIds) promotedSubtrees.remove(id)
+        }
         lastSavedText = currentText
+        // lastSavedText moved without a state emission, so the stateFlow
+        // watcher won't fire — refresh the dirty flag here.
+        recomputeDirty()
         try { onAfterSave() } catch (_: Throwable) {}
     }
 

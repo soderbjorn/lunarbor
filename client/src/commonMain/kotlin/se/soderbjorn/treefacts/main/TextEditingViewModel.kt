@@ -80,6 +80,13 @@ internal class TextEditingViewModel(
         // normal continuation.
         if (exitListOnEmptyBulletIfAny()) return
 
+        // Caret at the very start of a bullet's text: open an empty
+        // sibling *above* and leave the node — and its entire subtree —
+        // untouched (Workflowy-style). Without this, the split paths
+        // below would move the whole title onto the new row, demoting it
+        // and re-parenting its children onto the leftover empty bullet.
+        if (insertSiblingAboveAtTextStartIfAny()) return
+
         // Bullet with a *folded* subtree: a plain split would drop the new
         // row between the bullet and its hidden children — silently
         // re-parenting the subtree onto the fresh row and stranding the
@@ -253,6 +260,53 @@ internal class TextEditingViewModel(
         return true
     }
 
+    /**
+     * Handles Enter with the caret at the start of a bullet's text (at
+     * [DocumentLayout.caretStartCol], i.e. right after the `"* "` marker
+     * and any hidden line-level markdown prefix). Inserts an empty
+     * sibling bullet *above* the caret row at the same indent via
+     * [Document.insertLine] and moves the caret reference down one row —
+     * the node's line content, [LineId], fold state, and subtree are all
+     * untouched.
+     *
+     * Splitting in place here would be wrong in every variant: with an
+     * expanded subtree the first-child rule in [newlineBulletPrefix]
+     * demotes the entire title one level and re-parents the children onto
+     * the leftover empty bullet; with a folded subtree
+     * [insertSiblingAfterCollapsedSubtreeIfAny] ships the title below the
+     * subtree, likewise orphaning the children.
+     *
+     * Skipped (falls through to the paths below) when:
+     *   - the row is not a bullet, or the caret sits past the text start;
+     *   - the caret row is the zoom root — a sibling above the zoom
+     *     target would land outside the zoom region, invisibly.
+     *
+     * Empty *leaf* bullets never reach here (the exit-list checks run
+     * first); an empty bullet with children does, and gets the sibling
+     * above — preferable to the old first-child split, which would
+     * re-parent its subtree.
+     *
+     * Returns `true` when it consumed the Enter.
+     */
+    private fun insertSiblingAboveAtTextStartIfAny(): Boolean {
+        val s = state
+        val line = s.lines[s.cursorRow]
+        val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+        if (bulletCol < 0) return false
+        if (s.cursorCol > DocumentLayout.caretStartCol(line)) return false
+        val zoom = zoomInfoOf(s)
+        if (zoom != null && s.cursorRow <= zoom.startRow) return false
+        document.insertLine(s.cursorRow, line.substring(0, bulletCol) + "* ")
+        patch {
+            it.copy(
+                cursorRow = it.cursorRow + 1,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+        return true
+    }
+
     /** Case (3): no inline styles at the caret. Plain newline + bullet continuation. */
     private fun insertNewlinePlain(s0: PaneBackingViewModel.State) {
         val bulletPrefix = newlineBulletPrefix(s0)
@@ -279,6 +333,9 @@ internal class TextEditingViewModel(
      *
      * The folded-subtree case never reaches here:
      * [insertSiblingAfterCollapsedSubtreeIfAny] consumes the Enter first.
+     * Likewise caret-at-text-start: [insertSiblingAboveAtTextStartIfAny]
+     * consumes it (except on the zoom root), so the split below always
+     * leaves some of the bullet's own text on the caret row.
      */
     private fun newlineBulletPrefix(s: PaneBackingViewModel.State): String {
         val line = s.lines[s.cursorRow]
@@ -307,7 +364,11 @@ internal class TextEditingViewModel(
      * Folded *promoted refs* never reach the sibling path: their children
      * are unspliced from `lines` while folded, so
      * [DocumentLayout.hasChildren] is `false` and Enter behaves as on any
-     * childless bullet. Returns `true` when it consumed the Enter.
+     * childless bullet. Caret-at-text-start is consumed earlier by
+     * [insertSiblingAboveAtTextStartIfAny] except on the zoom root, so
+     * outside a zoom the tail moved below the subtree is always a proper
+     * suffix of the bullet's text, never the whole title. Returns `true`
+     * when it consumed the Enter.
      */
     private fun insertSiblingAfterCollapsedSubtreeIfAny(): Boolean {
         val s = state

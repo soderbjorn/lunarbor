@@ -19,9 +19,11 @@
 package se.soderbjorn.treefacts.main
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -63,8 +65,12 @@ class DocumentRegistry(
      * Live ref-count + [Document] handle. The document is shared among
      * panes for the same `fileRel`; releasing brings the count down,
      * and reaching zero triggers shutdown + removal.
+     *
+     * @property dirtyWatch Collector mirroring the document's
+     *   [Document.dirtyFlow] into [unsavedFilesFlow]. Cancelled in
+     *   [release] right before the document shuts down.
      */
-    private data class Slot(val document: Document, var refCount: Int)
+    private data class Slot(val document: Document, var refCount: Int, val dirtyWatch: Job)
 
     private val slots: MutableMap<String, Slot> = mutableMapOf()
 
@@ -118,6 +124,21 @@ class DocumentRegistry(
     val vaultListingsFlow: StateFlow<Map<String, List<VaultEntry>>> =
         _vaultListings.asStateFlow()
 
+    private val _unsavedFiles: MutableStateFlow<Set<String>> = MutableStateFlow(emptySet())
+
+    /**
+     * Vault-relative paths of every open [Document] that currently
+     * holds unflushed edits (see [Document.dirtyFlow]). Empty ⇔ all
+     * changes are on disk. Maintained by a per-slot watcher started in
+     * [acquire] and torn down in [release] (a released document's final
+     * flush guarantees it is clean, so its entry is removed).
+     *
+     * App chrome observes this to render a save-state indicator — on
+     * the web, the sidebar logo's dot pulses while this set is
+     * non-empty and holds a steady light once it drains.
+     */
+    val unsavedFilesFlow: StateFlow<Set<String>> = _unsavedFiles.asStateFlow()
+
     init {
         // Eagerly populate the vault root listing so the footer's first
         // level paints without a flash of "Loading…" right after boot.
@@ -159,7 +180,16 @@ class DocumentRegistry(
                 vaultIndex.invalidate(fileRel)
             },
         )
-        slots[fileRel] = Slot(doc, refCount = 1)
+        // Mirror the document's dirty flag into the aggregate unsaved
+        // set for as long as the slot lives. StateFlow.update is a CAS
+        // loop, so concurrent watchers on other documents can't lose
+        // each other's writes.
+        val dirtyWatch = scope.launch {
+            doc.dirtyFlow.collect { dirty ->
+                _unsavedFiles.update { if (dirty) it + fileRel else it - fileRel }
+            }
+        }
+        slots[fileRel] = Slot(doc, refCount = 1, dirtyWatch = dirtyWatch)
         // While the file is open as a [Document], the index reads from
         // it live, so any cached pre-open parse is now misleading. Drop
         // it so closing the doc later re-reads fresh from disk.
@@ -180,9 +210,14 @@ class DocumentRegistry(
             slot.refCount--
             if (slot.refCount > 0) return@withLock null
             slots.remove(fileRel)
+            slot.dirtyWatch.cancel()
             slot.document
         } ?: return
         toShutdown.shutdown()
+        // The dirty watcher was cancelled before the final flush ran, so
+        // clear the aggregate entry by hand: shutdown guarantees the
+        // document left nothing unsaved.
+        _unsavedFiles.update { it - fileRel }
         // Document.shutdown flushed one final save; the next non-live
         // lookup of this file will need to re-read from disk to see
         // those changes, so invalidate any cache entry.
@@ -221,13 +256,63 @@ class DocumentRegistry(
      *
      * @param fileRel Vault-relative path of the anchor file to create
      *   — must be of the form `<dir>/<basename>.md` (the doubled-name
-     *   shape TreeFacts uses for folder anchors). The caller is the
-     *   Insert Link pick handler, which gets this path from the picked
-     *   [se.soderbjorn.treefacts.data.VaultIndex.SearchHit.fileRel].
+     *   shape TreeFacts uses for folder anchors). Callers are the
+     *   Insert Link pick handler (path from the picked
+     *   [se.soderbjorn.treefacts.data.VaultIndex.SearchHit.fileRel])
+     *   and `PaneBackingViewModel.createSpaceAndNavigate`.
+     * @return `true` when a new file was written, `false` when the path
+     *   already existed. The New space flow uses this to apply initial
+     *   metadata only to genuinely fresh spaces, never to an existing
+     *   one the user happened to re-create by name.
      */
-    suspend fun ensureFolderStub(fileRel: String) {
+    suspend fun ensureFolderStub(fileRel: String): Boolean {
         val created = repository.createEmptyFile(fileRel)
-        if (!created) return
+        if (!created) return false
+        refreshLoadedVaultListings()
+        vaultIndex.invalidate(fileRel)
+        return true
+    }
+
+    /**
+     * Reads the AI opt-in of the space anchored at [fileRel]. `null`
+     * means no file exists there (not a space). Delegates to
+     * [NoteRepository.readSpaceAiAllowed]; see
+     * [se.soderbjorn.treefacts.data.SpaceMetadata] for semantics.
+     */
+    suspend fun spaceAiAllowed(fileRel: String): Boolean? =
+        repository.readSpaceAiAllowed(fileRel)
+
+    /**
+     * Sets the AI opt-in of the space anchored at [fileRel] and
+     * refreshes shared state that renders it: the vault listings (the
+     * footer's space-icon badge reads [VaultEntry.aiAllowed]) and the
+     * outline index cache entry for the rewritten file.
+     */
+    suspend fun setSpaceAiAllowed(fileRel: String, allowed: Boolean) {
+        repository.writeSpaceAiAllowed(fileRel, allowed)
+        refreshLoadedVaultListings()
+        vaultIndex.invalidate(fileRel)
+    }
+
+    /**
+     * Reads the `treefacts-space` marker of the anchor at [fileRel].
+     * `null` means no file exists there. Delegates to
+     * [NoteRepository.readSpaceMarker]; see
+     * [se.soderbjorn.treefacts.data.SpaceMetadata] for semantics.
+     */
+    suspend fun spaceMarker(fileRel: String): Boolean? =
+        repository.readSpaceMarker(fileRel)
+
+    /**
+     * Sets (or clears) the `treefacts-space` marker of the anchor at
+     * [fileRel] and refreshes the shared state that renders it: the vault
+     * listings (the footer's space icon reads [VaultEntry.isSpace]) and
+     * the outline index cache entry for the rewritten file. Called by
+     * `PaneBackingViewModel.createSpaceAndNavigate` to stamp a freshly
+     * created space's anchor.
+     */
+    suspend fun setSpaceMarker(fileRel: String, isSpace: Boolean) {
+        repository.writeSpaceMarker(fileRel, isSpace)
         refreshLoadedVaultListings()
         vaultIndex.invalidate(fileRel)
     }

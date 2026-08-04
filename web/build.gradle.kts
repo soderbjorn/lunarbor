@@ -24,9 +24,9 @@ kotlin {
         jsMain.dependencies {
             implementation(projects.client)
             implementation(libs.kotlinx.coroutines.core)
-            implementation(libs.darkness.core)
-            implementation(libs.darkness.store)
-            implementation(libs.darkness.web)
+            implementation(libs.lunula.core)
+            implementation(libs.lunula.store)
+            implementation(libs.lunula.web)
         }
     }
 }

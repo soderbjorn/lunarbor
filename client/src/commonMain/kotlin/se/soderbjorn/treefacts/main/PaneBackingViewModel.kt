@@ -1129,6 +1129,98 @@ class PaneBackingViewModel(
     }
 
     /**
+     * Vault-relative path of the anchor file of the space containing
+     * this pane's active file, or `null` when the pane is at the vault
+     * root (the root file has no space). Derived purely from the path:
+     * the space is the first path segment, its anchor the doubled-name
+     * file — `Work/Sub/Deep.md` → `Work/Work.md`.
+     *
+     * Purely syntactic — does **not** verify the anchor exists or is a
+     * genuine space (vs a promoted tree or foreign folder). The Space
+     * settings modal resolves that by probing [spaceAiAllowed], which
+     * returns `null` for a missing anchor.
+     */
+    fun currentSpaceAnchorFileRel(): String? {
+        val active = _stateFlow.value.activeFileRel
+        val segment = active.substringBefore('/', missingDelimiterValue = "")
+        if (segment.isEmpty()) return null
+        return "$segment/$segment${NoteRepository.NOTE_EXTENSION}"
+    }
+
+    /**
+     * Reads the AI opt-in of the space anchored at [fileRel]. `null`
+     * means no anchor file exists (not a space). See
+     * [DocumentRegistry.spaceAiAllowed].
+     */
+    suspend fun spaceAiAllowed(fileRel: String): Boolean? =
+        registry.spaceAiAllowed(fileRel)
+
+    /**
+     * Sets the AI opt-in of the space anchored at [fileRel]. See
+     * [DocumentRegistry.setSpaceAiAllowed]. Called by the web Space
+     * settings modal's save action.
+     */
+    suspend fun setSpaceAiAllowed(fileRel: String, allowed: Boolean) =
+        registry.setSpaceAiAllowed(fileRel, allowed)
+
+    /**
+     * Creates a new *space* — a self-contained top-level tree in the
+     * vault — and navigates this pane into it. The space gets the
+     * doubled-name shape TreeFacts uses for all its folder anchors:
+     * `<Name>/<Name>.md` directly under the vault root.
+     *
+     * Creation goes through [DocumentRegistry.ensureFolderStub], which
+     * is a strict no-op when the anchor file already exists — so
+     * invoking this with the name of an existing tree simply opens it,
+     * never overwrites. Either way the pane then navigates to the
+     * anchor file via [navigateToVaultFile].
+     *
+     * The created file is a *loose* tree: nothing links to it with a
+     * `#treefacts` promoted-ref URL, so it can never be auto-demoted
+     * (inlined back into another file and deleted) — demotion only
+     * applies to expanded promoted refs tracked in a parent document's
+     * `promotedByRow`. On top of that structural fact, a fresh anchor is
+     * stamped with the `treefacts-space: true` marker (see
+     * [se.soderbjorn.treefacts.data.SpaceMetadata]) so its space identity
+     * is *declared* rather than inferred, and the footer renders it with
+     * the dedicated space icon. Auto-promotion *inside* the new tree works as
+     * usual, and always stays under the tree's own folder.
+     *
+     * Called by the web command palette's "New space" command.
+     *
+     * @param name Raw user-typed space name. A trailing `.md` is dropped
+     *   (typing "Notes.md" means the note "Notes", not a doubled
+     *   extension), then the rest is reshaped into a filesystem-safe
+     *   basename via [SubtreeCodec.safeFilename] (slashes replaced,
+     *   whitespace collapsed, byte-capped); blank input falls back to
+     *   `untitled`.
+     * @param aiAllowed Initial AI opt-in from the New space modal's
+     *   checkbox. Applied **only when the anchor file was genuinely
+     *   created by this call** — re-creating an existing space by name
+     *   just opens it and leaves its metadata untouched (edit it via
+     *   the Space settings command instead). Fail-closed default:
+     *   `false` writes no marker at all.
+     */
+    fun createSpaceAndNavigate(name: String, aiAllowed: Boolean = false) {
+        val safe = SubtreeCodec.safeFilename(
+            name.trim().removeSuffix(NoteRepository.NOTE_EXTENSION),
+        )
+        val fileRel = "$safe/$safe${NoteRepository.NOTE_EXTENSION}"
+        scope.launch {
+            val created = registry.ensureFolderStub(fileRel)
+            if (created) {
+                // Stamp the declarative space marker so the folder is a
+                // space by declaration, not by the legacy "loose top-level
+                // tree" inference. Only genuinely fresh anchors are marked;
+                // re-creating an existing space by name leaves it untouched.
+                registry.setSpaceMarker(fileRel, true)
+                if (aiAllowed) registry.setSpaceAiAllowed(fileRel, true)
+            }
+            navigateToVaultFile(fileRel)
+        }
+    }
+
+    /**
      * Fire-and-forget request that the registry populate
      * [DocumentRegistry.vaultListingsFlow] with the entries under
      * [dirRel] if they are not already cached. Used by the
