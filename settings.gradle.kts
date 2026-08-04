@@ -33,7 +33,7 @@ dependencyResolutionManagement {
 // Pass -Plunula.toolkit.useArtifacts=true to force resolution from the
 // Maven Central even when sources are present (verifies published
 // artifacts). Pass -Plunula.toolkit.path=… to point at an explicit checkout.
-// Candidate list mirrors `refreshLunula` in the root build script.
+// Candidate list is searched in order; the first existing checkout wins.
 val toolkitOverride: String? = settings.providers.gradleProperty("lunula.toolkit.path").orNull
 val useArtifacts: Boolean = settings.providers.gradleProperty("lunula.toolkit.useArtifacts").orNull == "true"
 val toolkitCandidates: List<String> = listOfNotNull(
