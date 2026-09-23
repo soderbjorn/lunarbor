@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "The only per-repo file in this skill. SKILL.md and repos.md are identical",
+    "across every repo that uses /ai-dev — when you copy the skill to another",
+    "project, edit this file and nothing else.",
+    "",
+    "'toolkit' is the shared UI library this repo consumes from sources via a",
+    "relative path. Set it to null in a repo that has no such dependency."
+  ],
+
+  "project": "TreeFacts",
+  "maintainer": "soderbjorn",
+  "keyPrefix": "TRF",
+  "issueUrl": "https://issues.lunicle.dev/?issue={id}",
+
+  "statuses": {
+    "ready": "Ready for agent development",
+    "claimed": "In progress",
+    "review": "Ready for human code review"
+  },
+
+  "github": "soderbjorn/treefacts",
+  "repoRoot": "/Users/soderbjorn/repo-private/treefacts/main",
+  "worktreeParent": "/Users/soderbjorn/repo-private/treefacts",
+
+  "toolkit": {
+    "name": "lunula",
+    "github": "soderbjorn/lunula",
+    "repoRoot": "/Users/soderbjorn/repo-private/lunula/main",
+    "worktreeParent": "/Users/soderbjorn/repo-private/lunula",
+    "gradleProperty": "lunula.toolkit.path",
+    "relativeFromWorktree": "../../lunula/{slug}"
+  },
+
+  "build": "./gradlew build",
+  "basePort": 8300,
+  "runInstructions": [
+    "DO NOT LAUNCH THE APP. This is the whole of the run instructions for now, and",
+    "the reasons are not negotiable:",
+    "",
+    "  · TreeFacts' vault root is hardcoded (NoteRepository.DEFAULT_DIRECTORY) to",
+    "    /Users/soderbjorn/treefacts-db — the maintainer's REAL notes. There is no",
+    "    environment variable or flag that points a run somewhere else. Any launch",
+    "    loads those notes, and the 5-second autosave loop writes them back. A bug in",
+    "    the ticket you are working on can therefore rewrite or delete real data.",
+    "  · The Electron main process takes a single-instance lock. If the maintainer",
+    "    has TreeFacts open, or another ticket launched it, your instance quits",
+    "    immediately — or worse, you drive THEIR window and THEIR vault.",
+    "  · The app runs only inside Electron (a plain browser run of :web fails with",
+    "    `noteApi bridge unavailable`), and it opens a desktop window; there is no",
+    "    headless mode.",
+    "",
+    "So never run ./gradlew electron:run, scripts/run.sh, `electron .`, or the",
+    "/verify skill, and never touch scripts/wipe-vault.sh or scripts/seed-vault.py.",
+    "The port you are assigned is unused.",
+    "",
+    "What you CAN verify:",
+    "  · The configured build, which compiles every target and runs the tests.",
+    "  · Unit tests in client/src/commonTest (SubtreeCodecTest, PromotionPolicyTest,",
+    "    InlineMarkdownTokenizerTest, …). Everything below the View layer is",
+    "    commonMain, so prefer adding a test that pins the ticket's behaviour — it",
+    "    is the strongest verification this repo can offer. There is no fake",
+    "    FileSystem in commonTest yet; if you need one for Document or",
+    "    NoteRepository tests, add a small in-memory one there.",
+    "  · For a rendering-only change, confirm the new code is in the bundle:",
+    "    ./gradlew :web:jsBrowserProductionWebpack, then grep the output for an",
+    "    identifier you introduced.",
+    "",
+    "State plainly in the PR's Verification section that the change was NOT",
+    "exercised in the running app, and list what a human should click through to",
+    "check it."
+  ],
+
+  "maxConcurrent": 3
+}
