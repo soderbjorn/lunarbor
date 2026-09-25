@@ -9,26 +9,30 @@ TreeFacts's only runtime surface is the Electron app — the JS `FileSystem`
 actual errors outside Electron (`noteApi bridge unavailable`), so a plain
 browser run of `:web` does NOT work.
 
-## Isolation first: TREEFACTS_LOCAL_DATA + TREEFACTS_VAULT
+## Isolation first: launch only through `scripts/ai-dev-run.sh`
 
-Never launch a verification run against the real data. Every launch sets:
+Never launch a verification run against the real data, and never launch the
+app any other way than through the run script. It takes an isolated data
+directory from `TREEFACTS_LOCAL_DATA` and refuses to start without one:
 
 - `TREEFACTS_LOCAL_DATA=<dir>` — Electron `userData` (and so the
   single-instance lock) moves to `<dir>/electron`; the themes, UI-settings
   and layout files move from `~/Library/Application Support/Darkness` into
   `<dir>`. Without it your instance collides with (or quits in favour of)
   the maintainer's running app and writes their settings.
-- `TREEFACTS_VAULT=<abs path>` — the notes vault. Defaults to `<dir>/vault`
-  when only `TREEFACTS_LOCAL_DATA` is set, and to `~/treefacts-db` (the
-  REAL notes) when neither is.
+- The vault is always `<dir>/vault`. Leave `TREEFACTS_VAULT` unset — the
+  script refuses any other value, because the app's default when neither
+  variable is set is `~/treefacts-db`, the REAL notes.
 
-Use a throwaway directory, e.g. `/tmp/treefacts-verify` (or
-`/tmp/ai-dev/<KEY>` under `/ai-dev`). Directories are created on launch.
+Use a throwaway directory outside your home directory, e.g.
+`/tmp/treefacts-verify` (under `/ai-dev`, the `{dataDir}` your brief gives
+you). The script refuses `$HOME/…` paths. Directories are created on launch.
 
 ## Build + launch
 
 Build the Electron resources (repeat after each change; add
-`-Plunula.toolkit.path=…` if you work in a worktree):
+`-Plunula.toolkit.path=…` if you work in a worktree). The script never
+builds, and refuses to launch until these exist:
 
 ```bash
 ./gradlew :electron:npmInstall :electron:copyWebBundle :electron:copyMainBundle
@@ -40,27 +44,32 @@ Optionally seed content, always naming the vault explicitly:
 python3 scripts/seed-vault.py --vault /tmp/treefacts-verify/vault
 ```
 
-Launch with a CDP port, in the background (it blocks until quit):
+Launch, from the repo (or worktree) root:
 
 ```bash
-cd electron && \
-TREEFACTS_LOCAL_DATA=/tmp/treefacts-verify \
-TREEFACTS_VAULT=/tmp/treefacts-verify/vault \
-./node_modules/.bin/electron . --remote-debugging-port=9222
+TREEFACTS_LOCAL_DATA=/tmp/treefacts-verify scripts/ai-dev-run.sh 9222 /tmp/treefacts-verify
 ```
 
-`scripts/run.sh [vault]` / `./gradlew electron:run` forward the same
-variables but give you no CDP port, so prefer the command above.
-
-**Check the startup log** before trusting anything. It must show:
+`<port>` becomes `--remote-debugging-port=<port>`; the optional second
+argument must equal `TREEFACTS_LOCAL_DATA` (a typo check). The script starts
+the app in the background and returns once it is up. It refuses (exit 2,
+nothing launched) when the variable is unset, relative or under `$HOME`,
+when `TREEFACTS_VAULT` names anything but `<dir>/vault`, when the port is
+already taken, or when the Electron resources are not built. It prints the
+startup lines, which must read:
 
 ```
-==> Vault: /tmp/treefacts-verify/vault (TREEFACTS_VAULT)
+==> Vault: /tmp/treefacts-verify/vault (TREEFACTS_LOCAL_DATA)
 ==> Data: /tmp/treefacts-verify (TREEFACTS_LOCAL_DATA)
 ```
 
-If either line is missing or names `~/treefacts-db` / the Darkness folder,
-quit immediately — you are on real data.
+and it checks them itself: if either differs, or the app dies before CDP
+answers, it stops the run and exits non-zero. The app's output is in
+`<dir>/electron-run.log`.
+
+Do not use `scripts/run.sh`, `./gradlew electron:run`, `npm start` or
+`node_modules/.bin/electron` directly for verification — none of them
+enforce isolation, and they give you no CDP port.
 
 Confirm the fresh bundle actually contains your change before trusting
 what you see: `grep -o "<some-new-identifier>" electron/resources/web/web.js`.
@@ -98,5 +107,5 @@ Gotchas:
 - Toolkit chrome: `.dt-sidebar-header`, `.dt-bottombar` (bottom bar is
   disabled in TreeFacts), `.treefacts-editor` for the note pane.
 - Vault content on disk: saved `.md` files land under the
-  `TREEFACTS_VAULT` you launched with (the `==> Vault:` log line names it;
+  vault you launched with (the `==> Vault:` log line names it;
   resolution lives in `electron-main/.../RunPaths.kt`).
