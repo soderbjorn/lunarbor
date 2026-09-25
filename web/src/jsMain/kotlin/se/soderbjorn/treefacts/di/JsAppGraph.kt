@@ -1,9 +1,19 @@
+/* JsAppGraph.kt (jsMain) — Metro DI graph for the web/Electron renderer.
+ *
+ * Declares the app-scoped infrastructure (coroutine scope, persister,
+ * FileSystem, NoteRepository, DocumentRegistry). Per-pane view models are
+ * deliberately NOT in the graph — AppShell.ensurePaneViewModel builds them.
+ *
+ * The vault root comes from the Electron main process (TREEFACTS_VAULT /
+ * TREEFACTS_LOCAL_DATA, default ~/treefacts-db) via the preload bridge's
+ * `noteApi.vaultRoot`; this file never hardcodes a vault path. */
 package se.soderbjorn.treefacts.di
 
 import dev.zacsweers.metro.DependencyGraph
 import dev.zacsweers.metro.Provides
 import dev.zacsweers.metro.SingleIn
 import dev.zacsweers.metro.createGraph
+import kotlinx.browser.window
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.GlobalScope
 import se.soderbjorn.lunula.core.Persister
@@ -62,7 +72,7 @@ interface JsAppGraph {
     @SingleIn(AppScope::class)
     @Provides
     fun provideNoteRepository(fileSystem: FileSystem): NoteRepository =
-        NoteRepository(fileSystem)
+        NoteRepository(fileSystem, rootDirectory = bridgeVaultRoot())
 
     @SingleIn(AppScope::class)
     @Provides
@@ -73,3 +83,28 @@ interface JsAppGraph {
 }
 
 fun createJsAppGraph(): JsAppGraph = createGraph<JsAppGraph>()
+
+/**
+ * Read the vault root the Electron main process resolved for this run,
+ * exposed by `electron/preload.js` as `noteApi.vaultRoot`.
+ *
+ * Called by [JsAppGraph.provideNoteRepository].
+ *
+ * - Bridge present with a root: returns it.
+ * - Bridge present without a root (stale preload): throws rather than
+ *   guessing, because a guess could be the maintainer's real vault.
+ * - No bridge at all (plain browser run): returns `""`. No file I/O is
+ *   possible there anyway — `FileSystem` fails on its first call — so the
+ *   value is never used to touch disk.
+ *
+ * @return The absolute vault root, or `""` outside Electron.
+ */
+private fun bridgeVaultRoot(): String {
+    val bridge = window.asDynamic().noteApi
+    if (bridge == null || bridge == undefined) return ""
+    val root = bridge.vaultRoot as? String
+    check(!root.isNullOrBlank()) {
+        "noteApi.vaultRoot missing; the Electron preload must pass --treefacts-vault"
+    }
+    return root
+}

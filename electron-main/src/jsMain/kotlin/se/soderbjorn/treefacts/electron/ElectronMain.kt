@@ -1,6 +1,11 @@
 /* ElectronMain.kt — Electron main process, written in Kotlin/JS.
  *
  * Direct port of the previous electron/main.js. Owns:
+ *  - Run-path resolution from `TREEFACTS_VAULT` / `TREEFACTS_LOCAL_DATA`
+ *    (see RunPaths.kt): the vault root handed to the renderer via
+ *    `--treefacts-vault=`, and — for an isolated run — `userData`, the
+ *    single-instance lock and every settings file moved under the
+ *    `TREEFACTS_LOCAL_DATA` directory instead of the Darkness folder.
  *  - Per-OS persistence path resolution. UI settings split across the
  *    cross-app `<DarknessDir>/themes.json` (v2 custom theme definitions
  *    shared with every Darkness app) and the per-app
@@ -129,8 +134,39 @@ private var appUiSettingsWatcher: FsWatcher? = null
 private var sharedThemesDebounce: dynamic = null
 private var appUiSettingsDebounce: dynamic = null
 
+/**
+ * This run's storage locations, resolved from `TREEFACTS_VAULT` /
+ * `TREEFACTS_LOCAL_DATA` once at the top of [main] (before anything reads a
+ * settings path or takes the single-instance lock). See [RunPaths].
+ */
+private lateinit var runPaths: RunPaths
+
+/**
+ * Electron main-process entry point. Resolves [runPaths], isolates
+ * `userData` when `TREEFACTS_LOCAL_DATA` is set, takes the single-instance
+ * lock (keyed on `userData`, so isolated runs never collide with each other
+ * or with the maintainer's own app), then wires IPC and opens the window.
+ */
 fun main() {
     app.setName(APP_NAME)
+
+    runPaths = resolveRunPaths(
+        vaultEnv = process.env[ENV_TREEFACTS_VAULT] as String?,
+        localDataEnv = process.env[ENV_TREEFACTS_LOCAL_DATA] as String?,
+        homeDir = osModule.homedir(),
+        resolve = { pathModule.resolve(it) },
+        join = { a, b -> pathModule.join(a, b) },
+    )
+    // Must precede `requestSingleInstanceLock()` and `whenReady`: Electron
+    // keys the lock on `userData`, and every later `getPath("userData")`
+    // (e.g. [chromePrefsPath]) must see the isolated directory.
+    runPaths.userDataDir?.let { dir ->
+        ensureDirSync(dir)
+        app.setPath("userData", dir)
+    }
+    ensureDirSync(runPaths.vaultDir)
+    console.log(runPaths.vaultLogLine())
+    console.log(runPaths.dataLogLine(darknessDataDir()))
 
     if (!app.requestSingleInstanceLock()) {
         app.quit()
@@ -311,30 +347,50 @@ private fun appUiSettingsPath(): String =
     sharedDarknessPath("$APP_NAME_KEBAB.json")
 
 /**
- * Resolve a path relative to the OS-conventional Darkness data
- * directory (the same root every Darkness app on this machine uses).
+ * Resolve a path relative to this run's settings directory.
  *
- * - macOS: `~/Library/Application Support/Darkness/<filename>`
- * - Windows: `%APPDATA%\Darkness\<filename>`
- * - Linux: `$XDG_CONFIG_HOME/darkness/<filename>` (defaults to
- *   `~/.config/darkness/`).
+ * - Isolated run (`TREEFACTS_LOCAL_DATA` set): `<localDataDir>/<filename>`.
+ * - Otherwise the OS-conventional Darkness data directory (the same root
+ *   every Darkness app on this machine uses) — see [darknessDataDir].
+ *
+ * @param filename Leaf filename, e.g. `themes.json`.
  */
-private fun sharedDarknessPath(filename: String): String {
+private fun sharedDarknessPath(filename: String): String =
+    pathModule.join(settingsRootDir(), filename)
+
+/**
+ * Root under which [sharedDarknessPath] and [perAppPath] resolve: the
+ * `TREEFACTS_LOCAL_DATA` directory for an isolated run, else
+ * [darknessDataDir]. Keeping every settings path funnelled through here is
+ * what guarantees an isolated run never reads or writes the shared
+ * Darkness folder.
+ */
+private fun settingsRootDir(): String =
+    runPaths.localDataDir ?: darknessDataDir()
+
+/**
+ * The OS-conventional shared Darkness data directory.
+ *
+ * - macOS: `~/Library/Application Support/Darkness`
+ * - Windows: `%APPDATA%\Darkness`
+ * - Linux: `$XDG_CONFIG_HOME/darkness` (defaults to `~/.config/darkness`).
+ */
+private fun darknessDataDir(): String {
     val home = osModule.homedir()
     return when (process.platform) {
         "darwin" ->
-            pathModule.join(home, "Library", "Application Support", "Darkness", filename)
+            pathModule.join(home, "Library", "Application Support", "Darkness")
         "win32" -> {
             val appData = (process.env.APPDATA as String?)
                 ?.takeIf { it.isNotEmpty() }
                 ?: pathModule.join(home, "AppData", "Roaming")
-            pathModule.join(appData, "Darkness", filename)
+            pathModule.join(appData, "Darkness")
         }
         else -> {
             val xdg = (process.env.XDG_CONFIG_HOME as String?)
                 ?.takeIf { it.isNotEmpty() }
                 ?: pathModule.join(home, ".config")
-            pathModule.join(xdg, "darkness", filename)
+            pathModule.join(xdg, "darkness")
         }
     }
 }
@@ -353,23 +409,33 @@ private fun defaultAppLayoutStatePath(): String =
 private fun defaultAppLayoutToolkitStatePath(): String =
     perAppPath("layout-toolkit-state.json")
 
+/**
+ * Resolve a per-app file under `<settingsRoot>/TreeFacts/` (lower-case
+ * `treefacts` on Linux, matching the historical layout). The settings root
+ * is the `TREEFACTS_LOCAL_DATA` directory for an isolated run — see
+ * [settingsRootDir].
+ *
+ * @param filename Leaf filename, e.g. `layout-state.json`.
+ */
 private fun perAppPath(filename: String): String {
-    val home = osModule.homedir()
-    return when (process.platform) {
-        "darwin" ->
-            pathModule.join(home, "Library", "Application Support", "Darkness", APP_NAME, filename)
-        "win32" -> {
-            val appData = (process.env.APPDATA as String?)
-                ?.takeIf { it.isNotEmpty() }
-                ?: pathModule.join(home, "AppData", "Roaming")
-            pathModule.join(appData, "Darkness", APP_NAME, filename)
-        }
-        else -> {
-            val xdg = (process.env.XDG_CONFIG_HOME as String?)
-                ?.takeIf { it.isNotEmpty() }
-                ?: pathModule.join(home, ".config")
-            pathModule.join(xdg, "darkness", APP_NAME.lowercase(), filename)
-        }
+    val subdir = if (process.platform == "darwin" || process.platform == "win32") APP_NAME
+    else APP_NAME.lowercase()
+    return pathModule.join(settingsRootDir(), subdir, filename)
+}
+
+/**
+ * `mkdir -p` [dir] synchronously. Used at startup for the vault and the
+ * isolated `userData` directory; failures are logged rather than thrown so a
+ * permissions problem surfaces in the renderer's first file op instead of a
+ * silent crash before any window exists.
+ */
+private fun ensureDirSync(dir: String) {
+    try {
+        val opts: dynamic = js("({})")
+        opts.recursive = true
+        fsSync.mkdirSync(dir, opts)
+    } catch (err: Throwable) {
+        console.error("Could not create directory", dir, err.message)
     }
 }
 
@@ -486,6 +552,9 @@ private fun createWindow() {
     // `autoApplyCustomTitleBarBodyClass` consumes this preload-exposed
     // value to set `dt-custom-titlebar` synchronously on the first frame.
     additionalArguments += "--darkness-custom-titlebar=${chromePrefs.customTitleBar}"
+    // Vault root for the renderer's `NoteRepository`, exposed by
+    // preload.js as `noteApi.vaultRoot` and read in `JsAppGraph`.
+    additionalArguments += "--treefacts-vault=${js("encodeURIComponent")(runPaths.vaultDir)}"
 
     val options: dynamic = js("({})")
     options.width = 1024

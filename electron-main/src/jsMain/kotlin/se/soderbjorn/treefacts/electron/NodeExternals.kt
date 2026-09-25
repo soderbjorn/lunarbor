@@ -1,7 +1,7 @@
 /* NodeExternals.kt
  * Thin `external` shims for the Node modules the main process uses:
  * fs (sync read), fs/promises (async writes/reads/mkdir/rename/unlink/
- * readdir/rmdir), os (homedir), path (join/dirname/basename), process
+ * readdir/rmdir), os (homedir), path (join/dirname/basename/resolve), process
  * (platform/env/argv) — plus `fs.watch` for the shared-themes file
  * watcher. Loaded via `kotlin.js.require` because the bundle's CommonJS
  * output emits literal `require("…")` calls at runtime; that matches
@@ -53,6 +53,8 @@ external interface PathModule {
     fun join(vararg parts: String): String
     fun dirname(p: String): String
     fun basename(p: String): String
+    /** Resolve [p] against the process cwd into an absolute path. */
+    fun resolve(p: String): String
 }
 
 internal external val process: NodeProcess

@@ -25,5 +25,8 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.lunula.core)
         }
+        jsTest.dependencies {
+            implementation(libs.kotlin.test)
+        }
     }
 }
