@@ -12,6 +12,10 @@
 #                                  files live under <dir>; the vault
 #                                  defaults to <dir>/vault.
 # The app logs the resolved paths at startup (`==> Vault: …`, `==> Data: …`).
+#
+# Agents (/ai-dev, /verify) must NOT use this script: it enforces nothing and
+# falls back to the real vault. They launch through scripts/ai-dev-run.sh,
+# which refuses to start without an isolated TREEFACTS_LOCAL_DATA.
 
 set -euo pipefail
 

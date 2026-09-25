@@ -1,6 +1,6 @@
 ---
 name: ai-dev
-description: One cycle of autonomous ticket work. Snapshots the "ready for agent development" column of every Lunicle board named in config.json, claims every ticket in them immediately, and drives each to a pull request in a sibling worktree via its own subagent. Tickets sharing an epic are one unit — one worktree, one branch, one pull request, children built one after another in the epic's order. Tickets whose "Blocked by" issues are neither merged nor built earlier in the same cycle are left in the column for a later cycle. Pass --review to have each pull request code-reviewed too. A ticket sent back with maintainer feedback is reworked on its existing PR rather than reimplemented. Project-agnostic — everything repo-specific lives in config.json.
+description: One cycle of autonomous ticket work. Snapshots the "ready for agent development" column of every Lunicle board named in config.json, claims every ticket in them immediately, and drives each to a pull request in a sibling worktree via its own subagent. Tickets sharing an epic are one unit — one worktree, one branch, one pull request, children built one after another in the epic's order. Tickets whose "Blocked by" issues are neither merged nor built earlier in the same cycle are left in the column for a later cycle. A child that fails in an epic chain resets the worktree to the last good commit and skips only the siblings that depend on it. The cycle lock carries a heartbeat, so a long chain is never mistaken for a dead cycle. Pass --review to have each pull request code-reviewed too. A ticket sent back with maintainer feedback is reworked on its existing PR rather than reimplemented. Project-agnostic — everything repo-specific lives in config.json.
 ---
 
 Arguments: $ARGUMENTS
@@ -49,9 +49,21 @@ Lunicle sweep and a Lunula sweep are free to run at the same time.
 mkdir -p <config.worktreeParent>/.ai-dev
 ```
 
+**Age means the file's mtime, not the timestamp written inside it.** The owning
+cycle refreshes the mtime as it goes (the heartbeat below), so the mtime says
+when the cycle last showed signs of life, while the timestamp inside still says
+when it started. Test it with
+
+```
+find <config.worktreeParent>/.ai-dev/cycle.lock -mmin -360
+```
+
+which prints the path when the file was touched in the last 6 hours and nothing
+otherwise.
+
 If the file exists and is **younger than 6 hours**, a cycle is already running.
-Print `Skipped — a cycle started <when> is still running.` and stop. Do not
-snapshot, do not claim, do not touch the board at all. The loop will try again
+Print `Skipped — a cycle started <when> (last heartbeat <mtime>) is still running.`
+and stop. Do not snapshot, do not claim, do not touch the board at all. The loop will try again
 next tick, which is the correct behaviour: there is nothing to catch up on,
 because the running cycle already claimed everything that was ready.
 
@@ -82,13 +94,27 @@ Running unlocked means three things, and all three matter:
 It is never the right thing for a loop tick to pass.
 
 If it exists and is **older than 6 hours**, treat it as stale — a cycle that died
-before §10 could clean up — and say so in your final report, because a cycle that
-died mid-flight probably left tickets sitting in `config.statuses.claimed` with
+before §10 could clean up, since a live one would have touched it — and say so in
+your final report, because a cycle that died mid-flight probably left tickets sitting in `config.statuses.claimed` with
 nobody working them.
 
 Otherwise write it, with the current timestamp and one line naming this cycle.
-Six hours is chosen to be far longer than any real cycle; a human who knows better
-can always delete the file.
+Six hours is chosen to be far longer than any single subagent's run; a human who
+knows better can always delete the file.
+
+### The heartbeat
+
+**If you own the lock, `touch` it every time a subagent returns** — each child of
+an epic chain, each single-ticket unit, each reviewer — and again whenever you
+dispatch one. An epic of eight children can run far longer than 6 hours in total,
+and judged by its start time it would look dead halfway through: the next tick
+would take the lock, reuse the same ports, and launch a second copy of the app on
+every one of them. Judged by the heartbeat it stays alive for as long as work is
+still finishing, and a cycle that really died goes stale 6 hours after its last
+sign of life.
+
+`touch` only updates the mtime; never rewrite the file's contents, and never
+touch a lock you do not own (a `--force` cycle leaves it alone, as above).
 
 **If you took the lock you own it, and you must remove it before you exit — on
 every path.** Idle cycle, conflicting arguments, an error partway through: all of
@@ -395,13 +421,57 @@ worktree. Never hold two children of one epic in flight at once — §4 says why
 the same branch and must not open a second.** Say so in each brief, and give later
 children the pull request URL the earlier ones returned. One commit per child,
 with its ticket key in the message, so the epic's PR reads as the sequence of
-changes it is.
+changes it is. "First" means the first to succeed: if the child that ran first
+failed without opening one, the next child that runs opens it instead. Tell each
+child in its brief whether a pull request already exists yet.
 
-**A blocked child stops its chain.** Do not dispatch the rest: their work was
-specified against a predecessor that did not land. Leave them in
-`config.statuses.claimed`, and close each out through §7's blocked path naming the
-child that stopped it. A partial epic still pushes what did land — the pull request
-is real work and the maintainer decides what to do with it.
+### A failed child is contained, not fatal
+
+A child **fails** when it returns `blocked` or does not report back (see below).
+Its siblings are then split by the "Blocked by" links, not by position:
+
+- **Its dependents are skipped.** A dependent is any sibling in the unit that is
+  blocked by the failed child, directly or through other siblings — take the
+  transitive closure of `blockedBy` within the unit. Their work was specified
+  against a predecessor that did not land. Do not dispatch them; close each out
+  through §7's blocked path as **blocked by `<failed KEY>`**, and leave them in
+  `config.statuses.claimed`. A dependent of a *skipped* ticket is skipped too —
+  that is what the transitive closure means.
+- **Everything else carries on, in the same §4 order.** A sibling with no path
+  of links back to the failed child did not need its work, so there is no reason
+  to hold it hostage. The links are the maintainer's statement of what depends
+  on what; the array order alone is not.
+
+Before the next child runs, **reset the worktree to the last good commit**, so it
+starts from exactly what the successful children left and not from the failed
+child's half-finished edits:
+
+```
+git -C <worktree> reset --hard <last-good>
+git -C <worktree> clean -fd
+```
+
+`<last-good>` is the worktree's `HEAD` as it stood when the most recent `done`
+child returned — or, before any child has succeeded, the commit the unit started
+from (`origin/main` for a fresh unit, the pull request's head for a rework
+unit). Record it after every `done` result. This keeps every commit that landed
+and drops only what the failed child left behind. `clean -fd` without `-x`
+keeps ignored build output, so the next child does not rebuild from nothing.
+Do the same in the unit's paired toolkit worktree, if it has one, with its own
+last good commit. Never run either command anywhere but the unit's own
+worktrees. The unit's data directory is not reset: it is throwaway, and the
+next child's run re-reads whatever the vault holds.
+
+If the failed child pushed despite its brief, the remote branch is now ahead of
+`<last-good>` and the next child's push would be refused. Put the branch back
+with `git -C <worktree> push --force-with-lease origin <last-good>:<branch>` —
+the unit's own branch only, never `main` — and say so in the failed child's
+ticket comment.
+
+Tell every later child which siblings landed, which failed and which were
+skipped, so none of them goes looking for work that is not there. A partial epic
+still pushes what did land — the pull request is real work and the maintainer
+decides what to do with it.
 
 **Assign each unit a port** before you write its briefs: `config.basePort + i`,
 where `i` is the unit's zero-based position in the dispatch order — or
@@ -410,11 +480,22 @@ assigned per unit rather than per slot, so a unit that outlives its neighbours
 can never collide with the one that replaced it. It is substituted for `{port}` in
 `config.runInstructions`.
 
-**Every child of a unit gets that one port and one data directory**, not one each.
-`config.runInstructions` may key a local data path by ticket (`{key}`); for an
-epic, key it by the epic instead. A child that starts from an empty database
-cannot see the migration its predecessor just added, and would report a working
-change as broken.
+**Every unit gets its own data directory, and every child of a unit shares it.**
+When `config.dataDirRoot` is set, `{dataDir}` is `<config.dataDirRoot>/<unit
+key>` — the epic's key for an epic unit, the ticket's own key otherwise — and is
+substituted into `config.runInstructions` alongside `{port}`. `{key}` is still
+the ticket's own key. Two units never share a data directory, so two concurrent
+launches never share a vault, a settings file or a single-instance lock; one
+epic's children always share one, because a child that starts from an empty
+database cannot see the migration its predecessor just added, and would report a
+working change as broken.
+
+**How a unit launches the app is `config.runInstructions`' business, and it is
+enforced there, not here.** When they name a run script, that script is the only
+permitted way to launch, and it is what refuses a launch that is not isolated —
+this skill cannot check a subagent's shell, so the check lives in the one thing
+every launch has to go through. Paste the instructions verbatim; never soften
+a "refuses" or "only" into advice.
 
 Each subagent returns exactly four lines:
 
@@ -427,6 +508,9 @@ SUMMARY: <2–5 sentences>
 
 If a subagent dies or returns something unparseable, treat it as `blocked` with the
 reason "the subagent did not report back".
+
+Whatever it returned, `touch` the lock if you own it (§1's heartbeat) before you
+do anything else with the result.
 
 ## 7. Close the loop on each ticket
 
@@ -646,4 +730,8 @@ precisely the tickets where the toolkit side mattered most.
 - Never commit or push in `config.repoRoot` or `config.toolkit.repoRoot`.
 - Exactly one `send_email` per *resolved* ticket, sent as it resolves. None for a
   ticket that is merely claimed, and none at all on an idle cycle.
-- A failing ticket must never stop the others. Record it and carry on.
+- A failing ticket must never stop the others. Record it and carry on — inside an
+  epic too, where only the failed child's dependents (by "Blocked by", transitively)
+  are skipped and the worktree is reset to the last good commit first (§6).
+- Never let a lock you own go more than one subagent run without a heartbeat
+  (§1), and judge every lock's age by its mtime.
