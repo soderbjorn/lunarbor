@@ -25,6 +25,24 @@ Tracker link: <config.issueUrl with {id} substituted>
 ## Comments
 <every comment, verbatim, oldest first, each with its author. "None." if there are none.>
 
+<when the ticket is a child of an epic — drop this section otherwise:>
+# Part of epic <EPIC KEY>: <epic title>
+
+<the epic's description, verbatim>
+
+You are child <n> of <m>, in this order: <KEY, KEY, …>. You share one worktree,
+one branch and one pull request with your siblings, and you run alone — nobody
+else is editing the tree while you work.
+
+- Landed before you (their commits are already in your worktree): <KEYS, or "none">
+- Failed, and reset out of the worktree: <KEYS, or "none"> — do not look for their work
+- Skipped because they depend on a failed sibling: <KEYS, or "none">
+- Pull request: <the URL — push to it and do NOT open a second one — or "none yet:
+  you open it">
+
+Put <KEY> in every commit message, so the epic's pull request reads as the sequence
+of its children.
+
 # Where you work
 
 - Your worktree: <config.worktreeParent>/<slug-branch> — cd there first. The branch
@@ -73,7 +91,8 @@ requirements, not suggestions.
    isolation they describe is not optional.
 
 <config.runInstructions, joined with newlines, verbatim — with {port} replaced by
-your assigned port and {key} by <KEY>>
+your assigned port, {key} by <KEY>, and {dataDir} by the unit's data directory
+(SKILL.md §6: <config.dataDirRoot>/<unit key>, the epic's key for an epic unit)>
 
 3. Anything you could NOT verify goes in the PR's Verification section as an
    explicit gap. Do not dress a compile-only check up as success.

@@ -80,7 +80,9 @@ looks exactly like success: a clean cycle report, and no watcher.
 A tick firing while §3's sweep is still running is not a problem, because
 `/ai-dev` takes a cycle lock as its first act and a second cycle skips on a live
 lock. That protection is the whole reason this order is safe; before the lock
-existed it was not.
+existed it was not. "Live" is judged by the lock's heartbeat (its mtime, touched
+each time one of the cycle's subagents returns), so an epic chain that runs all
+night keeps later ticks skipping for as long as it is still making progress.
 
 ## 3. Sweep once, now
 

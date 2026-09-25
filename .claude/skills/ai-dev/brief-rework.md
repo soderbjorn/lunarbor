@@ -101,7 +101,8 @@ going onto a pull request the maintainer is about to merge.
    isolation they describe is not optional.
 
 <config.runInstructions, joined with newlines, verbatim — with {port} replaced by
-your assigned port and {key} by <KEY>>
+your assigned port, {key} by <KEY>, and {dataDir} by the unit's data directory
+(SKILL.md §6: <config.dataDirRoot>/<unit key>, the epic's key for an epic unit)>
 
 3. Anything you could NOT verify is an explicit gap in your pull request comment.
 
