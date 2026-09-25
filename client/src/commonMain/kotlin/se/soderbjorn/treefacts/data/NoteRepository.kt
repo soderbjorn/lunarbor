@@ -121,8 +121,12 @@ class NoteRepository(
      * web renderer's image-asset URL builder) can resolve a stored
      * vault-relative path like `Images/foo.png` against the same root the
      * repository uses for `.md` I/O.
+     *
+     * Deliberately has no default: each platform resolves it (on Electron
+     * from `TREEFACTS_VAULT` / `TREEFACTS_LOCAL_DATA`, falling back to
+     * `~/treefacts-db`) so no run can silently land on a hardcoded path.
      */
-    val rootDirectory: String = DEFAULT_DIRECTORY,
+    val rootDirectory: String,
     val rootFileName: String = DEFAULT_FILE_NAME,
 ) {
 
@@ -1139,7 +1143,6 @@ class NoteRepository(
     }
 
     companion object {
-        const val DEFAULT_DIRECTORY: String = "/Users/soderbjorn/treefacts-db"
         const val NOTE_EXTENSION: String = ".md"
         const val DEFAULT_FILE_NAME: String = "Home$NOTE_EXTENSION"
         /**

@@ -49,6 +49,13 @@ external interface ElectronApp {
     fun getPath(name: String): String
 
     /**
+     * Override a special directory. Called with `"userData"` before
+     * `requestSingleInstanceLock()` for a `TREEFACTS_LOCAL_DATA` run, since
+     * Electron keys the lock on `userData`.
+     */
+    fun setPath(name: String, path: String)
+
+    /**
      * Absolute path to the app's root directory. In dev this is the
      * `electron/` folder (where `package.json`'s `main` lives); when
      * packaged it points inside the `.asar`/app bundle. Used to locate

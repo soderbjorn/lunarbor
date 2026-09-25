@@ -1,9 +1,26 @@
 #!/usr/bin/env bash
-# Deletes the TreeFacts on-disk database at $HOME/treefacts-db.
+# Deletes a TreeFacts on-disk vault.
+#
+# Usage:
+#   scripts/wipe-vault.sh [vault-path]
+#
+# Vault resolution matches the Electron app (RunPaths.kt):
+#   1. the vault-path argument, if given
+#   2. $TREEFACTS_VAULT
+#   3. $TREEFACTS_LOCAL_DATA/vault
+#   4. $HOME/treefacts-db
 
 set -euo pipefail
 
-VAULT="$HOME/treefacts-db"
+if [[ $# -ge 1 && -n "$1" ]]; then
+  VAULT="$1"
+elif [[ -n "${TREEFACTS_VAULT:-}" ]]; then
+  VAULT="$TREEFACTS_VAULT"
+elif [[ -n "${TREEFACTS_LOCAL_DATA:-}" ]]; then
+  VAULT="$TREEFACTS_LOCAL_DATA/vault"
+else
+  VAULT="$HOME/treefacts-db"
+fi
 
 if [[ ! -e "$VAULT" ]]; then
   echo "Nothing to delete: $VAULT does not exist."

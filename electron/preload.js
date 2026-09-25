@@ -1,6 +1,17 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Vault root resolved by the main process from TREEFACTS_VAULT /
+// TREEFACTS_LOCAL_DATA (default ~/treefacts-db), passed as
+// `--treefacts-vault=<encoded>` and exposed as `noteApi.vaultRoot`.
+// JsAppGraph hands it to NoteRepository; the renderer never guesses it.
+const vaultArg = (process.argv || []).find(a => a && a.startsWith("--treefacts-vault="));
+const vaultRoot = vaultArg
+  ? decodeURIComponent(vaultArg.substring("--treefacts-vault=".length))
+  : null;
+
 contextBridge.exposeInMainWorld("noteApi", {
+  /** Absolute vault root for this run, or null if the main process sent none. */
+  vaultRoot,
   ensureDirectory: (path) => ipcRenderer.invoke("treefacts:ensureDirectory", path),
   readFileIfExists: (path) => ipcRenderer.invoke("treefacts:readFileIfExists", path),
   writeFile: (path, content) => ipcRenderer.invoke("treefacts:writeFile", path, content),
