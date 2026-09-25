@@ -17,16 +17,30 @@ Generates:
     Click in the footer should adopt them as TreeFacts promoted refs.
 
 Usage:
-  python3 seed-vault.py            # writes to $HOME/treefacts-db
-  python3 seed-vault.py --wipe     # clears the vault first
+  python3 seed-vault.py                  # writes to the resolved vault
+  python3 seed-vault.py --vault <path>   # writes to <path>
+  python3 seed-vault.py --wipe           # clears the vault first
+
+Vault resolution matches the Electron app (RunPaths.kt): --vault, else
+$TREEFACTS_VAULT, else $TREEFACTS_LOCAL_DATA/vault, else $HOME/treefacts-db.
 """
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
 
-VAULT = Path.home() / "treefacts-db"
+def default_vault() -> Path:
+    """Resolves the vault the same way the Electron app does when no
+    --vault argument is given."""
+    vault = os.environ.get("TREEFACTS_VAULT", "").strip()
+    if vault:
+        return Path(vault).expanduser().resolve()
+    data = os.environ.get("TREEFACTS_LOCAL_DATA", "").strip()
+    if data:
+        return Path(data).expanduser().resolve() / "vault"
+    return Path.home() / "treefacts-db"
 
 
 def write_treefacts(path: Path, body: str) -> None:
@@ -300,8 +314,16 @@ def main() -> int:
         action="store_true",
         help="Delete the vault directory first (destructive).",
     )
+    parser.add_argument(
+        "--vault",
+        type=Path,
+        default=None,
+        help="Vault directory to seed (default: $TREEFACTS_VAULT, else "
+        "$TREEFACTS_LOCAL_DATA/vault, else ~/treefacts-db).",
+    )
     args = parser.parse_args()
-    seed(VAULT, args.wipe)
+    vault = args.vault.expanduser().resolve() if args.vault else default_vault()
+    seed(vault, args.wipe)
     return 0
 
 
