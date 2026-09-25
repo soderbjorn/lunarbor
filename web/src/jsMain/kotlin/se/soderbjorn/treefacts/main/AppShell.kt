@@ -174,6 +174,7 @@ class AppShell(
         StarredModal(
             parentScope = scope,
             activePaneVmProvider = { resolveOrCreateFocusedPaneVm() },
+            vaultRoot = documentRegistry.rootDirectory,
         )
     }
 
@@ -1468,6 +1469,7 @@ class AppShell(
             StarredModal(
                 parentScope = scope,
                 activePaneVmProvider = { paneViewModels[paneId] },
+                vaultRoot = documentRegistry.rootDirectory,
             )
         }
         modal.open()

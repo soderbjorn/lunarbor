@@ -56,19 +56,26 @@ import se.soderbjorn.treefacts.platform.FileSystem
  *   [MainViewModel], or `null` if the pane has been torn down. Looked up
  *   on every interaction so the modal always targets the latest VM if
  *   the pane was rebuilt.
+ * @param vaultRoot Absolute vault root this run uses — the app-wide
+ *   [DocumentRegistry.rootDirectory], resolved by the Electron main process
+ *   from `TREEFACTS_VAULT` / `TREEFACTS_LOCAL_DATA`. Both private
+ *   repositories below are rooted here so the modal always reads the same
+ *   vault as the panes.
  */
 internal class StarredModal(
     private val parentScope: CoroutineScope,
     private val activePaneVmProvider: () -> MainViewModel?,
+    private val vaultRoot: String,
 ) {
     private val fileSystem = FileSystem()
-    private val noteRepository = NoteRepository(fileSystem = fileSystem)
+    private val noteRepository = NoteRepository(fileSystem = fileSystem, rootDirectory = vaultRoot)
 
     /** Private repo whose `rootFileName` is `Starred.md`, so the modal's
      *  document VM boots straight into the bookmark file with no extra
      *  switchTo dance. Constructed once, reused across opens. */
     private val starredRepo = NoteRepository(
         fileSystem = fileSystem,
+        rootDirectory = vaultRoot,
         rootFileName = NoteRepository.STARRED_FILE_NAME,
     )
 
