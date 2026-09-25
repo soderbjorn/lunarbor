@@ -1,6 +1,6 @@
 ---
 name: ai-dev
-description: One cycle of autonomous ticket work. Snapshots the "ready for agent development" column of every Lunicle board named in config.json, claims every ticket in them immediately, and drives each to a pull request in a sibling worktree via its own subagent. Tickets sharing an epic are one unit — one worktree, one branch, one pull request, children built one after another in the epic's order. Pass --review to have each pull request code-reviewed too. A ticket sent back with maintainer feedback is reworked on its existing PR rather than reimplemented. Project-agnostic — everything repo-specific lives in config.json.
+description: One cycle of autonomous ticket work. Snapshots the "ready for agent development" column of every Lunicle board named in config.json, claims every ticket in them immediately, and drives each to a pull request in a sibling worktree via its own subagent. Tickets sharing an epic are one unit — one worktree, one branch, one pull request, children built one after another in the epic's order. Tickets whose "Blocked by" issues are neither merged nor built earlier in the same cycle are left in the column for a later cycle. Pass --review to have each pull request code-reviewed too. A ticket sent back with maintainer feedback is reworked on its existing PR rather than reimplemented. Project-agnostic — everything repo-specific lives in config.json.
 ---
 
 Arguments: $ARGUMENTS
@@ -146,8 +146,46 @@ merge-sort across boards.
 That order is the claim order and the dispatch order, and it does not change for
 the rest of the cycle.
 
+### Drop what is still waiting on a blocker
+
+A board whose project has blocking relation kinds (`relationKinds` entries with
+`marksBlocked: true`) reports `isBlocked` and `blockedBy` per issue, computed over
+the whole project. **A ticket is only workable once every blocker is satisfied.**
+The maintainer uses this to queue a chain of tickets in the ready column all at
+once and let the cycles work through them in the right order. So a blocked ticket
+in the ready column is not a mistake to report. It is waiting its turn.
+
+For every snapshot ticket with `isBlocked: true`, check each issue in `blockedBy`.
+A blocker is **satisfied** when any of these holds:
+
+1. **It is built earlier in this same cycle, in this same tree.** The blocker is
+   in the snapshot too, and shares the ticket's parent (so §4 makes them one unit).
+   The chain builds the blocker first and the ticket sees its work.
+2. **Its work is already on `main`.** `get_issue` the blocker. If one of your own
+   comments on it carries a pull request URL, and `gh pr view <url> --json state`
+   says `MERGED`, the blocker is satisfied even though its card hasn't been closed.
+   A human merged it and just hasn't finished testing it.
+
+Anything else is unsatisfied: an open PR not merged yet, no PR at all, or a
+blocker that is not in this snapshot and is not merged.
+
+**Drop every ticket with an unsatisfied blocker from the snapshot, and repeat
+until nothing changes.** Dropping a ticket can break rule 1 for a ticket that
+depended on it, so iterate to a fixpoint. A dependency cycle among snapshot
+tickets never resolves under rule 1; drop every ticket in it.
+
+A dropped ticket is **left exactly where it is.** Do not claim it, do not move
+it, and do not comment on it. Otherwise every 15-minute sweep would post the
+same "still waiting" comment. It is picked up by the first cycle after its
+blockers clear. List each one in the §10 report as `waiting on <KEYS>`.
+
+A ticket with no `isBlocked` field, or on a board with no blocking kinds, is
+never dropped here.
+
 If the snapshot is empty across every board: release the lock if you own it,
-print `Idle cycle — nothing in "<ready column>".`, send no e-mail, and stop.
+print `Idle cycle — nothing in "<ready column>".`, send no e-mail, and stop. If
+tickets were dropped as waiting, add one line per ticket underneath:
+`  • <KEY> — waiting on <KEYS>`.
 
 ## 3. Claim every ticket, immediately
 
@@ -215,6 +253,12 @@ parent: its `children` come back in the maintainer's deliberate order, which is 
 separate axis from where the cards sit on the board. Sort the unit's tickets by
 their position in that array and build them in that order — it is the ranking, not
 a coincidence of when each child was attached.
+
+**Blockers override that order.** If a ticket in the unit is "blocked by" a
+sibling that the array places *after* it, move the ticket to just after its
+last blocker in the unit. Otherwise keep the array order: this is a stable
+topological sort, and it changes nothing when the array already respects the
+links. §2 has already dropped any dependency cycles.
 
 Only some of an epic's children may be in your snapshot; the rest are not ready.
 Order the ones you have by that array and ignore the gaps. A ticket that names a
@@ -565,6 +609,7 @@ Print one line per ticket, in dispatch order:
 Cycle — <n> ticket(s): <d> done, <b> blocked.
   • <KEY> — done: <one line> → <PR url>
   • <KEY> — blocked: <what's needed>
+  • <KEY> — waiting on <KEYS>          (dropped in §2, left in the ready column)
 ```
 
 Leave every app worktree and branch in place; the owner wants to revisit the work.
@@ -588,6 +633,8 @@ precisely the tickets where the toolkit side mattered most.
 - Never run without the lock unless `--force` said so, never exit still holding one
   you took, and never delete one you did not take.
 - Never work a ticket that was not in the ready column at snapshot time.
+- Never claim a ticket whose blocker is unsatisfied (§2). Leave it untouched in
+  the ready column for a later cycle.
 - Never move a ticket to `config.statuses.review` without a PR URL.
 - Never move a blocked ticket out of `config.statuses.claimed`.
 - Never reimplement a ticket that already has a pull request, and never open a
