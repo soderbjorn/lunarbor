@@ -120,6 +120,7 @@ Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppSc
 - **Name intents after the action**: `onSignOutTapped`, `selectWord(row, col)`, `insertNewline`. Not `_setLines(...)`.
 - **Cursor and selection are pane state, not document state.** They live in `PaneBackingViewModel`. `Document` knows nothing about them.
 - **Active file is pane state.** `PaneBackingViewModel.State.activeFileRel` says which file *this pane* is viewing. `Document` does not know "the active file" — there is no global active file. Two panes can be on the same file (sharing a `Document` instance) or on different files.
+- **Every outline line is a bullet.** In a `.treefacts` document (`Document.bulletsOnly`) no intent may produce a non-bullet line: Enter on an empty bullet outdents it or opens another bullet, Backspace merges or deletes, paste makes one bullet per line (`bulletLinesForPaste`). Free-form content goes in blocks. Plain `.md` files keep plain-line editing — that flag is the switch for Markdown mode.
 - **Selection-aware writes compose in the pane VM.** Typing first deletes the selection, then inserts. The pane VM owns this composition; `Document` only exposes the primitives.
 
 ## On-disk format

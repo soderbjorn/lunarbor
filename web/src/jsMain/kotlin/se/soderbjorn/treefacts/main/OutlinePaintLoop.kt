@@ -9,9 +9,13 @@
  * in `MainScreen` since it has access to the captured DOM selection
  * snapshot.
  *
- * Each rendered row is one of two shapes:
+ * Each rendered row is one of two shapes. In an outline (a `.treefacts`
+ * node, `Document.bulletsOnly`) every row the user can create is a
+ * bullet (TRF-4). The plain shape is kept for plain Markdown files
+ * (`Starred.md`, and the Markdown mode of TRF-7) and for block lines
+ * loaded from disk; the editing intents never produce it in an outline.
  *
- *   non-bullet:  <div data-row="N" data-prefix-len="0">
+ *   plain:       <div data-row="N" data-prefix-len="0">
  *                  <span class="text">{line}</span>
  *                </div>
  *
@@ -135,12 +139,11 @@ fun paint(
     for (row in visibleRows) {
         val rawLine = state.lines[row]
         // Only strip the zoom indent when the row actually has at least
-        // `viewOriginCol` leading whitespace chars. A row inside the zoom
-        // region whose content sits at a shallower column (e.g., user-
-        // edited prose at col 0, or the leftover of a stripped bullet)
-        // must display its full content; stripping blindly would chop
-        // real characters and the resulting prefix-len mismatch would
-        // misroute typed input through the model<->DOM caret mapping.
+        // `viewOriginCol` leading whitespace chars. Every row of the zoom
+        // region is nested deeper than the zoom target, so this holds for
+        // all TAB_SIZE-aligned bullets; the guard only protects a
+        // hand-edited, oddly indented line from losing real characters
+        // (which would misroute input through the model<->DOM mapping).
         val canStrip = viewOriginCol > 0 &&
             rawLine.length >= viewOriginCol &&
             (0 until viewOriginCol).all { rawLine[it] == ' ' }
@@ -151,19 +154,24 @@ fun paint(
         )
     }
 
-    // Empty-document affordance. A fresh/empty vault loads as a single
-    // blank line; without a cue the pane looks like a dead black area
-    // (there is no "create your first note" flow — you type into the
-    // root document directly). Overlay a faint, non-editable, click-
-    // through hint on the blank row. The first keystroke repaints and it
-    // vanishes. Guarded to the unzoomed root-empty case so it never
-    // covers real content.
-    if (zoom == null && docState.lines.size == 1 && docState.lines[0].isEmpty()) {
+    // Empty-document affordance. A fresh/empty outline loads as a single
+    // empty bullet (a plain file as a blank line); without a cue the pane
+    // looks like a dead area (there is no "create your first note" flow —
+    // you type into the root document directly). Overlay a faint,
+    // non-editable, click-through hint on that row. The first keystroke
+    // repaints and it vanishes. Guarded to the unzoomed root-empty case
+    // so it never covers real content.
+    val onlyLine = docState.lines.singleOrNull()
+    if (zoom == null && onlyLine != null && (onlyLine.isEmpty() || DocumentLayout.isEmptyBulletLine(onlyLine))) {
         (editor.firstElementChild as? HTMLElement)?.let { firstRow ->
             val hint = document.createElement("span") as HTMLElement
             hint.className = "treefacts-empty-hint"
             hint.textContent = "Type here to start your outline…"
             hint.setAttribute("contenteditable", "false")
+            // Start the hint where the text starts — right of the bullet
+            // glyph on an empty bullet — instead of covering the glyph.
+            val textSpan = firstRow.querySelector(".treefacts-text") as? HTMLElement
+            if (textSpan != null) hint.style.left = "${textSpan.offsetLeft}px"
             firstRow.appendChild(hint)
         }
     }
@@ -254,7 +262,8 @@ private fun buildRowElement(
         rowDiv.appendChild(buildBulletPrefix(absoluteRow, onBulletMouseDown))
         rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2)))
     } else {
-        // Non-bullet line: editable text starts at column 0 of the raw line,
+        // Plain line (plain Markdown files, block lines — never created by
+        // editing an outline): editable text starts at column 0 of the raw line,
         // unless we stripped a zoom indent — in that case the displayed text
         // begins at `viewOriginCol` in raw model columns.
         rowDiv.setAttribute("data-prefix-len", viewOriginCol.toString())
