@@ -43,7 +43,7 @@ import org.w3c.dom.events.KeyboardEvent
 import org.w3c.dom.events.MouseEvent
 import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.data.SubtreeCodec
-import se.soderbjorn.treefacts.platform.FileSystem
+import se.soderbjorn.treefacts.platform.PlatformFileSystem
 
 /**
  * Per-pane Starred bookmarks modal.
@@ -67,7 +67,7 @@ internal class StarredModal(
     private val activePaneVmProvider: () -> MainViewModel?,
     private val vaultRoot: String,
 ) {
-    private val fileSystem = FileSystem()
+    private val fileSystem = PlatformFileSystem()
     private val noteRepository = NoteRepository(fileSystem = fileSystem, rootDirectory = vaultRoot)
 
     /** Private repo whose `rootFileName` is `Starred.md`, so the modal's
@@ -700,7 +700,6 @@ internal class StarredModal(
     }
 
     private fun defaultFileTitle(fileRel: String): String {
-        val basename = fileRel.substringAfterLast('/')
-        return basename.removeSuffix(".md").ifBlank { fileRel }
+        return NoteRepository.displayNameOf(fileRel).ifBlank { fileRel }
     }
 }

@@ -31,6 +31,7 @@ import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.dom.events.MouseEvent
+import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineStyle
@@ -1457,7 +1458,7 @@ class MainScreen(
      */
     private fun updateTitle(title: HTMLElement, backing: PaneBackingViewModel.State?) {
         // Resolve text + line-level style. The non-zoomed case shows the
-        // active file's display name (with `.md` + directory stripped);
+        // active file's display name (NoteRepository.displayNameOf);
         // the zoomed case shows the leaf bullet's prefix-stripped text
         // plus its line-level style.
         val (text, style) = when {
@@ -1475,7 +1476,7 @@ class MainScreen(
                 zoom.titleText.ifBlank { "(untitled)" } to zoom.style
             } ?: run {
                 val fileRel = backing.activeFileRel
-                val fileName = fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Untitled" }
+                val fileName = NoteRepository.displayNameOf(fileRel).ifBlank { "Untitled" }
                 fileName to null
             }
         }

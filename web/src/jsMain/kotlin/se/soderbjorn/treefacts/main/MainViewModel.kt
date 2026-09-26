@@ -301,22 +301,6 @@ class MainViewModel(
     suspend fun ensureFolderStub(fileRel: String) =
         paneBackingViewModel.ensureFolderStub(fileRel)
 
-    /** See `PaneBackingViewModel.createSpaceAndNavigate`. */
-    fun createSpaceAndNavigate(name: String, aiAllowed: Boolean = false) =
-        paneBackingViewModel.createSpaceAndNavigate(name, aiAllowed)
-
-    /** See `PaneBackingViewModel.currentSpaceAnchorFileRel`. */
-    fun currentSpaceAnchorFileRel(): String? =
-        paneBackingViewModel.currentSpaceAnchorFileRel()
-
-    /** See `PaneBackingViewModel.spaceAiAllowed`. */
-    suspend fun spaceAiAllowed(fileRel: String): Boolean? =
-        paneBackingViewModel.spaceAiAllowed(fileRel)
-
-    /** See `PaneBackingViewModel.setSpaceAiAllowed`. */
-    suspend fun setSpaceAiAllowed(fileRel: String, allowed: Boolean) =
-        paneBackingViewModel.setSpaceAiAllowed(fileRel, allowed)
-
     /** See `PaneBackingViewModel.navigateToLink`. */
     fun navigateToLink(url: String, onComplete: () -> Unit = {}) =
         paneBackingViewModel.navigateToLink(url, onComplete)

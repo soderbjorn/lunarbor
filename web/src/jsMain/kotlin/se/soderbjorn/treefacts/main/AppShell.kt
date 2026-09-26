@@ -150,19 +150,6 @@ class AppShell(
     private val insertImageModals: MutableMap<String, ImageSearchModal> = mutableMapOf()
 
     /**
-     * Per-pane New-space modals ("New space" command). Same lifecycle
-     * pattern as [insertLinkModals]: lazy first-open create, reuse
-     * thereafter, cleared in [closePane].
-     */
-    private val newSpaceModals: MutableMap<String, NewSpaceModal> = mutableMapOf()
-
-    /**
-     * Per-pane Space-settings modals ("Space settings" command). Same
-     * lifecycle pattern as [newSpaceModals].
-     */
-    private val spaceSettingsModals: MutableMap<String, SpaceSettingsModal> = mutableMapOf()
-
-    /**
      * Singleton Starred-bookmarks modal mounted in the *tab toolbar*
      * (left of the layout dropdown), distinct from the per-pane
      * [starredModals]. Picking a favorite navigates whichever pane is
@@ -724,22 +711,6 @@ class AppShell(
             },
         )
         out += CommandPalette.Command(
-            id = "new-space",
-            title = "New space",
-            run = {
-                val paneId = focusedPaneId()
-                if (paneId != null) openNewSpaceModal(paneId)
-            },
-        )
-        out += CommandPalette.Command(
-            id = "space-settings",
-            title = "Space settings",
-            run = {
-                val paneId = focusedPaneId()
-                if (paneId != null) openSpaceSettingsModal(paneId)
-            },
-        )
-        out += CommandPalette.Command(
             id = "insert-image",
             title = "Insert Image",
             run = {
@@ -1088,7 +1059,7 @@ class AppShell(
         val segments = mutableListOf<PaneTitleSegment>()
         // Leading segment is the active file's display name. Click clears
         // the zoom (back to the file's top), matching the old "Home"
-        // behaviour on Home.md but generalising to any file.
+        // behaviour on the root outline but generalising to any file.
         segments += PaneTitleSegment(
             label = activeFileDisplayName(paneId),
             onClick = { vm.zoomTo(null) },
@@ -1198,15 +1169,15 @@ class AppShell(
     }
 
     /**
-     * Display name of the file currently loaded in [paneId] — basename
-     * minus `.md`, with the directory path stripped. Falls back to
-     * "Home" when the pane's view model hasn't booted yet.
+     * Display name of the file currently loaded in [paneId] — see
+     * [NoteRepository.displayNameOf]. Falls back to "Home" when the
+     * pane's view model hasn't booted yet.
      */
     private fun activeFileDisplayName(paneId: String): String {
         val backing = paneViewModels[paneId]?.stateFlow?.value?.backingState ?: return "Home"
         val fileRel = backing.activeFileRel
         if (fileRel.isEmpty()) return "Home"
-        return fileRel.substringAfterLast('/').removeSuffix(".md").ifBlank { "Home" }
+        return NoteRepository.displayNameOf(fileRel).ifBlank { "Home" }
     }
 
     /**
@@ -1329,42 +1300,31 @@ class AppShell(
     }
 
     /**
-     * Resolves the vault-relative parent file for [fileRel] using the
-     * TreeFacts on-disk convention that promoted subtrees live in
-     * `<Name>/<Name>.md` files. The parent file is one folder shallower:
+     * Resolves the node outline one level up from [fileRel], following
+     * the folder-per-bullet layout: a node's outline is
+     * `<folder>/.treefacts`, and its parent is the enclosing folder's.
      *
-     *  - `Recipes/Quick Granola/Quick Granola.md` → `Recipes/Recipes.md`
-     *  - `Recipes/Recipes.md`                     → [rootFileName]
-     *  - `links.md` (already root-level)          → `null`
+     *  - `Recipes/Pasta/.treefacts` → `Recipes/.treefacts`
+     *  - `Recipes/.treefacts`       → [rootFileName]
+     *  - `Recipes/notes.md`, `Recipes/pic.png` → `Recipes/.treefacts`
+     *  - `notes.md` (at the vault root) → [rootFileName]
      *
-     * Path-based heuristic — does not verify the parent file actually
-     * exists or contains a ref to [fileRel]. By TreeFacts convention this
-     * holds for every promoted file.
+     * Path-based; does not check that the parent outline exists (a
+     * folder without one is still a node, just with no bullets yet).
      *
-     * @param fileRel      vault-relative path of the current file (with `.md`).
-     * @param rootFileName vault-relative path of the configured root file.
-     * @return the parent file's vault-relative path, or `null` when the
-     *   file is already at root level (or is the root file itself).
+     * @param fileRel      vault-relative path of the current file.
+     * @param rootFileName vault-relative path of the root outline.
+     * @return the parent outline's vault-relative path, or `null` for the
+     *   root outline itself.
      */
     private fun parentFileOf(fileRel: String, rootFileName: String): String? {
         if (fileRel == rootFileName) return null
-        // Images don't follow the doubled-name convention — they sit
-        // directly inside whatever directory the user dropped them in
-        // and have no "own" folder to skip past. "Up" means the anchor
-        // file of the directory they live in, or the root file when
-        // the image is at the vault root.
-        if (NoteRepository.isImagePath(fileRel)) {
-            val parentDir = fileRel.substringBeforeLast('/', "")
-            if (parentDir.isEmpty()) return rootFileName
-            val parentName = parentDir.substringAfterLast('/')
-            return "$parentDir/$parentName.md"
+        val folder = if (NoteRepository.isOutlineFile(fileRel)) {
+            NoteRepository.folderOfOutline(fileRel).substringBeforeLast('/', "")
+        } else {
+            fileRel.substringBeforeLast('/', "")
         }
-        val withoutFile = fileRel.substringBeforeLast('/', "")
-        if (withoutFile.isEmpty()) return null
-        val parentFolder = withoutFile.substringBeforeLast('/', "")
-        if (parentFolder.isEmpty()) return rootFileName
-        val parentName = parentFolder.substringAfterLast('/')
-        return "$parentFolder/$parentName.md"
+        return if (folder.isEmpty()) rootFileName else NoteRepository.outlineFileOf(folder)
     }
 
     /**
@@ -1528,40 +1488,6 @@ class AppShell(
     }
 
     /**
-     * Opens the per-pane New-space modal — a single name input that
-     * creates a fresh top-level tree (`<Name>/<Name>.md`) and navigates
-     * the pane into it. Same lifecycle pattern as [openInsertLinkModal]:
-     * lazy first-open create, reuse thereafter, cleared in [closePane].
-     */
-    private fun openNewSpaceModal(paneId: String) {
-        if (paneViewModels[paneId] == null) return
-        val modal = newSpaceModals.getOrPut(paneId) {
-            NewSpaceModal(
-                activePaneVmProvider = { paneViewModels[paneId] },
-                onAfterPick = { paneEditors[paneId]?.focusEditor() },
-            )
-        }
-        modal.open()
-    }
-
-    /**
-     * Opens the per-pane Space-settings modal — edits the AI opt-in of
-     * the space containing the pane's active file. Same lifecycle
-     * pattern as [openNewSpaceModal].
-     */
-    private fun openSpaceSettingsModal(paneId: String) {
-        if (paneViewModels[paneId] == null) return
-        val modal = spaceSettingsModals.getOrPut(paneId) {
-            SpaceSettingsModal(
-                parentScope = scope,
-                activePaneVmProvider = { paneViewModels[paneId] },
-                onAfterPick = { paneEditors[paneId]?.focusEditor() },
-            )
-        }
-        modal.open()
-    }
-
-    /**
      * Injects treefacts-only chrome styles that aren't part of the toolkit
      * stylesheet: the disabled state for nav buttons (back/forward/up/
      * home stay in place when inert, dimmed instead of removed) and the
@@ -1580,7 +1506,7 @@ class AppShell(
             }
             /* ── Modal action button (termtastic-style) ─────────────────
                Filled accent button for modal dialogs' primary action
-               (Space settings → Save). Mirrors termtastic's
+               (e.g. a confirm action). Mirrors termtastic's
                .news-update-download pattern: accent fill, 6px radius,
                bold small label, hover brightens, active presses down.
                The palette rows are keyboard-highlight driven and have
@@ -2182,8 +2108,6 @@ class AppShell(
         insertLinkModals.remove(paneId)?.close()
         navigateToModals.remove(paneId)?.close()
         insertImageModals.remove(paneId)?.close()
-        newSpaceModals.remove(paneId)?.close()
-        spaceSettingsModals.remove(paneId)?.close()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
             // Last pane in a non-last tab: cascade to closing the tab.
             closeTab(tabId)

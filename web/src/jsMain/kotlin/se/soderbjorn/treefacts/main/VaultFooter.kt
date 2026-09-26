@@ -14,15 +14,13 @@
  * lets a vault dropped in from Obsidian or Dynalist read as a seamless
  * continuation of the outline rather than a separate file browser.
  *
- * The bullet slot therefore shows the same dot as the outline for ordinary
- * note files and folders. Two exceptions carry a real type glyph instead:
- * *spaces* (see [VaultEntry.isSpace]) show the dedicated padlock so a
- * structural boundary is recognizable at a glance, and image files show a
- * picture glyph since they aren't outline content. Files are leaves (a bullet,
- * no chevron); folders and spaces are expandable (a bullet-or-padlock plus a
- * disclosure chevron) — exactly the parent/leaf distinction the outline draws.
- * Clicking a file's bullet (via the row listener) navigates to it. Folders use
- * their basename; files render with their display name.
+ * The bullet slot therefore shows the same dot as the outline for note files
+ * and folders; only image files carry a picture glyph, since they aren't
+ * outline content. Files are leaves (a bullet, no chevron); folders are
+ * expandable (a bullet plus a disclosure chevron) — exactly the parent/leaf
+ * distinction the outline draws. Clicking a file's bullet (via the row
+ * listener) navigates to it. Folders show their decoded folder name; files
+ * their display name.
  *
  * Every footer row carries a `data-vault-path` (or `data-vault-dir`) data
  * attribute instead of `data-row` so any DOM walker that filters on
@@ -35,18 +33,15 @@
  * effective anchor:
  *
  *  - The pane is unzoomed and [PaneBackingViewModel.State.activeFileRel]
- *    is itself an anchor: the configured root file (anchors `""`, the
- *    vault root) or a doubled-name file `<dir>/<basename>.md` (anchors
- *    `<dir>`).
- *  - The pane is zoomed into a promoted-ref bullet whose child file is an
- *    anchor. The visible zoom region *is* that child file's content, so
- *    the footer lists the child's anchored directory — exactly as if the
- *    user had navigated into the child file directly.
+ *    is a node outline: the root outline (lists `""`, the vault root) or
+ *    `<dir>/.treefacts` (lists `<dir>`).
+ *  - The pane is zoomed into a folder-backed bullet. The visible zoom
+ *    region *is* that bullet's folder, so the footer lists it — exactly
+ *    as if the user had navigated into the folder's outline directly.
  *
- * In every other case (non-anchor active file, zoom into a plain inline
- * bullet, zoom into a promoted-ref whose child is a loose non-anchored
- * file) the footer is hidden — the user is "inside" a specific note and a
- * filesystem listing would be noise.
+ * In every other case (a `.md` note, a zoom into a leaf bullet) the footer
+ * is hidden — the user is "inside" a specific note and a filesystem
+ * listing would be noise.
  *
  * The anchor file itself is filtered out of the listing so the footer
  * never redundantly points at the file currently being viewed.
@@ -479,48 +474,16 @@ private fun buildVaultBulletGlyph(): HTMLElement {
 }
 
 /**
- * The glyph used by folder footer rows. Ordinary folders — whether foreign
- * directories or anchored TreeFacts trees — get the outline's bullet dot
- * (via [buildVaultBulletGlyph]) so the footer reads as one continuous
- * outline. Only a **space** (see [VaultEntry.isSpace]) breaks that
- * uniformity: it renders the dedicated padlock ([vaultSpaceSvg]) so a
- * structural boundary — a self-contained tree that never auto-demotes and
- * carries its own settings — is recognizable at a glance.
- *
- * (The disclosure chevron in the leading 22px slot, [buildVaultChevron],
- * already tells folders apart from files, so anchored vs. foreign folders no
- * longer need distinct body glyphs.)
- *
- * Keeps the same `.treefacts-bullet-prefix` wrapper + trailing space as
- * [buildVaultFileGlyph] so folder and file rows share identical horizontal
- * metrics and every glyph aligns in one column.
+ * The glyph used by folder footer rows: the outline's bullet dot (via
+ * [buildVaultBulletGlyph]), so the footer reads as one continuous outline.
+ * The disclosure chevron in the leading 22px slot ([buildVaultChevron])
+ * already tells folders apart from files.
  *
  * Inert: click handling lives on the parent row, which toggles the folder's
  * expand state — the glyph inherits the row's pointer cursor.
  */
-private fun buildVaultFolderGlyph(entry: VaultEntry): HTMLElement {
-    if (!entry.isSpace) return buildVaultBulletGlyph()
-    val prefix = document.createElement("span") as HTMLElement
-    prefix.className = "treefacts-bullet-prefix treefacts-vault-folder-prefix"
-    prefix.setAttribute("contenteditable", "false")
-    prefix.style.apply {
-        setProperty("user-select", "none")
-        cursor = "pointer"
-    }
-    val glyph = document.createElement("span") as HTMLElement
-    glyph.className = "treefacts-vault-folder-glyph"
-    glyph.innerHTML = vaultSpaceSvg(entry.aiAllowed)
-    prefix.title = if (entry.aiAllowed) {
-        "Space — AI access allowed"
-    } else {
-        "Space — a self-contained top-level tree (no AI access)"
-    }
-    prefix.appendChild(glyph)
-    val space = document.createElement("span") as HTMLElement
-    space.textContent = " "
-    prefix.appendChild(space)
-    return prefix
-}
+@Suppress("UNUSED_PARAMETER")
+private fun buildVaultFolderGlyph(entry: VaultEntry): HTMLElement = buildVaultBulletGlyph()
 
 /**
  * Builds the entry's text label. Plain `<span>` — no caret can land here
@@ -563,41 +526,6 @@ private fun buildVaultChevron(isExpanded: Boolean): HTMLElement {
         "style=\"transform: $rotation; transition: transform 120ms ease; pointer-events: none;\">" +
         "<polyline points=\"4,6 8,10 12,6\"></polyline></svg></span>"
     return target
-}
-
-/**
- * Dedicated space glyph: a padlock — solid body, stroked shackle.
- * Deliberately a different silhouette family from the folder and page
- * icons so a space is recognizable at a glance in the footer — it
- * marks a root-level loose tree, i.e. a stable sensitivity domain
- * whose content can never auto-demote out of its folder.
- *
- * Earlier revisions tried a ringed planet (read as an eye/blob) and a
- * safe with dial + feet (read as an insect). At 13 px in a single dim
- * colour, only glyphs with a bold, detail-free silhouette survive; the
- * padlock is the shape browsers have proven at this size in the URL
- * bar. Keep it free of internal detail (no keyhole).
- *
- * @param aiAllowed When `true` (the space's anchor frontmatter carries
- *   the `treefacts-ai: allowed` opt-in, see [VaultEntry.aiAllowed]), a
- *   small accent-tinted four-point sparkle is drawn at the padlock's
- *   upper right — the badge that marks the space as AI-eligible.
- *   Fail-closed spaces (the default) render the bare padlock.
- */
-private fun vaultSpaceSvg(aiAllowed: Boolean): String {
-    val sparkle = if (aiAllowed) {
-        "<path fill=\"var(--t-accent, #7aa2f7)\" stroke=\"none\" " +
-            "d=\"M19 0.5 L20.1 3.4 L23 4.5 L20.1 5.6 L19 8.5 L17.9 5.6 L15 4.5 L17.9 3.4 Z\"/>"
-    } else {
-        ""
-    }
-    return "<svg viewBox=\"0 0 24 24\" width=\"13\" height=\"13\" style=\"pointer-events: none;\">" +
-        "<path d=\"M8 11V7.5a4 4 0 0 1 8 0V11\" fill=\"none\" stroke=\"currentColor\" " +
-        "stroke-width=\"2.2\"/>" +
-        "<rect x=\"5\" y=\"10.5\" width=\"14\" height=\"10.5\" rx=\"2\" fill=\"currentColor\" " +
-        "stroke=\"none\"/>" +
-        sparkle +
-        "</svg>"
 }
 
 /**

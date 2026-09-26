@@ -241,7 +241,6 @@ private fun buildRowElement(
                     isFoldedPromotedRef
             val isCollapsedNow = rowId in state.collapsedIds
             if (isCollapsibleParent) {
-                val isRef = viewModel.isPromotedRef(rowId)
                 val chevron = buildChevron(rowId, isCollapsedNow, viewModel)
                 // Position the chevron just to the left of THIS row's bullet
                 // glyph, not the editor's left margin. The row's bullet sits
@@ -249,14 +248,6 @@ private fun buildRowElement(
                 // box; the chevron's 22px slot lands immediately before it.
                 chevron.style.left = "${depth * style.indentStepPx - 22}px"
                 rowDiv.appendChild(chevron)
-                if (isRef) {
-                    // Discrete file-icon adornment to the left of the
-                    // chevron, signalling that expanding leads into a
-                    // separate Markdown file rather than child bullets.
-                    val refIcon = buildPromotedRefIcon()
-                    refIcon.style.left = "${depth * style.indentStepPx - 36}px"
-                    rowDiv.appendChild(refIcon)
-                }
             }
         }
 
@@ -617,10 +608,9 @@ private fun buildBulletPrefix(
  * [MainViewModel.toggleCollapse]. Marked `contenteditable="false"` so it
  * never participates in caret placement.
  *
- * Promoted-ref bullets get a separate file-icon adornment via
- * [buildPromotedRefIcon] rather than restyling the chevron itself, so the
- * chevron stays visually identical regardless of whether it leads into a
- * separate document or in-file children.
+ * Folder-backed bullets use the same chevron as any other parent: since
+ * every parent bullet is folder-backed once saved, a separate adornment
+ * would mark nothing and only flicker in after the first save.
  */
 private fun buildChevron(
     rowId: LineId,
@@ -665,42 +655,6 @@ private fun buildChevron(
         viewModel.toggleCollapse(rowId)
     })
     return target
-}
-
-/**
- * Small file-icon adornment shown to the left of the chevron when the row
- * is a promoted-subtree reference (i.e. expanding it loads a separate
- * Markdown file). Purely decorative — non-interactive and
- * `contenteditable="false"` so it doesn't capture clicks intended for the
- * chevron or row body. Absolute positioning of the `left` offset is the
- * caller's responsibility.
- */
-private fun buildPromotedRefIcon(): HTMLElement {
-    val icon = document.createElement("div") as HTMLElement
-    icon.className = "treefacts-promoted-ref-icon"
-    icon.title = "Linked file"
-    icon.setAttribute("contenteditable", "false")
-    icon.style.apply {
-        setProperty("position", "absolute")
-        top = "0"
-        width = "22px"
-        height = "100%"
-        display = "flex"
-        alignItems = "center"
-        justifyContent = "center"
-        color = "var(--t-text-dim, #7a7a7a)"
-        setProperty("user-select", "none")
-        setProperty("pointer-events", "none")
-    }
-    // Page-with-folded-corner glyph. Sized + weighted to match
-    // `VaultFooter.buildVaultFileIcon` so promoted-ref rows and tree-row
-    // file rows read with the same prominence.
-    icon.innerHTML = "<svg viewBox=\"0 0 24 24\" width=\"11\" height=\"11\" fill=\"none\" " +
-        "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
-        "stroke-linejoin=\"round\" style=\"pointer-events: none;\">" +
-        "<path d=\"M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z\"/>" +
-        "<polyline points=\"14 3 14 9 20 9\"/></svg>"
-    return icon
 }
 
 /**
