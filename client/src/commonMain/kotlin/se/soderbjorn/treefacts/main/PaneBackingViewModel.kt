@@ -26,6 +26,13 @@
  *   - [MarkdownStyleViewModel] — inline / line-level markdown styling.
  *   - SelectionHelper.kt     — pure helpers (no class).
  *
+ * ### Markdown mode (TRF-7)
+ * A pane viewing a file that is not a `.treefacts` outline — a `.md`
+ * note — is in Markdown mode ([State.isMarkdownMode]): the same editor,
+ * fully editable, but with no bullet behaviour. Nothing folds, nothing
+ * zooms, rows are not dragged, and the document saves the text exactly
+ * as written ([Document.bulletsOnly] is `false`, so no promotion).
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -40,6 +47,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlin.time.TimeSource
+import se.soderbjorn.treefacts.data.ImagePaths
 import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineStyle
@@ -80,9 +88,9 @@ class PaneBackingViewModel(
     val vaultIndex: VaultIndex get() = registry.vaultIndex
 
     /**
-     * Lists vault image files (vault-relative paths under `Images/`).
-     * Used by the `Insert Image` palette flavour. Suspending because it
-     * crosses the FileSystem expect/actual boundary.
+     * Lists every image in the vault (vault-relative paths). Used by the
+     * `Insert Image` palette flavour. Suspending because it crosses the
+     * FileSystem boundary.
      */
     suspend fun listImageFiles(): List<String> = registry.listImageFiles()
 
@@ -115,9 +123,12 @@ class PaneBackingViewModel(
      *   targets within the active file. Capped at [NAV_HISTORY_CAP].
      * @property zoomForward Browser-style forward stack populated by
      *   [zoomBack] and consumed by [zoomForward].
-     * @property fileHistory Browser-style back stack of `(fileRel,
-     *   zoomedLineId)` pairs the user has switched away from. A single
-     *   Back chord walks zoom-back first, then file-back.
+     * @property fileHistory Browser-style back stack of the places the
+     *   user has switched away from — nodes, `.md` notes and images alike
+     *   (TRF-7). Each [FileHistoryEntry] carries the zoom the pane had in
+     *   that file, so Back from a note opened in a zoomed node returns to
+     *   that node. A single Back chord walks zoom-back first, then
+     *   file-back.
      * @property fileForward Mirror of [fileHistory] for forward
      *   navigation.
      * @property collapsedIds Within-file fold state.
@@ -154,8 +165,8 @@ class PaneBackingViewModel(
         val zoomedLineId: LineId? = null,
         val zoomHistory: List<LineId?> = emptyList(),
         val zoomForward: List<LineId?> = emptyList(),
-        val fileHistory: List<String> = emptyList(),
-        val fileForward: List<String> = emptyList(),
+        val fileHistory: List<FileHistoryEntry> = emptyList(),
+        val fileForward: List<FileHistoryEntry> = emptyList(),
         val collapsedIds: Set<LineId> = emptySet(),
         val expandedRefIdsLocal: Set<LineId> = emptySet(),
         val pendingLeafZoomChild: LineId? = null,
@@ -176,6 +187,16 @@ class PaneBackingViewModel(
         val isImageView: Boolean get() = NoteRepository.isImagePath(activeFileRel)
 
         /**
+         * `true` when the pane shows a file that is not a node outline —
+         * a `.md` note (TRF-7). The editor stays fully editable but drops
+         * every bullet behaviour: no folding, no zoom, no row dragging, no
+         * promotion to folders. `false` for outlines and for the image
+         * view.
+         */
+        val isMarkdownMode: Boolean
+            get() = activeFileRel.isNotEmpty() && !isImageView && !NoteRepository.isOutlineFile(activeFileRel)
+
+        /**
          * `true` while the document is mid-save on a tick that
          * promotes or demotes a subtree across the per-file boundary
          * — see [Document.State.isRestructuring].
@@ -185,6 +206,19 @@ class PaneBackingViewModel(
         /** Convenience accessor — never null, falls back to a single empty line. */
         val lines: List<String> get() = documentState?.lines ?: listOf("")
     }
+
+    /**
+     * One entry of [State.fileHistory] / [State.fileForward].
+     *
+     * @property fileRel The file the pane showed: a node outline, a `.md`
+     *   note or an image.
+     * @property zoomTitlePath Titles from the file's top-level bullet down
+     *   to the bullet the pane was zoomed into, or empty when it was not
+     *   zoomed. Stored as titles rather than a [LineId] because line ids
+     *   do not survive the document being closed and reloaded; restored
+     *   by [restoreZoom] on the way back.
+     */
+    data class FileHistoryEntry(val fileRel: String, val zoomTitlePath: List<String> = emptyList())
 
     /**
      * A normalized selection range (start ≤ end, by row-then-column),
@@ -405,6 +439,8 @@ class PaneBackingViewModel(
     private fun applyDefaultCollapseIfNeeded(state: State): State {
         val docState = state.documentState ?: return state
         if (!docState.isLoaded) return state
+        // Markdown mode never folds.
+        if (state.isMarkdownMode) return state
         val seen = state.seenLineIds
         val currentIds = docState.lineIds
         if (seen.size == currentIds.size && seen.containsAll(currentIds)) return state
@@ -443,10 +479,12 @@ class PaneBackingViewModel(
      * `releaseExpansion` so the shared document refcounts pane-local
      * intents — children are spliced in on the first acquire across all
      * panes, and only evicted when every pane has released.
+     *
+     * A no-op in Markdown mode, which never folds.
      */
     fun toggleCollapse(lineId: LineId) {
         val current = _stateFlow.value
-        if (!current.isLoaded) return
+        if (!current.isLoaded || current.isMarkdownMode) return
         val doc = document ?: return
         val isRef = doc.isPromotedRef(lineId)
         // A folder-backed bullet whose children are already in `lines`
@@ -740,6 +778,8 @@ class PaneBackingViewModel(
      * before [insertBeforeRow] with [targetIndent] applied to the top
      * of the moved block. See the v1 indent / disallow-cases / id
      * semantics rules from the original docstring; preserved verbatim.
+     *
+     * A no-op in Markdown mode, where rows are text, not movable bullets.
      */
     fun moveLineRange(
         fromStartRow: Int,
@@ -747,6 +787,7 @@ class PaneBackingViewModel(
         insertBeforeRow: Int,
         targetIndent: Int,
     ) = recordEdit(FrameKind.OTHER) {
+        if (_stateFlow.value.isMarkdownMode) return@recordEdit
         val doc = document ?: return@recordEdit
         val docStart = doc.stateFlow.value
         if (!docStart.isLoaded) return@recordEdit
@@ -796,14 +837,20 @@ class PaneBackingViewModel(
 
     // ------------------------------------------------------------------ zoom
 
-    /** See [ZoomNavigation.zoomInto]. */
-    fun zoomInto(row: Int) = zoomNavigation.zoomInto(row)
+    /** See [ZoomNavigation.zoomInto]. A no-op in Markdown mode, which never zooms. */
+    fun zoomInto(row: Int) {
+        if (_stateFlow.value.isMarkdownMode) return
+        zoomNavigation.zoomInto(row)
+    }
 
     /** See [ZoomNavigation.zoomOut]. */
     fun zoomOut() = zoomNavigation.zoomOut()
 
-    /** See [ZoomNavigation.zoomTo]. */
-    fun zoomTo(lineId: LineId?) = zoomNavigation.zoomTo(lineId)
+    /** See [ZoomNavigation.zoomTo]. A no-op in Markdown mode, which never zooms. */
+    fun zoomTo(lineId: LineId?) {
+        if (_stateFlow.value.isMarkdownMode) return
+        zoomNavigation.zoomTo(lineId)
+    }
 
     /**
      * Walk one step back in the unified navigation history. Pops the
@@ -844,30 +891,86 @@ class PaneBackingViewModel(
 
     private suspend fun fileBack() {
         val previous = _stateFlow.value.fileHistory.lastOrNull() ?: return
-        val currentFile = _stateFlow.value.activeFileRel
+        val current = currentHistoryEntry()
         val priorHistory = _stateFlow.value.fileHistory.dropLast(1)
         val priorForward = _stateFlow.value.fileForward
-        switchActiveFile(previous)
+        switchActiveFile(previous.fileRel)
         patch {
             it.copy(
                 fileHistory = priorHistory,
-                fileForward = (priorForward + currentFile).takeLast(NAV_HISTORY_CAP),
+                fileForward = (priorForward + current).takeLast(NAV_HISTORY_CAP),
             )
         }
+        restoreZoom(previous.zoomTitlePath)
     }
 
     private suspend fun fileForward() {
         val next = _stateFlow.value.fileForward.lastOrNull() ?: return
-        val currentFile = _stateFlow.value.activeFileRel
+        val current = currentHistoryEntry()
         val priorHistory = _stateFlow.value.fileHistory
         val priorForward = _stateFlow.value.fileForward.dropLast(1)
-        switchActiveFile(next)
+        switchActiveFile(next.fileRel)
         patch {
             it.copy(
-                fileHistory = (priorHistory + currentFile).takeLast(NAV_HISTORY_CAP),
+                fileHistory = (priorHistory + current).takeLast(NAV_HISTORY_CAP),
                 fileForward = priorForward,
             )
         }
+        restoreZoom(next.zoomTitlePath)
+    }
+
+    /**
+     * The [FileHistoryEntry] for where this pane is right now: the active
+     * file plus the title path of the zoom target, if any. Pushed onto
+     * the history by every cross-file navigation.
+     */
+    private fun currentHistoryEntry(): FileHistoryEntry {
+        val s = _stateFlow.value
+        val docState = s.documentState
+        val zoomed = s.zoomedLineId
+        val path = if (zoomed != null && docState != null && docState.isLoaded) {
+            val row = docState.lineIds.indexOf(zoomed)
+            if (row >= 0) titlePathOfRow(docState.lines, row) else emptyList()
+        } else {
+            emptyList()
+        }
+        return FileHistoryEntry(s.activeFileRel, path)
+    }
+
+    /**
+     * After a history step landed on a file, zooms back into the bullet
+     * at [titlePath] (see [FileHistoryEntry.zoomTitlePath]). Folded
+     * folder-backed bullets on the way are expanded for this pane, as a
+     * click on their chevron would. The zoom goes through
+     * [ZoomNavigation.zoomInto], so Back from there returns to the
+     * file's root view. Stops quietly at the first title it cannot find
+     * (the bullet was renamed or deleted meanwhile).
+     */
+    private suspend fun restoreZoom(titlePath: List<String>) {
+        if (titlePath.isEmpty()) return
+        val doc = document ?: return
+        doc.stateFlow.first { it.isLoaded }
+        var targetId: LineId? = null
+        for (depth in 1..titlePath.size) {
+            val id = findLineIdByTitlePathIn(
+                doc.stateFlow.value.lines, doc.stateFlow.value.lineIds, titlePath.take(depth)
+            ) ?: return
+            targetId = id
+            val isLast = depth == titlePath.size
+            if (!isLast && doc.isPromotedRef(id) && id !in _stateFlow.value.expandedRefIdsLocal) {
+                patch {
+                    it.copy(
+                        expandedRefIdsLocal = it.expandedRefIdsLocal + id,
+                        collapsedIds = it.collapsedIds - id,
+                    )
+                }
+                doc.acquireExpansion(id)
+            }
+        }
+        val id = targetId ?: return
+        if (document !== doc) return
+        val row = doc.stateFlow.value.lineIds.indexOf(id)
+        if (row >= 0) zoomNavigation.zoomInto(row)
     }
 
     /** See [ZoomNavigation.zoomInfo]. */
@@ -1163,13 +1266,13 @@ class PaneBackingViewModel(
     fun navigateToVaultFile(pathRel: String) {
         val current = _stateFlow.value
         if (!current.isLoaded && !current.isImageView) return
-        val currentFile = current.activeFileRel
-        if (currentFile == pathRel) return
+        if (current.activeFileRel == pathRel) return
+        val here = currentHistoryEntry()
         scope.launch {
             switchActiveFile(pathRel)
             patch {
                 it.copy(
-                    fileHistory = (it.fileHistory + currentFile).takeLast(NAV_HISTORY_CAP),
+                    fileHistory = (it.fileHistory + here).takeLast(NAV_HISTORY_CAP),
                     fileForward = emptyList(),
                 )
             }
@@ -1191,8 +1294,15 @@ class PaneBackingViewModel(
         val state = _stateFlow.value
         val docState = state.documentState ?: return emptyList()
         if (!docState.isLoaded) return emptyList()
-        val lines = docState.lines
-        val row = state.cursorRow
+        return titlePathOfRow(docState.lines, state.cursorRow)
+    }
+
+    /**
+     * Titles from the top-level bullet of [lines] down to the bullet at
+     * [row], inclusive; empty when [row] is not a bullet. The inverse of
+     * [findLineIdByTitlePathIn].
+     */
+    private fun titlePathOfRow(lines: List<String>, row: Int): List<String> {
         if (row !in lines.indices) return emptyList()
         val rowIndent = DocumentLayout.bulletAsteriskColumn(lines[row])
         if (rowIndent < 0) return emptyList()
@@ -1250,14 +1360,16 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Inserts an inline image reference `![alt](vaultRelPath)` at the
-     * cursor. Mirrors [insertMarkdownLink] — same selection-replacing
+     * Inserts an inline image reference `![alt](src)` at the cursor.
+     * Mirrors [insertMarkdownLink] — same selection-replacing
      * literal-insert path so an armed `pendingInlineStyles` doesn't
      * wrap the image syntax in marker pairs.
      *
-     * @param vaultRelPath Path to the image relative to the vault root
-     *   (e.g. `Images/foo.png`). Wrapped in `<…>` automatically when it
-     *   contains spaces / parens / angle brackets (CommonMark rule).
+     * @param src The image destination exactly as it should be written:
+     *   a bare file name for an image in the row's own folder, a
+     *   vault-rooted `/…` path otherwise ([ImagePaths]). Wrapped in `<…>`
+     *   automatically when it contains spaces / parens / angle brackets
+     *   (CommonMark rule).
      * @param alt Optional alt text. CommonMark specials are escaped so
      *   the alt round-trips cleanly.
      * @param widthPx Optional display width in CSS pixels. When set, the
@@ -1265,27 +1377,46 @@ class PaneBackingViewModel(
      *   so it survives the file → display → file round-trip. Standard
      *   CommonMark viewers treat the whole `alt|width` as alt text.
      */
-    fun insertImageRef(vaultRelPath: String, alt: String = "", widthPx: Int? = null) {
+    fun insertImageRef(src: String, alt: String = "", widthPx: Int? = null) {
         val sizedAlt = if (widthPx != null && widthPx > 0) "$alt|$widthPx" else alt
         val markdown = "![" + SubtreeCodec.escapeLabel(sizedAlt) + "](" +
-            SubtreeCodec.formatLinkUrlForLabel(vaultRelPath) + ")"
+            SubtreeCodec.formatLinkUrlForLabel(src) + ")"
         insertLiteralText(markdown)
     }
 
     /**
-     * Handles a pasted image. Writes [bytes] into the vault's `Images/`
-     * folder under [suggestedName] (with `-2`, `-3`, … suffix on
-     * collision) and inserts a `![](Images/<final-name>)` reference at
-     * the current cursor. No-op when the active document hasn't
+     * Inserts a reference to the existing vault image [vaultRelPath], as
+     * picked in the Insert Image palette. An image in the cursor row's
+     * own folder is referenced by bare file name (so it follows the row);
+     * any other is referenced vault-rooted (`/Images/logo.png`), which
+     * resolves the same wherever the row goes.
+     */
+    fun insertVaultImage(vaultRelPath: String) {
+        val folder = imageFolderOf(_stateFlow.value.cursorRow)
+        val parent = vaultRelPath.substringBeforeLast('/', missingDelimiterValue = "")
+        val name = vaultRelPath.substringAfterLast('/')
+        insertImageRef(if (folder != null && parent == folder) name else ImagePaths.vaultRooted(vaultRelPath))
+        if (folder != null && parent == folder) document?.noteImageHomeAt(_stateFlow.value.cursorRow)
+    }
+
+    /**
+     * Handles a pasted (or dropped) image. Writes [bytes] under
+     * [suggestedName] (with `-2`, `-3`, … on collision) into the folder
+     * of the node being edited — the folder the cursor row is stored in
+     * ([Document.storageFolderOf]), or the `.md` note's folder — and
+     * inserts `![](<name>)` at the cursor. The image then shows in that
+     * folder's contents list, and travels with the node's folder when it
+     * is renamed or moved. No-op when the active document hasn't
      * finished loading — the cursor isn't trustworthy yet.
      *
-     * Suspends across the disk write. The caller is expected to launch
+     * Saves the document first, so a bullet that just got its first
+     * child already has its folder and the image lands in it.
+     *
+     * Suspends across the disk writes. The caller is expected to launch
      * this on the pane's scope so paste latency doesn't block the UI
-     * thread; the markdown insert that follows the write goes through
-     * the standard undoable path, so an undo after paste removes the
-     * `![…]` (the file on disk is left as an orphan — a Phase-5 reaper
-     * task; deleting eagerly would surprise users who paste the same
-     * screenshot into multiple notes).
+     * thread; the markdown insert that follows goes through the standard
+     * undoable path, so an undo after paste removes the `![…]` (the file
+     * on disk is kept).
      *
      * @param suggestedName Filename including extension. Generated at
      *   the platform layer (where `Date.now()` / equivalents live) so
@@ -1294,9 +1425,29 @@ class PaneBackingViewModel(
      */
     suspend fun onImagePasted(suggestedName: String, bytes: ByteArray) {
         if (!_stateFlow.value.isLoaded) return
-        val rel = registry.saveImageBytes(suggestedName, bytes)
-        insertImageRef(rel)
+        val doc = document ?: return
+        doc.flush()
+        if (document !== doc) return
+        val folder = doc.storageFolderOf(_stateFlow.value.cursorRow)
+        val rel = registry.saveImageBytes(folder, suggestedName, bytes)
+        if (document !== doc) return
+        insertImageRef(rel.substringAfterLast('/'))
+        doc.noteImageHomeAt(_stateFlow.value.cursorRow)
     }
+
+    /**
+     * Vault-relative folder the images on [row] resolve against — see
+     * [Document.storageFolderOf] — or `null` when no document is loaded.
+     */
+    fun imageFolderOf(row: Int): String? = document?.storageFolderOf(row)
+
+    /**
+     * The vault-relative file the image [src] on [row] points at, or
+     * `null` for an external URL ([ImagePaths.resolve]). Called by the web
+     * paint loop and the zoom headline for every inline image they draw.
+     */
+    fun resolveImageSrc(row: Int, src: String): String? =
+        ImagePaths.resolve(imageFolderOf(row) ?: "", src)
 
     /**
      * Rewrites the inline image at [row] whose source path equals
@@ -1374,11 +1525,11 @@ class PaneBackingViewModel(
                 }
                 val isCrossFile = resolution.fileRel != _stateFlow.value.activeFileRel
                 if (isCrossFile) {
-                    val priorFile = _stateFlow.value.activeFileRel
+                    val here = currentHistoryEntry()
                     switchActiveFile(resolution.fileRel)
                     patch {
                         it.copy(
-                            fileHistory = (it.fileHistory + priorFile).takeLast(NAV_HISTORY_CAP),
+                            fileHistory = (it.fileHistory + here).takeLast(NAV_HISTORY_CAP),
                             fileForward = emptyList(),
                         )
                     }

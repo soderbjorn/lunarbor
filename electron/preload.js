@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld("noteApi", {
   moveDirectory: (from, to) => ipcRenderer.invoke("treefacts:moveDirectory", from, to),
   listDirectory: (path) => ipcRenderer.invoke("treefacts:listDirectory", path),
   listDirectoryEntries: (path) => ipcRenderer.invoke("treefacts:listDirectoryEntries", path),
+  /**
+   * Opens a vault file in the system's default app (TRF-7). Takes a
+   * vault-relative path; the main process resolves it and refuses paths
+   * outside the vault. Resolves to "" on success, else an error message.
+   */
+  openPath: (pathRel) => ipcRenderer.invoke("treefacts:openPath", pathRel),
 });
 
 // Hand off the shared darkness ui-settings JSON, parsed out of the

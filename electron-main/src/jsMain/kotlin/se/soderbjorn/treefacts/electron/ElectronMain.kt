@@ -20,7 +20,9 @@
  *  - `treefacts:*` file-ops IPC handlers powering the renderer's
  *    [se.soderbjorn.treefacts.platform.FileSystem] (ensureDirectory,
  *    readFileIfExists, writeFile, deleteFile, deleteDirectoryIfEmpty,
- *    moveFile, moveDirectory, listDirectory, listDirectoryEntries).
+ *    moveFile, moveDirectory, listDirectory, listDirectoryEntries), plus
+ *    `treefacts:openPath`, which opens a vault file in the system's
+ *    default app via `shell.openPath` (TRF-7; see VaultFilePath.kt).
  *  - BrowserWindow setup with the boot-time `--darkness-settings=` /
  *    `--darkness-layout-state=` argument injection the renderer's
  *    preload script picks up.
@@ -713,6 +715,23 @@ private fun registerIpcHandlers() {
             if (old != null && !old.isDestroyed()) old.destroy()
         }
         Unit
+    }
+
+    // ── treefacts:openPath (TRF-7) ──────────────────────────────
+    // Opens a vault file in the system's default app ("other file" rows
+    // of the folder contents list). The renderer sends a vault-relative
+    // path; [vaultFilePath] refuses anything that would leave the vault.
+    ipcMain.handle("treefacts:openPath") { _, pathRel ->
+        GlobalScope.promise {
+            val abs = vaultFilePath(runPaths.vaultDir, pathRel as String)
+            if (abs == null) {
+                console.error("treefacts:openPath refused", pathRel)
+                return@promise "refused: outside the vault"
+            }
+            val error = shell.openPath(abs).await()
+            if (error.isNotEmpty()) console.error("treefacts:openPath failed", abs, error)
+            error
+        }
     }
 
     // ── treefacts:* (renderer-side FileSystem operations) ────────

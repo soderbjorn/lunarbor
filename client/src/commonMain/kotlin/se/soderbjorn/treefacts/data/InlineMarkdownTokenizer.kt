@@ -108,10 +108,12 @@ data class StyledRun(
      * emit a replacement element (e.g. an `<img>`) when it encounters
      * a run whose [imageSrc] is non-null.
      *
-     * The source path is stored verbatim — vault-root-relative for paths
-     * created by TreeFacts (e.g. `Images/Foo.png`), or whatever the user
-     * typed for hand-edited references. Angle-bracket wrapping for paths
-     * with spaces (e.g. `<Images/My pic.png>`) is supported on read.
+     * The source path is stored verbatim — a bare file name for images
+     * pasted by TreeFacts (`Foo.png`, relative to the row's folder), a
+     * vault-rooted `/…` path for images picked from elsewhere, or whatever
+     * the user typed; `ImagePaths.resolve` maps it to a vault file.
+     * Angle-bracket wrapping for paths with spaces (e.g. `<My pic.png>`)
+     * is supported on read.
      *
      * [imageAlt] is the alt text minus any trailing `|<digits>` width
      * suffix. [imageWidthPx] is set when the alt ended with `|<digits>`

@@ -25,7 +25,13 @@
  * bullet deleted). The rules are documented on [save].
  *
  * Files that are not `.treefacts` outlines (`Starred.md`, other `.md`
- * notes) are loaded and saved as plain lines: no folders, no promotion.
+ * notes) are loaded and saved as plain lines, exactly as written: no
+ * folders, no promotion, no outline file (TRF-7 Markdown mode).
+ *
+ * Pasted images are written into the folder of the node being edited
+ * ([saveImageBytes]); when a row moves to another node, the images it
+ * references by bare file name follow it ([moveAttachments]). Image
+ * paths are resolved per [ImagePaths].
  *
  * Pure parsing/formatting lives in [SubtreeCodec]; folder naming in
  * [FolderName].
@@ -33,7 +39,6 @@
 
 package se.soderbjorn.treefacts.data
 
-import se.soderbjorn.treefacts.main.DocumentLayout
 import se.soderbjorn.treefacts.platform.FileSystem
 import se.soderbjorn.treefacts.platform.VaultDirectoryEntry
 import kotlin.time.Clock
@@ -100,6 +105,16 @@ data class PromotedRef(val folderRel: String) {
     /** Vault-relative path of the folder's outline file. */
     val fileRel: String get() = NoteRepository.outlineFileOf(folderRel)
 }
+
+/**
+ * One image file to move with a row that moved to another node
+ * ([NoteRepository.moveAttachments]).
+ *
+ * @property fromFolder Vault-relative folder the row was stored in.
+ * @property toFolder Vault-relative folder the row is stored in now.
+ * @property name The image's bare file name, as referenced by the row.
+ */
+data class AttachmentMove(val fromFolder: String, val toFolder: String, val name: String)
 
 /**
  * Reads and writes the vault.
@@ -227,8 +242,9 @@ class NoteRepository(
      * bullets and with anything already on disk) are case-insensitive.
      * Unchanged outline files are not rewritten.
      *
-     * Non-outline files are written verbatim (trailing empty bullets
-     * dropped).
+     * Non-outline files (Markdown mode) are written verbatim — the lines
+     * joined with `\n`, nothing added or trimmed — and never get a
+     * `.treefacts` file or folder.
      *
      * @param fileRel The document's file. For an outline, its folder is
      *   the root node of [lines].
@@ -255,7 +271,7 @@ class NoteRepository(
     ): SaveResult {
         fileSystem.ensureDirectory(rootDirectory)
         if (!isOutlineFile(fileRel)) {
-            val body = stripTrailingEmptyBullets(lines).joinToString("\n")
+            val body = lines.joinToString("\n")
             if (fileSystem.readFileIfExists(abs(fileRel)) != body) fileSystem.writeFile(abs(fileRel), body)
             return SaveResult(emptyMap())
         }
@@ -586,23 +602,6 @@ class NoteRepository(
         return trashed.getValue(b) + path.substring(b.length)
     }
 
-    /**
-     * Drops trailing empty bullets and blank lines from a plain file's
-     * [content], keeping at least one row. Plain files only; outline
-     * trimming is structural (see [SubtreeCodec.trimTrailingEmpty]).
-     */
-    private fun stripTrailingEmptyBullets(content: List<String>): List<String> {
-        var end = content.size
-        while (end > 0) {
-            val last = content[end - 1]
-            if (!(last.isBlank() || DocumentLayout.isEmptyBulletLine(last))) break
-            end--
-        }
-        if (end == content.size) return content
-        if (end == 0) return listOf("")
-        return content.subList(0, end).toList()
-    }
-
     // -------------------------------------------------------- vault listing
 
     /**
@@ -717,44 +716,96 @@ class NoteRepository(
     // ---------------------------------------------------------------- images
 
     /**
-     * Writes a pasted image into the vault's `Images/` folder and returns
-     * the vault-relative path actually written. Name collisions get `-2`,
-     * `-3`, … before the extension.
+     * Writes a pasted image into the folder [dirRel] — the folder of the
+     * node being edited, or of the `.md` note — and returns the
+     * vault-relative path actually written. Name collisions (with any
+     * entry in the folder, case-insensitively) get `-2`, `-3`, … before
+     * the extension.
      *
+     * Called by `DocumentRegistry.saveImageBytes` for a paste or drop.
+     *
+     * @param dirRel Vault-relative folder (`""` = vault root). Created if
+     *   missing.
      * @param suggestedName Filename including extension, no path.
      * @param bytes Raw image data.
      */
-    suspend fun saveImageBytes(suggestedName: String, bytes: ByteArray): String {
-        val imagesAbs = abs(IMAGES_DIR)
-        fileSystem.ensureDirectory(imagesAbs)
-        val existing = fileSystem.listDirectory(imagesAbs).toSet()
+    suspend fun saveImageBytes(dirRel: String, suggestedName: String, bytes: ByteArray): String {
+        val dirAbs = abs(dirRel)
+        fileSystem.ensureDirectory(dirAbs)
+        val existing = fileSystem.listDirectory(dirAbs).map { it.lowercase() }.toSet()
         val finalName = uniqueImageFilename(suggestedName, existing)
-        fileSystem.writeBinary("$imagesAbs/$finalName", bytes)
-        return "$IMAGES_DIR/$finalName"
+        val rel = join(dirRel, finalName)
+        fileSystem.writeBinary(abs(rel), bytes)
+        return rel
     }
 
-    private fun uniqueImageFilename(suggested: String, existing: Set<String>): String {
-        if (suggested !in existing) return suggested
+    private fun uniqueImageFilename(suggested: String, existingLowercase: Set<String>): String {
+        if (suggested.lowercase() !in existingLowercase) return suggested
         val dot = suggested.lastIndexOf('.')
         val stem = if (dot < 0) suggested else suggested.substring(0, dot)
         val ext = if (dot < 0) "" else suggested.substring(dot)
         var n = 2
         while (true) {
             val candidate = "$stem-$n$ext"
-            if (candidate !in existing) return candidate
+            if (candidate.lowercase() !in existingLowercase) return candidate
             n++
         }
     }
 
     /**
-     * Image files directly under `Images/`, vault-relative, sorted.
-     * Not cached: saves and pastes change the folder at any time.
+     * Every image in the vault, vault-relative, sorted — every node
+     * folder and any other folder, skipping dot-folders (the trash).
+     * Not cached: saves and pastes change the tree at any time. Used by
+     * the Insert Image palette.
      */
-    suspend fun listImageFiles(): List<String> =
-        fileSystem.listDirectory(abs(IMAGES_DIR))
-            .filter { !it.startsWith(".") && isImagePath(it) }
-            .map { "$IMAGES_DIR/$it" }
-            .sorted()
+    suspend fun listImageFiles(): List<String> {
+        val out = ArrayList<String>()
+        walkImages("", out)
+        return out.sorted()
+    }
+
+    private suspend fun walkImages(dirRel: String, out: MutableList<String>) {
+        for (entry in fileSystem.listDirectoryEntries(abs(dirRel))) {
+            if (entry.name.startsWith(".")) continue
+            val pathRel = join(dirRel, entry.name)
+            if (entry.isDirectory) walkImages(pathRel, out)
+            else if (isImagePath(entry.name)) out += pathRel
+        }
+    }
+
+    /**
+     * Moves image files that belong to rows which moved to another
+     * node's folder. Each move is `fromFolder/name → toFolder/name`
+     * (vault-relative folders, bare file names). A move is skipped when
+     * the source is gone (it already moved, e.g. with its folder) or the
+     * destination name is taken — the file is never overwritten.
+     *
+     * Called by `Document` after a save, for rows whose storage folder
+     * changed ([ImagePaths.isFolderLocal] images only).
+     *
+     * @return The moves that were applied.
+     */
+    suspend fun moveAttachments(moves: List<AttachmentMove>): List<AttachmentMove> {
+        val applied = ArrayList<AttachmentMove>()
+        val listings = HashMap<String, Set<String>>()
+        suspend fun namesIn(folder: String): Set<String> = listings.getOrPut(folder) {
+            fileSystem.listDirectoryEntries(abs(folder)).filter { !it.isDirectory }.map { it.name }.toHashSet()
+        }
+        for (m in moves) {
+            if (m.fromFolder == m.toFolder) continue
+            if (m.name !in namesIn(m.fromFolder)) continue
+            val taken = namesIn(m.toFolder).any { it.equals(m.name, ignoreCase = true) }
+            if (taken) {
+                println("[autosave]   keep ${m.fromFolder}/${m.name}: ${m.toFolder} already has one")
+                continue
+            }
+            fileSystem.moveFile(abs(join(m.fromFolder, m.name)), abs(join(m.toFolder, m.name)))
+            listings[m.fromFolder] = namesIn(m.fromFolder) - m.name
+            listings[m.toFolder] = namesIn(m.toFolder) + m.name
+            applied += m
+        }
+        return applied
+    }
 
     // --------------------------------------------------------------- starred
 
@@ -836,9 +887,6 @@ class NoteRepository(
 
         /** Parking area for folders mid-move; see [applyMoves]. */
         const val MOVING_DIR: String = "$TRASH_DIR/.moving"
-
-        /** Vault-relative folder where pasted images live. */
-        const val IMAGES_DIR: String = "Images"
 
         private const val TAB_SIZE: Int = 2
 

@@ -121,6 +121,7 @@ Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppSc
 - **Cursor and selection are pane state, not document state.** They live in `PaneBackingViewModel`. `Document` knows nothing about them.
 - **Active file is pane state.** `PaneBackingViewModel.State.activeFileRel` says which file *this pane* is viewing. `Document` does not know "the active file" — there is no global active file. Two panes can be on the same file (sharing a `Document` instance) or on different files.
 - **Every outline line is a bullet.** In a `.treefacts` document (`Document.bulletsOnly`) no intent may produce a non-bullet line: Enter on an empty bullet outdents it or opens another bullet, Backspace merges or deletes, paste makes one bullet per line (`bulletLinesForPaste`). Free-form content goes in blocks. Plain `.md` files keep plain-line editing — that flag is the switch for Markdown mode.
+- **Markdown mode is pane state.** `PaneBackingViewModel.State.isMarkdownMode` is `true` when the pane shows a file that is not a `.treefacts` outline (a `.md` note). Same editor, fully editable, no bullet behaviour: nothing folds (`toggleCollapse`, default collapse), nothing zooms (`zoomInto` / `zoomTo`), rows are not dragged (`moveLineRange`, the view's drag handles), no chevrons or badges. The file is saved exactly as written and never gets a `.treefacts` file.
 - **Blocks are the only other outline line.** A block (bordered free Markdown among the bullets) is one row per content line in `Document.lines`, each `<indent><marker><content>` with a hidden private-use marker (`BlockLayout.FIRST` opens a block, `BlockLayout.NEXT` continues it). The marker keeps every context-free helper from mistaking a `* item` inside a block for a bullet; the `:::` fences exist only on disk. A block nests under the preceding bullet by indent, so a block under a leaf makes it folder-backed. Inside a block Enter adds a row, Backspace joins rows (an empty block is deleted), paste is verbatim, Tab moves the whole block, Cmd-Enter / Escape leave it onto a new bullet. Insert / Delete block are palette commands; deletion is undoable.
 - **Selection-aware writes compose in the pane VM.** Typing first deletes the selection, then inserts. The pane VM owns this composition; `Document` only exposes the primitives.
 
@@ -142,7 +143,8 @@ One folder per parent bullet. A bullet is backed by a folder if and only if it h
 - `:::` … `:::` — a block (a longer fence when the content contains a `:::` line).
 - **Folder names** (`data/FolderName.kt`): the title's plain text, percent-encoded where unsafe (`/ \ : * ? " < > |`, `%`, a leading dot, trailing dots/spaces, control characters), capped at 120 bytes; sibling collisions are case-insensitive and get ` (2)`, ` (3)`, …; an empty title is `Untitled`.
 - **Save rules** (`NoteRepository.save`, run 1 s after the last edit and at most 5 s apart): a leaf that gets its first child becomes a folder; a folder whose last child is removed is deleted unless it still holds files; title edits rename the folder; moves (indent, outdent, drag, cut and paste) `rename` the folder so attachments travel; a deleted folder-backed bullet's folder goes to `<vault>/.trash/<timestamp> <name>/` (undo in the same session moves it back; the trash is never emptied automatically).
-- **Parser/codec**: `client/src/commonMain/.../data/SubtreeCodec.kt` parses and emits the outline format; `NoteRepository.kt` is the only thing that touches `FileSystem`. Files that are not `.treefacts` outlines (`Starred.md`, other `.md` notes) are read and written as plain lines.
+- **Parser/codec**: `client/src/commonMain/.../data/SubtreeCodec.kt` parses and emits the outline format; `NoteRepository.kt` is the only thing that touches `FileSystem`. Files that are not `.treefacts` outlines (`Starred.md`, other `.md` notes) are read and written as plain lines, verbatim.
+- **Images** (`data/ImagePaths.kt`): an image `src` resolves like a CommonMark link, relative to the folder the line is stored in (`Document.storageFolderOf`: the nearest folder-backed ancestor's folder, the outline's own folder, or a `.md` note's folder). A pasted image is written into that folder and referenced by bare file name (`![](shot.png)`), so it moves with the node's folder; when a save moves a row to another folder, the images it names that way move with it (`NoteRepository.moveAttachments`, unless another row still uses them). A `/…` src is vault-rooted (the Insert Image palette uses it for images outside the row's folder); a src with a URL scheme is external.
 
 ## Folder contents list
 
@@ -151,7 +153,8 @@ Under the bullets of the node a pane is showing (the zoom target, or the root of
 - **Shown:** `.md` notes, images, other files, foreign subfolders, TreeFacts folders no bullet references. **Hidden:** folders a `+` line of the node's own outline points at (`VaultEntry.isReferenced`, set by `NoteRepository.listVaultLevel`), dotfiles (including `.treefacts`) and `.trash`.
 - **Order:** folders first, then files, each group by `FolderContents.naturalCompare` (case-insensitive, `Note 2` before `Note 10`).
 - **Which folder:** `PaneBackingViewModel.currentNodeFolder` — the zoomed bullet's folder, the open outline's folder, or none (a zoomed leaf, a `.md` note).
-- An expanded folder-backed bullet carries a count badge (`FolderContents.badgeLabel`, e.g. `2 folders, 3 files`) computed from the same list. Clicking a folder row opens it as a node (`openFolderAsNode`); "New Markdown file" in the palette creates `Untitled.md`, `Untitled 2.md`, … in the current folder and opens it.
+- An expanded folder-backed bullet carries a count badge (`FolderContents.badgeLabel`, e.g. `2 folders, 3 files`) computed from the same list. "New Markdown file" in the palette creates `Untitled.md`, `Untitled 2.md`, … in the current folder and opens it.
+- **Clicking a row:** a folder opens as a node (`openFolderAsNode`); a `.md` note opens in Markdown mode and an image in the read-only image view (`navigateToVaultFile`) — all three push the pane's file history, so Back / Forward walk nodes, notes and images alike; any other file opens in the system's default app (`MainViewModel.openInDefaultApp` → `noteApi.openPath` → the main process's `treefacts:openPath`, which refuses paths outside the vault).
 
 ## Zoom navigation
 
@@ -182,6 +185,7 @@ client/src/commonMain/.../data/
   NoteRepository.kt                   ← vault I/O + folder-per-bullet save rules
   SubtreeCodec.kt                     ← `.treefacts` outline codec
   FolderName.kt                       ← title → folder name encoding
+  ImagePaths.kt                       ← image `src` → vault file rules
 
 client/src/*Main/.../platform/
   FileSystem.kt                       ← interface; per-platform PlatformFileSystem

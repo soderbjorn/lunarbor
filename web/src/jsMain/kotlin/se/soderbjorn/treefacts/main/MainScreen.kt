@@ -31,6 +31,7 @@ import org.w3c.dom.Node
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.dom.events.MouseEvent
+import se.soderbjorn.treefacts.data.ImagePaths
 import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.InlineStyle
@@ -1502,7 +1503,11 @@ class MainScreen(
             }
         }
         applyTitleStyleClass(title, style)
-        renderInlineRuns(title, text, baseRunClass = null)
+        // Images in a zoomed headline resolve against the zoom row's folder.
+        val zoomRow = backing?.takeIf { it.isLoaded }?.let { viewModel.zoomInfo(it)?.zoomRow }
+        renderInlineRuns(title, text, baseRunClass = null) { src ->
+            if (zoomRow != null) viewModel.resolveImageSrc(zoomRow, src) else ImagePaths.resolve("", src)
+        }
     }
 
     /**
@@ -1519,8 +1524,15 @@ class MainScreen(
      *   editor uses `treefacts-text-run` so its caret-mapping code can
      *   walk the spans; the headline passes `null` and just gets the
      *   style classes.
+     * @param imageResolver maps an inline image `src` to its vault file
+     *   (see `createImageRunElement`).
      */
-    private fun renderInlineRuns(parent: HTMLElement, text: String, baseRunClass: String?) {
+    private fun renderInlineRuns(
+        parent: HTMLElement,
+        text: String,
+        baseRunClass: String?,
+        imageResolver: (String) -> String?,
+    ) {
         val tokenized = InlineMarkdownTokenizer.tokenize(text)
         parent.innerHTML = ""
         if (tokenized.runs.isEmpty()) {
@@ -1529,7 +1541,7 @@ class MainScreen(
         }
         for (run in tokenized.runs) {
             if (run.imageSrc != null) {
-                parent.appendChild(createImageRunElement(run, baseRunClass = baseRunClass))
+                parent.appendChild(createImageRunElement(run, baseRunClass = baseRunClass, imageResolver = imageResolver))
                 continue
             }
             val span = document.createElement("span") as HTMLElement
@@ -1943,6 +1955,8 @@ class MainScreen(
      */
     private fun beginDragFromBullet(absoluteRow: Int, ev: MouseEvent) {
         val backing = viewModel.currentBackingState
+        // Markdown mode (TRF-7): rows are text, not movable bullets.
+        if (backing.isMarkdownMode) return
         val sel = PaneBackingViewModel.selectionOf(backing)
         if (sel != null && sel.startRow != sel.endRow && absoluteRow in sel.startRow..sel.endRow) {
             startDragSession(sel.startRow, sel.endRow, ev, DragSession.Origin.Selection)
@@ -1964,6 +1978,7 @@ class MainScreen(
      */
     private fun maybeBeginGutterDrag(editor: HTMLElement, ev: MouseEvent) {
         val backing = viewModel.currentBackingState
+        if (backing.isMarkdownMode) return
         val sel = PaneBackingViewModel.selectionOf(backing) ?: return
         val target = ev.target as? Node ?: return
         val rowDiv = ancestorRowDiv(target) ?: return

@@ -67,11 +67,16 @@ fun paintFolderContents(
 }
 
 /**
- * One row: a type glyph and the entry's name. Clicking a folder opens it
- * as a node ([MainViewModel.openFolderAsNode]); clicking a Markdown note
- * or an image opens it in this pane ([MainViewModel.navigateToVaultFile]).
- * Other files are listed but not clickable yet — opening files is the
- * Markdown-mode ticket's job.
+ * One row: a type glyph and the entry's name. What a click opens (TRF-7):
+ *
+ * - **Folder:** the folder as a node ([MainViewModel.openFolderAsNode]).
+ * - **Markdown note:** the note in this pane, in Markdown mode
+ *   ([MainViewModel.navigateToVaultFile]).
+ * - **Image:** the read-only image view in this pane (same intent).
+ * - **Other file:** the system's default app for it
+ *   ([MainViewModel.openInDefaultApp]); the pane stays where it is.
+ *
+ * The first three push the pane's file history, so Back returns here.
  */
 private fun buildEntryRow(
     entry: VaultEntry,
@@ -98,14 +103,12 @@ private fun buildEntryRow(
     label.textContent = entry.name
     row.appendChild(label)
 
-    val action: (() -> Unit)? = when (entry.kind) {
+    val action: () -> Unit = when (entry.kind) {
         VaultEntryKind.FOLDER -> { { viewModel.openFolderAsNode(entry.pathRel) } }
         VaultEntryKind.MARKDOWN, VaultEntryKind.IMAGE -> { { viewModel.navigateToVaultFile(entry.pathRel) } }
-        VaultEntryKind.FILE -> null
+        VaultEntryKind.FILE -> { { viewModel.openInDefaultApp(entry.pathRel) } }
     }
-    if (action == null) {
-        row.classList.add("treefacts-folder-entry-inert")
-    }
+    if (entry.kind == VaultEntryKind.FILE) row.title = "${entry.pathRel} — opens in the default app"
     // Keep the press away from the editor's caret placement and drag
     // handlers, which listen on the editor.
     row.addEventListener("mousedown", { event ->
@@ -113,14 +116,12 @@ private fun buildEntryRow(
         me.stopPropagation()
         me.preventDefault()
     })
-    if (action != null) {
-        row.addEventListener("click", { event ->
-            val me = event as MouseEvent
-            me.stopPropagation()
-            me.preventDefault()
-            action()
-        })
-    }
+    row.addEventListener("click", { event ->
+        val me = event as MouseEvent
+        me.stopPropagation()
+        me.preventDefault()
+        action()
+    })
     return row
 }
 

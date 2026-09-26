@@ -79,6 +79,12 @@ external interface IpcMain {
 
 external interface Shell {
     fun openExternal(url: String): Promise<Unit>
+
+    /**
+     * Opens the file at the absolute [path] in the desktop's default app
+     * for its type. Resolves to `""` on success, or an error message.
+     */
+    fun openPath(path: String): Promise<String>
 }
 
 @JsName("BrowserWindow")

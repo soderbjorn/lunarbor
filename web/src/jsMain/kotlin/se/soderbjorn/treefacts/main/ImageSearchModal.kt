@@ -2,9 +2,11 @@
  * ImageSearchModal.kt (jsMain)
  * ----------------------------
  * Per-pane modal for the "Insert Image" palette command. Lists every
- * image already in the vault's `Images/` folder (resolved through
- * `NoteRepository.listImageFiles`) and lets the user pick one to drop
- * into the active document at the cursor as a markdown `![](…)` ref.
+ * image already in the vault — the `Images/` folder and every node
+ * folder (resolved through `NoteRepository.listImageFiles`) — and lets
+ * the user pick one to drop into the active document at the cursor as a
+ * markdown `![](…)` ref (`MainViewModel.insertVaultImage` picks the
+ * reference form).
  *
  * Modeled on [LinkSearchModal] — same backdrop / panel chrome, same
  * input/list/arrow-key/Enter/Escape keyboard model, same one-instance-
@@ -114,7 +116,7 @@ internal class ImageSearchModal(
         val input = document.createElement("input") as HTMLInputElement
         input.type = "text"
         input.className = "treefacts-palette-input"
-        input.placeholder = "Find an image in Images/…"
+        input.placeholder = "Find an image in the vault…"
         input.autocomplete = "off"
         input.spellcheck = false
         input.addEventListener("input", { _ -> rebuildList(input.value) })
@@ -258,7 +260,7 @@ internal class ImageSearchModal(
         val rel = matches.getOrNull(highlightedIndex) ?: return
         val vm = pinnedVm ?: return
         close()
-        vm.insertImageRef(rel)
+        vm.insertVaultImage(rel)
         onAfterPick()
     }
 }

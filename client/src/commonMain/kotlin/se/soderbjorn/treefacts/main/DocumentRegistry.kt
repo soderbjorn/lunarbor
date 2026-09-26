@@ -272,13 +272,21 @@ class DocumentRegistry(
     suspend fun listImageFiles(): List<String> = repository.listImageFiles()
 
     /**
-     * Persists a pasted image and returns its vault-relative path.
-     * Delegates to [NoteRepository.saveImageBytes]; exposed on the
-     * registry so panes don't have to know about the repository
-     * directly.
+     * Persists a pasted image into the folder [dirRel] and returns its
+     * vault-relative path, then refreshes that folder's listing so the
+     * image shows in every pane's contents list at once. Delegates to
+     * [NoteRepository.saveImageBytes]; exposed on the registry so panes
+     * don't have to know about the repository directly.
+     *
+     * Called by `PaneBackingViewModel.onImagePasted`.
+     *
+     * @param dirRel Folder of the node (or `.md` note) being edited.
      */
-    suspend fun saveImageBytes(suggestedName: String, bytes: ByteArray): String =
-        repository.saveImageBytes(suggestedName, bytes)
+    suspend fun saveImageBytes(dirRel: String, suggestedName: String, bytes: ByteArray): String {
+        val rel = repository.saveImageBytes(dirRel, suggestedName, bytes)
+        refreshVaultListing(dirRel)
+        return rel
+    }
 
     /**
      * Creates `Untitled.md` (or `Untitled 2.md`, …) in the folder

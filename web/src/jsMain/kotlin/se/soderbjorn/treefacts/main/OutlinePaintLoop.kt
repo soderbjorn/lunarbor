@@ -15,6 +15,15 @@
  * (`Starred.md`, and the Markdown mode of TRF-7); the editing intents
  * never produce it in an outline.
  *
+ * In Markdown mode (`PaneBackingViewModel.State.isMarkdownMode`, a `.md`
+ * note) a `* item` line still draws as a list bullet, but with no bullet
+ * behaviour: no chevron, no count badge, and the dot is not a drag or
+ * zoom handle.
+ *
+ * Inline images resolve their `src` against the folder the row is stored
+ * in (`MainViewModel.resolveImageSrc`, rules in `ImagePaths`), so a
+ * pasted image's bare file name finds the file in the node's folder.
+ *
  *   plain:       <div data-row="N" data-prefix-len="0">
  *                  <span class="text">{line}</span>
  *                </div>
@@ -187,7 +196,8 @@ fun paint(
         (editor.firstElementChild as? HTMLElement)?.let { firstRow ->
             val hint = document.createElement("span") as HTMLElement
             hint.className = "treefacts-empty-hint"
-            hint.textContent = "Type here to start your outline…"
+            hint.textContent =
+                if (state.isMarkdownMode) "Type here to start writing…" else "Type here to start your outline…"
             hint.setAttribute("contenteditable", "false")
             // Start the hint where the text starts — right of the bullet
             // glyph on an empty bullet — instead of covering the glyph.
@@ -235,6 +245,8 @@ private fun buildRowElement(
 
     val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
     val rowId = if (absoluteRow in docState.lineIds.indices) docState.lineIds[absoluteRow] else null
+    // Inline images on this row resolve against the row's own folder.
+    val imageResolver: (String) -> String? = { src -> viewModel.resolveImageSrc(absoluteRow, src) }
 
     // Inline-image rows are much taller than a text-only line, which
     // makes a baseline-aligned bullet visually float in the vertical
@@ -265,7 +277,10 @@ private fun buildRowElement(
         // not the zoom-relative one — child rows in `docState.lines` have
         // their full indent, so a relative comparison would never match.
         val absoluteIndentInRaw = DocumentLayout.bulletAsteriskColumn(docState.lines[absoluteRow])
-        if (rowId != null) {
+        // Markdown mode draws the bullet but gives it no outline
+        // behaviour: no chevron, no badge, no drag/zoom handle.
+        val outline = !state.isMarkdownMode
+        if (rowId != null && outline) {
             val isFoldedPromotedRef = viewModel.isPromotedRef(rowId) &&
                 rowId !in state.expandedRefIdsLocal
             val isCollapsibleParent =
@@ -283,18 +298,18 @@ private fun buildRowElement(
             }
         }
 
-        rowDiv.appendChild(buildBulletPrefix(absoluteRow, onBulletMouseDown))
-        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2)))
-        if (rowId != null) buildFolderBadge(absoluteRow, rowId, state, viewModel)?.let(rowDiv::appendChild)
+        rowDiv.appendChild(buildBulletPrefix(absoluteRow, if (outline) onBulletMouseDown else null, interactive = outline))
+        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2), imageResolver))
+        if (rowId != null && outline) buildFolderBadge(absoluteRow, rowId, state, viewModel)?.let(rowDiv::appendChild)
     } else if (block != null && BlockLayout.markerColumn(line) >= 0) {
-        decorateBlockRow(rowDiv, absoluteRow, line, viewOriginCol, block, state, docState, viewModel, style)
+        decorateBlockRow(rowDiv, absoluteRow, line, viewOriginCol, block, state, docState, viewModel, style, imageResolver)
     } else {
         // Plain line (plain Markdown files, block lines — never created by
         // editing an outline): editable text starts at column 0 of the raw line,
         // unless we stripped a zoom indent — in that case the displayed text
         // begins at `viewOriginCol` in raw model columns.
         rowDiv.setAttribute("data-prefix-len", viewOriginCol.toString())
-        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line))
+        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line, imageResolver))
     }
 
     return rowDiv
@@ -354,6 +369,8 @@ private fun buildFolderBadge(
  * @param viewOriginCol Columns stripped for the zoom, added back to
  *   `data-prefix-len` so it stays in raw model columns.
  * @param block Rows of the block, in the document.
+ * @param imageResolver Maps an inline image `src` to its vault file; see
+ *   [buildStyledTextRegion].
  */
 private fun decorateBlockRow(
     rowDiv: HTMLElement,
@@ -365,6 +382,7 @@ private fun decorateBlockRow(
     docState: Document.State,
     viewModel: MainViewModel,
     style: EditorStyle,
+    imageResolver: (String) -> String?,
 ) {
     val markerCol = BlockLayout.markerColumn(line)
     val depth = markerCol / PaneBackingViewModel.TAB_SIZE
@@ -402,7 +420,7 @@ private fun decorateBlockRow(
             rowDiv.appendChild(del)
         }
     }
-    rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(markerCol + 1)))
+    rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(markerCol + 1), imageResolver))
 
     // An empty block would be an empty box; say what it is for.
     if (block.first == block.last && BlockLayout.isEmptyContent(line)) {
@@ -429,8 +447,15 @@ private fun decorateBlockRow(
  * @param rowDiv The enclosing row div — used as the column-map key.
  * @param editable The editable inline text (the line with any bullet
  *   prefix already removed). May be empty.
+ * @param imageResolver Maps an inline image's `src` to the vault-relative
+ *   file it shows, or `null` for an external URL — normally
+ *   `MainViewModel.resolveImageSrc` for this row.
  */
-private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLElement {
+private fun buildStyledTextRegion(
+    rowDiv: HTMLElement,
+    editable: String,
+    imageResolver: (String) -> String?,
+): HTMLElement {
     val wrapper = document.createElement("span") as HTMLElement
     wrapper.className = "treefacts-text"
 
@@ -495,7 +520,7 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
             val span: HTMLElement
             val srcEnd: Int
             if (run.imageSrc != null) {
-                span = createImageRunElement(run, baseRunClass = "treefacts-text-run")
+                span = createImageRunElement(run, baseRunClass = "treefacts-text-run", imageResolver = imageResolver)
                 srcEnd = run.modelStart + (run.imageSourceLen ?: 0)
             } else {
                 span = document.createElement("span") as HTMLElement
@@ -641,8 +666,15 @@ internal fun treefactsAssetUrl(vaultRelPath: String): String {
  * @param run the image run produced by [InlineMarkdownTokenizer].
  * @param baseRunClass optional base class added before the image-specific
  *   classes — `treefacts-text-run` in the editor, `null` in the headline.
+ * @param imageResolver maps the run's `src` to the vault-relative file it
+ *   shows (relative to the row's folder, see `ImagePaths`), or `null` for
+ *   an external URL, which is loaded as written.
  */
-internal fun createImageRunElement(run: StyledRun, baseRunClass: String?): HTMLElement {
+internal fun createImageRunElement(
+    run: StyledRun,
+    baseRunClass: String?,
+    imageResolver: (String) -> String?,
+): HTMLElement {
     val src = run.imageSrc ?: error("createImageRunElement called on non-image run")
     val span = document.createElement("span") as HTMLElement
     val classes = inlineRunCssClasses(run.styles, isImage = true)
@@ -656,7 +688,7 @@ internal fun createImageRunElement(run: StyledRun, baseRunClass: String?): HTMLE
     // step past this atomic glyph instead of collapsing to its start.
     run.imageSourceLen?.let { span.setAttribute("data-img-source-len", it.toString()) }
     val img = document.createElement("img") as HTMLImageElement
-    img.src = treefactsAssetUrl(src)
+    img.src = imageResolver(src)?.let { treefactsAssetUrl(it) } ?: src
     img.alt = run.imageAlt ?: ""
     img.draggable = false
     run.imageWidthPx?.let { img.style.width = "${it}px" }
@@ -716,18 +748,23 @@ private fun runClassName(styles: Set<InlineStyle>, isLink: Boolean = false, isTa
  * listener installed by `startDragSession`. See the comment in
  * `MainScreen.wireInputListeners` about the matching pattern for
  * external-link follow.
+ *
+ * @param interactive `false` in Markdown mode: the dot is a plain list
+ *   marker (default cursor; the caller passes no [onBulletMouseDown]).
  */
 private fun buildBulletPrefix(
     absoluteRow: Int,
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
+    interactive: Boolean = true,
 ): HTMLElement {
     val prefix = document.createElement("span") as HTMLElement
     prefix.className = "treefacts-bullet-prefix"
     prefix.setAttribute("contenteditable", "false")
     prefix.style.apply {
         setProperty("user-select", "none")
-        cursor = "pointer"
+        cursor = if (interactive) "pointer" else "default"
     }
+    if (!interactive) prefix.classList.add("treefacts-bullet-plain")
 
     val glyph = document.createElement("span") as HTMLElement
     glyph.className = "treefacts-bullet"
@@ -966,6 +1003,16 @@ fun ensureStyles() {
             transform: scale(0.92);
             box-shadow: 0 0 0 4px var(--t-border, rgba(255, 255, 255, 0.14));
         }
+        /* Markdown mode (TRF-7): the dot is a plain list marker, not a
+           drag / zoom handle, so it does not react to the pointer. */
+        .treefacts-bullet-prefix.treefacts-bullet-plain:active {
+            cursor: default;
+        }
+        .treefacts-bullet-plain:hover .treefacts-bullet,
+        .treefacts-bullet-plain:active .treefacts-bullet {
+            transform: none;
+            box-shadow: none;
+        }
         .treefacts-chevron {
             opacity: 0.85;
             transition: color 120ms ease-out, opacity 120ms ease-out;
@@ -1049,13 +1096,6 @@ fun ensureStyles() {
         }
         .treefacts-folder-entry:hover {
             background: var(--t-surface-alt, rgba(127, 127, 127, 0.12));
-        }
-        .treefacts-folder-entry-inert {
-            cursor: default;
-            color: var(--t-text-dim, #7a7a7a);
-        }
-        .treefacts-folder-entry-inert:hover {
-            background: none;
         }
         .treefacts-folder-entry-glyph {
             display: inline-flex;

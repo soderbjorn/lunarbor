@@ -8,8 +8,10 @@
  *
  * All editor logic lives one layer down. Keep this class boring — the only
  * code that belongs here is platform-specific glue that cannot exist in
- * commonMain (there is none today on web). Android and iOS will have their
- * own `MainViewModel` implementations with the same shape.
+ * commonMain: on web, [MainViewModel.openInDefaultApp], which hands a file
+ * to the Electron main process to open in the system's default app.
+ * Android and iOS will have their own `MainViewModel` implementations with
+ * the same shape.
  */
 
 package se.soderbjorn.treefacts.main
@@ -18,6 +20,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineStyle
@@ -293,6 +296,26 @@ class MainViewModel(
     /** See `PaneBackingViewModel.refreshCurrentFolderListing`. */
     fun refreshCurrentFolderListing() = paneBackingViewModel.refreshCurrentFolderListing()
 
+    /**
+     * Opens the vault file [pathRel] in the system's default app for its
+     * type (TRF-7: an "other file" row in the folder contents list).
+     * Platform glue with no commonMain counterpart: forwards to the
+     * Electron main process (`noteApi.openPath` → `shell.openPath`), which
+     * resolves the path against the vault root and refuses anything
+     * outside it. Does not touch pane state or file history — the file
+     * opens outside TreeFacts.
+     *
+     * @param pathRel Vault-relative path of the file.
+     */
+    fun openInDefaultApp(pathRel: String) {
+        val bridge = window.asDynamic().noteApi
+        if (bridge == null || bridge.openPath == null) {
+            console.warn("[treefacts] noteApi.openPath unavailable; cannot open $pathRel")
+            return
+        }
+        bridge.openPath(pathRel)
+    }
+
     // ---- link intents ---------------------------------------------------
 
     /** App-scoped outline index used by the Insert Link modal's search. */
@@ -306,8 +329,14 @@ class MainViewModel(
         paneBackingViewModel.insertMarkdownLink(label, url)
 
     /** See `PaneBackingViewModel.insertImageRef`. */
-    fun insertImageRef(vaultRelPath: String, alt: String = "", widthPx: Int? = null) =
-        paneBackingViewModel.insertImageRef(vaultRelPath, alt, widthPx)
+    fun insertImageRef(src: String, alt: String = "", widthPx: Int? = null) =
+        paneBackingViewModel.insertImageRef(src, alt, widthPx)
+
+    /** See `PaneBackingViewModel.insertVaultImage`. */
+    fun insertVaultImage(vaultRelPath: String) = paneBackingViewModel.insertVaultImage(vaultRelPath)
+
+    /** See `PaneBackingViewModel.resolveImageSrc`. */
+    fun resolveImageSrc(row: Int, src: String): String? = paneBackingViewModel.resolveImageSrc(row, src)
 
     /** See `PaneBackingViewModel.listImageFiles`. */
     suspend fun listImageFiles(): List<String> = paneBackingViewModel.listImageFiles()

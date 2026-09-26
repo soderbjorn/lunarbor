@@ -31,6 +31,20 @@
  * pasted row ([rememberCut] / [adoptCut]), so the folder is moved rather
  * than trashed and recreated.
  *
+ * ### Images follow their row
+ * A row references a pasted image by bare file name, resolved against
+ * the folder the row is stored in ([storageFolderOf], [ImagePaths]).
+ * [imageHomes] remembers, per row, which folder-backed bullet's folder
+ * (or the document's own folder) its images live in. After each save,
+ * a row that now lives in another folder takes its images along
+ * ([NoteRepository.moveAttachments]); a second save then demotes a
+ * folder left empty by that.
+ *
+ * ### Markdown mode
+ * A document that is not a `.treefacts` outline ([bulletsOnly] `false`,
+ * e.g. a `.md` note) is plain text: no folder-backed rows, saved exactly
+ * as written, and its images resolve against the note's folder.
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -47,6 +61,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import se.soderbjorn.treefacts.data.AttachmentMove
+import se.soderbjorn.treefacts.data.ImagePaths
+import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.data.PromotedRef
 import se.soderbjorn.treefacts.data.SubtreeCodec
@@ -131,6 +148,15 @@ class Document(
     /** The line an empty document holds: an empty bullet in an outline. */
     private val emptyLine: String get() = if (bulletsOnly) NoteRepository.EMPTY_OUTLINE_LINE else ""
 
+    /**
+     * Vault-relative folder of this document's file: the node folder of
+     * an outline (`""` for the vault root's `.treefacts`), the containing
+     * folder of any other file.
+     */
+    val folderRel: String =
+        if (bulletsOnly) NoteRepository.folderOfOutline(fileRel)
+        else fileRel.substringBeforeLast('/', missingDelimiterValue = "")
+
     private val _stateFlow = MutableStateFlow(State())
 
     /**
@@ -183,6 +209,24 @@ class Document(
     private data class CutRecord(val text: String, val refs: Map<Int, Pair<LineId, String>>)
 
     private var lastCut: CutRecord? = null
+
+    /**
+     * Where one row's images live: the folder of the folder-backed bullet
+     * [anchor], or the document's own folder when [anchor] is `null`.
+     * Keyed by the bullet's id rather than a path, so a rename or move of
+     * that folder (which carries the images along) does not make it stale.
+     */
+    private data class ImageHome(val anchor: LineId?)
+
+    /**
+     * Row id → where the images it references by bare file name live, as
+     * of the last load, splice, paste or save. Compared after each save
+     * with where the row is stored now; see the file header.
+     */
+    private val imageHomes: MutableMap<LineId, ImageHome> = mutableMapOf()
+
+    /** Rows of the last cut, by offset, that had an [ImageHome]; handed on by [adoptCut]. */
+    private var lastCutImageHomes: Map<Int, ImageHome> = emptyMap()
 
     /**
      * Single-flight lock serialising saves with each other, with
@@ -463,7 +507,13 @@ class Document(
             if (row == endRow && endCol < line.length) continue
             refs[row - startRow] = id to SubtreeCodec.titleOf(line)
         }
-        lastCut = if (refs.isEmpty()) null else CutRecord(text, refs)
+        val homes = HashMap<Int, ImageHome>()
+        for (row in startRow..endRow) {
+            val id = state.lineIds.getOrNull(row) ?: continue
+            imageHomes[id]?.let { homes[row - startRow] = it }
+        }
+        lastCutImageHomes = homes
+        lastCut = if (refs.isEmpty() && homes.isEmpty()) null else CutRecord(text, refs)
     }
 
     /**
@@ -471,7 +521,9 @@ class Document(
      * what the last [rememberCut] took, hand each cut folder-backed row's
      * folder (and its unloaded state) to the row now holding the same
      * title, so the next save moves the folder instead of trashing it.
-     * One cut is adopted at most once; a second paste is a plain copy.
+     * Rows that referenced images keep their [ImageHome], so the images
+     * follow them. One cut is adopted at most once; a second paste is a
+     * plain copy.
      *
      * Called by `TextEditingViewModel.insertText` after every insert.
      */
@@ -480,6 +532,13 @@ class Document(
         if (cut.text != text) return
         lastCut = null
         val state = _stateFlow.value
+        // Pasted rows keep the image home of the rows they were cut from,
+        // so the next save moves their images to wherever they landed.
+        for ((offset, home) in lastCutImageHomes) {
+            val id = state.lineIds.getOrNull(startRow + offset) ?: continue
+            if (id !in imageHomes) imageHomes[id] = home
+        }
+        lastCutImageHomes = emptyMap()
         var unloaded = state.unloadedRefIds
         for ((offset, pair) in cut.refs) {
             val (oldId, title) = pair
@@ -502,6 +561,139 @@ class Document(
             if (oldId in unloaded) unloaded = unloaded - oldId + newId
         }
         if (unloaded != state.unloadedRefIds) _stateFlow.value = state.copy(unloadedRefIds = unloaded)
+    }
+
+    // ---------------------------------------------------------------- images
+
+    /**
+     * Vault-relative folder the line at [row] is stored in — the folder
+     * its images resolve against ([ImagePaths.resolve]) and where an
+     * image pasted into it is written:
+     *
+     * - Markdown mode: the note's folder.
+     * - Outline: the folder of the nearest folder-backed ancestor bullet,
+     *   or the document's own node folder for a top-level row. A bullet
+     *   that just got its first child is folder-backed only after the
+     *   next save; until then its children resolve against the folder
+     *   above, where their images still are.
+     *
+     * Called by `PaneBackingViewModel` for pastes and by the view (through
+     * `PaneBackingViewModel.imageFolderOf`) to draw a row's images.
+     */
+    fun storageFolderOf(row: Int): String {
+        val state = _stateFlow.value
+        if (row !in state.lines.indices) return folderRel
+        return folderOfHome(ImageHome(storageAnchorOf(state.lines, state.lineIds, row))) ?: folderRel
+    }
+
+    /**
+     * Records that the images row [row] references by bare file name
+     * live in [storageFolderOf] that row right now. Called by
+     * `PaneBackingViewModel.onImagePasted` after inserting a pasted image,
+     * so if the next save moves the row (a paste under a leaf, which that
+     * save promotes), the image goes with it.
+     */
+    fun noteImageHomeAt(row: Int) {
+        if (!bulletsOnly) return
+        val state = _stateFlow.value
+        val id = state.lineIds.getOrNull(row) ?: return
+        imageHomes[id] = ImageHome(storageAnchorOf(state.lines, state.lineIds, row))
+    }
+
+    /**
+     * The nearest folder-backed ancestor bullet of [row] (walking up by
+     * nesting column, as the save does), or `null` when the row belongs
+     * to the document's own node. Always `null` in Markdown mode.
+     */
+    private fun storageAnchorOf(lines: List<String>, ids: List<LineId>, row: Int): LineId? {
+        if (!bulletsOnly) return null
+        val line = lines[row]
+        val blockCol = BlockLayout.markerColumn(line)
+        var lookingFor = if (blockCol >= 0) blockCol else DocumentLayout.indentOf(line)
+        var r = row - 1
+        while (r >= 0 && lookingFor > 0) {
+            val col = DocumentLayout.bulletAsteriskColumn(lines[r])
+            if (col in 0 until lookingFor) {
+                val id = ids.getOrNull(r)
+                if (id != null && id in promotedSubtrees && id !in trashedIds) return id
+                lookingFor = col
+            }
+            r--
+        }
+        return null
+    }
+
+    /** Folder of [home], or `null` when its anchor bullet no longer has one. */
+    private fun folderOfHome(home: ImageHome): String? {
+        val anchor = home.anchor ?: return folderRel
+        return promotedSubtrees[anchor]?.folderRel
+    }
+
+    /**
+     * Bare file names of the images [line] references relative to its own
+     * folder ([ImagePaths.isFolderLocal]); empty for most lines.
+     */
+    private fun localImageNames(line: String): List<String> {
+        if ("![" !in line) return emptyList()
+        val text = line.substring(DocumentLayout.textStartCol(line).coerceAtMost(line.length))
+        return InlineMarkdownTokenizer.tokenize(text).runs
+            .mapNotNull { it.imageSrc }
+            .filter { ImagePaths.isFolderLocal(it) }
+            .distinct()
+    }
+
+    /**
+     * Gives every row that references local images and has no
+     * [ImageHome] yet the one it has now. Called after a load and a
+     * splice-in, when every such row is exactly where its file put it.
+     */
+    private fun recordMissingImageHomes() {
+        if (!bulletsOnly) return
+        val state = _stateFlow.value
+        for ((row, line) in state.lines.withIndex()) {
+            val id = state.lineIds[row]
+            if (id in imageHomes || localImageNames(line).isEmpty()) continue
+            imageHomes[id] = ImageHome(storageAnchorOf(state.lines, state.lineIds, row))
+        }
+    }
+
+    /**
+     * After a save of [saved]: moves the local images of every row that
+     * now lives in a different folder than its [ImageHome] says, then
+     * updates the homes. An image another row still uses in the old
+     * folder stays. Caller holds [saveLock].
+     *
+     * @return `true` when a file was moved (the old folder may now be
+     *   empty, so one more save should run to demote it).
+     */
+    private suspend fun followImagesAfterSave(saved: State): Boolean {
+        if (!bulletsOnly) return false
+        class Moved(val id: LineId, val names: List<String>, val from: String, val to: String, val home: ImageHome)
+        val staying = HashSet<Pair<String, String>>()
+        val moved = ArrayList<Moved>()
+        for ((row, line) in saved.lines.withIndex()) {
+            val id = saved.lineIds[row]
+            val names = localImageNames(line)
+            if (names.isEmpty()) continue
+            val now = ImageHome(storageAnchorOf(saved.lines, saved.lineIds, row))
+            val nowFolder = folderOfHome(now)
+            val before = imageHomes[id]
+            val beforeFolder = before?.let { folderOfHome(it) }
+            if (before == null || beforeFolder == null || nowFolder == null || beforeFolder == nowFolder) {
+                if (nowFolder != null) for (n in names) staying += nowFolder to n
+                imageHomes[id] = now
+                continue
+            }
+            moved += Moved(id, names, beforeFolder, nowFolder, now)
+        }
+        if (moved.isEmpty()) return false
+        val moves = LinkedHashSet<AttachmentMove>()
+        for (m in moved) {
+            for (n in m.names) if ((m.from to n) !in staying) moves += AttachmentMove(m.from, m.to, n)
+            imageHomes[m.id] = m.home
+        }
+        if (moves.isEmpty()) return false
+        return repository.moveAttachments(moves.toList()).isNotEmpty()
     }
 
     // ------------------------------------------------------------- expansion
@@ -627,6 +819,7 @@ class Document(
             lineIds = mergedIds,
             unloadedRefIds = current.unloadedRefIds - lineId + nested,
         )
+        recordMissingImageHomes()
         return true
     }
 
@@ -687,6 +880,8 @@ class Document(
             isLoaded = true,
             unloadedRefIds = unloaded,
         )
+        imageHomes.clear()
+        recordMissingImageHomes()
     }
 
     /**
@@ -710,10 +905,15 @@ class Document(
         }
     }
 
-    /** Runs one save when anything changed since the last one. Caller holds [saveLock]. */
+    /**
+     * Runs one save when anything changed since the last one — and a
+     * second one right after when the first moved images out of a folder
+     * ([followImagesAfterSave]), so a folder that is now empty is demoted
+     * at once. Caller holds [saveLock].
+     */
     private suspend fun saveIfDirtyUnderLock() {
         if (!isDirty(_stateFlow.value)) return
-        runOneSave()
+        if (runOneSave()) runOneSave()
     }
 
     /**
@@ -725,9 +925,12 @@ class Document(
      * Then hands the outline, the folder-backed rows, the unloaded rows
      * and the deleted rows' folders to [NoteRepository.save], and applies
      * the result: new folders for promoted rows, removed entries for
-     * demoted rows, trash paths for deleted rows.
+     * demoted rows, trash paths for deleted rows. Finally moves the
+     * images of rows that changed folder ([followImagesAfterSave]).
+     *
+     * @return `true` when images were moved, so the caller saves once more.
      */
-    private suspend fun runOneSave() {
+    private suspend fun runOneSave(): Boolean {
         materializeUnloadedWithChildren()
         val state = _stateFlow.value
         val text = currentText(state)
@@ -785,7 +988,9 @@ class Document(
         // save leaves the live set different, so the document stays dirty.
         lastSavedUnloaded = state.unloadedRefIds.filterTo(HashSet()) { it in promotedSubtrees }
         recomputeDirty()
+        val movedImages = followImagesAfterSave(state)
         try { onAfterSave() } catch (_: Throwable) {}
+        return movedImages
     }
 
     /**
