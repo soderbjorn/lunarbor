@@ -40,6 +40,13 @@
  * ([NoteRepository.moveAttachments]); a second save then demotes a
  * folder left empty by that.
  *
+ * ### Links follow renames and moves
+ * After each save the document reports, through `onAfterSave`, every
+ * folder the save renamed, moved or trashed and every image it moved
+ * ([PathMove]s). `DocumentRegistry` then rewrites the `tf:` links that
+ * point at or through the old paths — in closed files on disk, and in open
+ * documents through [rewriteLinks] (TRF-8).
+ *
  * ### Markdown mode
  * A document that is not a `.treefacts` outline ([bulletsOnly] `false`,
  * e.g. a `.md` note) is plain text: no folder-backed rows, saved exactly
@@ -65,8 +72,10 @@ import se.soderbjorn.treefacts.data.AttachmentMove
 import se.soderbjorn.treefacts.data.ImagePaths
 import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.NoteRepository
+import se.soderbjorn.treefacts.data.PathMove
 import se.soderbjorn.treefacts.data.PromotedRef
 import se.soderbjorn.treefacts.data.SubtreeCodec
+import se.soderbjorn.treefacts.data.TfLink
 
 /**
  * One loaded treefacts file.
@@ -86,8 +95,10 @@ import se.soderbjorn.treefacts.data.SubtreeCodec
  * @param saveDebounceMillis Quiet time after the last edit before a save.
  * @param maxSaveDelayMillis Longest a dirty document waits while the user
  *   keeps typing; a save is forced this long after the first unsaved edit.
- * @param onAfterSave Hook fired after every save, used by
- *   [DocumentRegistry] to refresh the shared vault-listings cache.
+ * @param onAfterSave Hook fired after every save with the folders and
+ *   files that save renamed, moved or trashed (empty for a pure content
+ *   save). Used by [DocumentRegistry] to refresh the shared vault-listings
+ *   cache and to rewrite links to the moved paths.
  */
 class Document(
     private val repository: NoteRepository,
@@ -95,7 +106,7 @@ class Document(
     val fileRel: String,
     private val saveDebounceMillis: Long = DEFAULT_SAVE_DEBOUNCE_MILLIS,
     private val maxSaveDelayMillis: Long = DEFAULT_MAX_SAVE_DELAY_MILLIS,
-    private val onAfterSave: suspend () -> Unit = {},
+    private val onAfterSave: suspend (moves: List<PathMove>) -> Unit = {},
 ) {
     /**
      * Immutable snapshot of one file's content at a point in time.
@@ -479,6 +490,64 @@ class Document(
     }
 
     /**
+     * Rewrites every `tf:` link in the document's lines that points at or
+     * through a path [moves] renamed or moved ([TfLink.rewriteText]).
+     * Row ids are kept, so fold state, zoom and backing folders are
+     * untouched; the change saves like any edit. Links into the trash are
+     * left alone.
+     *
+     * Called by [DocumentRegistry] after any open document's save moved
+     * folders or files.
+     *
+     * @return `true` when a line changed.
+     */
+    fun rewriteLinks(moves: List<PathMove>): Boolean {
+        val state = _stateFlow.value
+        if (!state.isLoaded || moves.isEmpty()) return false
+        var changed = false
+        val newLines = state.lines.map { line ->
+            val rewritten = TfLink.rewriteText(line, moves)
+            if (rewritten != null) { changed = true; rewritten } else line
+        }
+        if (changed) _stateFlow.value = state.copy(lines = newLines)
+        return changed
+    }
+
+    /**
+     * Vault-relative note files whose content this document holds in
+     * memory: its own file plus the outline of every folder-backed bullet
+     * whose children are spliced in. A save of this document rewrites
+     * them, so nothing else may edit them on disk meanwhile —
+     * [DocumentRegistry] skips them in its on-disk link rewrite and
+     * rewrites this document's lines instead.
+     */
+    fun heldFiles(): Set<String> {
+        val out = HashSet<String>()
+        out += fileRel
+        val state = _stateFlow.value
+        for ((id, ref) in promotedSubtrees) {
+            if (id in trashedIds || id in state.unloadedRefIds) continue
+            out += ref.fileRel
+        }
+        return out
+    }
+
+    /**
+     * The live row whose folder-backed bullet is backed by [folderRel], or
+     * `null` when no row in [State.lines] is. Used by
+     * `PaneBackingViewModel.navigateToLink` to zoom into the bullet a
+     * folder link names.
+     */
+    fun lineIdForFolder(folderRel: String): LineId? {
+        val ids = _stateFlow.value.lineIds
+        for (id in ids) {
+            if (id in trashedIds) continue
+            if (promotedSubtrees[id]?.folderRel == folderRel) return id
+        }
+        return null
+    }
+
+    /**
      * Records what a cut is about to remove, so a later [adoptCut] of the
      * same text can hand the cut bullets' folders to the pasted rows.
      * Called by `TextEditingViewModel.onCutRequested` *before* it deletes
@@ -663,11 +732,12 @@ class Document(
      * updates the homes. An image another row still uses in the old
      * folder stays. Caller holds [saveLock].
      *
-     * @return `true` when a file was moved (the old folder may now be
-     *   empty, so one more save should run to demote it).
+     * @return The image moves that were applied, as [PathMove]s; non-empty
+     *   means the old folder may now be empty, so one more save should run
+     *   to demote it.
      */
-    private suspend fun followImagesAfterSave(saved: State): Boolean {
-        if (!bulletsOnly) return false
+    private suspend fun followImagesAfterSave(saved: State): List<PathMove> {
+        if (!bulletsOnly) return emptyList()
         class Moved(val id: LineId, val names: List<String>, val from: String, val to: String, val home: ImageHome)
         val staying = HashSet<Pair<String, String>>()
         val moved = ArrayList<Moved>()
@@ -686,15 +756,19 @@ class Document(
             }
             moved += Moved(id, names, beforeFolder, nowFolder, now)
         }
-        if (moved.isEmpty()) return false
+        if (moved.isEmpty()) return emptyList()
         val moves = LinkedHashSet<AttachmentMove>()
         for (m in moved) {
             for (n in m.names) if ((m.from to n) !in staying) moves += AttachmentMove(m.from, m.to, n)
             imageHomes[m.id] = m.home
         }
-        if (moves.isEmpty()) return false
-        return repository.moveAttachments(moves.toList()).isNotEmpty()
+        if (moves.isEmpty()) return emptyList()
+        return repository.moveAttachments(moves.toList()).map {
+            PathMove(joinPath(it.fromFolder, it.name), joinPath(it.toFolder, it.name))
+        }
     }
+
+    private fun joinPath(folder: String, name: String): String = if (folder.isEmpty()) name else "$folder/$name"
 
     // ------------------------------------------------------------- expansion
 
@@ -926,7 +1000,8 @@ class Document(
      * and the deleted rows' folders to [NoteRepository.save], and applies
      * the result: new folders for promoted rows, removed entries for
      * demoted rows, trash paths for deleted rows. Finally moves the
-     * images of rows that changed folder ([followImagesAfterSave]).
+     * images of rows that changed folder ([followImagesAfterSave]) and
+     * reports every folder and file this save moved to `onAfterSave`.
      *
      * @return `true` when images were moved, so the caller saves once more.
      */
@@ -953,6 +1028,14 @@ class Document(
                 _stateFlow.value = _stateFlow.value.copy(isRestructuring = false)
             }
         }
+        // Every folder this save renamed or moved (old → new path), plus the
+        // trash moves, for the link rewrite.
+        val moves = ArrayList<PathMove>()
+        for ((idx, old) in rowToRef) {
+            val now = result.promotedByRow[idx] ?: continue
+            if (old.folderRel != now.folderRel && old.folderRel.isNotEmpty()) moves += PathMove(old.folderRel, now.folderRel)
+        }
+        for ((old, trash) in result.trashed) moves += PathMove(old, trash)
         for ((idx, id) in state.lineIds.withIndex()) {
             val newRef = result.promotedByRow[idx]
             if (newRef != null) {
@@ -989,8 +1072,11 @@ class Document(
         lastSavedUnloaded = state.unloadedRefIds.filterTo(HashSet()) { it in promotedSubtrees }
         recomputeDirty()
         val movedImages = followImagesAfterSave(state)
-        try { onAfterSave() } catch (_: Throwable) {}
-        return movedImages
+        moves += movedImages
+        try { onAfterSave(moves) } catch (e: Throwable) {
+            println("[autosave] after-save hook failed for $fileRel: $e")
+        }
+        return movedImages.isNotEmpty()
     }
 
     /**

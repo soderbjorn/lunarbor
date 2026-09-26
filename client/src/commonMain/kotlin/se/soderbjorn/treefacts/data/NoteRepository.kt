@@ -33,6 +33,13 @@
  * references by bare file name follow it ([moveAttachments]). Image
  * paths are resolved per [ImagePaths].
  *
+ * Links (TRF-8) are `tf:` paths ([TfLink]). The repository lists what
+ * links may point at ([listLinkTargets]), says what is at a path
+ * ([kindOf]), rewrites links in a file on disk after renames and moves
+ * ([rewriteLinksInFile]) and reports every note text it reads or writes
+ * to [noteTextObserver], which keeps `VaultIndex`'s link index current.
+ * Starred entries are `* [Label](tf:/…)` bullets in [STARRED_FILE_NAME].
+ *
  * Pure parsing/formatting lives in [SubtreeCodec]; folder naming in
  * [FolderName].
  */
@@ -121,7 +128,8 @@ data class AttachmentMove(val fromFolder: String, val toFolder: String, val name
  *
  * ### Callers
  * - `Document` for loading, splicing and saving one open outline.
- * - `DocumentRegistry` for vault listings, images and folder stubs.
+ * - `DocumentRegistry` for vault listings, images, link targets and
+ *   the link rewrite after renames and moves.
  * - The web Starred modal for `Starred.md`.
  *
  * @property rootDirectory Absolute path to the vault root. Public so
@@ -140,6 +148,19 @@ class NoteRepository(
     val rootFileName: String = OUTLINE_FILE_NAME,
     private val nowMillis: () -> Long = ::systemNowMillis,
 ) {
+
+    /**
+     * Told about the text of every note file (`.treefacts` outline or
+     * `.md` note) this repository reads or writes, by vault-relative
+     * path; `null` text means the file was deleted. `DocumentRegistry`
+     * sets it to keep `VaultIndex`'s link index current as files load and
+     * save (TRF-8). `null` (the default) observes nothing.
+     */
+    var noteTextObserver: ((fileRel: String, text: String?) -> Unit)? = null
+
+    private fun observe(fileRel: String, text: String?) {
+        if (isOutlineFile(fileRel) || fileRel.endsWith(NOTE_EXTENSION)) noteTextObserver?.invoke(fileRel, text)
+    }
 
     /**
      * Result of [loadFile] / [loadSubtree].
@@ -185,6 +206,7 @@ class NoteRepository(
     suspend fun loadFile(fileRel: String): Loaded {
         fileSystem.ensureDirectory(rootDirectory)
         val text = fileSystem.readFileIfExists(abs(fileRel))
+        observe(fileRel, text)
         if (!isOutlineFile(fileRel)) {
             if (text.isNullOrEmpty()) return Loaded(listOf(""), emptyMap())
             return Loaded(text.split("\n"), emptyMap())
@@ -205,7 +227,8 @@ class NoteRepository(
      */
     suspend fun loadSubtree(folderRel: String, parentIndent: Int): Loaded {
         val text = fileSystem.readFileIfExists(abs(outlineFileOf(folderRel)))
-            ?: return Loaded(emptyList(), emptyMap())
+        observe(outlineFileOf(folderRel), text)
+        if (text == null) return Loaded(emptyList(), emptyMap())
         return composeNode(folderRel, text, parentIndent + TAB_SIZE)
     }
 
@@ -272,7 +295,10 @@ class NoteRepository(
         fileSystem.ensureDirectory(rootDirectory)
         if (!isOutlineFile(fileRel)) {
             val body = lines.joinToString("\n")
-            if (fileSystem.readFileIfExists(abs(fileRel)) != body) fileSystem.writeFile(abs(fileRel), body)
+            if (fileSystem.readFileIfExists(abs(fileRel)) != body) {
+                fileSystem.writeFile(abs(fileRel), body)
+                observe(fileRel, body)
+            }
             return SaveResult(emptyMap())
         }
         val docFolder = folderOfOutline(fileRel)
@@ -299,7 +325,10 @@ class NoteRepository(
 
             // Phase 3: apply. Demoted outlines go first (at their current
             // paths), then the moves, then every write at its new path.
-            for (d in plan.demotions) fileSystem.deleteFile(abs(outlineFileOf(d)))
+            for (d in plan.demotions) {
+                fileSystem.deleteFile(abs(outlineFileOf(d)))
+                observe(outlineFileOf(d), null)
+            }
             applyMoves(plan.moves)
             for (d in plan.demotions.sortedByDescending { depth(it) }) {
                 val now = postMovePath(d, plan.moves)
@@ -313,13 +342,18 @@ class NoteRepository(
                 if (text.isEmpty() && onDisk == null) continue
                 println("[autosave]   write $path")
                 fileSystem.writeFile(path, text)
+                observe(outlineFileOf(folder), text)
             }
-            for (folder in plan.clearedOutlines) fileSystem.deleteFile(abs(outlineFileOf(folder)))
+            for (folder in plan.clearedOutlines) {
+                fileSystem.deleteFile(abs(outlineFileOf(folder)))
+                observe(outlineFileOf(folder), null)
+            }
             for ((folder, extra) in plan.appends) {
                 val path = abs(outlineFileOf(folder))
                 val existing = fileSystem.readFileIfExists(path) ?: ""
-                val merged = SubtreeCodec.parseNodeFile(existing) + extra
-                fileSystem.writeFile(path, SubtreeCodec.formatNodeFile(merged))
+                val merged = SubtreeCodec.formatNodeFile(SubtreeCodec.parseNodeFile(existing) + extra)
+                fileSystem.writeFile(path, merged)
+                observe(outlineFileOf(folder), merged)
             }
             return SaveResult(
                 promotedByRow = plan.assigned.mapValues { (_, folder) -> PromotedRef(folder) },
@@ -660,24 +694,15 @@ class NoteRepository(
                     kind = VaultEntryKind.FOLDER,
                     isReferenced = entry.name.lowercase() in referenced,
                 )
-                entry.name.endsWith(NOTE_EXTENSION) -> VaultEntry(
-                    name = entry.name.removeSuffix(NOTE_EXTENSION),
-                    pathRel = pathRel,
-                    kind = VaultEntryKind.MARKDOWN,
-                    lastEditedMs = entry.lastModifiedMs,
-                )
-                isImagePath(entry.name) -> VaultEntry(
-                    name = entry.name,
-                    pathRel = pathRel,
-                    kind = VaultEntryKind.IMAGE,
-                    lastEditedMs = entry.lastModifiedMs,
-                )
-                else -> VaultEntry(
-                    name = entry.name,
-                    pathRel = pathRel,
-                    kind = VaultEntryKind.FILE,
-                    lastEditedMs = entry.lastModifiedMs,
-                )
+                else -> {
+                    val kind = kindOfFileName(entry.name)
+                    VaultEntry(
+                        name = if (kind == VaultEntryKind.MARKDOWN) entry.name.removeSuffix(NOTE_EXTENSION) else entry.name,
+                        pathRel = pathRel,
+                        kind = kind,
+                        lastEditedMs = entry.lastModifiedMs,
+                    )
+                }
             }
         }
         return out
@@ -810,63 +835,185 @@ class NoteRepository(
     // --------------------------------------------------------------- starred
 
     /**
-     * Appends one bookmark bullet to [STARRED_FILE_NAME], creating the
-     * file when missing. Called by the Starred modal.
+     * Appends one bookmark bullet, `* [title](tf:/…)`, to
+     * [STARRED_FILE_NAME], creating the file when missing. Starred entries
+     * use the same `tf:` paths as links (TRF-8), so a save that renames or
+     * moves the target rewrites them too. Called by the Starred modal.
      *
      * @param title Label shown in the bookmark list.
-     * @param targetPathRel Vault-relative path of the bookmarked file.
-     * @param targetRow Optional 0-based row in that file; encoded as a
-     *   `#r=<row>` fragment. `null` bookmarks the whole file.
+     * @param targetPathRel Vault-relative folder or file being starred
+     *   (`""` = the vault root).
      */
-    suspend fun appendStarredEntry(title: String, targetPathRel: String, targetRow: Int?) {
+    suspend fun appendStarredEntry(title: String, targetPathRel: String) {
         fileSystem.ensureDirectory(rootDirectory)
         val absPath = abs(STARRED_FILE_NAME)
         val existing = fileSystem.readFileIfExists(absPath) ?: ""
-        val href = if (targetRow != null) "$targetPathRel#r=$targetRow" else targetPathRel
-        val newBullet = SubtreeCodec.formatPlainLinkBullet(indent = 0, label = title, href = href)
+        val newBullet = SubtreeCodec.formatPlainLinkBullet(indent = 0, label = title, href = TfLink.format(targetPathRel))
         val nextContent = when {
             existing.isEmpty() -> newBullet + "\n"
             existing.endsWith("\n") -> existing + newBullet + "\n"
             else -> existing + "\n" + newBullet + "\n"
         }
         fileSystem.writeFile(absPath, nextContent)
+        observe(STARRED_FILE_NAME, nextContent)
     }
 
     /**
-     * Removes every bookmark in [STARRED_FILE_NAME] that points at
-     * `(targetPathRel, targetRow)`; other lines are kept verbatim. Called
-     * by the Starred modal's un-star toggle.
+     * Removes every bookmark in [STARRED_FILE_NAME] whose `tf:` target is
+     * [targetPathRel]; other lines are kept verbatim. Called by the
+     * Starred modal's un-star toggle.
      */
-    suspend fun removeStarredEntry(targetPathRel: String, targetRow: Int?) {
+    suspend fun removeStarredEntry(targetPathRel: String) {
         val absPath = abs(STARRED_FILE_NAME)
         val existing = fileSystem.readFileIfExists(absPath) ?: return
-        val rowMarker = "#r="
         val kept = existing.split("\n").filter { line ->
             val link = SubtreeCodec.parseAnyLinkBullet(line) ?: return@filter true
-            val url = link.url
-            val hashIdx = url.indexOf(rowMarker)
-            val (path, row) = if (hashIdx >= 0) {
-                val n = url.substring(hashIdx + rowMarker.length).toIntOrNull()
-                if (n != null) url.substring(0, hashIdx) to n else url to null
-            } else {
-                url to null
-            }
-            !(path == targetPathRel && row == targetRow)
+            TfLink.parse(link.url) != targetPathRel
         }
-        fileSystem.writeFile(absPath, kept.joinToString("\n"))
+        val text = kept.joinToString("\n")
+        fileSystem.writeFile(absPath, text)
+        observe(STARRED_FILE_NAME, text)
+    }
+
+    // ----------------------------------------------------------------- links
+
+    /**
+     * What is at [pathRel] right now: [VaultEntryKind.FOLDER] for a folder
+     * (the vault root `""` included), the file's kind for a file, `null`
+     * when nothing is there. Names are compared exactly. Used to tell a
+     * working link from a broken one and to decide how a click opens it.
+     */
+    suspend fun kindOf(pathRel: String): VaultEntryKind? = kindsOf(listOf(pathRel))[pathRel]
+
+    /**
+     * [kindOf] for many paths at once, listing each parent folder once.
+     *
+     * @return Every path in [paths] mapped to its kind, or to `null` when
+     *   it does not exist.
+     */
+    suspend fun kindsOf(paths: Collection<String>): Map<String, VaultEntryKind?> {
+        val listings = HashMap<String, List<VaultDirectoryEntry>>()
+        val out = HashMap<String, VaultEntryKind?>(paths.size)
+        for (p in paths) {
+            if (p.isEmpty()) { out[p] = VaultEntryKind.FOLDER; continue }
+            val parent = parentOf(p)
+            val name = p.substringAfterLast('/')
+            val entries = listings.getOrPut(parent) { fileSystem.listDirectoryEntries(abs(parent)) }
+            val e = entries.firstOrNull { it.name == name }
+            out[p] = when {
+                e == null -> null
+                e.isDirectory -> VaultEntryKind.FOLDER
+                else -> kindOfFileName(e.name)
+            }
+        }
+        return out
     }
 
     /**
-     * Creates an empty file at [fileRel] unless something already exists
-     * there. Used by `DocumentRegistry.ensureFolderStub` to give a folder
-     * picked in the Insert Link modal its outline file.
-     *
-     * @return `true` when a new file was written.
+     * `true` when [folderRel] is the folder of a folder-backed bullet: its
+     * parent's outline has a `+` line naming it. Such a folder is opened
+     * by zooming into that bullet; any other folder opens as a node of its
+     * own. `false` for the vault root.
      */
-    suspend fun createEmptyFile(fileRel: String): Boolean {
-        val absPath = abs(fileRel)
-        if (fileSystem.readFileIfExists(absPath) != null) return false
-        fileSystem.writeFile(absPath, "")
+    suspend fun isBulletFolder(folderRel: String): Boolean {
+        if (folderRel.isEmpty()) return false
+        val outline = fileSystem.readFileIfExists(abs(outlineFileOf(parentOf(folderRel)))) ?: return false
+        return folderRel.substringAfterLast('/').lowercase() in referencedFolderNames(outline)
+    }
+
+    /**
+     * Every folder and file a link may point at (TRF-8), walking the whole
+     * vault from the root and skipping dot entries (the trash, outline
+     * files): each non-empty folder — one holding any entry, or whose
+     * outline has at least one line — and every file. Empty folders are
+     * left out; leaf bullets never have a folder, so they cannot appear.
+     *
+     * A folder's title is its bullet's plain-text title from the parent's
+     * outline when it has one (so a collision-suffixed `Soup (2)` still
+     * shows the bullet's text), its decoded name otherwise; the vault root
+     * is [ROOT_DISPLAY_NAME]. Not cached: `VaultIndex` caches it.
+     */
+    suspend fun listLinkTargets(): List<LinkTarget> {
+        fileSystem.ensureDirectory(rootDirectory)
+        val out = ArrayList<LinkTarget>()
+        walkLinkTargets("", ROOT_DISPLAY_NAME, emptyList(), out)
+        return out
+    }
+
+    /**
+     * Adds [dirRel] (when non-empty) and everything below it to [out].
+     *
+     * @param title The folder's display title.
+     * @param crumbs Titles of the folder's ancestors, root excluded.
+     */
+    private suspend fun walkLinkTargets(dirRel: String, title: String, crumbs: List<String>, out: MutableList<LinkTarget>) {
+        val entries = fileSystem.listDirectoryEntries(abs(dirRel)).sortedBy { it.name.lowercase() }
+        val outline = fileSystem.readFileIfExists(abs(outlineFileOf(dirRel)))
+        val items = if (outline == null) emptyList() else SubtreeCodec.parseNodeFile(outline)
+        val titleOf = HashMap<String, String>()
+        for (item in items) {
+            if (item is NodeLine.Folder) titleOf[item.folder.lowercase()] = FolderName.plainTextOf(item.title)
+        }
+        val visible = entries.filter { !it.name.startsWith(".") }
+        if (items.isEmpty() && visible.isEmpty()) return
+        out += LinkTarget(dirRel, title, VaultEntryKind.FOLDER, crumbs)
+        val childCrumbs = if (dirRel.isEmpty()) emptyList() else crumbs + title
+        for (e in visible) {
+            val pathRel = join(dirRel, e.name)
+            if (e.isDirectory) {
+                val childTitle = titleOf[e.name.lowercase()]?.takeIf { it.isNotBlank() } ?: FolderName.decode(e.name)
+                walkLinkTargets(pathRel, childTitle, childCrumbs, out)
+            } else {
+                val kind = kindOfFileName(e.name)
+                val fileTitle = if (kind == VaultEntryKind.MARKDOWN) e.name.removeSuffix(NOTE_EXTENSION) else e.name
+                out += LinkTarget(pathRel, fileTitle, kind, childCrumbs)
+            }
+        }
+    }
+
+    /**
+     * Every file that can hold `tf:` links, vault-relative: all node
+     * outlines (the root's `.treefacts` included) and all `.md` notes,
+     * outside dot-folders. Used to build `VaultIndex`'s link index.
+     */
+    suspend fun listLinkBearingFiles(): List<String> {
+        val out = ArrayList<String>()
+        if (fileSystem.readFileIfExists(abs(OUTLINE_FILE_NAME)) != null) out += OUTLINE_FILE_NAME
+        out += listAllNoteFiles()
+        return out
+    }
+
+    /**
+     * The raw text of the note file [fileRel], or `null` when it does not
+     * exist. Reported to [noteTextObserver] like any other read.
+     */
+    suspend fun readNoteText(fileRel: String): String? {
+        val text = fileSystem.readFileIfExists(abs(fileRel))
+        observe(fileRel, text)
+        return text
+    }
+
+    /**
+     * Rewrites the `tf:` links in the file [fileRel] on disk per [moves]
+     * ([TfLink.rewriteText]), for a file no open document holds. Works on
+     * the raw text, so an outline's structure and a note's formatting are
+     * untouched.
+     *
+     * Called by `DocumentRegistry` after a save renamed or moved folders
+     * or files.
+     *
+     * @return `true` when the file was rewritten.
+     */
+    suspend fun rewriteLinksInFile(fileRel: String, moves: List<PathMove>): Boolean {
+        val text = fileSystem.readFileIfExists(abs(fileRel)) ?: return false
+        val rewritten = TfLink.rewriteText(text, moves)
+        if (rewritten == null) {
+            observe(fileRel, text)
+            return false
+        }
+        println("[links]   rewrite $fileRel")
+        fileSystem.writeFile(abs(fileRel), rewritten)
+        observe(fileRel, rewritten)
         return true
     }
 
@@ -893,6 +1040,13 @@ class NoteRepository(
         /** Image extensions the renderer loads natively (case-insensitive). */
         val IMAGE_EXTENSIONS: List<String> =
             listOf(".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+
+        /** Kind of a file named [name]: Markdown note, image or other file. */
+        fun kindOfFileName(name: String): VaultEntryKind = when {
+            name.endsWith(NOTE_EXTENSION) -> VaultEntryKind.MARKDOWN
+            isImagePath(name) -> VaultEntryKind.IMAGE
+            else -> VaultEntryKind.FILE
+        }
 
         /** `true` when [pathRel] has one of [IMAGE_EXTENSIONS]. */
         fun isImagePath(pathRel: String): Boolean {

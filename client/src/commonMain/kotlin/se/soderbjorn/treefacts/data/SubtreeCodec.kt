@@ -147,7 +147,7 @@ sealed class ComposedItem {
  *   into folders, and [formatNodeFile] to write each folder's file.
  * - `Document` uses [composedSubtreeEnd] so collapsing a folder-backed
  *   bullet removes exactly the rows save would attribute to it.
- * - `PaneBackingViewModel`, `VaultIndex` and the Starred modal use
+ * - `PaneBackingViewModel`, `NoteRepository` (Starred) and the Starred modal use
  *   [titleOf], [parseAnyLinkBullet], [formatPlainLinkBullet],
  *   [escapeLabel] and [formatLinkUrlForLabel].
  */

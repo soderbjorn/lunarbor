@@ -33,6 +33,15 @@
  * zooms, rows are not dragged, and the document saves the text exactly
  * as written ([Document.bulletsOnly] is `false`, so no promotion).
  *
+ * ### Links (TRF-8)
+ * Links are `tf:` paths to folders and files ([TfLink]). Clicking one
+ * ([navigateToLink]) zooms to a folder — into its bullet when it is a
+ * node's folder — or opens a file as the folder contents list would. The
+ * link search runs over the whole vault ([VaultIndex.search]); a link
+ * whose target is gone is reported by [isLinkBroken] for the view to
+ * strike through. Starred entries are the same `tf:` paths
+ * ([currentLocationPath], [toggleStarred]).
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -51,10 +60,13 @@ import se.soderbjorn.treefacts.data.ImagePaths
 import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineStyle
-import se.soderbjorn.treefacts.data.LinkUrl
+import se.soderbjorn.treefacts.data.FolderName
+import se.soderbjorn.treefacts.data.LinkTarget
 import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.data.SubtreeCodec
+import se.soderbjorn.treefacts.data.TfLink
 import se.soderbjorn.treefacts.data.VaultEntry
+import se.soderbjorn.treefacts.data.VaultEntryKind
 import se.soderbjorn.treefacts.data.VaultIndex
 
 /**
@@ -84,7 +96,7 @@ class PaneBackingViewModel(
     /** Mirrors [DocumentRegistry.rootFileName] for the view layer. */
     val rootFileName: String get() = registry.rootFileName
 
-    /** App-scoped outline index, exposed for the Insert Link modal's search. */
+    /** App-scoped link index, exposed for the link modals' search ([VaultIndex.search]). */
     val vaultIndex: VaultIndex get() = registry.vaultIndex
 
     /**
@@ -111,6 +123,9 @@ class PaneBackingViewModel(
      *   without a separate registry handle; read it through
      *   [folderContentsOf] / [folderContentsOfBullet], which apply
      *   [FolderContents.visible].
+     * @property linkStatus Mirror of [DocumentRegistry.linkStatusFlow]:
+     *   link target path → whether it exists. Mirrored so a target found
+     *   missing (or back) repaints the pane; read through [isLinkBroken].
      * @property cursorRow Row of the caret, in absolute document coords.
      * @property cursorCol Column of the caret on [cursorRow].
      * @property anchorRow If non-null, together with [anchorCol] defines
@@ -158,6 +173,7 @@ class PaneBackingViewModel(
         val activeFileRel: String = "",
         val documentState: Document.State? = null,
         val vaultListings: Map<String, List<VaultEntry>> = emptyMap(),
+        val linkStatus: Map<String, Boolean> = emptyMap(),
         val cursorRow: Int = 0,
         val cursorCol: Int = 0,
         val anchorRow: Int? = null,
@@ -312,6 +328,11 @@ class PaneBackingViewModel(
         scope.launch {
             registry.vaultListingsFlow.collect { listings ->
                 _stateFlow.value = _stateFlow.value.copy(vaultListings = listings)
+            }
+        }
+        scope.launch {
+            registry.linkStatusFlow.collect { status ->
+                _stateFlow.value = _stateFlow.value.copy(linkStatus = status)
             }
         }
         // Acquire the initial document and start mirroring it.
@@ -1219,20 +1240,6 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Gives a folder picked from the Insert Link modal's folder-stub
-     * results its outline file. Delegates to
-     * [DocumentRegistry.ensureFolderStub].
-     *
-     * Suspends so the Insert Link pick handler can `await` the file
-     * creation before computing the link URL via
-     * [se.soderbjorn.treefacts.data.VaultIndex.shortestUrlFor] — the
-     * resolver only sees the new node once its outline exists on disk.
-     */
-    suspend fun ensureFolderStub(fileRel: String) {
-        registry.ensureFolderStub(fileRel)
-    }
-
-    /**
      * Fire-and-forget request that the registry populate
      * [DocumentRegistry.vaultListingsFlow] with the entries under
      * [dirRel] if they are not already cached. Used by
@@ -1282,19 +1289,105 @@ class PaneBackingViewModel(
     // ----------------------------------------------------------------- links
 
     /**
-     * The title path inside the active file from the file's top down
-     * to the bullet currently containing the cursor. Empty when the
-     * cursor is on a non-bullet row or the document hasn't loaded.
-     *
-     * Used by the Insert Link modal to scope its relative-URL math:
-     * combined with [activeFileRel] and [VaultIndex.fullPathFor] this
-     * yields the cursor's full vault title path.
+     * Inserts a link to [target] at the cursor: `[label](tf:/…)`, labelled
+     * with [label] or, when that is blank, the target's title. See
+     * [insertMarkdownLink]. Called by the Insert Link / "Link to node…"
+     * modal once the user picks a target.
      */
-    fun currentInFileTitlePath(): List<String> {
-        val state = _stateFlow.value
-        val docState = state.documentState ?: return emptyList()
-        if (!docState.isLoaded) return emptyList()
-        return titlePathOfRow(docState.lines, state.cursorRow)
+    fun insertLinkTo(target: LinkTarget, label: String = "") {
+        insertMarkdownLink(label.ifBlank { target.title }, TfLink.format(target.pathRel))
+    }
+
+    /**
+     * Gets the link search ready to reflect the latest edits: saves every
+     * open document (so a bullet that just got its first child already has
+     * a folder, and a renamed one its new name) and drops the cached
+     * target list. Called when a link modal opens.
+     */
+    suspend fun prepareLinkSearch() {
+        registry.flushAll()
+        registry.vaultIndex.invalidateTargets()
+    }
+
+    /**
+     * `true` when [url] is a `tf:` link whose target is known to be
+     * missing — moved or trashed outside the app, or a node deleted here.
+     * While the target's status is unknown, starts a check (see
+     * [DocumentRegistry.requestLinkStatus]) and answers `false`; the
+     * result arrives as a new [State.linkStatus], which repaints.
+     *
+     * Called by the web paint loop for every link it draws. Links with
+     * any other URL are never broken.
+     */
+    fun isLinkBroken(state: State, url: String): Boolean {
+        val path = TfLink.parse(url) ?: return TfLink.isTfLink(url)
+        state.linkStatus[path]?.let { return !it }
+        return registry.requestLinkStatus(path) == false
+    }
+
+    /**
+     * Where this pane is, as the `tf:` path a Starred entry stores (TRF-8):
+     *
+     * - An image or a `.md` note: the file itself.
+     * - Zoomed into a folder-backed bullet: its folder.
+     * - Zoomed into a leaf bullet: the folder the leaf is stored in (leaf
+     *   bullets cannot be linked).
+     * - Otherwise: the outline's folder (`""` for the vault root).
+     *
+     * Saves the document first, so a bullet that just got children has its
+     * folder. `null` while nothing is loaded.
+     */
+    suspend fun currentLocationPath(): String? {
+        val s0 = _stateFlow.value
+        if (s0.isImageView) return s0.activeFileRel
+        val doc = document ?: return null
+        if (!s0.isLoaded) return null
+        doc.flush()
+        val s = _stateFlow.value
+        if (s.isMarkdownMode) return s.activeFileRel
+        val zoomed = s.zoomedLineId ?: return doc.folderRel
+        doc.folderOf(zoomed)?.takeIf { !NoteRepository.isInTrash(it) }?.let { return it }
+        val row = s.documentState?.lineIds?.indexOf(zoomed) ?: -1
+        return if (row >= 0) doc.storageFolderOf(row) else doc.folderRel
+    }
+
+    /**
+     * Label for a Starred entry of [pathRel]: the zoomed bullet's plain
+     * title when the pane is zoomed into the bullet backed by [pathRel],
+     * the path's display name otherwise.
+     */
+    private fun starLabelFor(pathRel: String): String {
+        val s = _stateFlow.value
+        val zoomed = s.zoomedLineId
+        val docState = s.documentState
+        if (zoomed != null && docState != null && document?.folderOf(zoomed) == pathRel) {
+            val row = docState.lineIds.indexOf(zoomed)
+            if (row >= 0) FolderName.plainTextOf(SubtreeCodec.titleOf(docState.lines[row])).takeIf { it.isNotBlank() }?.let { return it }
+        }
+        if (pathRel.isEmpty()) return NoteRepository.ROOT_DISPLAY_NAME
+        val name = pathRel.substringAfterLast('/')
+        return if (NoteRepository.isImagePath(name) || name.endsWith(NoteRepository.NOTE_EXTENSION)) {
+            name.removeSuffix(NoteRepository.NOTE_EXTENSION)
+        } else {
+            FolderName.decode(name)
+        }
+    }
+
+    /**
+     * Stars or un-stars this pane's [currentLocationPath]: adds a
+     * `* [label](tf:/…)` entry to `Starred.md` when [starred] is `false`,
+     * removes every entry for the location when it is `true`. Goes through
+     * the registry so the link index sees the change.
+     *
+     * Called by the web Starred modal (the Add / Remove button and ⌘D).
+     *
+     * @param starred Whether the location is currently starred, as the
+     *   modal shows it.
+     */
+    suspend fun toggleStarred(starred: Boolean) {
+        val path = currentLocationPath() ?: return
+        if (starred) registry.removeStarred(path)
+        else registry.addStarred(starLabelFor(path), path)
     }
 
     /**
@@ -1494,74 +1587,45 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Resolves [url] against the cursor's position and navigates this
-     * pane to the target. No-op when the URL is unparseable or the
-     * resolver returns [VaultIndex.Resolution.NotFound] — the link
-     * text stays in the document for the user to fix manually.
+     * Follows the `tf:` link [url] (TRF-8):
      *
-     * Wires together:
-     *  1. [LinkUrl.parse] (pure codec).
-     *  2. [VaultIndex.resolve] (deterministic walk).
-     *  3. [navigateToVaultFile] (if the target lives in another file).
-     *  4. [zoomTo] (if the target is a specific bullet).
+     * - **A folder** zooms there ([zoomToFolder]).
+     * - **A `.md` note or an image** opens in this pane, with file history,
+     *   as a click in the folder contents list does.
+     * - **Any other file** is handed to [openExternally] (on the web, the
+     *   system's default app).
+     * - **A missing target** does nothing; the view already draws the
+     *   link as broken, and its text stays as it is.
+     *
+     * [onComplete] runs once the navigation has settled (or failed), so
+     * the view can focus the editor. No-op for other URLs.
+     *
+     * Called when a link is clicked, when a Starred entry or a
+     * Navigate-to hit is picked, and for the new pane a shift-click opens.
      */
-    fun navigateToLink(url: String, onComplete: () -> Unit = {}) {
-        val parsed = LinkUrl.parse(url)
-        val state = _stateFlow.value
-        if (parsed == null || !state.isLoaded) {
+    fun navigateToLink(url: String, onComplete: () -> Unit = {}, openExternally: (String) -> Unit = {}) {
+        val path = TfLink.parse(url)
+        if (path == null) {
             onComplete()
             return
         }
-        val activeFileRel = state.activeFileRel
-        val inFilePath = currentInFileTitlePath()
         scope.launch {
             try {
-                val cursorFullPath =
-                    vaultIndex.fullPathFor(activeFileRel, inFilePath) ?: emptyList()
-                val resolution = vaultIndex.resolve(parsed, cursorFullPath)
-                if (resolution !is VaultIndex.Resolution.Found) {
-                    println("[treefacts] link target not found: $url (cursor at $cursorFullPath)")
-                    return@launch
-                }
-                val isCrossFile = resolution.fileRel != _stateFlow.value.activeFileRel
-                if (isCrossFile) {
-                    val here = currentHistoryEntry()
-                    switchActiveFile(resolution.fileRel)
-                    patch {
-                        it.copy(
-                            fileHistory = (it.fileHistory + here).takeLast(NAV_HISTORY_CAP),
-                            fileForward = emptyList(),
-                        )
+                when (registry.kindOf(path)) {
+                    null -> {
+                        println("[treefacts] link target not found: $url")
+                        registry.requestLinkStatus(path)
+                        registry.refreshLinkStatuses()
                     }
-                }
-                if (resolution.titlePathInFile.isNotEmpty()) {
-                    val targetId = awaitLineIdForTitlePath(resolution.titlePathInFile)
-                    if (targetId != null) {
-                        if (isCrossFile) {
-                            // The link click is this pane's entry point into
-                            // the new file — no prior zoom in this file to
-                            // remember. Set [zoomedLineId] directly without
-                            // pushing to zoomHistory so the unified Back
-                            // chord falls through to fileBack (returning to
-                            // where the user came from) instead of unzooming
-                            // inside the just-arrived file.
-                            patch { it.copy(zoomedLineId = targetId) }
-                        } else {
-                            // Same-file navigation: keep the normal
-                            // push-to-history semantics so Back undoes the
-                            // zoom in place.
-                            zoomTo(targetId)
-                        }
-                        placeCursorOn(targetId)
+                    VaultEntryKind.FOLDER -> zoomToFolder(path)
+                    VaultEntryKind.MARKDOWN, VaultEntryKind.IMAGE -> {
+                        if (NoteRepository.isOutlineFile(path)) zoomToFolder(NoteRepository.folderOfOutline(path))
+                        else openFileWithHistory(path)
                     }
-                } else if (isCrossFile) {
-                    // File-root navigation (no specific bullet, e.g. user
-                    // picked "Framna" in the modal). Park the caret on
-                    // row 0 so the contenteditable has a valid DOM
-                    // selection to extend from — without this, focusing
-                    // the editor leaves the caret unset and chords like
-                    // Cmd-Shift-Left have nothing to anchor on.
-                    awaitFirstLoadedLineId()?.let { placeCursorOn(it) }
+                    VaultEntryKind.FILE -> {
+                        if (NoteRepository.isOutlineFile(path)) zoomToFolder(NoteRepository.folderOfOutline(path))
+                        else openExternally(path)
+                    }
                 }
             } finally {
                 onComplete()
@@ -1569,10 +1633,112 @@ class PaneBackingViewModel(
         }
     }
 
+    /** Switches this pane to [fileRel], pushing file history, and waits for it to load. */
+    private suspend fun openFileWithHistory(fileRel: String) {
+        if (_stateFlow.value.activeFileRel == fileRel) return
+        val here = currentHistoryEntry()
+        switchActiveFile(fileRel)
+        patch {
+            it.copy(
+                fileHistory = (it.fileHistory + here).takeLast(NAV_HISTORY_CAP),
+                fileForward = emptyList(),
+            )
+        }
+        if (!NoteRepository.isImagePath(fileRel)) awaitFirstLoadedLineId()?.let { placeCursorOn(it) }
+    }
+
+    /**
+     * Shows the folder [folderRel] as a zoomed node:
+     *
+     * 1. **Inside the open outline** — the folder is the outline's own
+     *    folder or lies below it: expand the folder-backed bullets on the
+     *    way (as a chevron click would, for this pane only) and zoom into
+     *    the bullet backed by [folderRel], with zoom history; the outline's
+     *    own folder clears the zoom.
+     * 2. **Elsewhere, a node's folder** — open the parent node's outline
+     *    and zoom into the bullet; Back returns to where the link was.
+     * 3. **Elsewhere, any other folder** (foreign, or one no bullet names)
+     *    — open it as a node of its own, like a folder row in the contents
+     *    list.
+     */
+    private suspend fun zoomToFolder(folderRel: String) {
+        if (zoomWithinCurrentOutline(folderRel)) return
+        if (folderRel.isNotEmpty() && registry.isBulletFolder(folderRel)) {
+            val parentOutline = NoteRepository.outlineFileOf(folderRel.substringBeforeLast('/', missingDelimiterValue = ""))
+            openFileWithHistory(parentOutline)
+            val doc = document ?: return
+            doc.stateFlow.first { it.isLoaded }
+            val id = doc.lineIdForFolder(folderRel)
+            if (id != null && document === doc) {
+                expandForPane(doc, id)
+                // Entry point into the file: no zoom history, so Back
+                // returns to where the link was clicked.
+                patch { it.copy(zoomedLineId = id) }
+                placeCursorOn(id)
+                return
+            }
+        }
+        openFileWithHistory(NoteRepository.outlineFileOf(folderRel))
+    }
+
+    /**
+     * Case 1 of [zoomToFolder]. Returns `false` when the pane is not on
+     * an outline, the folder is not at or under the outline's folder, or a
+     * bullet on the way cannot be found (bullets unfolded before that stay
+     * unfolded; the caller then navigates elsewhere anyway).
+     */
+    private suspend fun zoomWithinCurrentOutline(folderRel: String): Boolean {
+        val doc = document ?: return false
+        val s = _stateFlow.value
+        if (!s.isLoaded || s.isMarkdownMode || s.isImageView) return false
+        val base = doc.folderRel
+        if (folderRel == base) {
+            if (s.zoomedLineId != null) zoomTo(null)
+            return true
+        }
+        val rest = when {
+            base.isEmpty() -> folderRel
+            folderRel.startsWith("$base/") -> folderRel.substring(base.length + 1)
+            else -> return false
+        }
+        val segments = rest.split('/')
+        var prefix = base
+        var targetId: LineId? = null
+        for (seg in segments) {
+            prefix = if (prefix.isEmpty()) seg else "$prefix/$seg"
+            val id = doc.lineIdForFolder(prefix) ?: return false
+            targetId = id
+            // Expand every bullet on the way, the target too, so the zoom
+            // shows its children.
+            expandForPane(doc, id)
+        }
+        val id = targetId ?: return false
+        if (document !== doc) return false
+        zoomTo(id)
+        placeCursorOn(id)
+        return true
+    }
+
+    /**
+     * Unfolds the folder-backed bullet [id] for this pane, as a chevron
+     * click would: records the pane's expansion intent, loads its
+     * children if they are on disk only, and clears its fold.
+     */
+    private suspend fun expandForPane(doc: Document, id: LineId) {
+        val needsExpansion = doc.isPromotedRef(id) && id !in _stateFlow.value.expandedRefIdsLocal
+        patch {
+            it.copy(
+                expandedRefIdsLocal = if (needsExpansion) it.expandedRefIdsLocal + id else it.expandedRefIdsLocal,
+                collapsedIds = it.collapsedIds - id,
+            )
+        }
+        if (needsExpansion) doc.acquireExpansion(id)
+    }
+
     /**
      * Awaits the active document's first loaded emission and returns
-     * its row-0 [LineId]. Used by [navigateToLink] for file-root
-     * navigation where there is no specific bullet path to walk.
+     * its row-0 [LineId]. Used when a link opens a file, so the caret has
+     * a row to sit on.
      */
     private suspend fun awaitFirstLoadedLineId(): LineId? {
         val doc = document ?: return null
@@ -1605,31 +1771,11 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Awaits the active document's first loaded emission and tries
-     * to resolve [titlePath] inside it. Used by [navigateToLink] so
-     * the lookup runs on the freshly-acquired document's content even
-     * when the click happens before the initial disk read finishes.
-     *
-     * Returns `null` when the active document is gone or the path
-     * doesn't match any bullet in the loaded content.
+     * Walks [titlePath] through the bullets of [lines] and returns the
+     * [LineId] of the matching row, or `null` when no walk succeeds. Each
+     * segment is matched against direct-child bullets (deeper indent) of
+     * the previously matched row. Used by [restoreZoom].
      */
-    private suspend fun awaitLineIdForTitlePath(titlePath: List<String>): LineId? {
-        val doc = document ?: return null
-        val loadedState = doc.stateFlow.first { it.isLoaded }
-        return findLineIdByTitlePathIn(loadedState.lines, loadedState.lineIds, titlePath)
-    }
-
-    /**
-     * Walks [titlePath] through the active document's bullets and
-     * returns the [LineId] of the matching row, or `null` when no
-     * walk succeeds. Each segment is matched against direct-child
-     * bullets (deeper indent) of the previously matched row.
-     */
-    fun findLineIdByTitlePath(titlePath: List<String>): LineId? {
-        val docState = _stateFlow.value.documentState ?: return null
-        return findLineIdByTitlePathIn(docState.lines, docState.lineIds, titlePath)
-    }
-
     private fun findLineIdByTitlePathIn(
         lines: List<String>,
         lineIds: List<LineId>,

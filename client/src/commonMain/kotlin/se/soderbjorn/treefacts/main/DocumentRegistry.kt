@@ -14,6 +14,13 @@
  * tied to any particular file: when one save creates or removes a
  * folder, every pane's list wants to see the change.
  *
+ * And owns the link machinery (TRF-8): the [VaultIndex] (link-target
+ * search and the index of which files link where), the "does this link
+ * target exist" cache the views use to strike broken links through
+ * ([linkStatusFlow]), and the rewrite that keeps links and Starred entries
+ * pointing at folders and files a save renamed or moved
+ * ([applyPathMoves]).
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -29,7 +36,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import se.soderbjorn.treefacts.data.NoteRepository
+import se.soderbjorn.treefacts.data.PathMove
 import se.soderbjorn.treefacts.data.VaultEntry
+import se.soderbjorn.treefacts.data.VaultEntryKind
 import se.soderbjorn.treefacts.data.VaultIndex
 
 /**
@@ -79,29 +88,19 @@ class DocumentRegistry(
     private val slots: MutableMap<String, Slot> = mutableMapOf()
 
     /**
-     * App-scoped outline index used by the Insert Link feature. Bypasses
-     * its own cache for files the registry currently holds — always
-     * reads from [Document.stateFlow] for those — so the autosave loop
-     * does not invalidate anything. Closed-file entries are invalidated
-     * here whenever a save tick completes ([refreshVaultListings])
-     * or a [Document] is shut down.
+     * App-scoped link index: link-target search for the link modals and
+     * the index of which files link where. Fed with every note file text
+     * the repository reads or writes (wired in `init`); its target list is
+     * dropped whenever the listings are refreshed.
      */
     val vaultIndex: VaultIndex = VaultIndex(
-        loadFromDisk = repository::loadFile,
-        listAllMdFiles = repository::listAllNoteFiles,
-        rootFileName = repository.rootFileName,
-        openDocuments = ::openDocumentsSnapshot,
+        listTargets = repository::listLinkTargets,
+        listLinkBearingFiles = repository::listLinkBearingFiles,
+        readText = repository::readNoteText,
     )
 
-    private fun openDocumentsSnapshot(): Map<String, Document> {
-        // Snapshot taken without the slots lock — slot mutations would
-        // race with VaultIndex lookups otherwise, and we only need a
-        // best-effort view (newly-acquired docs can lag one lookup; the
-        // next call sees them).
-        val result = HashMap<String, Document>(slots.size)
-        for ((rel, slot) in slots) result[rel] = slot.document
-        return result
-    }
+    /** Snapshot of the open documents, taken without the slots lock (best effort). */
+    private fun openDocuments(): List<Document> = slots.values.map { it.document }
 
     /**
      * Serializes acquire / release across panes so the refcount, slot
@@ -146,7 +145,24 @@ class DocumentRegistry(
      */
     val unsavedFilesFlow: StateFlow<Set<String>> = _unsavedFiles.asStateFlow()
 
+    private val _linkStatus: MutableStateFlow<Map<String, Boolean>> = MutableStateFlow(emptyMap())
+
+    /**
+     * Link target path → whether something exists there, for every `tf:`
+     * target a view has asked about ([requestLinkStatus]). Views draw a
+     * link whose entry is `false` struck through with a "not found"
+     * tooltip; the link text itself is never touched. Re-checked by
+     * [refreshVaultListings] — after every save and when the window
+     * regains focus — so a target moved or trashed in Finder shows as
+     * broken at the next refresh.
+     */
+    val linkStatusFlow: StateFlow<Map<String, Boolean>> = _linkStatus.asStateFlow()
+
+    /** Paths whose status check is in flight, so a repaint storm checks each once. */
+    private val pendingStatus: MutableSet<String> = mutableSetOf()
+
     init {
+        repository.noteTextObserver = vaultIndex::noteText
         // Eagerly populate the vault root listing so the root's contents
         // list paints right after boot.
         scope.launch { ensureVaultListing("") }
@@ -177,15 +193,9 @@ class DocumentRegistry(
             fileRel = fileRel,
             saveDebounceMillis = saveDebounceMillis,
             maxSaveDelayMillis = maxSaveDelayMillis,
-            onAfterSave = {
+            onAfterSave = { moves ->
+                if (moves.isNotEmpty()) applyPathMoves(moves)
                 refreshVaultListings()
-                // The save may have promoted/demoted bullets inside this
-                // file; drop the cache entry so the next non-live lookup
-                // (which only happens once this file is closed again)
-                // re-reads from disk. Live lookups bypass the cache
-                // anyway, so this is purely belt-and-braces for after
-                // [release] tears the [Document] down.
-                vaultIndex.invalidate(fileRel)
             },
         )
         // Mirror the document's dirty flag into the aggregate unsaved
@@ -198,10 +208,6 @@ class DocumentRegistry(
             }
         }
         slots[fileRel] = Slot(doc, refCount = 1, dirtyWatch = dirtyWatch)
-        // While the file is open as a [Document], the index reads from
-        // it live, so any cached pre-open parse is now misleading. Drop
-        // it so closing the doc later re-reads fresh from disk.
-        vaultIndex.invalidate(fileRel)
         doc.start()
         doc
     }
@@ -226,10 +232,6 @@ class DocumentRegistry(
         // clear the aggregate entry by hand: shutdown guarantees the
         // document left nothing unsaved.
         _unsavedFiles.update { it - fileRel }
-        // Document.shutdown flushed one final save; the next non-live
-        // lookup of this file will need to re-read from disk to see
-        // those changes, so invalidate any cache entry.
-        vaultIndex.invalidate(fileRel)
     }
 
     /**
@@ -245,23 +247,99 @@ class DocumentRegistry(
         _vaultListings.value = current + (dirRel to entries)
     }
 
+    // ------------------------------------------------------------- links
+
     /**
-     * Gives a folder picked from the Insert Link modal's folder-stub
-     * results its (empty) outline file, `<dir>/.treefacts`, so it becomes
-     * a node the link resolver can walk to. No-op when the file already
-     * exists. After a write, refreshes [vaultListingsFlow] and drops the
-     * [VaultIndex] cache entry so the new node is visible at once.
+     * Keeps links working after a save renamed or moved folders or files
+     * (TRF-8). Called from every document's after-save hook with that
+     * save's [moves]:
      *
-     * @param fileRel Vault-relative outline path, `<dir>/.treefacts`, as
-     *   carried by [se.soderbjorn.treefacts.data.VaultIndex.SearchHit.fileRel].
-     * @return `true` when a new file was written.
+     *  1. Carries the link index's keys along with moved folders.
+     *  2. Rewrites the `tf:` links in every open document's lines
+     *     ([Document.rewriteLinks]); those edits save with the document.
+     *  3. Rewrites, on disk, every other file the link index says links at
+     *     or through a moved path ([NoteRepository.rewriteLinksInFile]) —
+     *     `Starred.md` included — except files an open document holds in
+     *     memory ([Document.heldFiles]), whose next save writes the
+     *     rewritten lines anyway.
+     *
+     * Moves into or out of the trash only update the index: a link to a
+     * deleted node is left as it is and shows as broken until undo brings
+     * the folder back.
      */
-    suspend fun ensureFolderStub(fileRel: String): Boolean {
-        val created = repository.createEmptyFile(fileRel)
-        if (!created) return false
-        refreshVaultListings()
-        vaultIndex.invalidate(fileRel)
-        return true
+    suspend fun applyPathMoves(moves: List<PathMove>) {
+        vaultIndex.moveKeys(moves)
+        val live = moves.filter { !it.touchesTrash }
+        if (live.isEmpty()) return
+        val held = HashSet<String>()
+        for (doc in openDocuments()) {
+            held += doc.heldFiles()
+            doc.rewriteLinks(live)
+        }
+        for (file in vaultIndex.filesLinkingInto(live)) {
+            if (file in held) continue
+            repository.rewriteLinksInFile(file, live)
+        }
+    }
+
+    /**
+     * Returns the cached existence of the link target [pathRel] (see
+     * [linkStatusFlow]), or `null` while unknown — in which case a check
+     * is started and its result lands in [linkStatusFlow]. Cheap enough to
+     * call on every repaint.
+     */
+    fun requestLinkStatus(pathRel: String): Boolean? {
+        _linkStatus.value[pathRel]?.let { return it }
+        if (!pendingStatus.add(pathRel)) return null
+        scope.launch {
+            try {
+                val exists = repository.kindOf(pathRel) != null
+                _linkStatus.update { it + (pathRel to exists) }
+            } finally {
+                pendingStatus.remove(pathRel)
+            }
+        }
+        return null
+    }
+
+    /** Re-checks every path in [linkStatusFlow] against the disk. */
+    suspend fun refreshLinkStatuses() {
+        val keys = _linkStatus.value.keys.toList()
+        if (keys.isEmpty()) return
+        val kinds = repository.kindsOf(keys)
+        _linkStatus.update { current -> current + kinds.mapValues { (_, k) -> k != null } }
+    }
+
+    /**
+     * What is at the link target [pathRel] right now (a folder, or a
+     * file's kind), or `null` when nothing is. See [NoteRepository.kindOf].
+     */
+    suspend fun kindOf(pathRel: String): VaultEntryKind? = repository.kindOf(pathRel)
+
+    /** See [NoteRepository.isBulletFolder]. */
+    suspend fun isBulletFolder(folderRel: String): Boolean = repository.isBulletFolder(folderRel)
+
+    /**
+     * Saves every open document that has unsaved edits, so a vault walk
+     * (the link search) sees bullets promoted or renamed a moment ago.
+     */
+    suspend fun flushAll() {
+        for (doc in openDocuments()) doc.flush()
+    }
+
+    /**
+     * Adds a Starred entry for [targetPathRel] labelled [title]. Goes
+     * through this registry's repository so the link index sees the new
+     * entry and later renames rewrite it. See
+     * [NoteRepository.appendStarredEntry].
+     */
+    suspend fun addStarred(title: String, targetPathRel: String) {
+        repository.appendStarredEntry(title, targetPathRel)
+    }
+
+    /** Removes every Starred entry for [targetPathRel]. See [NoteRepository.removeStarredEntry]. */
+    suspend fun removeStarred(targetPathRel: String) {
+        repository.removeStarredEntry(targetPathRel)
     }
 
     /**
@@ -321,9 +399,13 @@ class DocumentRegistry(
      * [Document]'s `onAfterSave` hook after every save tick so folders
      * created/removed by the save surface at once, and by the web shell
      * whenever the window regains focus so files added in Finder (or by
-     * any other program) show up at that refresh.
+     * any other program) show up at that refresh. Also drops the cached
+     * link-target list and re-checks link targets ([refreshLinkStatuses]),
+     * so links broken or fixed on disk repaint accordingly.
      */
     suspend fun refreshVaultListings() {
+        vaultIndex.invalidateTargets()
+        refreshLinkStatuses()
         val keys = _vaultListings.value.keys.toList()
         if (keys.isEmpty()) return
         val updates = HashMap<String, List<VaultEntry>>()
