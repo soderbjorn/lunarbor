@@ -81,7 +81,7 @@ be a thin pass-through. It will not stay correct. The moment the
 repository grows any of:
 
 - a write queue / debounce so we don't thrash the disk on every keystroke
-- an in-memory cache of parsed frontmatter
+- an in-memory cache of parsed outlines
 - a flow that observers (e.g. a future sidebar) subscribe to for "the
   vault changed"
 - coordination with autosave to avoid write/write races on `Starred.md`
