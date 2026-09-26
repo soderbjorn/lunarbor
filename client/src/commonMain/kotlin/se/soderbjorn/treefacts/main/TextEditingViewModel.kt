@@ -16,6 +16,12 @@
  * selection keeps the first row's marker. Plain Markdown files keep the
  * plain-line behaviors (strip the marker, paste verbatim).
  *
+ * Blocks (TRF-5, see [BlockLayout]): block rows are the one other kind of
+ * outline line. Inside a block Enter adds a block row, Backspace merges
+ * rows of the block (and deletes an empty block), paste keeps the pasted
+ * lines verbatim as block rows, and Tab moves the whole block. The block
+ * intents — [insertBlock], [deleteBlockAt], [exitBlock] — live here too.
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports. The class holds
  * no state of its own; cursor and selection live in the aggregate's
  * single `MutableStateFlow`.
@@ -424,16 +430,23 @@ internal class TextEditingViewModel(
      * through [bulletLinesForPaste], so every pasted line lands as its own
      * bullet: the first line joins the caret row, each further line
      * becomes a bullet at the caret row's depth (or deeper, keeping the
-     * pasted text's own nesting). Blank lines are dropped.
+     * pasted text's own nesting). Blank lines are dropped. Inside a block
+     * the lines instead become block rows, verbatim ([blockLinesForPaste]).
      */
     fun insertText(text: String) {
         if (!state.isLoaded) return
         deleteSelectionIfAny()
         val startRow = state.cursorRow
-        val toInsert = if (document.bulletsOnly && ('\n' in text || '\r' in text)) {
-            val baseIndent = DocumentLayout.bulletAsteriskColumn(state.lines[startRow]).coerceAtLeast(0)
-            bulletLinesForPaste(text, baseIndent)
-        } else text
+        val multiLine = '\n' in text || '\r' in text
+        val blockCol = BlockLayout.markerColumn(state.lines[startRow])
+        val toInsert = when {
+            multiLine && blockCol >= 0 -> blockLinesForPaste(text, blockCol)
+            multiLine && document.bulletsOnly -> {
+                val baseIndent = DocumentLayout.bulletAsteriskColumn(state.lines[startRow]).coerceAtLeast(0)
+                bulletLinesForPaste(text, baseIndent)
+            }
+            else -> text
+        }
         if (toInsert.isEmpty()) return
         insertWithPendingStyles(toInsert)
         // The cut record matches on the clipboard text, row by row. The
@@ -554,6 +567,10 @@ internal class TextEditingViewModel(
                     patch { it.copy(cursorCol = textStart) }
                     return
                 }
+                if (BlockLayout.isBlockLine(line) && s.cursorCol == textStart) {
+                    backspaceAtBlockRowStart(s)
+                    return
+                }
                 if (isAtBulletMarkerEnd(line, s.cursorCol)) {
                     // Caret at the first text position of a bullet. Deleting here would
                     // orphan any subtree this bullet anchors, so refuse on non-leaf
@@ -570,6 +587,19 @@ internal class TextEditingViewModel(
                     // content into rows the user can't see (same hazard as the
                     // cursorRow > 0 branch below). [prevVisibleRow] is zoom-clamped,
                     // so at the top of a zoom this is never taken.
+                    if (prevVisibleRow(s, s.cursorRow) == s.cursorRow - 1 &&
+                        BlockLayout.isBlockLine(s.lines[s.cursorRow - 1])
+                    ) {
+                        // The row above is the last row of a block. A bullet never
+                        // merges into a block: an empty bullet just goes, the caret
+                        // landing at the end of the block; a non-empty one stays.
+                        if (DocumentLayout.isEmptyBulletLine(line)) {
+                            document.deleteLine(s.cursorRow)
+                            val prevLen = s.lines[s.cursorRow - 1].length
+                            patch { it.copy(cursorRow = s.cursorRow - 1, cursorCol = prevLen) }
+                        }
+                        return
+                    }
                     if (prevVisibleRow(s, s.cursorRow) == s.cursorRow - 1) {
                         val previousLen = s.lines[s.cursorRow - 1].length
                         document.delete(s.cursorRow - 1, previousLen, s.cursorRow, s.cursorCol)
@@ -618,6 +648,31 @@ internal class TextEditingViewModel(
     }
 
     /**
+     * Backspace with the caret at the text start of block row
+     * `s.cursorRow` (right after the hidden marker):
+     *
+     *  - A further row of the block merges into the row above, like
+     *    joining two lines of a paragraph.
+     *  - The first row of an empty block (every row blank) deletes the
+     *    whole block ([deleteBlockAt]).
+     *  - The first row of a non-empty block does nothing: the block never
+     *    merges into the bullet above.
+     *
+     * Called only from [backspace].
+     */
+    private fun backspaceAtBlockRowStart(s: PaneBackingViewModel.State) {
+        val row = s.cursorRow
+        val range = BlockLayout.rangeAt(s.lines, row) ?: return
+        if (row > range.first) {
+            val previousLen = s.lines[row - 1].length
+            document.delete(row - 1, previousLen, row, DocumentLayout.textStartCol(s.lines[row]))
+            patch { it.copy(cursorRow = row - 1, cursorCol = previousLen, anchorRow = null, anchorCol = null) }
+            return
+        }
+        if (range.all { BlockLayout.isEmptyContent(s.lines[it]) }) deleteBlockAt(row)
+    }
+
+    /**
      * Backspace at the text start of an empty leaf bullet that has no
      * array-adjacent visible row above it to merge into — the first row
      * of the document or of the zoom, or a row right below a folded
@@ -662,8 +717,12 @@ internal class TextEditingViewModel(
         }
         val row = s.cursorRow
         val line = s.lines[row]
+        // A block moves as a unit, measured from its first row: indenting
+        // one row alone would split it into two blocks.
+        val block = BlockLayout.rangeAt(s.lines, row)
+        val first = block?.first ?: row
         val currentIndent = line.takeWhile { it == ' ' }.length
-        val ancestorIndent = precedingBulletIndent(s.lines, row) ?: return
+        val ancestorIndent = precedingBulletIndent(s.lines, first) ?: return
         if (currentIndent >= ancestorIndent + amount) return
 
         // Refuse to indent under a collapsed promoted-ref: auto-expanding
@@ -671,7 +730,7 @@ internal class TextEditingViewModel(
         // moved subtree would appear to belong to that other file at the
         // next autosave. Force the user to expand the ref first.
         val newIndent = currentIndent + amount
-        val newParentRow = precedingBulletRowAtIndentBelow(s.lines, row, newIndent)
+        val newParentRow = precedingBulletRowAtIndentBelow(s.lines, first, newIndent)
         if (newParentRow != null) {
             val ids = s.documentState?.lineIds
             val parentId = ids?.getOrNull(newParentRow)
@@ -683,9 +742,13 @@ internal class TextEditingViewModel(
         // Indent the whole subtree as a unit so children stay nested
         // under their parent (Workflowy-style Tab semantics).
         val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
-        val end = if (bulletCol >= 0) DocumentLayout.subtreeEnd(s.lines, row, bulletCol) else row
+        val end = when {
+            block != null -> block.last
+            bulletCol >= 0 -> DocumentLayout.subtreeEnd(s.lines, row, bulletCol)
+            else -> row
+        }
         val pad = " ".repeat(amount)
-        for (r in row..end) {
+        for (r in first..end) {
             document.insertText(r, 0, pad)
         }
         // The reveal must ride in the SAME patch as the cursor move: the
@@ -693,7 +756,7 @@ internal class TextEditingViewModel(
         // row, and if the new parent is still marked collapsed at that
         // instant the clamp yanks the caret off the just-indented row (up
         // to the previous visible row) before a separate reveal could run.
-        val reveal = ancestorIdsAt(s, row, newIndent)
+        val reveal = ancestorIdsAt(s, first, newIndent)
         patch {
             it.copy(
                 cursorCol = it.cursorCol + amount, anchorRow = null, anchorCol = null,
@@ -722,9 +785,15 @@ internal class TextEditingViewModel(
         // is preserved. Children all have indent strictly greater than
         // the parent's, so removing `remove` (≤ parent's leading) from
         // each row's column 0 is always safe.
+        val block = BlockLayout.rangeAt(s.lines, row)
         val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
-        val end = if (bulletCol >= 0) DocumentLayout.subtreeEnd(s.lines, row, bulletCol) else row
-        for (r in row..end) {
+        val first = block?.first ?: row
+        val end = when {
+            block != null -> block.last
+            bulletCol >= 0 -> DocumentLayout.subtreeEnd(s.lines, row, bulletCol)
+            else -> row
+        }
+        for (r in first..end) {
             document.delete(r, 0, r, remove)
         }
         patch {
@@ -749,22 +818,21 @@ internal class TextEditingViewModel(
         sel: PaneBackingViewModel.Selection,
         amount: Int,
     ) {
-        val effEnd = if (sel.endCol == 0) sel.endRow - 1 else sel.endRow
-        if (effEnd < sel.startRow) return
-        val ancestorIndent = precedingBulletIndent(s0.lines, sel.startRow) ?: return
-        val firstIndent = s0.lines[sel.startRow].takeWhile { it == ' ' }.length
+        val (startRow, effEnd) = widenToBlocks(s0.lines, sel) ?: return
+        val ancestorIndent = precedingBulletIndent(s0.lines, startRow) ?: return
+        val firstIndent = s0.lines[startRow].takeWhile { it == ' ' }.length
         if (firstIndent >= ancestorIndent + amount) return
         val pad = " ".repeat(amount)
-        for (row in sel.startRow..effEnd) {
+        for (row in startRow..effEnd) {
             document.insertText(row, 0, pad)
         }
-        val cursorShift = if (s0.cursorRow in sel.startRow..effEnd) amount else 0
-        val anchorShift = if (s0.anchorRow != null && s0.anchorRow in sel.startRow..effEnd) amount else 0
+        val cursorShift = if (s0.cursorRow in startRow..effEnd) amount else 0
+        val anchorShift = if (s0.anchorRow != null && s0.anchorRow in startRow..effEnd) amount else 0
         // Same-patch reveal as in [indentLine]: if the block's new parent is
         // still marked collapsed when this patch reconciles, the clamp-to-
         // visible pass would tear the cursor (and selection anchor) off the
         // indented rows.
-        val reveal = ancestorIdsAt(s0, sel.startRow, firstIndent + amount)
+        val reveal = ancestorIdsAt(s0, startRow, firstIndent + amount)
         patch {
             it.copy(
                 cursorCol = it.cursorCol + cursorShift,
@@ -786,12 +854,11 @@ internal class TextEditingViewModel(
         sel: PaneBackingViewModel.Selection,
         amount: Int,
     ) {
-        val effEnd = if (sel.endCol == 0) sel.endRow - 1 else sel.endRow
-        if (effEnd < sel.startRow) return
+        val (startRow, effEnd) = widenToBlocks(s0.lines, sel) ?: return
         val zoom = zoomInfoOf(s0)
         val minAllowed = if (zoom != null) zoom.zoomIndent + TAB_SIZE else 0
-        val removals = IntArray(effEnd - sel.startRow + 1) { i ->
-            val line = s0.lines[sel.startRow + i]
+        val removals = IntArray(effEnd - startRow + 1) { i ->
+            val line = s0.lines[startRow + i]
             val leading = line.takeWhile { it == ' ' }.length
             minOf(amount, leading - minAllowed).coerceAtLeast(0)
         }
@@ -799,15 +866,15 @@ internal class TextEditingViewModel(
         for (i in removals.indices) {
             val remove = removals[i]
             if (remove > 0) {
-                val row = sel.startRow + i
+                val row = startRow + i
                 document.delete(row, 0, row, remove)
             }
         }
-        val cursorRemoval = if (s0.cursorRow in sel.startRow..effEnd) {
-            removals[s0.cursorRow - sel.startRow]
+        val cursorRemoval = if (s0.cursorRow in startRow..effEnd) {
+            removals[s0.cursorRow - startRow]
         } else 0
-        val anchorRemoval = if (s0.anchorRow != null && s0.anchorRow in sel.startRow..effEnd) {
-            removals[s0.anchorRow - sel.startRow]
+        val anchorRemoval = if (s0.anchorRow != null && s0.anchorRow in startRow..effEnd) {
+            removals[s0.anchorRow - startRow]
         } else 0
         patch {
             it.copy(
@@ -817,10 +884,120 @@ internal class TextEditingViewModel(
         }
     }
 
+    /**
+     * The rows a multi-row indent/outdent of [sel] touches: the selected
+     * rows (a selection ending at column 0 excludes its last row), widened
+     * so a block the selection only partly covers moves whole. `null` when
+     * nothing is left.
+     */
+    private fun widenToBlocks(lines: List<String>, sel: PaneBackingViewModel.Selection): Pair<Int, Int>? {
+        val effEnd = if (sel.endCol == 0) sel.endRow - 1 else sel.endRow
+        if (effEnd < sel.startRow) return null
+        val start = BlockLayout.rangeAt(lines, sel.startRow)?.first ?: sel.startRow
+        val end = BlockLayout.rangeAt(lines, effEnd)?.last ?: effEnd
+        return start to end
+    }
+
     fun isBulletLine(): Boolean {
         val s = state
         if (!s.isLoaded) return false
         return DocumentLayout.bulletAsteriskColumn(s.lines[s.cursorRow]) >= 0
+    }
+
+    // ------------------------------------------------------------------ blocks
+
+    /** `true` when the caret row is a block row (TRF-5). */
+    fun isBlockLine(): Boolean {
+        val s = state
+        if (!s.isLoaded) return false
+        return BlockLayout.isBlockLine(s.lines[s.cursorRow])
+    }
+
+    /**
+     * Inserts an empty block after the caret's item, at the same level,
+     * and puts the caret in it. The "item" is the caret's bullet together
+     * with its whole subtree — so the block lands after the bullet's
+     * children and never re-parents them — or, when the caret is in a
+     * block, that block. Any selection is dropped, not deleted.
+     *
+     * Outlines only ([Document.bulletsOnly]); a no-op in a plain Markdown
+     * file. Called by `PaneBackingViewModel.insertBlock` (the "Insert
+     * block" palette command).
+     */
+    fun insertBlock() {
+        val s = state
+        if (!s.isLoaded || !document.bulletsOnly) return
+        val row = s.cursorRow
+        val line = s.lines[row]
+        val block = BlockLayout.rangeAt(s.lines, row)
+        val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+        val (after, indent) = when {
+            block != null -> block.last to BlockLayout.markerColumn(line)
+            bulletCol >= 0 -> DocumentLayout.subtreeEnd(s.lines, row, bulletCol) to bulletCol
+            else -> row to DocumentLayout.indentOf(line)
+        }
+        document.insertLine(after + 1, BlockLayout.firstLine(indent))
+        patch {
+            it.copy(
+                cursorRow = after + 1, cursorCol = indent + 1,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+    }
+
+    /**
+     * Deletes the whole block containing [row] and moves the caret to the
+     * end of the previous visible row (or, at the top of the document or
+     * zoom, to the text start of the row that moves up). A no-op when
+     * [row] is not a block row.
+     *
+     * Called by `PaneBackingViewModel.deleteBlock` (the hover delete
+     * control and the "Delete block" palette command) and by [backspace]
+     * in an empty block. Undo restores the block through the pane's
+     * snapshot history.
+     */
+    fun deleteBlockAt(row: Int) {
+        val s = state
+        if (!s.isLoaded) return
+        val range = BlockLayout.rangeAt(s.lines, row) ?: return
+        val prev = prevVisibleRow(s, range.first)
+        document.deleteRows(range.first, range.last)
+        val lines = document.stateFlow.value.lines
+        val (r, c) = if (prev != null) {
+            prev to lines[prev].length
+        } else {
+            val r0 = range.first.coerceAtMost(lines.lastIndex)
+            r0 to DocumentLayout.caretStartCol(lines[r0])
+        }
+        patch {
+            it.copy(
+                cursorRow = r, cursorCol = c,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+    }
+
+    /**
+     * Leaves the block the caret is in: inserts a new empty bullet right
+     * after the block, at the block's level, and puts the caret on it. A
+     * no-op outside a block. Called by `PaneBackingViewModel.exitBlock`
+     * (Cmd-Enter and Escape in a block).
+     */
+    fun exitBlock() {
+        val s = state
+        if (!s.isLoaded) return
+        val range = BlockLayout.rangeAt(s.lines, s.cursorRow) ?: return
+        val indent = BlockLayout.markerColumn(s.lines[range.first])
+        document.insertLine(range.last + 1, " ".repeat(indent) + "* ")
+        patch {
+            it.copy(
+                cursorRow = range.last + 1, cursorCol = indent + 2,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
     }
 
     // ------------------------------------------------------------------ movement
@@ -1032,14 +1209,16 @@ internal class TextEditingViewModel(
      * start copies that row *with* its indent and `"* "` marker, like
      * every following row. The clipboard then holds a well-formed
      * Markdown list, and [bulletLinesForPaste] can tell the first row's
-     * depth from the rest when the text is pasted back.
+     * depth from the rest when the text is pasted back. Block rows copy as
+     * their indent plus content: the hidden [BlockLayout] markers never
+     * reach the clipboard.
      */
     fun getSelectedText(): String? {
         val s = state
         if (!s.isLoaded) return null
         val sel = selectionOf(s) ?: return null
         val lines = s.lines
-        return if (sel.startRow == sel.endRow) {
+        val raw = if (sel.startRow == sel.endRow) {
             lines[sel.startRow].substring(sel.startCol, sel.endCol)
         } else {
             val firstLine = lines[sel.startRow]
@@ -1054,6 +1233,9 @@ internal class TextEditingViewModel(
                 append(lines[sel.endRow].substring(0, sel.endCol))
             }
         }
+        // Block markers are an in-memory device; the clipboard gets the
+        // block's Markdown content.
+        return raw.filter { it != BlockLayout.FIRST && it != BlockLayout.NEXT }
     }
 
     /**
@@ -1071,18 +1253,29 @@ internal class TextEditingViewModel(
     }
 
     /**
-     * Indent (leading-space count) of the nearest bullet line strictly
-     * before [row], or `null` when no preceding bullet exists. Used by
-     * [indentLine] / [indentRange] as the structural ceiling: a row may
-     * never be indented more than one tab past its nearest preceding
+     * Indent (leading-space count) of the nearest bullet strictly before
+     * [row] that [row] could become a child of, or `null` when there is
+     * none. Used by [indentLine] / [indentRange] as the structural
+     * ceiling: a row may never be indented more than one tab past that
      * bullet, and the very first bullet in the document (or zoom region)
      * has no ancestor and so cannot be indented at all.
+     *
+     * Normally that is simply the nearest preceding bullet. A block
+     * (TRF-5) can never be a parent, though, so a bullet that a block row
+     * at its own depth or shallower separates from [row] is skipped — the
+     * rows between a parent and its child must all sit deeper than the
+     * parent. Otherwise Tab on the row right after a top-level block would
+     * indent it visually under a bullet that does not own it.
      */
     private fun precedingBulletIndent(lines: List<String>, row: Int): Int? {
+        var minSeen = Int.MAX_VALUE
         var r = row - 1
         while (r >= 0) {
-            val col = DocumentLayout.bulletAsteriskColumn(lines[r])
-            if (col >= 0) return col
+            val line = lines[r]
+            val col = DocumentLayout.bulletAsteriskColumn(line)
+            if (col in 0 until minSeen) return col
+            val blockCol = BlockLayout.markerColumn(line)
+            if (blockCol >= 0) minSeen = minOf(minSeen, blockCol)
             r--
         }
         return null

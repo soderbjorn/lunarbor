@@ -553,7 +553,9 @@ class PaneBackingViewModel(
         val current = _stateFlow.value
         val docState = current.documentState ?: return
         if (row !in docState.lines.indices) return
-        val rowIndent = DocumentLayout.bulletAsteriskColumn(docState.lines[row])
+        // A block row nests by its marker column, like a bullet by its `*`.
+        val rowIndent = BlockLayout.markerColumn(docState.lines[row]).takeIf { it >= 0 }
+            ?: DocumentLayout.bulletAsteriskColumn(docState.lines[row])
         var lookingFor = if (rowIndent >= 0) rowIndent else Int.MAX_VALUE
         if (lookingFor <= 0) return
         val toReveal = mutableSetOf<LineId>()
@@ -741,6 +743,44 @@ class PaneBackingViewModel(
 
     /** See [TextEditingViewModel.isBulletLine]. */
     fun isBulletLine(): Boolean = textEditing.isBulletLine()
+
+    // ------------------------------------------------------------------ blocks
+
+    /** See [TextEditingViewModel.isBlockLine]. */
+    fun isBlockLine(): Boolean = textEditing.isBlockLine()
+
+    /** See [TextEditingViewModel.insertBlock]. Undoable. */
+    fun insertBlock() {
+        recordEdit(FrameKind.OTHER) {
+            commitPlaceholderIfAny()
+            textEditing.insertBlock()
+        }
+    }
+
+    /**
+     * Deletes the block whose row carries [lineId] — any row of the block
+     * will do. Called by the view's hover delete control, which knows the
+     * block by the stable id of its first row. Undoable. See
+     * [TextEditingViewModel.deleteBlockAt].
+     */
+    fun deleteBlock(lineId: LineId) {
+        val row = _stateFlow.value.documentState?.lineIds?.indexOf(lineId) ?: return
+        if (row < 0) return
+        recordEdit(FrameKind.OTHER) { textEditing.deleteBlockAt(row) }
+    }
+
+    /**
+     * Deletes the block the caret is in; a no-op elsewhere. The "Delete
+     * block" palette command. Undoable. See [TextEditingViewModel.deleteBlockAt].
+     */
+    fun deleteBlockAtCursor() {
+        recordEdit(FrameKind.OTHER) { textEditing.deleteBlockAt(_stateFlow.value.cursorRow) }
+    }
+
+    /** See [TextEditingViewModel.exitBlock]. Undoable. */
+    fun exitBlock() {
+        recordEdit(FrameKind.OTHER) { textEditing.exitBlock() }
+    }
 
     /**
      * Resolves the absolute row range owned by the bullet at [row]:

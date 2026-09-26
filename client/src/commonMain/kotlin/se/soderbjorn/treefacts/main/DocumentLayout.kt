@@ -13,9 +13,11 @@
  * stays in commonMain is the bullet/indent/zoom semantics, shared by
  * every platform.
  *
- * Every row of an outline is a bullet (TRF-4): the editing intents never
- * produce a non-bullet line in a `.treefacts` node. The helpers still
- * accept non-bullet lines — block content and plain Markdown files use
+ * Every row of an outline is a bullet (TRF-4) or a block row (TRF-5, see
+ * [BlockLayout]): the editing intents never produce any other line in a
+ * `.treefacts` node. Block rows carry a hidden marker, so none of the
+ * context-free helpers here mistakes a `* item` inside a block for a
+ * bullet. The helpers still accept plain lines — plain Markdown files use
  * them — and treat them by indentation, the same rule the storage codec
  * uses.
  */
@@ -58,7 +60,8 @@ object DocumentLayout {
     /**
      * Smallest column the cursor is allowed to occupy on [line]. For bullet lines this is
      * the position immediately after the `"* "` marker (`bulletAsteriskColumn(line) + 2`);
-     * for non-bullet lines it is `0`.
+     * for block rows it is right after the hidden block marker
+     * ([BlockLayout.markerColumn] + 1); for any other line it is `0`.
      *
      * Used by the platform view layer (when mapping DOM/native selection back into the
      * model) and every cursor-movement intent to keep the caret out of the bullet/indent
@@ -67,7 +70,9 @@ object DocumentLayout {
      */
     fun textStartCol(line: String): Int {
         val bulletCol = bulletAsteriskColumn(line)
-        return if (bulletCol >= 0) bulletCol + 2 else 0
+        if (bulletCol >= 0) return bulletCol + 2
+        val blockCol = BlockLayout.markerColumn(line)
+        return if (blockCol >= 0) blockCol + 1 else 0
     }
 
     /**
@@ -96,11 +101,11 @@ object DocumentLayout {
      * otherwise its leading-space count (the whole length for an
      * all-whitespace line, `0` for the empty string).
      *
-     * In an outline every row the user can create is a bullet, so this is
-     * normally just [bulletAsteriskColumn]. Non-bullet rows still occur as
-     * block content (TRF-5) and in plain Markdown files (TRF-7), and they
-     * nest under the preceding bullet by indentation — the same ownership
-     * rule `SubtreeCodec.parseComposed` applies on save.
+     * In an outline every row is a bullet or a block row. A block row's
+     * nesting column is its marker column (its indent), so a block nests
+     * under the preceding bullet by indentation — the same ownership rule
+     * `SubtreeCodec.parseComposed` applies on save. Plain lines (plain
+     * Markdown files) nest the same way.
      */
     fun indentOf(line: String): Int {
         val bulletCol = bulletAsteriskColumn(line)

@@ -6,6 +6,7 @@
 
 package se.soderbjorn.treefacts.data
 
+import se.soderbjorn.treefacts.main.BlockLayout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -79,7 +80,12 @@ class SubtreeCodecTest {
     fun compose_indents_and_records_folders() {
         val composed = SubtreeCodec.composeNodeLines(SubtreeCodec.parseNodeFile(sample), indent = 2)
         assertEquals(
-            listOf("  * Buy oat milk", "  * Recipes", "  * Trip to **Lisbon**", "  :::", "  **Packing**: passport, charger, adapter", "  :::"),
+            listOf(
+                "  * Buy oat milk",
+                "  * Recipes",
+                "  * Trip to **Lisbon**",
+                BlockLayout.firstLine(2, "**Packing**: passport, charger, adapter"),
+            ),
             composed.lines,
         )
         assertEquals(mapOf(1 to "Recipes"), composed.folderByRow)
@@ -90,21 +96,60 @@ class SubtreeCodecTest {
         val lines = listOf(
             "* A",
             "  * B",
-            "  :::",
-            "  * not a bullet",
-            "  :::",
+            BlockLayout.firstLine(2, "## Heading"),
+            BlockLayout.nextLine(2, "* not a bullet"),
             "* C",
         )
         val items = SubtreeCodec.parseComposed(lines)
         assertEquals(2, items.size)
         val a = assertIs<ComposedItem.Bullet>(items[0])
-        assertEquals(4, a.endRow)
+        assertEquals(3, a.endRow)
         assertEquals(2, a.children.size)
         val block = assertIs<ComposedItem.Block>(a.children[1])
-        assertEquals(listOf("* not a bullet"), block.content)
-        assertEquals(4, SubtreeCodec.composedSubtreeEnd(lines, 0))
+        assertEquals(listOf("## Heading", "* not a bullet"), block.content)
+        assertEquals(3, SubtreeCodec.composedSubtreeEnd(lines, 0))
         assertEquals(1, SubtreeCodec.composedSubtreeEnd(lines, 1))
-        assertEquals(5, SubtreeCodec.composedSubtreeEnd(lines, 5))
+        assertEquals(4, SubtreeCodec.composedSubtreeEnd(lines, 4))
+    }
+
+    @Test
+    fun adjacent_blocks_stay_separate_and_a_stranded_row_opens_its_own_block() {
+        val lines = listOf(
+            BlockLayout.firstLine(0, "one"),
+            BlockLayout.firstLine(0, "two"),
+            BlockLayout.nextLine(0, "two b"),
+            "* A",
+            BlockLayout.nextLine(0, "stranded"),
+        )
+        val items = SubtreeCodec.parseComposed(lines)
+        assertEquals(
+            listOf(listOf("one"), listOf("two", "two b"), listOf("stranded")),
+            items.filterIsInstance<ComposedItem.Block>().map { it.content },
+        )
+    }
+
+    @Test
+    fun an_empty_block_composes_to_one_empty_row_and_saves_as_one_blank_line() {
+        val composed = SubtreeCodec.composeNodeLines(listOf(NodeLine.Block(emptyList())), indent = 0)
+        assertEquals(listOf(BlockLayout.firstLine(0)), composed.lines)
+        val block = assertIs<ComposedItem.Block>(SubtreeCodec.parseComposed(composed.lines).single())
+        assertEquals(":::\n\n:::\n", SubtreeCodec.formatNodeFile(listOf(NodeLine.Block(block.content))))
+    }
+
+    @Test
+    fun block_content_with_fence_lines_round_trips_through_the_editor_form() {
+        val text = "* A\n:::::\n## Notes\n:::\n- item\n::::\n:::::\n"
+        val composed = SubtreeCodec.composeNodeLines(SubtreeCodec.parseNodeFile(text), indent = 0)
+        assertEquals(4, composed.lines.count { BlockLayout.isBlockLine(it) })
+        val items = SubtreeCodec.parseComposed(composed.lines)
+        val out = items.map {
+            when (it) {
+                is ComposedItem.Bullet -> NodeLine.Leaf(it.title)
+                is ComposedItem.Block -> NodeLine.Block(it.content)
+                is ComposedItem.Text -> NodeLine.Text(it.text)
+            }
+        }
+        assertEquals(text, SubtreeCodec.formatNodeFile(out))
     }
 
     @Test

@@ -30,10 +30,14 @@
  *
  * `Document` holds one flat, indented list of lines (the composed
  * outline): bullets as `<indent>* title` — folder-backed bullets too; the
- * document remembers which rows those are — and blocks as their fence and
- * content lines, each prefixed with the block's indent. [parseComposed]
- * turns that list back into a tree so `NoteRepository.save` can split it
- * into per-folder files.
+ * document remembers which rows those are — and blocks as one row per
+ * content line, `<indent><marker><content>`, where the marker is the
+ * hidden [BlockLayout.FIRST] / [BlockLayout.NEXT] character (see
+ * `BlockLayout`). The fences exist only on disk: the in-memory marker
+ * already delimits the block, so content holding a `:::` line needs no
+ * special care until [formatNodeFile] picks a longer fence for it.
+ * [parseComposed] turns the list back into a tree so `NoteRepository.save`
+ * can split it into per-folder files.
  *
  * No I/O and no state: `NoteRepository` is the only thing that touches the
  * file system. commonMain only.
@@ -41,6 +45,7 @@
 
 package se.soderbjorn.treefacts.data
 
+import se.soderbjorn.treefacts.main.BlockLayout
 import se.soderbjorn.treefacts.main.DocumentLayout
 
 /**
@@ -108,11 +113,12 @@ sealed class ComposedItem {
     ) : ComposedItem()
 
     /**
-     * A fenced block.
+     * A block: a run of block rows (see [BlockLayout]).
      *
-     * @property row Row of the opening fence.
-     * @property endRow Row of the closing fence.
-     * @property content Content lines with the block's indent removed.
+     * @property row Row of the block's first line.
+     * @property endRow Row of its last line.
+     * @property content Content lines with the block's indent and
+     *   markers removed.
      */
     data class Block(
         override val row: Int,
@@ -285,10 +291,11 @@ object SubtreeCodec {
     /**
      * Turns parsed [items] into composed editor lines at [indent]:
      * bullets (leaf and folder alike) become `<indent>* title`, blocks
-     * become their fence plus content lines, text lines are kept.
+     * become one block row per content line (an empty block one empty
+     * row — see [BlockLayout]), text lines are kept.
      *
-     * Every block content line, blank ones included, is prefixed with
-     * [indent] spaces so it still counts as nested under the parent
+     * Every block row, blank content included, carries [indent] spaces
+     * before its marker so it still counts as nested under the parent
      * bullet when [composedSubtreeEnd] measures it.
      */
     fun composeNodeLines(items: List<NodeLine>, indent: Int): Composed {
@@ -303,10 +310,9 @@ object SubtreeCodec {
                     out += "$pad* ${item.title}"
                 }
                 is NodeLine.Block -> {
-                    val fence = fenceFor(item.content)
-                    out += pad + fence
-                    for (c in item.content) out += pad + c
-                    out += pad + fence
+                    val content = item.content.ifEmpty { listOf("") }
+                    out += BlockLayout.firstLine(indent, content.first())
+                    for (c in content.drop(1)) out += BlockLayout.nextLine(indent, c)
                 }
                 is NodeLine.Text -> out += pad + item.raw
             }
@@ -320,10 +326,11 @@ object SubtreeCodec {
      * Builds the item tree of a composed outline.
      *
      * Ownership follows indentation: an item belongs to the nearest
-     * preceding bullet with a smaller indent. A fence line opens a block
-     * that runs to the next line with the identical fence; its content is
-     * opaque (a `* ` inside a block is not a bullet). Blank lines outside
-     * blocks belong to nobody and are dropped.
+     * preceding bullet with a smaller indent. A run of block rows (see
+     * [BlockLayout.rangeAt]) is one block; its content is opaque (a `* `
+     * inside a block is not a bullet) and loses the block's indent and
+     * markers. Blank lines outside blocks belong to nobody and are
+     * dropped.
      *
      * @return The top-level items, in order.
      */
@@ -336,16 +343,13 @@ object SubtreeCodec {
             val line = lines[i]
             if (line.isBlank()) { i++; continue }
             val indent = line.indexOfFirst { it != ' ' }
-            if (isFence(line)) {
-                val fence = line.trim()
-                val close = (i + 1 until lines.size).firstOrNull { lines[it].trim() == fence }
-                if (close != null) {
-                    while (stack.last().indent >= indent) closeFrame(stack)
-                    val content = (i + 1 until close).map { stripIndent(lines[it], indent) }
-                    stack.last().children += ComposedItem.Block(i, close, content)
-                    i = close + 1
-                    continue
-                }
+            val block = BlockLayout.rangeAt(lines, i)
+            if (block != null) {
+                while (stack.last().indent >= indent) closeFrame(stack)
+                val content = block.map { BlockLayout.contentOf(lines[it]) }
+                stack.last().children += ComposedItem.Block(i, block.last, content)
+                i = block.last + 1
+                continue
             }
             val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
             while (stack.last().indent >= indent) closeFrame(stack)
@@ -374,12 +378,6 @@ object SubtreeCodec {
         val f = stack.removeLast()
         val end = f.children.maxOfOrNull { it.endRow } ?: f.row
         stack.last().children += ComposedItem.Bullet(f.row, end, f.indent, f.title, f.children.toList())
-    }
-
-    private fun stripIndent(line: String, indent: Int): String {
-        var drop = 0
-        while (drop < indent && drop < line.length && line[drop] == ' ') drop++
-        return line.substring(drop)
     }
 
     /**

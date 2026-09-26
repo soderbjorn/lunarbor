@@ -95,9 +95,7 @@ class FolderStorageTest {
     fun a_block_is_content_and_round_trips() = runTest {
         seed(".treefacts", "* Trip to **Lisbon**\n")
         val doc = open()
-        doc.appendLine("  :::")
-        doc.appendLine("  **Packing**: passport")
-        doc.appendLine("  :::")
+        doc.appendLine(BlockLayout.firstLine(2, "**Packing**: passport"))
         doc.flush()
         assertEquals("+ [Trip to **Lisbon**](Trip to Lisbon)\n", read(".treefacts"))
         assertEquals(":::\n**Packing**: passport\n:::\n", read("Trip to Lisbon/.treefacts"))
@@ -105,7 +103,7 @@ class FolderStorageTest {
         reopened.stateFlow.first { it.isLoaded }
         reopened.acquireExpansion(reopened.id(0))
         assertEquals(
-            listOf("* Trip to **Lisbon**", "  :::", "  **Packing**: passport", "  :::"),
+            listOf("* Trip to **Lisbon**", BlockLayout.firstLine(2, "**Packing**: passport")),
             reopened.lines(),
         )
     }
@@ -149,8 +147,8 @@ class FolderStorageTest {
         seed("A/.treefacts", ":::\nx\n:::\n")
         val doc = open()
         doc.acquireExpansion(doc.id(0))
-        assertEquals(4, doc.lines().size)
-        doc.delete(0, doc.lines()[0].length, 3, doc.lines()[3].length)
+        assertEquals(2, doc.lines().size)
+        doc.deleteRows(1, 1)
         doc.flush()
         assertEquals("* A\n", read(".treefacts"))
         assertFalse(dirExists("A"))

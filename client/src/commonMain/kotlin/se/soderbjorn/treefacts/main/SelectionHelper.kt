@@ -25,17 +25,46 @@ internal fun isWordChar(c: Char): Boolean = c.isLetterOrDigit() || c == '_'
 /**
  * Computes the prefix (indent + `"* "`) that a newline should inherit
  * from [line] when Enter is pressed at [cursorCol]. Returns an empty
- * string for non-bullet lines or when the caret is still at/before the
+ * string for plain lines or when the caret is still at/before the
  * bullet marker (so pressing Enter at the very start of a bullet
  * produces a blank line, matching most editors).
+ *
+ * On a block row (TRF-5) the new row continues the block: the prefix is
+ * the block's indent plus the [BlockLayout.NEXT] marker, so Enter adds a
+ * line inside the block rather than a bullet.
  */
 internal fun continuationBulletPrefix(line: String, cursorCol: Int): String {
+    val blockCol = BlockLayout.markerColumn(line)
+    if (blockCol >= 0) {
+        return if (cursorCol > blockCol) BlockLayout.nextLine(blockCol) else ""
+    }
     val indent = line.indexOfFirst { !it.isWhitespace() }
     if (indent < 0) return ""
     if (indent + 1 >= line.length) return ""
     if (line[indent] != '*' || line[indent + 1] != ' ') return ""
     if (cursorCol <= indent + 1) return ""
     return line.substring(0, indent) + "* "
+}
+
+/**
+ * Rewrites multi-line pasted [text] for insertion at the caret of a
+ * block row whose marker sits at [blockCol]: every line after the first
+ * becomes a further row of the same block ([BlockLayout.nextLine]),
+ * kept verbatim — block content is free Markdown, so indentation and
+ * list markers are the user's own. `\r\n` and `\r` count as line
+ * breaks.
+ *
+ * Called by `TextEditingViewModel.insertText` when the caret is inside
+ * a block.
+ *
+ * @return The text to insert at the caret; single-line [text] is
+ *   returned unchanged.
+ */
+internal fun blockLinesForPaste(text: String, blockCol: Int): String {
+    val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
+    if ('\n' !in normalized) return text
+    val lines = normalized.split("\n")
+    return lines.first() + lines.drop(1).joinToString("") { "\n" + BlockLayout.nextLine(blockCol, it) }
 }
 
 /**

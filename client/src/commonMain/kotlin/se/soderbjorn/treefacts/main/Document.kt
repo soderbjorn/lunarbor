@@ -86,7 +86,7 @@ class Document(
      * @property lines One entry per logical line. Invariant: always
      *   non-empty — an empty outline is `listOf("* ")`, an empty plain
      *   file `listOf("")`. In an outline ([bulletsOnly]) every line the
-     *   editor creates is a bullet.
+     *   editor creates is a bullet or a block row ([BlockLayout]).
      * @property lineIds Parallel list of stable identifiers, one per
      *   entry in [lines].
      * @property isLoaded `false` until the initial disk read completes.
@@ -324,14 +324,28 @@ class Document(
      * line (`"* "` when [bulletsOnly]). Called by
      * `TextEditingViewModel.deleteEmptyBulletWithoutMerge`.
      */
-    fun deleteLine(row: Int) {
+    fun deleteLine(row: Int) = deleteRows(row, row)
+
+    /**
+     * Removes rows [startRow]..[endRow] (inclusive) entirely; every other
+     * row keeps its [LineId]. Removing every row leaves one empty line
+     * (`"* "` when [bulletsOnly]). Used to delete a whole block (TRF-5,
+     * `PaneBackingViewModel.deleteBlock`) and, through [deleteLine], one
+     * empty bullet. Out-of-range rows are clamped; an empty range is a
+     * no-op.
+     */
+    fun deleteRows(startRow: Int, endRow: Int) {
         val state = _stateFlow.value
         if (!state.isLoaded) return
-        if (row !in state.lines.indices) return
+        val from = startRow.coerceAtLeast(0)
+        val to = endRow.coerceAtMost(state.lines.lastIndex)
+        if (from > to) return
         val newLines = state.lines.toMutableList()
         val newIds = state.lineIds.toMutableList()
-        newLines.removeAt(row)
-        newIds.removeAt(row)
+        repeat(to - from + 1) {
+            newLines.removeAt(from)
+            newIds.removeAt(from)
+        }
         if (newLines.isEmpty()) {
             newLines += emptyLine
             newIds += allocateId()
