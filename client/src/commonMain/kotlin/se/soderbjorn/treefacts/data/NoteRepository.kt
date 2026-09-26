@@ -102,7 +102,9 @@ class NoteRepository(
      * Result of [loadFile] / [loadSubtree].
      *
      * @property lines Composed editor lines. Always non-empty for
-     *   [loadFile] — an empty document is `listOf("")`.
+     *   [loadFile] — an empty outline is a single empty bullet
+     *   (`listOf("* ")`, every outline line is a bullet), an empty plain
+     *   file `listOf("")`.
      * @property promotedByRow Row in [lines] → the backing folder of each
      *   folder-backed (`+`) bullet on that row.
      */
@@ -145,7 +147,7 @@ class NoteRepository(
             return Loaded(text.split("\n"), emptyMap())
         }
         val node = composeNode(folderOfOutline(fileRel), text ?: "", indent = 0)
-        return if (node.lines.isEmpty()) Loaded(listOf(""), emptyMap()) else node
+        return if (node.lines.isEmpty()) Loaded(listOf(EMPTY_OUTLINE_LINE), emptyMap()) else node
     }
 
     /**
@@ -778,6 +780,9 @@ class NoteRepository(
             val lower = pathRel.lowercase()
             return IMAGE_EXTENSIONS.any { lower.endsWith(it) }
         }
+
+        /** The only line of an empty outline: a bullet with no text. */
+        const val EMPTY_OUTLINE_LINE: String = "* "
 
         /** `true` when [fileRel] is a node outline (`.treefacts`) file. */
         fun isOutlineFile(fileRel: String): Boolean =

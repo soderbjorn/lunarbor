@@ -424,10 +424,11 @@ class FolderStorageTest {
     fun a_folder_without_an_outline_is_an_empty_node_and_typing_creates_the_file() = runTest {
         fs.ensureDirectory("$root/Plain folder")
         val doc = open("Plain folder/.treefacts")
-        assertEquals(listOf(""), doc.lines())
+        // An empty outline is one empty bullet (TRF-4: bullets only).
+        assertEquals(listOf("* "), doc.lines())
         doc.flush()
         assertNull(read("Plain folder/.treefacts"))
-        doc.insertText(0, 0, "* first")
+        doc.insertText(0, 2, "first")
         doc.flush()
         assertEquals("* first\n", read("Plain folder/.treefacts"))
     }

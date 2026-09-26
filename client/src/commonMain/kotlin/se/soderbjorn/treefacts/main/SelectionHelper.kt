@@ -39,6 +39,75 @@ internal fun continuationBulletPrefix(line: String, cursorCol: Int): String {
 }
 
 /**
+ * Rewrites multi-line pasted [text] so that, inserted at the caret of a
+ * bullet at column [baseIndent], every line becomes its own bullet — an
+ * outline never gets a non-bullet line (TRF-4).
+ *
+ * Rules:
+ *  - `\r\n` and `\r` count as line breaks; blank lines after the
+ *    first are dropped.
+ *  - The first line joins the caret row. It is kept verbatim (it may be
+ *    empty, when the text starts with a line break), except that a list
+ *    item loses its indent and marker.
+ *  - Every further line loses its indentation and any leading list
+ *    marker (`* `, `- `, `+ `, or a bare `*`, `-`, `+`); tabs count as
+ *    [PaneBackingViewModel.TAB_SIZE] spaces.
+ *  - Every further line becomes `<indent>* <text>`. Its depth is its
+ *    source indentation relative to a reference line — the first line
+ *    when that line is itself a list item (so a copied bullet and its
+ *    children keep their shape), otherwise the least-indented of the
+ *    further lines (the first line was copied from mid-text and its
+ *    depth is unknown). Depths are measured in [PaneBackingViewModel.TAB_SIZE]
+ *    steps, never shallower than the caret row, and at most one level
+ *    deeper than the line before, so no bullet skips a level.
+ *
+ * Called by `TextEditingViewModel.insertText` for outline documents.
+ *
+ * @param text The pasted text; single-line text is returned unchanged.
+ * @param baseIndent Bullet column of the caret row (`0` at top level).
+ * @return The text to insert at the caret; empty when [text] held only
+ *   blank lines.
+ */
+internal fun bulletLinesForPaste(text: String, baseIndent: Int): String {
+    val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
+    if ('\n' !in normalized) return text
+    val tab = PaneBackingViewModel.TAB_SIZE
+    class Parsed(val lead: Int, val isListItem: Boolean, val content: String)
+    fun parse(raw: String): Parsed {
+        var lead = 0
+        var i = 0
+        while (i < raw.length && (raw[i] == ' ' || raw[i] == '\t')) {
+            lead += if (raw[i] == '\t') tab else 1
+            i++
+        }
+        val rest = raw.substring(i)
+        return when {
+            rest.length >= 2 && rest[0] in "*-+" && rest[1] == ' ' -> Parsed(lead, true, rest.substring(2).trim())
+            rest.length == 1 && rest[0] in "*-+" -> Parsed(lead, true, "")
+            else -> Parsed(lead, false, rest.trim())
+        }
+    }
+    val rawLines = normalized.split("\n")
+    val first = parse(rawLines.first())
+    val further = rawLines.drop(1).filter { it.isNotBlank() }.map(::parse)
+    // The first line joins the caret row: verbatim, unless it is a list
+    // item, whose indent and marker would otherwise land mid-bullet.
+    val firstText = if (first.isListItem) first.content else rawLines.first().trimEnd()
+    if (further.isEmpty()) return firstText
+    val reference = if (first.isListItem) first.lead else further.minOf { it.lead }
+    val sb = StringBuilder(firstText)
+    var prevDepth = 0
+    for (line in further) {
+        val wanted = ((line.lead - reference).coerceAtLeast(0)) / tab
+        val depth = minOf(wanted, prevDepth + 1)
+        sb.append('\n')
+        sb.append(" ".repeat(baseIndent + depth * tab)).append("* ").append(line.content)
+        prevDepth = depth
+    }
+    return sb.toString()
+}
+
+/**
  * Detects the special case where the caret sits immediately after the
  * `"* "` of a bullet marker and there's nothing else on the line's
  * leading whitespace. Used by backspace so hitting Backspace on an
@@ -203,16 +272,10 @@ internal fun zoomInfoOf(
     if (row !in lines.indices) return null
     val indent = DocumentLayout.bulletAsteriskColumn(lines[row])
     if (indent < 0) return null
-    val baseEnd = DocumentLayout.zoomSubtreeEnd(lines, row, indent)
-    // Always extend the region to cover the caret's current row (when it
-    // sits after the zoom row and inside the document). Without this,
-    // any edit that pushes the caret onto an unindented prose row — e.g.
-    // typing into an empty mixed-block line in the zoom — would land
-    // the row outside `zoomSubtreeEnd` and trigger reconcile's zoom
-    // clamp, yanking the caret back up. Extending the region keeps the
-    // user's active row visible and editable in the zoom view.
-    val cursorRow = state.cursorRow
-    val end = if (cursorRow in (row + 1)..lines.lastIndex) maxOf(baseEnd, cursorRow) else baseEnd
+    // The zoom region is exactly the bullet's subtree. Every row an edit
+    // creates inside it is a bullet at a deeper indent (TRF-4), so there
+    // is no stray prose row that needs the region stretched to reach it.
+    val end = DocumentLayout.subtreeEnd(lines, row, indent)
     val rawTitle = lines[row].substring(minOf(indent + 2, lines[row].length))
     val prefix = LineMarkdownPrefix.detect(rawTitle, 0)
     val titleText = rawTitle.substring(prefix.markerEnd)

@@ -84,7 +84,9 @@ class Document(
      * Immutable snapshot of one file's content at a point in time.
      *
      * @property lines One entry per logical line. Invariant: always
-     *   non-empty — an empty file is `listOf("")`.
+     *   non-empty — an empty outline is `listOf("* ")`, an empty plain
+     *   file `listOf("")`. In an outline ([bulletsOnly]) every line the
+     *   editor creates is a bullet.
      * @property lineIds Parallel list of stable identifiers, one per
      *   entry in [lines].
      * @property isLoaded `false` until the initial disk read completes.
@@ -112,6 +114,22 @@ class Document(
      * so callers can place the cursor immediately after the new text.
      */
     data class InsertResult(val endRow: Int, val endCol: Int)
+
+    /**
+     * `true` when every line of this document is a bullet — the outline
+     * mode of a `.treefacts` node (TRF-4). The editing intents in
+     * `TextEditingViewModel` then never produce a non-bullet line: Enter
+     * and Backspace never strip the `"* "` marker, pasted text becomes one
+     * bullet per line, and an empty document is a single empty bullet.
+     *
+     * `false` for any other file (plain Markdown such as `Starred.md`),
+     * which keeps the plain-line editing and rendering paths. This is the
+     * switch the Markdown mode for foreign `.md` files (TRF-7) builds on.
+     */
+    val bulletsOnly: Boolean = NoteRepository.isOutlineFile(fileRel)
+
+    /** The line an empty document holds: an empty bullet in an outline. */
+    private val emptyLine: String get() = if (bulletsOnly) NoteRepository.EMPTY_OUTLINE_LINE else ""
 
     private val _stateFlow = MutableStateFlow(State())
 
@@ -299,6 +317,29 @@ class Document(
     }
 
     /**
+     * Removes row [row] entirely. Every other row keeps its [LineId] —
+     * unlike a [delete] across the newline, which keeps the *upper* row's
+     * id and would drop the identity (fold state, backing folder) of the
+     * row that moves up. Removing the last remaining row leaves one empty
+     * line (`"* "` when [bulletsOnly]). Called by
+     * `TextEditingViewModel.deleteEmptyBulletWithoutMerge`.
+     */
+    fun deleteLine(row: Int) {
+        val state = _stateFlow.value
+        if (!state.isLoaded) return
+        if (row !in state.lines.indices) return
+        val newLines = state.lines.toMutableList()
+        val newIds = state.lineIds.toMutableList()
+        newLines.removeAt(row)
+        newIds.removeAt(row)
+        if (newLines.isEmpty()) {
+            newLines += emptyLine
+            newIds += allocateId()
+        }
+        _stateFlow.value = state.copy(lines = newLines, lineIds = newIds)
+    }
+
+    /**
      * Deletes the run from `(startRow, startCol)` up to but not
      * including `(endRow, endCol)`. Multi-row deletions merge the tail
      * of [endRow] onto [startRow] and drop the intermediate rows
@@ -351,7 +392,7 @@ class Document(
         lines.addAll(at, newTexts)
         ids.addAll(at, movedIds)
         if (lines.isEmpty()) {
-            lines += ""
+            lines += emptyLine
             ids += allocateId()
         }
         _stateFlow.value = state.copy(lines = lines, lineIds = ids)
@@ -604,7 +645,7 @@ class Document(
 
     private suspend fun loadFromDisk() {
         val loaded = repository.loadFile(fileRel)
-        val lines = loaded.lines.ifEmpty { listOf("") }
+        val lines = loaded.lines.ifEmpty { listOf(emptyLine) }
         val ids = List(lines.size) { allocateId() }
         promotedSubtrees.clear()
         trashedIds.clear()

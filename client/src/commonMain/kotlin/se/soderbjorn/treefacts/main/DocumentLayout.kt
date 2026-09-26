@@ -12,6 +12,12 @@
  * editor surface already knows how to wrap and place a caret. What
  * stays in commonMain is the bullet/indent/zoom semantics, shared by
  * every platform.
+ *
+ * Every row of an outline is a bullet (TRF-4): the editing intents never
+ * produce a non-bullet line in a `.treefacts` node. The helpers still
+ * accept non-bullet lines — block content and plain Markdown files use
+ * them — and treat them by indentation, the same rule the storage codec
+ * uses.
  */
 
 package se.soderbjorn.treefacts.main
@@ -86,92 +92,57 @@ object DocumentLayout {
     }
 
     /**
-     * Walks downward from [row] and returns the last absolute row index that
-     * belongs to its subtree. A line belongs to the subtree if it is a bullet
-     * with indent strictly greater than [parentIndent]; anything else
-     * (including non-bullet prose) terminates.
+     * Nesting column of [line]: the bullet's `*` column for a bullet line,
+     * otherwise its leading-space count (the whole length for an
+     * all-whitespace line, `0` for the empty string).
      *
+     * In an outline every row the user can create is a bullet, so this is
+     * normally just [bulletAsteriskColumn]. Non-bullet rows still occur as
+     * block content (TRF-5) and in plain Markdown files (TRF-7), and they
+     * nest under the preceding bullet by indentation — the same ownership
+     * rule `SubtreeCodec.parseComposed` applies on save.
+     */
+    fun indentOf(line: String): Int {
+        val bulletCol = bulletAsteriskColumn(line)
+        if (bulletCol >= 0) return bulletCol
+        val firstNonSpace = line.indexOfFirst { it != ' ' }
+        return if (firstNonSpace >= 0) firstNonSpace else line.length
+    }
+
+    /**
+     * Walks downward from [row] and returns the last absolute row index that
+     * belongs to its subtree: every following row whose [indentOf] is
+     * strictly greater than [parentIndent]. The first row at or above
+     * [parentIndent] (a sibling or a shallower bullet) ends the walk.
+     *
+     * Single source of truth for "the rows under a bullet" — folding
+     * ([visibleRowsOf]), the zoom region (`zoomInfoOf`), subtree
+     * indent/outdent and drag all use it.
+     *
+     * @param parentIndent The bullet column of [row].
      * @return [row] itself when the subtree is empty.
      */
     fun subtreeEnd(lines: List<String>, row: Int, parentIndent: Int): Int {
         var end = row
-        while (end + 1 <= lines.lastIndex) {
-            val col = bulletAsteriskColumn(lines[end + 1])
-            if (col < 0 || col <= parentIndent) break
-            end++
-        }
+        while (end + 1 <= lines.lastIndex && indentOf(lines[end + 1]) > parentIndent) end++
         return end
     }
 
     /**
-     * Zoom-tolerant variant of [subtreeEnd]. Walks downward from [row]
-     * and returns the last row that should be considered "inside" the
-     * zoom region rooted at [row].
+     * `true` when [row] in [lines] has at least one row nested under it,
+     * i.e. the immediate next line's [indentOf] is strictly greater than
+     * [indent]. [indent] should be the bullet column of [row] (i.e.
+     * [bulletAsteriskColumn] of that line); pass `-1` for non-bullet rows
+     * and the result is always `false`.
      *
-     * Unlike [subtreeEnd], a non-bullet prose line does not automatically
-     * terminate the walk — it's included when its leading indent (or, for
-     * an all-whitespace line, its length) is strictly greater than
-     * [parentIndent]. This keeps TreeFacts's always-supported mixed bullet
-     * / non-bullet blocks visible inside a zoom view, and in particular
-     * lets the user strip the `"* "` from an empty leaf bullet without
-     * the resulting all-whitespace row falling outside the region (which
-     * would trigger `reconcile`'s zoom clamp and yank the caret).
-     *
-     * Termination conditions, in order:
-     *   - sibling or shallower bullet (`bulletAsteriskColumn ≤ parentIndent`)
-     *   - non-bullet prose row whose leading indent ≤ [parentIndent]
-     *     (catches root-level prose that doesn't belong to this zoom)
-     *   - end of document
-     *
-     * A truly empty row (length 0) is treated as a neutral spacer: it
-     * neither extends the meaningful end of the zoom nor terminates the
-     * walk, but it IS included so the caret can sit there after pressing
-     * Enter on a previous in-region row. Without this carve-out, the
-     * fresh blank row from `insertNewlinePlain` would fall outside the
-     * region and reconcile's zoom clamp would yank the caret back up.
-     *
-     * @return [row] itself when no rows belong to the zoom region.
-     */
-    fun zoomSubtreeEnd(lines: List<String>, row: Int, parentIndent: Int): Int {
-        var end = row
-        var i = row + 1
-        while (i <= lines.lastIndex) {
-            val line = lines[i]
-            val col = bulletAsteriskColumn(line)
-            if (col >= 0) {
-                if (col <= parentIndent) break
-                end = i
-                i++
-                continue
-            }
-            if (line.isEmpty()) {
-                end = i
-                i++
-                continue
-            }
-            val firstNonSpace = line.indexOfFirst { it != ' ' }
-            val effectiveIndent = if (firstNonSpace >= 0) firstNonSpace else line.length
-            if (effectiveIndent <= parentIndent) break
-            end = i
-            i++
-        }
-        return end
-    }
-
-    /**
-     * `true` when [row] in [lines] is a bullet whose immediate next line is
-     * also a bullet at strictly greater indent than [indent]. [indent] should
-     * be the bullet column of [row] (i.e. [bulletAsteriskColumn] of that line);
-     * pass `-1` for non-bullet rows and the result is always `false`.
-     *
-     * Used by the chevron painter and by [PaneBackingViewModel]'s
-     * default-collapse pass to decide whether a bullet is foldable.
+     * Used by the chevron painter, by [PaneBackingViewModel]'s
+     * default-collapse pass, and by the editing intents that must not
+     * orphan a subtree (Backspace-merge, Enter on an empty bullet).
      */
     fun hasChildren(lines: List<String>, row: Int, indent: Int): Boolean {
         if (indent < 0) return false
         if (row + 1 > lines.lastIndex) return false
-        val nextCol = bulletAsteriskColumn(lines[row + 1])
-        return nextCol > indent
+        return indentOf(lines[row + 1]) > indent
     }
 
     /**

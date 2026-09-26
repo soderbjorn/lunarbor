@@ -9,6 +9,13 @@
  * `documentProvider` lambda — the pane swaps the underlying [Document]
  * on cross-file navigation, so this slice never holds a direct ref.
  *
+ * Bullets only (TRF-4): in an outline document ([Document.bulletsOnly])
+ * no intent here produces a non-bullet line. Enter on an empty bullet
+ * outdents it or opens another bullet, Backspace at a bullet's start
+ * merges or deletes it, paste makes one bullet per line, and deleting a
+ * selection keeps the first row's marker. Plain Markdown files keep the
+ * plain-line behaviors (strip the marker, paste verbatim).
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports. The class holds
  * no state of its own; cursor and selection live in the aggregate's
  * single `MutableStateFlow`.
@@ -60,25 +67,17 @@ internal class TextEditingViewModel(
         if (!state.isLoaded) return
         deleteSelectionIfAny()
 
-        // Zoom view, empty leaf bullet: drop the row entirely and land the
-        // caret at the start of the next visible row's editable text. The
-        // strip-in-place "exit the list" behavior used at root level reads
-        // as awkward inside a zoom — an indented blank row looks like it's
-        // still part of the bullet list. Users expect the empty bullet to
-        // vanish so they're on the row below ready to keep going. Only
-        // applies when the next visible row is the immediately-adjacent
-        // row (so we never silently merge across a folded subtree) and
-        // there is one (so we don't strand the caret past end-of-zoom);
-        // anything else falls through to the canonical strip path below.
-        if (deleteEmptyBulletInZoomIfAny()) return
-
-        // Empty leaf bullet: Enter "exits the list" by stripping the `"* "`
-        // marker in place, leaving any indent and parking the caret at the
-        // indent column. Complements the backspace-join in [backspace]
-        // (which merges the row upward); Enter escapes downward-in-place.
-        // Refuse on non-leaf bullets (orphans children) — fall through to
-        // normal continuation.
-        if (exitListOnEmptyBulletIfAny()) return
+        // Empty leaf bullet. In an outline (bullets only, TRF-4) Enter
+        // outdents it one level when it is the last of its siblings, the
+        // usual outliner "step out of the list" gesture; everywhere else
+        // it falls through and opens another bullet — a node never gets a
+        // non-bullet line. Plain Markdown files keep the Markdown-editor
+        // behavior of stripping the marker in place.
+        if (document.bulletsOnly) {
+            if (outdentEmptyLastChildIfAny()) return
+        } else if (exitListOnEmptyBulletIfAny()) {
+            return
+        }
 
         // Caret at the very start of a bullet's text: open an empty
         // sibling *above* and leave the node — and its entire subtree —
@@ -195,54 +194,40 @@ internal class TextEditingViewModel(
     }
 
     /**
-     * If the caret sits on an empty leaf bullet (line is just indent +
-     * `"* "` with no descendants), strip the marker so the row becomes a
-     * plain (possibly indented) blank line and the caret lands at the
-     * indent column. Returns `true` when it consumed the Enter; `false`
-     * when the line isn't an empty leaf bullet and normal newline handling
-     * should run.
+     * Enter on an empty leaf bullet in an outline: when the bullet is the
+     * last of its siblings and may be outdented (it sits deeper than the
+     * top level of the document or of the zoom), outdent it one level via
+     * [outdentLine] and return `true`.
      *
-     * Symmetric with the bullet-start branch in [backspace]: the same
-     * children-check guards against orphaning a subtree.
+     * Returns `false` — so Enter opens a new bullet as usual — when the
+     * row is not an empty leaf bullet, is already at the top level, or has
+     * a following sibling. Outdenting a bullet with siblings below it
+     * would silently re-parent those siblings under the empty row.
      */
-    /**
-     * Zoom-only counterpart to [exitListOnEmptyBulletIfAny]. When the
-     * caret sits on an empty leaf bullet inside a zoom and there is a
-     * directly-adjacent visible row to fall onto, deletes the empty
-     * bullet's whole line (including its trailing newline) and parks the
-     * caret at [DocumentLayout.caretStartCol] of what is now the cursor
-     * row (previously the next row). Returns `true` when it consumed
-     * the Enter; `false` otherwise so the caller can fall through to
-     * the canonical [exitListOnEmptyBulletIfAny] strip path.
-     *
-     * The "next visible row must equal row + 1" guard avoids silently
-     * pulling content out of a folded subtree the user can't see;
-     * the "must be inside the zoom region" guard (implicit in
-     * [nextVisibleRow]) avoids landing the caret past `endRowInclusive`
-     * where reconcile's zoom clamp would then yank it back up.
-     */
-    private fun deleteEmptyBulletInZoomIfAny(): Boolean {
+    private fun outdentEmptyLastChildIfAny(): Boolean {
         val s = state
-        if (zoomInfoOf(s) == null) return false
-        val line = s.lines[s.cursorRow]
+        val row = s.cursorRow
+        val line = s.lines[row]
         if (!DocumentLayout.isEmptyBulletLine(line)) return false
         val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
-        if (DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return false
-        val next = nextVisibleRow(s, s.cursorRow) ?: return false
-        if (next != s.cursorRow + 1) return false
-        document.delete(s.cursorRow, 0, s.cursorRow + 1, 0)
-        val newLine = state.lines[s.cursorRow]
-        val newCol = DocumentLayout.caretStartCol(newLine)
-        patch {
-            it.copy(
-                cursorCol = newCol,
-                anchorRow = null, anchorCol = null,
-                pendingInlineStyles = emptySet(),
-            )
-        }
+        if (DocumentLayout.hasChildren(s.lines, row, bulletCol)) return false
+        val zoom = zoomInfoOf(s)
+        val minAllowed = if (zoom != null) zoom.zoomIndent + TAB_SIZE else 0
+        if (bulletCol - TAB_SIZE < minAllowed) return false
+        val next = s.lines.getOrNull(row + 1)
+        val regionEnd = zoom?.endRowInclusive ?: s.lines.lastIndex
+        if (next != null && row + 1 <= regionEnd && DocumentLayout.indentOf(next) >= bulletCol) return false
+        outdentLine()
         return true
     }
 
+    /**
+     * Plain (non-outline) files only: if the caret sits on an empty leaf
+     * bullet, strip the `"* "` marker so the row becomes a plain blank
+     * line — the Markdown-editor "exit the list" gesture. Returns `true`
+     * when it consumed the Enter. Never used in an outline, where every
+     * line stays a bullet (see [Document.bulletsOnly]).
+     */
     private fun exitListOnEmptyBulletIfAny(): Boolean {
         val s = state
         val line = s.lines[s.cursorRow]
@@ -281,10 +266,11 @@ internal class TextEditingViewModel(
      *   - the caret row is the zoom root — a sibling above the zoom
      *     target would land outside the zoom region, invisibly.
      *
-     * Empty *leaf* bullets never reach here (the exit-list checks run
-     * first); an empty bullet with children does, and gets the sibling
-     * above — preferable to the old first-child split, which would
-     * re-parent its subtree.
+     * An empty bullet reaches here when [outdentEmptyLastChildIfAny]
+     * declined it (top level, or siblings below); the sibling above then
+     * reads as "Enter opened another bullet". An empty bullet with
+     * children gets the sibling above too — preferable to the old
+     * first-child split, which would re-parent its subtree.
      *
      * Returns `true` when it consumed the Enter.
      */
@@ -343,7 +329,7 @@ internal class TextEditingViewModel(
         if (base.isEmpty()) return base
         val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
         if (!DocumentLayout.hasChildren(s.lines, s.cursorRow, bulletCol)) return base
-        val childCol = DocumentLayout.bulletAsteriskColumn(s.lines[s.cursorRow + 1])
+        val childCol = DocumentLayout.indentOf(s.lines[s.cursorRow + 1])
         return " ".repeat(childCol) + "* "
     }
 
@@ -382,7 +368,7 @@ internal class TextEditingViewModel(
 
         val zoom = zoomInfoOf(s)
         if (zoom != null && row == zoom.startRow) {
-            val childCol = DocumentLayout.bulletAsteriskColumn(s.lines[row + 1])
+            val childCol = DocumentLayout.indentOf(s.lines[row + 1])
             val result = document.insertText(row, s.cursorCol, "\n" + " ".repeat(childCol) + "* ")
             patch {
                 it.copy(
@@ -433,14 +419,31 @@ internal class TextEditingViewModel(
      * Types or pastes [text] at the caret, replacing any selection. When
      * [text] is exactly the last cut, the document re-attaches the cut
      * bullets' folders to the pasted rows ([Document.adoptCut]).
+     *
+     * In an outline ([Document.bulletsOnly]) multi-line text is first run
+     * through [bulletLinesForPaste], so every pasted line lands as its own
+     * bullet: the first line joins the caret row, each further line
+     * becomes a bullet at the caret row's depth (or deeper, keeping the
+     * pasted text's own nesting). Blank lines are dropped.
      */
     fun insertText(text: String) {
         if (!state.isLoaded) return
         deleteSelectionIfAny()
         val startRow = state.cursorRow
-        insertWithPendingStyles(text)
-        document.adoptCut(startRow, text)
+        val toInsert = if (document.bulletsOnly && ('\n' in text || '\r' in text)) {
+            val baseIndent = DocumentLayout.bulletAsteriskColumn(state.lines[startRow]).coerceAtLeast(0)
+            bulletLinesForPaste(text, baseIndent)
+        } else text
+        if (toInsert.isEmpty()) return
+        insertWithPendingStyles(toInsert)
+        // The cut record matches on the clipboard text, row by row. The
+        // normalized text has the same rows as a cut of whole bullets
+        // (no blank lines to drop), so offsets still line up.
+        if (lineCount(toInsert) == lineCount(text)) document.adoptCut(startRow, text)
     }
+
+    private fun lineCount(text: String): Int =
+        text.replace("\r\n", "\n").count { it == '\n' || it == '\r' } + 1
 
     /**
      * Inserts [text] at the caret verbatim, **without** wrapping it in
@@ -573,15 +576,15 @@ internal class TextEditingViewModel(
                         patch { it.copy(cursorRow = s.cursorRow - 1, cursorCol = previousLen) }
                         return
                     }
-                    // Nothing to merge into (first row of the document or of a zoom,
-                    // or a folded subtree directly above): fall through to remove just
-                    // the `"* "` marker, leaving any indent and trailing content intact
-                    // and the cursor at the indent column — the row stays put as a
-                    // plain (possibly indented) line instead of collapsing upward.
-                    // Works the same inside a zoom: the zoom region (computed via
-                    // [DocumentLayout.zoomSubtreeEnd]) includes non-bullet prose rows,
-                    // so the just-stripped row stays inside `endRowInclusive` and
-                    // reconcile's zoom clamp leaves the cursor where it is.
+                    // Nothing adjacent to merge into. An outline never unbullets the
+                    // row (TRF-4): an empty bullet is deleted, a non-empty one stays.
+                    if (document.bulletsOnly) {
+                        deleteEmptyBulletWithoutMerge(s)
+                        return
+                    }
+                    // Plain Markdown file: fall through and remove just the `"* "`
+                    // marker, leaving any indent and trailing content intact and the
+                    // cursor at the indent column.
                 }
                 val removed = when {
                     isAtBulletMarkerEnd(line, s.cursorCol) -> 2
@@ -612,6 +615,41 @@ internal class TextEditingViewModel(
                 patch { it.copy(cursorRow = prevVisible, cursorCol = previousLen) }
             }
         }
+    }
+
+    /**
+     * Backspace at the text start of an empty leaf bullet that has no
+     * array-adjacent visible row above it to merge into — the first row
+     * of the document or of the zoom, or a row right below a folded
+     * subtree. Deletes the row outright instead of unbulleting it:
+     *
+     *  - Folded subtree above: remove the row (and the newline before it)
+     *    and park the caret at the end of the folded bullet, the previous
+     *    visible row.
+     *  - First row with rows below it: remove the row and put the caret at
+     *    the text start of the row that moves up into its place.
+     *  - The only row: nothing to do; the empty bullet stays.
+     *
+     * A non-empty bullet is left alone — Backspace at its start has
+     * nothing sensible to merge with. Called only from [backspace] in an
+     * outline ([Document.bulletsOnly]).
+     */
+    private fun deleteEmptyBulletWithoutMerge(s: PaneBackingViewModel.State) {
+        val row = s.cursorRow
+        val line = s.lines[row]
+        if (!DocumentLayout.isEmptyBulletLine(line)) return
+        val prev = prevVisibleRow(s, row)
+        if (prev != null) {
+            document.deleteLine(row)
+            patch { it.copy(cursorRow = prev, cursorCol = s.lines[prev].length, anchorRow = null, anchorCol = null) }
+            return
+        }
+        if (nextVisibleRow(s, row) != row + 1) return
+        // [Document.deleteLine], not a delete across the newline: the row
+        // moving up must keep its own id (fold state, backing folder).
+        document.deleteLine(row)
+        val newCol = DocumentLayout.caretStartCol(state.lines[row])
+        patch { it.copy(cursorRow = row, cursorCol = newCol, anchorRow = null, anchorCol = null) }
     }
 
     fun indentLine(amount: Int = TAB_SIZE) {
@@ -948,6 +986,16 @@ internal class TextEditingViewModel(
 
     fun clearSelection() = mutate { it.copy(anchorRow = null, anchorCol = null) }
 
+    /**
+     * Deletes the active selection, if any, and collapses the caret to its
+     * start. Returns `true` when something was deleted.
+     *
+     * In an outline ([Document.bulletsOnly]) both ends are first clamped
+     * to the bullet's text start, so a selection that begins at column 0
+     * (Select All, a triple-click) keeps the first row's `"* "` marker and
+     * the merged row stays a bullet — deleting everything leaves one empty
+     * bullet, never a bare line.
+     */
     fun deleteSelectionIfAny(): Boolean {
         val s = state
         val sel = selectionOf(s) ?: run {
@@ -956,16 +1004,36 @@ internal class TextEditingViewModel(
             }
             return false
         }
-        document.delete(sel.startRow, sel.startCol, sel.endRow, sel.endCol)
+        var startCol = sel.startCol
+        var endCol = sel.endCol
+        if (document.bulletsOnly) {
+            startCol = maxOf(startCol, DocumentLayout.textStartCol(s.lines[sel.startRow]))
+            endCol = maxOf(endCol, DocumentLayout.textStartCol(s.lines[sel.endRow]))
+            if (sel.startRow == sel.endRow && endCol <= startCol) {
+                patch { it.copy(cursorRow = sel.startRow, cursorCol = startCol, anchorRow = null, anchorCol = null) }
+                return true
+            }
+        }
+        document.delete(sel.startRow, startCol, sel.endRow, endCol)
         patch {
             it.copy(
-                cursorRow = sel.startRow, cursorCol = sel.startCol,
+                cursorRow = sel.startRow, cursorCol = startCol,
                 anchorRow = null, anchorCol = null
             )
         }
         return true
     }
 
+    /**
+     * Text of the active selection for the clipboard, or `null` when
+     * nothing is selected.
+     *
+     * A multi-row selection that starts at or before the first row's text
+     * start copies that row *with* its indent and `"* "` marker, like
+     * every following row. The clipboard then holds a well-formed
+     * Markdown list, and [bulletLinesForPaste] can tell the first row's
+     * depth from the rest when the text is pasted back.
+     */
     fun getSelectedText(): String? {
         val s = state
         if (!s.isLoaded) return null
@@ -974,8 +1042,10 @@ internal class TextEditingViewModel(
         return if (sel.startRow == sel.endRow) {
             lines[sel.startRow].substring(sel.startCol, sel.endCol)
         } else {
+            val firstLine = lines[sel.startRow]
+            val firstFrom = if (sel.startCol <= DocumentLayout.textStartCol(firstLine)) 0 else sel.startCol
             buildString {
-                append(lines[sel.startRow].substring(sel.startCol))
+                append(firstLine.substring(firstFrom))
                 append('\n')
                 for (i in sel.startRow + 1 until sel.endRow) {
                     append(lines[i])
