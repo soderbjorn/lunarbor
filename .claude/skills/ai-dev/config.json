@@ -96,7 +96,7 @@
     "",
     "Also verify without the app wherever you can:",
     "  · The configured build, which compiles every target and runs the tests.",
-    "  · Unit tests in client/src/commonTest (SubtreeCodecTest, PromotionPolicyTest,",
+    "  · Unit tests in client/src/commonTest (SubtreeCodecTest, FolderStorageTest,",
     "    InlineMarkdownTokenizerTest, …). Everything below the View layer is",
     "    commonMain, so prefer adding a test that pins the ticket's behaviour — it",
     "    is the strongest verification this repo can offer.",

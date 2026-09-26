@@ -12,13 +12,13 @@ MainViewModel         (per-platform — thin facade over the pane backing VM)
 PaneBackingViewModel  (commonMain — one pane's cursor, selection, zoom,
                        file/zoom history, undo/redo, fold state, etc.)
   ↓ primitive edits / observes state
-Document              (commonMain — one loaded file + its autosave loop)
+Document              (commonMain — one loaded node outline or note + its autosave loop)
   ↑ acquired/released through
 DocumentRegistry      (commonMain — fileRel → Document, refcounted)
   ↓
-NoteRepository        (commonMain — file I/O, plain text)
+NoteRepository        (commonMain — vault I/O, folder-per-bullet save rules)
   ↓
-FileSystem (expect/actual)  (per-platform — Node fs on JS, java.io on Android, …)
+FileSystem (interface)  (per-platform PlatformFileSystem — Electron IPC on JS, …)
 ```
 
 ### 1. View (per-platform)
@@ -49,10 +49,10 @@ Structure:
 
 ### 4. Document (common)
 
-`client/src/commonMain/.../Document.kt`. One instance per loaded file. Responsibilities:
+`client/src/commonMain/.../Document.kt`. One instance per loaded file — a node's `.treefacts` outline (`bulletsOnly`) or a plain `.md` note. Responsibilities:
 
-- Owns `lines: List<String>`, `lineIds: List<LineId>`, `unloadedRefIds: Set<LineId>`, `isLoaded: Boolean`, plus the in-memory `promotedSubtrees` map for that file.
-- Exposes primitive edits only: `insertText(row, col, text) → InsertResult`, `insertNewline(row, col)`, `delete(startRow, startCol, endRow, endCol)`, `replaceContent(...)`, `expandSubtree(id)`, `collapseSubtree(id)`. No cursor concept, no selection concept, no editor policy, no file-switching concept.
+- Owns `lines: List<String>`, `lineIds: List<LineId>`, `unloadedRefIds: Set<LineId>`, `isLoaded: Boolean`, plus the in-memory `promotedSubtrees` map (folder-backed row → its folder) for that outline. Descendant node folders are spliced into `lines` on demand (`acquireExpansion` / `releaseExpansion`, refcounted across panes) and saved back to their own `.treefacts` files.
+- Exposes primitive edits only: `insertText(row, col, text) → InsertResult`, `insertNewline(row, col)`, `insertLine`, `deleteRows`, `delete(startRow, startCol, endRow, endCol)`, `moveRows(...)`, `replaceContent(...)`, `rewriteLinks(moves)`, `acquireExpansion(id)`, `releaseExpansion(id)`. No cursor concept, no selection concept, no editor policy, no file-switching concept.
 - Runs its own autosave loop (1 s debounce, 5 s max) on the scope passed in by `DocumentRegistry`. `start()` is called by the registry on first acquire; `shutdown()` (called by the registry when the last pane releases) flushes one final save synchronously and cancels the loop.
 - Single source of truth for *one file's* content. When two panes acquire the same `fileRel`, they get the same `Document` instance and their edits flow through to each other in real time.
 
@@ -182,13 +182,17 @@ Links point at folders and files by path, never at bullets by title (`data/TfLin
 - `zoomHistory: List<LineId?>` — browser-style back stack. Every zoom-changing intent (`zoomInto`, `zoomTo`, `zoomOut`) pushes the current target before changing, and clears the forward stack.
 - `zoomForward: List<LineId?>` — populated by `zoomBack` and consumed by `zoomForward`. Capped at 50 entries per direction.
 
-User-facing affordances on the web: the pane toolbar shows a back-arrow and forward-arrow whenever the corresponding stack is non-empty, plus the existing `up` (zoom one level out) and `home` (clear zoom) buttons. Keyboard shortcuts are `Option-Cmd-Left` (back), `Option-Cmd-Right` (forward), `Option-Cmd-Up` (zoom out one level), and `Escape` (clear zoom). Clicking the bullet dot of a folder-backed bullet navigates into it via the existing `zoomInto` intent — the lazy-load on a folded ref + history push gives a "click to open this page" UX without any link-specific click handling.
+The zoom stacks hold ids within the pane's open outline. Moving to another file (opening a folder as a node, a `.md` note or an image from the folder contents list, a link into another outline) goes through `navigateToVaultFile`, which pushes the pane's cross-file `fileHistory` instead. `PaneBackingViewModel.zoomBack` / `zoomForward` pop the zoom stack first and fall through to `fileBack` / `fileForward`, so one pair of Back / Forward buttons walks both.
+
+Because every folder-backed bullet's children live in its own folder, zooming into a collapsed one loads them first (`acquireExpansion`); zooming into a leaf inserts an empty placeholder child. Markdown mode never zooms: `zoomInto` / `zoomTo` are no-ops there.
+
+User-facing affordances on the web: the pane toolbar shows back and forward arrows (dimmed when the corresponding stacks are empty), plus `up` and `home` buttons. `up` zooms one level out, or — with no zoom — opens the parent folder's outline (`AppShell.parentFileOf`); `home` clears the zoom and returns to the root outline. Keyboard shortcuts are `Option-Cmd-Left` (back), `Option-Cmd-Right` (forward), `Option-Cmd-Up` (zoom out one level), and `Escape` (clear zoom). Clicking the bullet dot of a folder-backed bullet zooms into it via `zoomInto` — the load on a folded bullet + history push gives a "click to open this node" UX without any link-specific click handling.
 
 ## Where things live
 
 ```
 client/src/commonMain/.../main/
-  Document.kt                         ← one loaded file: content + autosave
+  Document.kt                         ← one loaded outline/note: content + autosave
   DocumentRegistry.kt                 ← fileRel → Document, refcounted
   PaneBackingViewModel.kt             ← per-pane state + editor intents
   TextEditingViewModel.kt             ← typing/movement/selection slice
@@ -206,6 +210,8 @@ client/src/commonMain/.../data/
   ImagePaths.kt                       ← image `src` → vault file rules
   TfLink.kt                           ← `tf:` link paths: codec, find, rewrite
   VaultIndex.kt                       ← link-target search + link index
+  InlineMarkdownTokenizer.kt          ← inline Markdown → styled runs
+  LineMarkdownPrefix.kt               ← line-level styles (headings, quote)
 
 client/src/*Main/.../platform/
   FileSystem.kt                       ← interface; per-platform PlatformFileSystem
@@ -215,10 +221,25 @@ web/src/jsMain/.../
   di/JsAppGraph.kt                    ← Metro DI graph
   main/MainViewModel.kt               ← thin facade (one per pane)
   main/MainScreen.kt                  ← DOM rendering + event handling
+  main/OutlinePaintLoop.kt            ← paints bullets, blocks, chevrons, badges
   main/FolderContentsList.kt          ← folder contents list under the bullets
+  main/ImageViewer.kt                 ← read-only view of an opened image
   main/LinkSearchModal.kt             ← Insert Link / Link to node / Navigate to
+  main/ImageSearchModal.kt            ← Insert Image (every image in the vault)
   main/StarredModal.kt                ← Starred bookmarks
+  main/CommandPalette.kt              ← command palette
   main/AppShell.kt                    ← per-pane VM construction + lifecycle
+
+electron-main/src/jsMain/.../electron/
+  ElectronMain.kt                     ← main process: window, IPC file access
+  RunPaths.kt                         ← TREEFACTS_VAULT / TREEFACTS_LOCAL_DATA
+  VaultFilePath.kt                    ← vault-confined paths for openPath
+
+docs/files-and-bullets.md             ← the on-disk model, for humans
+scripts/
+  seed-vault.py                       ← sample vault in the current format
+  dynalist_to_treefacts.py            ← Dynalist OPML import (+ its test)
+  ai-dev-run.sh                       ← isolated app launch for agent runs
 ```
 
 ## Source-file documentation

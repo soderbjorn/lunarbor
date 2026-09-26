@@ -1,156 +1,104 @@
 # Files and bullets
 
-TreeFacts has two complementary structures that describe the same vault:
+A TreeFacts vault is an ordinary directory. The outline you edit and the
+folders you see in Finder are the same tree:
 
-1. **A bullet outline.** Every `.md` file holds a CommonMark bullet list. The
-   bullets form a tree by indentation. This is the user's writing surface —
-   the document you scroll through and edit.
-2. **A filesystem.** The vault is a directory of `.md` files. The filesystem
-   describes where on disk the content lives, and which folders contain
-   which files. This is the durable substrate — what you'd see in Finder, or
-   what Obsidian sees if you point it at the same directory.
-
-These two structures coexist deliberately. The outline gives you the
-top-down, hierarchical reading view. The filesystem gives you the
-bag-of-files reality — the kind another tool, or a future-you with a
-different organisational instinct, can drop new notes into without
-ceremony.
-
-## Promoted refs are the bridge
-
-A bullet in one file can be **promoted** to its own `.md` file via a
-markdown link bullet whose URL ends in the literal fragment `#treefacts`:
+- **Every bullet with content is a folder.** A bullet that has child
+  bullets, blocks or files is backed by a folder named after its title. A
+  bullet with nothing under it is just a line in its parent's outline.
+- **Every node folder holds one outline file**, `.treefacts` (hidden),
+  listing that node's direct children. The vault root is the root node.
+- **Everything else in a folder is a file of yours** — Markdown notes,
+  images, PDFs, anything. TreeFacts lists them under the bullets and never
+  rewrites them.
 
 ```
-* [Recipes](Recipes/Recipes.md#treefacts)
+vault/
+  .treefacts              * Buy oat milk
+                          + [Recipes](Recipes)
+  Recipes/
+    .treefacts            + [Soups](Soups)
+                          * Granola ![](granola.png)
+    Soups/
+      .treefacts          * Tomato
+    granola.png
+    Shopping notes.md
+  Starred.md
 ```
 
-When TreeFacts encounters such a bullet, it treats the linked file's
-bullets as if they were spliced in under that bullet. Folding the bullet
-collapses the linked file's outline; unfolding reveals it. To the reader
-they are one continuous outline; to the filesystem they are two distinct
-files.
+## The outline file
 
-The link uses one of two URL forms:
+`.treefacts` holds one line per direct child, with no indentation (depth is
+the folder tree):
 
-- **Promoted-ref bullets** that the autosave loop emits on its own:
-  `[Title](path/to/file.md#treefacts)` — a path to the on-disk file plus
-  the `#treefacts` marker.
-- **User-inserted links** from the Insert Link modal:
-  `[Title](#treefacts-bullet=Title/Path)` — a title-path fragment that
-  resolves to the same target via the outline tree. Title paths survive
-  renames and promotion/demotion better than file paths.
+- `* text` — a leaf bullet; the text is inline Markdown.
+- `+ [title](folder)` — a folder-backed bullet. The title keeps its
+  formatting; the folder name is stored explicitly, relative to this
+  folder.
+- `:::` … `:::` — a block: free Markdown shown in a bordered box among
+  the bullets. A list inside a block is just a list, not part of the
+  outline. The fence grows (`::::`) when the content contains a `:::`
+  line.
 
-Both forms render as a link bullet that the user can click to navigate
-to the target file.
+Folder names are the title's plain text with unsafe characters
+percent-encoded (`Q3/Q4 plan` is stored as `Q3%2FQ4 plan`), capped at 120
+bytes; sibling collisions get ` (2)`, ` (3)`, …; an empty title is
+`Untitled`.
 
-## Anchor files
+## Saving
 
-A file whose path matches the doubled-name shape `<dir>/<dir>.md` is the
-**anchor** for the directory `<dir>`. Examples:
+TreeFacts saves one second after the last edit, and at least every five
+seconds while you keep typing. Each save keeps the folders in step with the
+outline:
 
-- `Root.md` anchors the vault root (`""`).
-- `Framna/Framna.md` anchors `Framna/`.
-- `Framna/Projects/Projects.md` anchors `Framna/Projects/`.
+- A leaf that gets its first child becomes a folder; a folder whose last
+  child goes away is removed again, unless it still holds files.
+- Editing a title renames the folder. Indent, outdent, drag and cut/paste
+  move it, so its files travel with it.
+- Deleting a folder-backed bullet moves its folder to
+  `<vault>/.trash/<timestamp> <name>/`. Undo in the same session moves it
+  back. The trash is never emptied automatically.
 
-Anchors are not a special file type — they're just `.md` files at the
-doubled-name path. TreeFacts's auto-promotion creates them automatically
-when a bullet grows large enough to be split out, but you can hand-author
-one in any folder and it picks up the anchor role.
+## The folder contents list
 
-## The parallel files view (per page)
+Below the bullets of the node you are looking at, TreeFacts lists
+everything in that node's folder that is not already a bullet: subfolders
+first, then files, each in natural name order. Dotfiles, `.trash` and the
+folders the outline already points at are hidden.
 
-When you open an anchor file, TreeFacts renders the editor in two stacked
-sections:
+- A folder opens as a node.
+- A `.md` note opens in **Markdown mode**: the same editor, with no bullet
+  behaviour (no folding, zooming or dragging). It is saved exactly as
+  written.
+- An image opens in the image view.
+- Any other file opens in the system's default app.
+
+## Links and Starred
+
+Links point at folders and files by vault path, never at a bullet by its
+title:
 
 ```
-┌──────────────────────────────────────┐
-│  the file's bullet outline           │   ← the document body
-│  (links, sub-bullets, promoted-refs) │
-├──────────────────────────────────────┤
-│  Files                               │   ← the parallel files footer
-│  ├── (sibling .md files in <dir>/)   │
-│  └── (subfolders in <dir>/)          │
-└──────────────────────────────────────┘
+* See [soups](tf:/Recipes/Soups)
+* Plan in [Budget 2027](tf:/Budget%202027.md)
 ```
 
-The top half is the file's own bullet outline. The bottom half — the
-"Files" footer — is a live filesystem listing of the directory that the
-file anchors. The listing is filtered so that:
+A link can target any non-empty folder and any file. When a save renames or
+moves a folder (or moves an image), TreeFacts rewrites every link that
+points at or through it, in open documents and on disk. A link
+whose target has gone missing (trashed, or moved in Finder) is drawn struck
+through and left as it is.
 
-- The anchor file itself is hidden (you wouldn't want to navigate to the
-  file you're already in).
-- Every file or directory that's already promoted from the outline above
-  is hidden (it's not "loose" — the outline already points to it).
-- Empty directories give an empty footer, which suppresses the divider
-  entirely.
+`Starred.md` in the vault root stores bookmarks as the same `tf:` links,
+so they stay current the same way.
 
-The footer is **per page**. Every anchor file you navigate to renders
-*its* sibling files. So:
+## Why this shape
 
-- At `Root.md`, the footer shows what's directly under the vault root
-  that `Root.md` doesn't already link to.
-- Navigate into a promoted-ref bullet pointing at `Framna/Framna.md`:
-  the footer now shows what's directly under `Framna/` that
-  `Framna.md` doesn't link to.
-- Navigate deeper into `Framna/Projects/Projects.md`: the footer scopes
-  to `Framna/Projects/`.
-
-Non-anchor files (loose `.md` files that don't have the doubled-name
-shape) render no footer — they aren't entry points for a directory; they
-are just leaves the user opened directly.
-
-## Why this matters
-
-The dual structure is what makes TreeFacts safe to drop into an existing
-vault:
-
-- **Files TreeFacts didn't create stay as you wrote them.** A plain `.md`
-  file with hand-authored content is treated as opaque foreign markdown.
-  TreeFacts renders its link in the bullet that points to it, never
-  splices its content, never rewrites it.
-- **Files TreeFacts did create are still plain markdown.** Open any
-  promoted-ref file in another editor — it's CommonMark with bullet
-  lists and links. No frontmatter ceremony, no custom syntax. The
-  `#treefacts` URL fragment is an unknown anchor that other tools
-  silently ignore.
-
-And it's what makes navigation feel "outline-shaped" without forcing the
-user to maintain a perfect outline:
-
-- Anything you've added to the outline is in the outline. Click,
-  expand, fold, drag.
-- Anything you haven't yet linked is in the footer of whichever anchor
-  page covers its directory. You can find it, click into it, edit it,
-  and (when ready) hoist it into the outline by adding a link.
-
-The footer is the bridge in the other direction: from "files on disk"
-back into "bullets in the outline".
-
-## Insert Link with folder picks
-
-The Insert Link modal (Cmd+K) searches every bullet and every loose file
-in the vault — and it also lists **folder stubs**. A folder stub is a
-vault directory that contains `.md` files but lacks its own anchor.
-Picking a folder stub materialises an empty anchor file
-`<dir>/<dir>.md` on disk and inserts a link pointing at it. From that
-moment on the directory has an anchor: you can navigate into it, the
-footer for that anchor surfaces the directory's contents, and the
-folder behaves like any other promoted-ref destination.
-
-This is how you "promote a folder" — without copying its contents, and
-without renaming any of its existing `.md` files.
-
-## Summary
-
-- A vault is a tree of `.md` files. Each file is a CommonMark bullet
-  outline.
-- A bullet can be promoted to its own file via a `#treefacts` link. The
-  outline reads as one continuous tree across file boundaries.
-- A file at `<dir>/<dir>.md` is the **anchor** for `<dir>/`. Anchors
-  render with a parallel "Files" footer below the document body,
-  scoped to that directory and filtered against the document's own
-  promoted refs.
-- Each page (each anchor file you navigate to) has its own parallel
-  files structure — the outline above for what's already linked, the
-  footer below for what isn't yet.
+- **The vault is readable without TreeFacts.** Every node is a folder with
+  a plain-text outline; every note is plain Markdown. Another tool, a sync
+  service or a shell script sees an ordinary directory tree.
+- **Files live where they belong.** A pasted image is written into the
+  folder of the bullet it belongs to and referenced by bare file name, so
+  it moves when the bullet moves.
+- **Top-level folders are separate areas.** There is no separate "space"
+  concept: put `Work/` and `Private/` at the root and zoom into either.
