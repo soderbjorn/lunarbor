@@ -148,6 +148,23 @@ class MainViewModel(
     /** See `PaneBackingViewModel.isBulletLine`. */
     fun isBulletLine(): Boolean = paneBackingViewModel.isBulletLine()
 
+    // ---- block intents (TRF-5) --------------------------------------------
+
+    /** See `PaneBackingViewModel.isBlockLine`. */
+    fun isBlockLine(): Boolean = paneBackingViewModel.isBlockLine()
+
+    /** See `PaneBackingViewModel.insertBlock`. */
+    fun insertBlock() = paneBackingViewModel.insertBlock()
+
+    /** See `PaneBackingViewModel.deleteBlock`. */
+    fun deleteBlock(lineId: LineId) = paneBackingViewModel.deleteBlock(lineId)
+
+    /** See `PaneBackingViewModel.deleteBlockAtCursor`. */
+    fun deleteBlockAtCursor() = paneBackingViewModel.deleteBlockAtCursor()
+
+    /** See `PaneBackingViewModel.exitBlock`. */
+    fun exitBlock() = paneBackingViewModel.exitBlock()
+
     // ---- drag intents ---------------------------------------------------
 
     /** See `PaneBackingViewModel.subtreeRange`. */

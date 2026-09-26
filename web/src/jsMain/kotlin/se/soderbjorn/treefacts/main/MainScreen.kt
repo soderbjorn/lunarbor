@@ -509,7 +509,8 @@ class MainScreen(
 
     /**
      * Handles keyboard shortcuts that don't fit the `beforeinput` model:
-     * Tab (indent/outdent), Escape (zoom out), Cmd/Ctrl+A (select all
+     * Tab (indent/outdent; a block moves whole), Escape (leave a block,
+     * else zoom out), Cmd-Enter (leave a block), Cmd/Ctrl+A (select all
      * routed through the model so subsequent edits see the right range),
      * and the Option-Cmd navigation set —
      * Left = back through zoom history, Right = forward,
@@ -641,6 +642,14 @@ class MainScreen(
                 }
             }
         }
+        if (event.key == "Enter" && cmd && !event.altKey && !event.shiftKey) {
+            // Cmd-Enter in a block (TRF-5): leave it onto a new bullet
+            // right after it. Outside a block Cmd-Enter does nothing.
+            event.preventDefault()
+            syncSelectionFromDom(editor)
+            if (viewModel.isBlockLine()) viewModel.exitBlock()
+            return
+        }
         if (event.key == "Tab") {
             event.preventDefault()
             syncSelectionFromDom(editor)
@@ -649,7 +658,7 @@ class MainScreen(
             val multiRow = sel != null && sel.startRow != sel.endRow
             if (event.shiftKey) {
                 viewModel.outdentLine()
-            } else if (multiRow || viewModel.isBulletLine()) {
+            } else if (multiRow || viewModel.isBulletLine() || viewModel.isBlockLine()) {
                 viewModel.indentLine()
             } else {
                 viewModel.insertText("  ")
@@ -657,6 +666,14 @@ class MainScreen(
             return
         }
         if (event.key == "Escape") {
+            // In a block (TRF-5) Escape leaves it onto a new bullet, like
+            // Cmd-Enter; elsewhere it zooms out.
+            syncSelectionFromDom(editor)
+            if (viewModel.isBlockLine()) {
+                event.preventDefault()
+                viewModel.exitBlock()
+                return
+            }
             val backing = viewModel.stateFlow.value.backingState
             if (backing != null && viewModel.zoomInfo(backing) != null) {
                 event.preventDefault()

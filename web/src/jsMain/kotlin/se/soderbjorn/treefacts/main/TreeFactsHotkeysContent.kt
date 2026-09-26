@@ -79,6 +79,11 @@ internal fun treefactsHotkeysSpec(): HotkeysModalSpec {
                         iconSvg = ICON_INDENT,
                     ),
                     HotkeyEntry(
+                        label = "Leave block onto a new bullet",
+                        chord = listOf(cmd, "⏎"),
+                        iconSvg = ICON_ESC,
+                    ),
+                    HotkeyEntry(
                         label = "Select all (clamped to zoom)",
                         chord = listOf(cmd, "A"),
                         iconSvg = ICON_SELECT_ALL,

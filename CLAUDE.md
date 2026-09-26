@@ -121,6 +121,7 @@ Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppSc
 - **Cursor and selection are pane state, not document state.** They live in `PaneBackingViewModel`. `Document` knows nothing about them.
 - **Active file is pane state.** `PaneBackingViewModel.State.activeFileRel` says which file *this pane* is viewing. `Document` does not know "the active file" — there is no global active file. Two panes can be on the same file (sharing a `Document` instance) or on different files.
 - **Every outline line is a bullet.** In a `.treefacts` document (`Document.bulletsOnly`) no intent may produce a non-bullet line: Enter on an empty bullet outdents it or opens another bullet, Backspace merges or deletes, paste makes one bullet per line (`bulletLinesForPaste`). Free-form content goes in blocks. Plain `.md` files keep plain-line editing — that flag is the switch for Markdown mode.
+- **Blocks are the only other outline line.** A block (bordered free Markdown among the bullets) is one row per content line in `Document.lines`, each `<indent><marker><content>` with a hidden private-use marker (`BlockLayout.FIRST` opens a block, `BlockLayout.NEXT` continues it). The marker keeps every context-free helper from mistaking a `* item` inside a block for a bullet; the `:::` fences exist only on disk. A block nests under the preceding bullet by indent, so a block under a leaf makes it folder-backed. Inside a block Enter adds a row, Backspace joins rows (an empty block is deleted), paste is verbatim, Tab moves the whole block, Cmd-Enter / Escape leave it onto a new bullet. Insert / Delete block are palette commands; deletion is undoable.
 - **Selection-aware writes compose in the pane VM.** Typing first deletes the selection, then inserts. The pane VM owns this composition; `Document` only exposes the primitives.
 
 ## On-disk format
@@ -165,6 +166,7 @@ client/src/commonMain/.../main/
   MarkdownStyleViewModel.kt           ← inline + line-level markdown slice
   SelectionHelper.kt                  ← pure helpers (selection, breadcrumb)
   DocumentLayout.kt                   ← pure layout helpers (visible rows, hit-test)
+  BlockLayout.kt                      ← block rows: markers, block ranges
 
 client/src/commonMain/.../data/
   NoteRepository.kt                   ← vault I/O + folder-per-bullet save rules

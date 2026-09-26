@@ -9,15 +9,27 @@
  * in `MainScreen` since it has access to the captured DOM selection
  * snapshot.
  *
- * Each rendered row is one of two shapes. In an outline (a `.treefacts`
- * node, `Document.bulletsOnly`) every row the user can create is a
- * bullet (TRF-4). The plain shape is kept for plain Markdown files
- * (`Starred.md`, and the Markdown mode of TRF-7) and for block lines
- * loaded from disk; the editing intents never produce it in an outline.
+ * Each rendered row is one of three shapes. In an outline (a `.treefacts`
+ * node, `Document.bulletsOnly`) every row is a bullet (TRF-4) or a block
+ * row (TRF-5). The plain shape is kept for plain Markdown files
+ * (`Starred.md`, and the Markdown mode of TRF-7); the editing intents
+ * never produce it in an outline.
  *
  *   plain:       <div data-row="N" data-prefix-len="0">
  *                  <span class="text">{line}</span>
  *                </div>
+ *
+ *   block row:   <div data-row="N" data-prefix-len="P" class="treefacts-block-row …"
+ *                     style="margin-left:Xpx">
+ *                  [<span class="treefacts-block-delete">×</span>]  (first row only)
+ *                  <span class="text">{line.substring(P)}</span>
+ *                </div>
+ *
+ * A block is drawn as one bordered rectangle by giving its rows side
+ * borders and its first/last rows the top/bottom border, so it grows with
+ * its content while every line stays an ordinary editable row. The hidden
+ * block marker ([BlockLayout]) sits before `data-prefix-len` and never
+ * reaches the DOM.
  *
  *   bullet:      <div data-row="N" data-prefix-len="P" style="padding-left:Xpx">
  *                  <span class="bullet-prefix" contenteditable="false">
@@ -73,14 +85,18 @@ internal class RowColumnMap(
 )
 
 /**
- * Module-level map from row div → its column-translation. Cleared at the
- * start of every `paint`. Holding strong references is fine because the
- * old row divs are released when `editor.innerHTML = ""` runs first.
+ * Property name under which each row div carries its [RowColumnMap].
+ * Stored on the element rather than in a module-level map: every pane
+ * paints into its own editor, and a shared map cleared on each paint let
+ * a second pane showing the same document wipe the first pane's maps —
+ * the caret mapping then ignored hidden heading markers (`## `) and
+ * typing in a heading landed at its start.
  */
-private val rowColumnMaps: MutableMap<HTMLElement, RowColumnMap> = HashMap()
+private const val ROW_COLUMN_MAP_KEY = "__treefactsColumnMap"
 
 /** Look up the column map for [rowDiv], if it has one. */
-internal fun rowColumnMapOf(rowDiv: HTMLElement): RowColumnMap? = rowColumnMaps[rowDiv]
+internal fun rowColumnMapOf(rowDiv: HTMLElement): RowColumnMap? =
+    rowDiv.asDynamic()[ROW_COLUMN_MAP_KEY].unsafeCast<RowColumnMap?>()
 
 /**
  * Renders the "Loading…" placeholder into [editor]. Used on cold start
@@ -113,7 +129,6 @@ fun paint(
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ) {
     editor.innerHTML = ""
-    rowColumnMaps.clear()
     if (!state.isLoaded) {
         paintLoading(editor)
         return
@@ -136,6 +151,10 @@ fun paint(
     val visibleRows = DocumentLayout.visibleRowsOf(
         docState.lines, docState.lineIds, state.collapsedIds, startRow, endRowInclusive
     )
+    // Row → the block it belongs to, so each block row knows whether it
+    // draws the block's top or bottom edge.
+    val blockOfRow = HashMap<Int, IntRange>()
+    for (block in BlockLayout.blocksOf(docState.lines)) for (r in block) blockOfRow[r] = block
     for (row in visibleRows) {
         val rawLine = state.lines[row]
         // Only strip the zoom indent when the row actually has at least
@@ -150,7 +169,9 @@ fun paint(
         val stripPrefix = if (canStrip) viewOriginCol else 0
         val line = if (stripPrefix > 0) rawLine.substring(stripPrefix) else rawLine
         editor.appendChild(
-            buildRowElement(row, line, stripPrefix, state, docState, viewModel, style, onBulletMouseDown)
+            buildRowElement(
+                row, line, stripPrefix, state, docState, viewModel, style, blockOfRow[row], onBulletMouseDown
+            )
         )
     }
 
@@ -190,6 +211,8 @@ fun paint(
  *   sibling lookups.
  * @param viewModel Receives bullet click + chevron toggle intents.
  * @param style Visual constants (line height, indent step, etc.).
+ * @param block The rows of the block this row belongs to, or `null` when
+ *   it is not a block row.
  */
 private fun buildRowElement(
     absoluteRow: Int,
@@ -199,6 +222,7 @@ private fun buildRowElement(
     docState: Document.State,
     viewModel: MainViewModel,
     style: EditorStyle,
+    block: IntRange?,
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ): HTMLElement {
     val rowDiv = document.createElement("div") as HTMLElement
@@ -261,6 +285,8 @@ private fun buildRowElement(
 
         rowDiv.appendChild(buildBulletPrefix(absoluteRow, onBulletMouseDown))
         rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2)))
+    } else if (block != null && BlockLayout.markerColumn(line) >= 0) {
+        decorateBlockRow(rowDiv, absoluteRow, line, viewOriginCol, block, state, docState, viewModel, style)
     } else {
         // Plain line (plain Markdown files, block lines — never created by
         // editing an outline): editable text starts at column 0 of the raw line,
@@ -274,6 +300,84 @@ private fun buildRowElement(
 }
 
 /**
+ * Fills [rowDiv] as one row of a block (TRF-5): the block's side borders
+ * (plus the top edge on its first row and the bottom edge on its last),
+ * the editable content after the hidden marker, and — on the first row —
+ * the non-editable delete control.
+ *
+ * The delete control shows while the pointer is over any row of the
+ * block (each row toggles `treefacts-block-hover` on the first row) and
+ * while the caret is in the block. Pressing it calls
+ * `MainViewModel.deleteBlock` with the first row's id; undo restores the
+ * block.
+ *
+ * @param rowDiv The row div being built.
+ * @param absoluteRow Document row of [rowDiv].
+ * @param line The row text after any zoom-indent stripping.
+ * @param viewOriginCol Columns stripped for the zoom, added back to
+ *   `data-prefix-len` so it stays in raw model columns.
+ * @param block Rows of the block, in the document.
+ */
+private fun decorateBlockRow(
+    rowDiv: HTMLElement,
+    absoluteRow: Int,
+    line: String,
+    viewOriginCol: Int,
+    block: IntRange,
+    state: PaneBackingViewModel.State,
+    docState: Document.State,
+    viewModel: MainViewModel,
+    style: EditorStyle,
+) {
+    val markerCol = BlockLayout.markerColumn(line)
+    val depth = markerCol / PaneBackingViewModel.TAB_SIZE
+    rowDiv.classList.add("treefacts-block-row")
+    rowDiv.style.marginLeft = "${depth * style.indentStepPx}px"
+    rowDiv.setAttribute("data-block-start", block.first.toString())
+    rowDiv.setAttribute("data-prefix-len", (viewOriginCol + markerCol + 1).toString())
+    val isFirst = absoluteRow == block.first
+    if (isFirst) rowDiv.classList.add("treefacts-block-first")
+    if (absoluteRow == block.last) rowDiv.classList.add("treefacts-block-last")
+    if (state.cursorRow in block) rowDiv.classList.add("treefacts-block-active")
+
+    // Hovering any row of the block reveals the delete control, which
+    // lives on the first row.
+    fun firstRowDiv(): HTMLElement? =
+        rowDiv.parentElement?.querySelector("[data-row='${block.first}']") as? HTMLElement
+    rowDiv.addEventListener("mouseenter", { _ -> firstRowDiv()?.classList?.add("treefacts-block-hover") })
+    rowDiv.addEventListener("mouseleave", { _ -> firstRowDiv()?.classList?.remove("treefacts-block-hover") })
+
+    if (isFirst) {
+        val id = docState.lineIds.getOrNull(block.first)
+        if (id != null) {
+            val del = document.createElement("span") as HTMLElement
+            del.className = "treefacts-block-delete"
+            del.setAttribute("contenteditable", "false")
+            del.setAttribute("title", "Delete block")
+            del.textContent = "×"
+            del.addEventListener("mousedown", { ev ->
+                // Keep the press away from the editor's caret placement
+                // and drag handlers, which listen on the editor itself.
+                ev.preventDefault()
+                ev.stopPropagation()
+                viewModel.deleteBlock(id)
+            })
+            rowDiv.appendChild(del)
+        }
+    }
+    rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(markerCol + 1)))
+
+    // An empty block would be an empty box; say what it is for.
+    if (block.first == block.last && BlockLayout.isEmptyContent(line)) {
+        val hint = document.createElement("span") as HTMLElement
+        hint.className = "treefacts-block-hint"
+        hint.textContent = "Block — write Markdown here"
+        hint.setAttribute("contenteditable", "false")
+        rowDiv.appendChild(hint)
+    }
+}
+
+/**
  * Builds the `.treefacts-text` editable region for one row. Splits the
  * inline markdown into one `<span class="treefacts-text-run …">` per
  * styled run; marker characters are *not* in the DOM at all so the user
@@ -281,7 +385,7 @@ private fun buildRowElement(
  * (`# `, `> `, etc.), strips it from the rendering, and adds the
  * matching styling class to the wrapper.
  *
- * Stashes a [RowColumnMap] in [rowColumnMaps] so caret-mapping code can
+ * Stashes a [RowColumnMap] on [rowDiv] (see [rowColumnMapOf]) so caret-mapping code can
  * translate between the DOM (markers-stripped) and the underlying model
  * line.
  *
@@ -327,7 +431,7 @@ private fun buildStyledTextRegion(rowDiv: HTMLElement, editable: String): HTMLEl
     val markerCols = HashSet<Int>(tokenized.markerCols.size + lineMarkerLen)
     for (i in 0 until lineMarkerLen) markerCols += i
     for (m in tokenized.markerCols) markerCols += (m + lineMarkerLen)
-    rowColumnMaps[rowDiv] = RowColumnMap(rowModelToDom, rowDomToModel, markerCols)
+    rowDiv.asDynamic()[ROW_COLUMN_MAP_KEY] = RowColumnMap(rowModelToDom, rowDomToModel, markerCols)
 
     if (tokenized.runs.isEmpty()) {
         // Empty editable region (or whole region was markers like `****`).
@@ -711,6 +815,63 @@ fun ensureStyles() {
         .treefacts-bullet-prefix {
             display: inline;
             cursor: grab;
+        }
+        /* Blocks (TRF-5): each row draws the side borders; the first and
+           last rows add the top and bottom edges, so the rows together
+           read as one rectangle that grows with its content. */
+        .treefacts-block-row {
+            border-left: 1px solid var(--t-border, #4a4a4a);
+            border-right: 1px solid var(--t-border, #4a4a4a);
+            padding-left: 10px;
+            padding-right: 28px;
+            background: rgba(127, 127, 127, 0.05);
+        }
+        .treefacts-block-first {
+            border-top: 1px solid var(--t-border, #4a4a4a);
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            padding-top: 4px;
+            margin-top: 4px;
+        }
+        .treefacts-block-last {
+            border-bottom: 1px solid var(--t-border, #4a4a4a);
+            border-bottom-left-radius: 6px;
+            border-bottom-right-radius: 6px;
+            padding-bottom: 4px;
+            margin-bottom: 4px;
+        }
+        .treefacts-block-delete {
+            position: absolute;
+            top: 3px;
+            right: 6px;
+            display: none;
+            width: 18px;
+            height: 18px;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            cursor: pointer;
+            user-select: none;
+            color: var(--t-text-dim, #9a9a9a);
+            line-height: 1;
+        }
+        .treefacts-block-delete:hover {
+            color: var(--t-text, #e6e6e6);
+            background: var(--t-border, rgba(255, 255, 255, 0.10));
+        }
+        .treefacts-block-first:hover .treefacts-block-delete,
+        .treefacts-block-hover .treefacts-block-delete,
+        .treefacts-block-active .treefacts-block-delete {
+            display: flex;
+        }
+        .treefacts-block-hint {
+            position: absolute;
+            left: 11px;
+            top: 4px;
+            pointer-events: none;
+            user-select: none;
+            opacity: 0.4;
+            font-style: italic;
         }
         /* When the row contains an inline image, the row is much
            taller than a text-only line. The default baseline

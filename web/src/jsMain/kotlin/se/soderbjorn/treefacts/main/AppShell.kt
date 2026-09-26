@@ -718,6 +718,10 @@ class AppShell(
                 if (paneId != null) openInsertImageModal(paneId)
             },
         )
+        // Blocks (TRF-5): a bordered free-Markdown block after the
+        // caret's bullet, and its removal (both undoable).
+        addStyleCmd("insert-block", "Insert block") { it.insertBlock() }
+        addStyleCmd("delete-block", "Delete block") { it.deleteBlockAtCursor() }
         out += CommandPalette.Command(
             id = "open-new-pane",
             title = "Open new pane",
