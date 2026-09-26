@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineStyle
 import se.soderbjorn.treefacts.data.VaultEntry
+import se.soderbjorn.treefacts.data.LinkTarget
 import se.soderbjorn.treefacts.data.VaultIndex
 
 /**
@@ -318,11 +319,24 @@ class MainViewModel(
 
     // ---- link intents ---------------------------------------------------
 
-    /** App-scoped outline index used by the Insert Link modal's search. */
+    /** App-scoped link index; the link modals search it (`VaultIndex.search`). */
     val vaultIndex: VaultIndex get() = paneBackingViewModel.vaultIndex
 
-    /** See `PaneBackingViewModel.currentInFileTitlePath`. */
-    fun currentInFileTitlePath(): List<String> = paneBackingViewModel.currentInFileTitlePath()
+    /** See `PaneBackingViewModel.prepareLinkSearch`. */
+    suspend fun prepareLinkSearch() = paneBackingViewModel.prepareLinkSearch()
+
+    /** See `PaneBackingViewModel.insertLinkTo`. */
+    fun insertLinkTo(target: LinkTarget, label: String = "") = paneBackingViewModel.insertLinkTo(target, label)
+
+    /** See `PaneBackingViewModel.isLinkBroken`. */
+    fun isLinkBroken(state: PaneBackingViewModel.State, url: String): Boolean =
+        paneBackingViewModel.isLinkBroken(state, url)
+
+    /** See `PaneBackingViewModel.currentLocationPath`. */
+    suspend fun currentLocationPath(): String? = paneBackingViewModel.currentLocationPath()
+
+    /** See `PaneBackingViewModel.toggleStarred`. */
+    suspend fun toggleStarred(starred: Boolean) = paneBackingViewModel.toggleStarred(starred)
 
     /** See `PaneBackingViewModel.insertMarkdownLink`. */
     fun insertMarkdownLink(label: String, url: String) =
@@ -349,13 +363,13 @@ class MainViewModel(
     fun setImageWidth(row: Int, imageSrc: String, widthPx: Int?) =
         paneBackingViewModel.setImageWidth(row, imageSrc, widthPx)
 
-    /** See `PaneBackingViewModel.ensureFolderStub`. */
-    suspend fun ensureFolderStub(fileRel: String) =
-        paneBackingViewModel.ensureFolderStub(fileRel)
-
-    /** See `PaneBackingViewModel.navigateToLink`. */
+    /**
+     * See `PaneBackingViewModel.navigateToLink`. A link to a file that is
+     * neither a note nor an image opens in the system's default app
+     * ([openInDefaultApp]), the one platform-specific part.
+     */
     fun navigateToLink(url: String, onComplete: () -> Unit = {}) =
-        paneBackingViewModel.navigateToLink(url, onComplete)
+        paneBackingViewModel.navigateToLink(url, onComplete, openExternally = ::openInDefaultApp)
 
     /**
      * Releases the underlying [Document] back to the registry. Call

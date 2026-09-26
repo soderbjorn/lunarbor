@@ -156,6 +156,24 @@ Under the bullets of the node a pane is showing (the zoom target, or the root of
 - An expanded folder-backed bullet carries a count badge (`FolderContents.badgeLabel`, e.g. `2 folders, 3 files`) computed from the same list. "New Markdown file" in the palette creates `Untitled.md`, `Untitled 2.md`, … in the current folder and opens it.
 - **Clicking a row:** a folder opens as a node (`openFolderAsNode`); a `.md` note opens in Markdown mode and an image in the read-only image view (`navigateToVaultFile`) — all three push the pane's file history, so Back / Forward walk nodes, notes and images alike; any other file opens in the system's default app (`MainViewModel.openInDefaultApp` → `noteApi.openPath` → the main process's `treefacts:openPath`, which refuses paths outside the vault).
 
+## Links and Starred
+
+Links point at folders and files by path, never at bullets by title (`data/TfLink.kt`, tested in `TfLinkTest` and `LinksTest`):
+
+```
+* See [soups](tf:/Recipes/Soups)
+* Photo: [granola](tf:/Recipes/granola.jpg)
+* Plan in [Budget 2027](tf:/Budget%202027.md)
+```
+
+- **Syntax:** `tf:/` plus the vault-relative path of on-disk (already `FolderName`-encoded) names, each segment percent-encoded again for whitespace, `%`, `( ) < > [ ] \ # ?` (so `Q3%2FQ4 plan` is `tf:/Q3%252FQ4%20plan`); `tf:/` is the vault root. An encoded target never holds a space, bracket, parenthesis or backslash, so links can be found and rewritten in raw file text, including inside an outline's escaped `+ [title](folder)` titles.
+- **Targets:** any non-empty folder (a node's folder, or any folder TreeFacts didn't create) and any file. Leaf bullets have no folder and empty folders are skipped, so neither is ever offered.
+- **Search:** Insert Link, "Link to node…" (same modal) and Navigate to (Cmd-O) search `VaultIndex.search` — the whole vault from the root, however deep the pane is zoomed; titles are the bullet's plain text for node folders, decoded names otherwise, file names for files. The modal saves open documents first (`prepareLinkSearch`).
+- **Clicking** (`PaneBackingViewModel.navigateToLink`): a folder zooms there — in place when it is under the open outline (expanding the bullets on the way), otherwise by opening the parent node zoomed into its bullet, or the folder itself as a node when no bullet names it; a `.md` note or image opens as from the folder contents list; any other file opens in the default app.
+- **Links stay up to date:** after each save, `Document` reports every folder it renamed, moved or trashed and every image it moved (`PathMove`); `DocumentRegistry.applyPathMoves` rewrites every link pointing at or through an old path — in open documents' lines (`Document.rewriteLinks`, saved with them) and, on disk, in every other file the link index names (`NoteRepository.rewriteLinksInFile`). The link index (`VaultIndex`: file → linked paths) is built by one vault scan on first use and kept current from every note text the repository reads or writes (`NoteRepository.noteTextObserver`). Trash moves never rewrite links.
+- **Broken links:** a link whose target is gone (moved in Finder, trashed) is drawn struck through with a "Not found" tooltip (`isLinkBroken`, from `DocumentRegistry.linkStatusFlow`, re-checked after every save and on window focus). Its text is never changed.
+- **Starred** (`Starred.md`, `* [Label](tf:/…)`) stores the same paths — the zoomed node's folder, the open outline's folder, or the open note / image — so the same rewrite keeps it current. Starring goes through the registry (`PaneBackingViewModel.toggleStarred`) so the index sees it.
+
 ## Zoom navigation
 
 `PaneBackingViewModel` keeps three zoom-related fields:
@@ -186,6 +204,8 @@ client/src/commonMain/.../data/
   SubtreeCodec.kt                     ← `.treefacts` outline codec
   FolderName.kt                       ← title → folder name encoding
   ImagePaths.kt                       ← image `src` → vault file rules
+  TfLink.kt                           ← `tf:` link paths: codec, find, rewrite
+  VaultIndex.kt                       ← link-target search + link index
 
 client/src/*Main/.../platform/
   FileSystem.kt                       ← interface; per-platform PlatformFileSystem
@@ -196,6 +216,8 @@ web/src/jsMain/.../
   main/MainViewModel.kt               ← thin facade (one per pane)
   main/MainScreen.kt                  ← DOM rendering + event handling
   main/FolderContentsList.kt          ← folder contents list under the bullets
+  main/LinkSearchModal.kt             ← Insert Link / Link to node / Navigate to
+  main/StarredModal.kt                ← Starred bookmarks
   main/AppShell.kt                    ← per-pane VM construction + lifecycle
 ```
 

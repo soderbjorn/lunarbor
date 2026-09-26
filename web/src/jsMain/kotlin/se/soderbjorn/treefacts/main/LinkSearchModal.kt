@@ -1,18 +1,20 @@
 /*
  * LinkSearchModal.kt (jsMain)
  * ---------------------------
- * Single modal class shared by the "Insert Link" command and the
- * "Navigate to" command (Cmd-O). Same DOM, same keyboard handling,
- * same search-as-you-type backed by `VaultIndex.search`. The two
- * commands differ only in:
+ * Single modal class shared by the "Insert Link" and "Link to node…"
+ * commands and the "Navigate to" command (Cmd-O). Same DOM, same keyboard
+ * handling, same search-as-you-type backed by `VaultIndex.search` — over
+ * the whole vault from the root, however deep the pane is zoomed, and
+ * offering only linkable targets (non-empty folders and files; never a
+ * leaf bullet or an empty folder). The commands differ only in:
  *
  *  - the placeholder text shown in the input,
- *  - what to do when the user picks a hit (insert a markdown link at
- *    the cursor, vs navigate this pane to the target).
+ *  - what to do when the user picks a hit (insert a `tf:` link at the
+ *    cursor, vs navigate this pane to the target).
  *
- * They're expressed as two factory functions on the companion. Adding
- * a third "go to" flavour later (e.g. "Open in new pane") is a one-line
- * factory that hands a different [Action] callback.
+ * They're expressed as two factory functions on the companion. View
+ * layer only: the search, the link format and the navigation live in
+ * commonMain (`VaultIndex`, `TfLink`, `PaneBackingViewModel`).
  */
 
 package se.soderbjorn.treefacts.main
@@ -26,11 +28,12 @@ import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
 import org.w3c.dom.events.MouseEvent
-import se.soderbjorn.treefacts.data.LinkUrl
-import se.soderbjorn.treefacts.data.VaultIndex
+import se.soderbjorn.treefacts.data.LinkTarget
+import se.soderbjorn.treefacts.data.TfLink
+import se.soderbjorn.treefacts.data.VaultEntryKind
 
 /**
- * Per-pane search-and-pick modal for vault outline nodes.
+ * Per-pane search-and-pick modal for link targets.
  *
  * @param parentScope App-scoped coroutine scope for suspend-y vault
  *   queries triggered by typing.
@@ -39,9 +42,7 @@ import se.soderbjorn.treefacts.data.VaultIndex
  *   `StarredModal`.
  * @param placeholder The text shown in the empty input.
  * @param action What to do once the user picks a hit. Receives the
- *   captured-at-open [OpenContext] so flavours that care about the
- *   cursor (Insert Link uses cursor position to compute a relative
- *   URL) can read it without re-querying mid-flight.
+ *   captured-at-open [OpenContext] (the selection to use as the label).
  */
 internal class LinkSearchModal private constructor(
     private val parentScope: CoroutineScope,
@@ -51,14 +52,13 @@ internal class LinkSearchModal private constructor(
 ) {
 
     /**
-     * State captured when the modal opens, frozen so the action's
-     * computations reference *where the user was* when they invoked
-     * the command, not whatever the focus state ends up being while
-     * they type.
+     * State captured when the modal opens, frozen so the action uses what
+     * the user had selected when they invoked the command.
+     *
+     * @property selectedText The editor selection at open time; Insert
+     *   Link uses it as the link label.
      */
     data class OpenContext(
-        val activeFileRel: String,
-        val cursorInFilePath: List<String>,
         val selectedText: String,
     )
 
@@ -68,19 +68,22 @@ internal class LinkSearchModal private constructor(
      * launch its own coroutines / popovers.
      */
     fun interface Action {
-        fun perform(vm: MainViewModel, hit: VaultIndex.SearchHit, context: OpenContext)
+        fun perform(vm: MainViewModel, hit: LinkTarget, context: OpenContext)
     }
 
     private var backdropEl: HTMLElement? = null
     private var inputEl: HTMLInputElement? = null
     private var listEl: HTMLElement? = null
 
-    private var matches: List<VaultIndex.SearchHit> = emptyList()
+    private var matches: List<LinkTarget> = emptyList()
     private var highlightedIndex: Int = 0
 
     private var pinnedVm: MainViewModel? = null
-    private var pinnedContext: OpenContext = OpenContext("", emptyList(), "")
+    private var pinnedContext: OpenContext = OpenContext("")
     private var pendingSearchJob: Job? = null
+
+    /** Saves open documents before the first search; see `MainViewModel.prepareLinkSearch`. */
+    private var prepareJob: Job? = null
 
     private var focusToRestore: HTMLElement? = null
     private var documentKeyHandler: ((Event) -> Unit)? = null
@@ -92,12 +95,8 @@ internal class LinkSearchModal private constructor(
             return
         }
         pinnedVm = vm
-        val backing = vm.currentBackingState
-        pinnedContext = OpenContext(
-            activeFileRel = backing.activeFileRel,
-            cursorInFilePath = vm.currentInFileTitlePath(),
-            selectedText = vm.getSelectedText().orEmpty(),
-        )
+        pinnedContext = OpenContext(selectedText = vm.getSelectedText().orEmpty())
+        prepareJob = parentScope.launch { vm.prepareLinkSearch() }
         focusToRestore = document.activeElement as? HTMLElement
         buildDom()
         rebuildList(query = "")
@@ -115,7 +114,8 @@ internal class LinkSearchModal private constructor(
         matches = emptyList()
         highlightedIndex = 0
         pinnedVm = null
-        pinnedContext = OpenContext("", emptyList(), "")
+        pinnedContext = OpenContext("")
+        prepareJob = null
         detachDocumentKeyHandler()
         focusToRestore?.focus()
         focusToRestore = null
@@ -206,14 +206,16 @@ internal class LinkSearchModal private constructor(
             renderRows(emptyList())
             return
         }
+        val prepared = prepareJob
         pendingSearchJob = parentScope.launch {
+            prepared?.join()
             val hits = vm.vaultIndex.search(query, max = 50)
             if (listEl == null) return@launch
             renderRows(hits)
         }
     }
 
-    private fun renderRows(hits: List<VaultIndex.SearchHit>) {
+    private fun renderRows(hits: List<LinkTarget>) {
         val list = listEl ?: return
         matches = hits
         highlightedIndex = if (hits.isEmpty()) 0 else 0
@@ -236,20 +238,15 @@ internal class LinkSearchModal private constructor(
             titleEl.textContent = hit.title
             row.appendChild(titleEl)
 
-            val breadcrumb = hit.titlePathFromRoot.dropLast(1)
-            if (breadcrumb.isNotEmpty()) {
+            if (hit.crumbs.isNotEmpty()) {
                 val crumbEl = document.createElement("div") as HTMLElement
                 crumbEl.className = "treefacts-link-item-crumb"
-                crumbEl.textContent = breadcrumb.joinToString(" › ")
+                crumbEl.textContent = hit.crumbs.joinToString(" › ")
                 row.appendChild(crumbEl)
             }
             val pathEl = document.createElement("div") as HTMLElement
             pathEl.className = "treefacts-link-item-path"
-            // Folder stubs name a directory whose anchor file does not
-            // exist yet — make that obvious so picking the row isn't
-            // surprising when it creates a new file on disk.
-            pathEl.textContent = if (hit.isFolderStub) "${hit.fileRel} (new folder page)"
-                                 else hit.fileRel
+            pathEl.textContent = kindLabel(hit) + " · " + TfLink.format(hit.pathRel)
             row.appendChild(pathEl)
 
             row.addEventListener("mousemove", { _ ->
@@ -289,14 +286,23 @@ internal class LinkSearchModal private constructor(
         action.perform(vm, hit, context)
     }
 
+    /** Short type label shown before a hit's link: node, folder, note, image or file. */
+    private fun kindLabel(hit: LinkTarget): String = when (hit.kind) {
+        VaultEntryKind.FOLDER -> if (hit.pathRel.isEmpty()) "home" else "node"
+        VaultEntryKind.MARKDOWN -> "note"
+        VaultEntryKind.IMAGE -> "image"
+        VaultEntryKind.FILE -> "file"
+    }
+
     companion object {
         /**
-         * "Insert Link" flavour: at pick time, compute the shortest
-         * URL from the cursor's position and emit a markdown link via
-         * `MainViewModel.insertMarkdownLink`. If the user had an
-         * editor selection at open time, that text becomes the link's
-         * label; otherwise the hit's title is used.
+         * "Insert Link" / "Link to node…" flavour: at pick time, insert a
+         * `[label](tf:/…)` link at the cursor via
+         * `MainViewModel.insertLinkTo`. If the user had an editor
+         * selection at open time, that text becomes the link's label;
+         * otherwise the hit's title is used.
          *
+         * @param placeholder Input placeholder; differs per command.
          * @param onAfterPick Optional follow-up — typically the host
          *   focuses the pane's editor here so the caret lands inside
          *   the contenteditable after the modal closes.
@@ -304,43 +310,27 @@ internal class LinkSearchModal private constructor(
         fun forInsertLink(
             parentScope: CoroutineScope,
             activePaneVmProvider: () -> MainViewModel?,
+            placeholder: String = "Find a node or file to link…",
             onAfterPick: () -> Unit = {},
         ): LinkSearchModal = LinkSearchModal(
             parentScope = parentScope,
             activePaneVmProvider = activePaneVmProvider,
-            placeholder = "Find a note or bullet to link…",
+            placeholder = placeholder,
             action = Action { vm, hit, ctx ->
-                parentScope.launch {
-                    // A folder-stub hit names a directory that has no
-                    // anchor file yet — materialise it before the
-                    // resolver tries to walk to it. Subsequent calls
-                    // are no-ops once the file exists.
-                    if (hit.isFolderStub) {
-                        vm.ensureFolderStub(hit.fileRel)
-                    }
-                    val cursorFullPath =
-                        vm.vaultIndex.fullPathFor(ctx.activeFileRel, ctx.cursorInFilePath)
-                            ?: emptyList()
-                    val url = vm.vaultIndex.shortestUrlFor(hit, cursorFullPath)
-                    val label = ctx.selectedText.takeIf { it.isNotEmpty() } ?: hit.title
-                    vm.insertMarkdownLink(label, LinkUrl.format(url.segments, url.isAbsolute))
-                    onAfterPick()
-                }
+                vm.insertLinkTo(hit, ctx.selectedText)
+                onAfterPick()
             },
         )
 
         /**
-         * "Navigate to" flavour: at pick time, build an absolute-form
-         * URL from the hit's full title path and route through
-         * `MainViewModel.navigateToLink` so the file-switch +
-         * zoom-to-bullet semantics match a real link click.
+         * "Navigate to" flavour: at pick time, follow the hit's `tf:` link
+         * through `MainViewModel.navigateToLink`, so the zoom / open
+         * semantics match a real link click.
          *
          * @param onAfterPick Optional follow-up — typically the host
          *   focuses the pane's editor so the caret lands inside the
-         *   target document after navigation. Without this the focus
-         *   is restored to whatever element held it before the modal
-         *   opened (the command palette button, say), which leaves
-         *   the user one click away from typing.
+         *   target document after navigation. Deferred until navigation
+         *   completes.
          */
         fun forNavigateTo(
             parentScope: CoroutineScope,
@@ -349,25 +339,9 @@ internal class LinkSearchModal private constructor(
         ): LinkSearchModal = LinkSearchModal(
             parentScope = parentScope,
             activePaneVmProvider = activePaneVmProvider,
-            placeholder = "Navigate to a note or bullet…",
+            placeholder = "Navigate to a node or file…",
             action = Action { vm, hit, _ ->
-                // Defer onAfterPick until navigation actually completes —
-                // navigateToLink's work is async (file switch, document
-                // load, cursor placement), so calling onAfterPick before
-                // the coroutine finishes would focus an editor that's
-                // about to be reconciled with new content, losing focus.
-                val targetUrl = LinkUrl.format(hit.titlePathFromRoot, isAbsolute = true)
-                if (hit.isFolderStub) {
-                    // The anchor file doesn't exist yet — materialise it
-                    // first so the resolver can walk to a real file root
-                    // when navigateToLink runs.
-                    parentScope.launch {
-                        vm.ensureFolderStub(hit.fileRel)
-                        vm.navigateToLink(targetUrl, onComplete = onAfterPick)
-                    }
-                } else {
-                    vm.navigateToLink(targetUrl, onComplete = onAfterPick)
-                }
+                vm.navigateToLink(TfLink.format(hit.pathRel), onComplete = onAfterPick)
             },
         )
     }

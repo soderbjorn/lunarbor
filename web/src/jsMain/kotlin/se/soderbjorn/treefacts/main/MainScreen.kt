@@ -36,6 +36,7 @@ import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.data.InlineMarkdownTokenizer
 import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineStyle
+import se.soderbjorn.treefacts.data.TfLink
 import kotlin.math.sqrt
 
 /**
@@ -55,7 +56,7 @@ class MainScreen(
     private val scope: CoroutineScope,
     /**
      * Invoked when the user shift-clicks an internal TreeFacts bullet
-     * link. Receives the link's `href` (a `#treefacts-bullet=…` URL).
+     * link. Receives the link's `href` (a `tf:/…` URL).
      * The host opens the target in a new pane instead of navigating
      * the current one. `null` falls back to in-pane navigation —
      * shift-click behaves the same as a plain click.
@@ -1084,21 +1085,21 @@ class MainScreen(
     }
 
     /**
-     * If [ev] hit a span carrying a `data-href` of the TreeFacts
-     * title-path form (`#treefacts-bullet=…`), route it through the
-     * pane's [MainViewModel.navigateToLink] intent and suppress the
-     * default contenteditable caret placement. Returns `true` when the
-     * event was handled.
+     * If [ev] hit a span carrying a TreeFacts `tf:` link (`data-href`),
+     * route it through the pane's [MainViewModel.navigateToLink] intent
+     * and suppress the default contenteditable caret placement. Returns
+     * `true` when the event was handled. A broken link (drawn struck
+     * through) is still routed: navigation does nothing, and the click
+     * re-checks the target.
      *
-     * Plain `#section` anchors and bare `*.md` file paths fall through
-     * (we have no first-class support yet for the latter and the former
-     * is browser-native), so the press lands as a normal caret place.
+     * Plain `#section` anchors and bare relative paths fall through, so
+     * the press lands as a normal caret place.
      */
     private fun handleTreeFactsLinkMouseDown(ev: MouseEvent): Boolean {
         if (ev.button.toInt() != 0) return false
         val target = ev.target as? Node ?: return false
         val href = ancestorHref(target) ?: return false
-        if (!href.startsWith("#treefacts-bullet=")) return false
+        if (!TfLink.isTfLink(href)) return false
         ev.preventDefault()
         ev.stopPropagation()
         // Shift-click opens the link in a new pane instead of navigating

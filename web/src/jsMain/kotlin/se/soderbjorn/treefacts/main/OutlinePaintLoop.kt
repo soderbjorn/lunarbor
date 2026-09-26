@@ -24,6 +24,10 @@
  * in (`MainViewModel.resolveImageSrc`, rules in `ImagePaths`), so a
  * pasted image's bare file name finds the file in the node's folder.
  *
+ * A `tf:` link whose target no longer exists (`MainViewModel.isLinkBroken`,
+ * TRF-8) is drawn struck through with a "not found" tooltip
+ * ([markBrokenLinks]); the text is left exactly as it is.
+ *
  *   plain:       <div data-row="N" data-prefix-len="0">
  *                  <span class="text">{line}</span>
  *                </div>
@@ -70,6 +74,7 @@ import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineMarkdownPrefix
 import se.soderbjorn.treefacts.data.LineStyle
 import se.soderbjorn.treefacts.data.StyledRun
+import se.soderbjorn.treefacts.data.TfLink
 
 /**
  * Per-row mapping between displayed (markers-stripped) text and the
@@ -312,7 +317,32 @@ private fun buildRowElement(
         rowDiv.appendChild(buildStyledTextRegion(rowDiv, line, imageResolver))
     }
 
+    markBrokenLinks(rowDiv, state, viewModel)
     return rowDiv
+}
+
+/**
+ * Marks every `tf:` link span under [root] whose target is missing
+ * ([MainViewModel.isLinkBroken]) with the `treefacts-md-link-broken` class
+ * (struck through) and a "Not found" tooltip naming the path. Links whose
+ * status is still being checked are drawn normally; the check's result
+ * arrives as a new pane state and repaints.
+ *
+ * Called for every painted row by [buildRowElement].
+ */
+internal fun markBrokenLinks(root: HTMLElement, state: PaneBackingViewModel.State, viewModel: MainViewModel) {
+    val spans = root.querySelectorAll("[data-href]")
+    for (i in 0 until spans.length) {
+        val span = spans.item(i) as? HTMLElement ?: continue
+        val href = span.getAttribute("data-href") ?: continue
+        if (!TfLink.isTfLink(href)) continue
+        if (viewModel.isLinkBroken(state, href)) {
+            span.classList.add("treefacts-md-link-broken")
+            span.title = "Not found: " + (TfLink.parse(href)?.let { "/$it" } ?: href)
+        } else {
+            span.title = TfLink.parse(href)?.let { "/$it" } ?: href
+        }
+    }
 }
 
 /**
@@ -1152,6 +1182,12 @@ fun ensureStyles() {
             text-decoration: underline;
             text-underline-offset: 2px;
             cursor: pointer;
+        }
+        /* A `tf:` link whose target is gone (TRF-8): struck through and
+           muted; the tooltip says "Not found". */
+        .treefacts-md-link.treefacts-md-link-broken {
+            color: var(--t-text-muted, #8a8a8a);
+            text-decoration: line-through;
         }
         /* Hashtag (`#name`) — drawn with a rectangle in the accent color.
            The whole `#name` is real text in the model so the border just

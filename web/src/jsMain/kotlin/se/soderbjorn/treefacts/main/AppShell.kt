@@ -129,7 +129,8 @@ class AppShell(
     private val starredModals: MutableMap<String, StarredModal> = mutableMapOf()
 
     /**
-     * Per-pane Insert Link modals, keyed by leaf pane id. Same lifecycle
+     * Per-pane Insert Link / "Link to node…" modals, keyed by
+     * `"<paneId>|<placeholder>"`. Same lifecycle
      * pattern as [starredModals]: lazily created on first open from the
      * command palette, reused thereafter, cleared in [closePane].
      */
@@ -714,6 +715,16 @@ class AppShell(
             run = {
                 val paneId = focusedPaneId()
                 if (paneId != null) openInsertLinkModal(paneId)
+            },
+        )
+        // TRF-8: the same Insert Link search, named for linking a node —
+        // whole vault, from the root, however deep the pane is zoomed.
+        out += CommandPalette.Command(
+            id = "link-to-node",
+            title = "Link to node…",
+            run = {
+                val paneId = focusedPaneId()
+                if (paneId != null) openInsertLinkModal(paneId, placeholder = "Link to node…")
             },
         )
         out += CommandPalette.Command(
@@ -1458,16 +1469,18 @@ class AppShell(
     }
 
     /**
-     * Opens the per-pane Insert Link modal. Same lifecycle pattern as
-     * [openStarredModal] — lazy first-open create, reuse thereafter,
-     * one modal per pane keyed by [paneId].
+     * Opens the per-pane Insert Link modal — for both "Insert Link" and
+     * "Link to node…", which differ only in [placeholder]. Same lifecycle
+     * pattern as [openStarredModal] — lazy first-open create, reuse
+     * thereafter, one modal per pane and placeholder.
      */
-    private fun openInsertLinkModal(paneId: String) {
+    private fun openInsertLinkModal(paneId: String, placeholder: String = "Find a node or file to link…") {
         if (paneViewModels[paneId] == null) return
-        val modal = insertLinkModals.getOrPut(paneId) {
+        val modal = insertLinkModals.getOrPut("$paneId|$placeholder") {
             LinkSearchModal.forInsertLink(
                 parentScope = scope,
                 activePaneVmProvider = { paneViewModels[paneId] },
+                placeholder = placeholder,
                 onAfterPick = { paneEditors[paneId]?.focusEditor() },
             )
         }
@@ -1996,7 +2009,7 @@ class AppShell(
     /**
      * Opens the TreeFacts internal link [href] in a new pane spawned
      * from [sourcePaneId]. Wired via [MainScreen.onShiftClickInternalLink]
-     * so shift-clicking a `#treefacts-bullet=…` link creates a new pane
+     * so shift-clicking a `tf:` link creates a new pane
      * rooted at the link target, leaving the originating pane
      * untouched. Auto layout (if active) immediately re-tiles to fit
      * both panes.
@@ -2005,11 +2018,9 @@ class AppShell(
         val newId = addFloatingPane(tabId, parentPaneId = sourcePaneId) ?: return
         ensurePaneViewModel(newId)
         val paneVm = paneViewModels[newId] ?: return
-        // The brand-new pane's document hasn't loaded yet —
-        // [PaneBackingViewModel.navigateToLink] silently no-ops when
-        // `state.isLoaded == false`. Wait for the first loaded
-        // emission before dispatching the navigation so the new pane
-        // actually lands on the link target instead of the root.
+        // The brand-new pane's document hasn't loaded yet; wait for the
+        // first loaded emission before dispatching the navigation so the
+        // link's zoom lands on a loaded outline.
         scope.launch {
             paneVm.stateFlow.first { it.backingState?.isLoaded == true }
             paneVm.navigateToLink(href)
@@ -2127,7 +2138,7 @@ class AppShell(
         if (removedVm != null) scope.launch { removedVm.release() }
         paneEditors.remove(paneId)
         starredModals.remove(paneId)?.dispose()
-        insertLinkModals.remove(paneId)?.close()
+        insertLinkModals.keys.filter { it.startsWith("$paneId|") }.forEach { insertLinkModals.remove(it)?.close() }
         navigateToModals.remove(paneId)?.close()
         insertImageModals.remove(paneId)?.close()
         if (remaining.isEmpty() && layoutState.tabs.size > 1) {
