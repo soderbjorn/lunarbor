@@ -51,9 +51,9 @@ Structure:
 
 `client/src/commonMain/.../Document.kt`. One instance per loaded file. Responsibilities:
 
-- Owns `lines: List<String>`, `lineIds: List<LineId>`, `expandedRefIds: Set<LineId>`, `isLoaded: Boolean`, plus the in-memory `promotedSubtrees` map for that file.
+- Owns `lines: List<String>`, `lineIds: List<LineId>`, `unloadedRefIds: Set<LineId>`, `isLoaded: Boolean`, plus the in-memory `promotedSubtrees` map for that file.
 - Exposes primitive edits only: `insertText(row, col, text) → InsertResult`, `insertNewline(row, col)`, `delete(startRow, startCol, endRow, endCol)`, `replaceContent(...)`, `expandSubtree(id)`, `collapseSubtree(id)`. No cursor concept, no selection concept, no editor policy, no file-switching concept.
-- Runs its own autosave loop on the scope passed in by `DocumentRegistry`. `start()` is called by the registry on first acquire; `shutdown()` (called by the registry when the last pane releases) flushes one final save synchronously and cancels the loop.
+- Runs its own autosave loop (1 s debounce, 5 s max) on the scope passed in by `DocumentRegistry`. `start()` is called by the registry on first acquire; `shutdown()` (called by the registry when the last pane releases) flushes one final save synchronously and cancels the loop.
 - Single source of truth for *one file's* content. When two panes acquire the same `fileRel`, they get the same `Document` instance and their edits flow through to each other in real time.
 
 ### 5. DocumentRegistry (common)
@@ -124,21 +124,23 @@ Mirror the JS graph with a platform-specific scope (`AndroidAppScope`, `IosAppSc
 
 ## On-disk format
 
-Notes are persisted as plain CommonMark `.md` files. A TreeFacts-managed file always starts with a YAML frontmatter marker:
+One folder per parent bullet. A bullet is backed by a folder if and only if it has content: child bullets, blocks, or files in that folder. Every node folder holds one hidden outline file, `.treefacts`, listing only that node's **direct** children (no indentation). The vault root is the root node (`<vault>/.treefacts`); top-level folders act as separate areas.
 
 ```
----
-treefacts: true
----
-* A bullet
-* [Recipes](Recipes/Recipes.md)
-* [Shopping list](<Shopping list/Shopping list.md>)
+* Buy oat milk
++ [Recipes](Recipes)
+* Trip to **Lisbon**
+:::
+**Packing**: passport, charger, adapter
+:::
 ```
 
-- **Bullets**: `* ` followed by the title; nested bullets indent by 2 spaces per level (CommonMark-compatible).
-- **Promoted-subtree refs**: a bullet whose entire content is a CommonMark inline link `* [Title](Title/Title.md)`. The link target is always relative to the parent file's directory and follows the doubled-name `<Name>/<Name>.md` shape so root, child, and grandchild files all use the same resolution rule. Paths containing spaces (or `(`, `)`, `<`, `>`) are wrapped in angle brackets — `* [Shopping list](<Shopping list/Shopping list.md>)` — per CommonMark.
-- **Frontmatter as TreeFacts marker**: `NoteRepository` only treats a markdown link as a promoted-subtree ref when the link's target file exists *and* has the `treefacts: true` marker. Files without it are treated as opaque foreign Markdown — TreeFacts displays the bullet's link text verbatim, never auto-splices the file's content, and never rewrites the file. This is what makes it safe to drop a TreeFacts tree into an Obsidian vault that already contains hand-authored notes.
-- **Parser/codec**: `client/src/commonMain/.../data/SubtreeCodec.kt` is the single place that parses and emits the link form; `NoteRepository.kt` owns the frontmatter and is the only thing that touches `FileSystem`.
+- `* text` — a leaf bullet; the text is inline Markdown.
+- `+ [title](folder)` — a folder-backed bullet; the title keeps its formatting, the folder name is stored explicitly (relative to the file's folder).
+- `:::` … `:::` — a block (a longer fence when the content contains a `:::` line).
+- **Folder names** (`data/FolderName.kt`): the title's plain text, percent-encoded where unsafe (`/ \ : * ? " < > |`, `%`, a leading dot, trailing dots/spaces, control characters), capped at 120 bytes; sibling collisions are case-insensitive and get ` (2)`, ` (3)`, …; an empty title is `Untitled`.
+- **Save rules** (`NoteRepository.save`, run 1 s after the last edit and at most 5 s apart): a leaf that gets its first child becomes a folder; a folder whose last child is removed is deleted unless it still holds files; title edits rename the folder; moves (indent, outdent, drag, cut and paste) `rename` the folder so attachments travel; a deleted folder-backed bullet's folder goes to `<vault>/.trash/<timestamp> <name>/` (undo in the same session moves it back; the trash is never emptied automatically).
+- **Parser/codec**: `client/src/commonMain/.../data/SubtreeCodec.kt` parses and emits the outline format; `NoteRepository.kt` is the only thing that touches `FileSystem`. Files that are not `.treefacts` outlines (`Starred.md`, other `.md` notes) are read and written as plain lines.
 
 ## Zoom navigation
 
@@ -148,7 +150,7 @@ treefacts: true
 - `zoomHistory: List<LineId?>` — browser-style back stack. Every zoom-changing intent (`zoomInto`, `zoomTo`, `zoomOut`) pushes the current target before changing, and clears the forward stack.
 - `zoomForward: List<LineId?>` — populated by `zoomBack` and consumed by `zoomForward`. Capped at 50 entries per direction.
 
-User-facing affordances on the web: the pane toolbar shows a back-arrow and forward-arrow whenever the corresponding stack is non-empty, plus the existing `up` (zoom one level out) and `home` (clear zoom) buttons. Keyboard shortcuts are `Option-Cmd-Left` (back), `Option-Cmd-Right` (forward), `Option-Cmd-Up` (zoom out one level), and `Escape` (clear zoom). Clicking the bullet dot of a promoted-ref bullet navigates into its file via the existing `zoomInto` intent — the lazy-load on a folded ref + history push gives a "click to open this page" UX without any link-specific click handling.
+User-facing affordances on the web: the pane toolbar shows a back-arrow and forward-arrow whenever the corresponding stack is non-empty, plus the existing `up` (zoom one level out) and `home` (clear zoom) buttons. Keyboard shortcuts are `Option-Cmd-Left` (back), `Option-Cmd-Right` (forward), `Option-Cmd-Up` (zoom out one level), and `Escape` (clear zoom). Clicking the bullet dot of a folder-backed bullet navigates into it via the existing `zoomInto` intent — the lazy-load on a folded ref + history push gives a "click to open this page" UX without any link-specific click handling.
 
 ## Where things live
 
@@ -164,12 +166,12 @@ client/src/commonMain/.../main/
   DocumentLayout.kt                   ← pure layout helpers (visible rows, hit-test)
 
 client/src/commonMain/.../data/
-  NoteRepository.kt                   ← Markdown I/O + frontmatter
-  SubtreeCodec.kt                     ← markdown-link bullet codec
-  PromotionPolicy.kt                  ← when to spin a subtree out
+  NoteRepository.kt                   ← vault I/O + folder-per-bullet save rules
+  SubtreeCodec.kt                     ← `.treefacts` outline codec
+  FolderName.kt                       ← title → folder name encoding
 
 client/src/*Main/.../platform/
-  FileSystem.kt                       ← expect/actual
+  FileSystem.kt                       ← interface; per-platform PlatformFileSystem
 
 web/src/jsMain/.../
   Main.kt                             ← entry, creates graph
