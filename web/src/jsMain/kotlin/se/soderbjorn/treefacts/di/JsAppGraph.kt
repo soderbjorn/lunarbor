@@ -21,6 +21,7 @@ import se.soderbjorn.lunula.web.LocalStoragePersister
 import se.soderbjorn.treefacts.data.NoteRepository
 import se.soderbjorn.treefacts.main.DocumentRegistry
 import se.soderbjorn.treefacts.platform.FileSystem
+import se.soderbjorn.treefacts.platform.PlatformFileSystem
 
 object AppScope
 
@@ -67,7 +68,7 @@ interface JsAppGraph {
 
     @SingleIn(AppScope::class)
     @Provides
-    fun provideFileSystem(): FileSystem = FileSystem()
+    fun provideFileSystem(): FileSystem = PlatformFileSystem()
 
     @SingleIn(AppScope::class)
     @Provides

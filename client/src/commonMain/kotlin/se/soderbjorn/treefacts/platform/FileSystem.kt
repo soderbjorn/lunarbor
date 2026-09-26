@@ -1,24 +1,25 @@
-package se.soderbjorn.treefacts.platform
-
-/**
+/*
+ * FileSystem.kt (commonMain)
+ * --------------------------
  * Platform abstraction over the local filesystem operations TreeFacts needs.
  *
- * The auto-promotion feature splits one outline across many `.md` files in a
- * directory tree that mirrors the outline shape, so the surface goes beyond
- * "read/write a single file" — directories must be created and listed,
- * promoted subtrees may be renamed when the user edits the parent bullet's
- * title, and demoted subtrees must be cleaned up.
+ * The vault is a tree of folders, one per folder-backed bullet, each holding
+ * a hidden `.treefacts` outline file (see `NoteRepository`). Keeping that
+ * tree in step with the outline needs more than "read/write a single file":
+ * directories are created, listed, renamed and moved (so attachments travel
+ * with their bullet), and emptied folders are removed.
  *
- * Each TreeFacts-managed file starts with a `treefacts: true` YAML
- * frontmatter marker; `NoteRepository` adds it on every write and strips
- * it on every read. Files without the marker are treated as opaque
- * markdown — TreeFacts displays the link to them but never auto-splices
- * or rewrites them, so it's safe to share a directory with hand-authored
- * notes (e.g. an Obsidian vault).
+ * [FileSystem] is a plain interface so commonTest can run the repository
+ * against an in-memory implementation. Each platform source set supplies
+ * its own `PlatformFileSystem` class (the Electron bridge on JS, stubs
+ * elsewhere), constructed by that platform's DI graph. `NoteRepository` is
+ * the only production caller.
  *
- * All paths are absolute and use `/` as separator on every platform; the JS
- * actual normalises to host conventions internally if needed.
+ * All paths are absolute and use `/` as separator on every platform.
  */
+
+package se.soderbjorn.treefacts.platform
+
 /**
  * One direct entry in a directory listing produced by [FileSystem.listDirectoryEntries].
  * Used by the filesystem-tree footer in the editor view to lazy-load each
@@ -36,7 +37,15 @@ data class VaultDirectoryEntry(
     val lastModifiedMs: Long = 0L,
 )
 
-expect class FileSystem() {
+/**
+ * The filesystem operations `NoteRepository` performs.
+ *
+ * ### Implementations
+ * - `PlatformFileSystem` in each platform source set (Electron IPC bridge
+ *   on JS; stubs elsewhere).
+ * - An in-memory map-backed fake in commonTest.
+ */
+interface FileSystem {
     /** Creates [path] (and any missing ancestors); no-op if it already exists. */
     suspend fun ensureDirectory(path: String)
 
@@ -48,12 +57,7 @@ expect class FileSystem() {
 
     /**
      * Writes raw [bytes] to [path], creating any missing parent
-     * directories. Used by paste-an-image and any future binary asset
-     * write path. Implementations are expected to be atomic enough that
-     * a partial write doesn't leave a half-file on disk (e.g. write to
-     * `path.tmp` then rename); the JS actual relies on Electron's
-     * `fsPromises.writeFile`, which is atomic on a per-file basis on
-     * every supported platform.
+     * directories. Used by paste-an-image.
      */
     suspend fun writeBinary(path: String, bytes: ByteArray)
 
@@ -66,7 +70,11 @@ expect class FileSystem() {
     /** Atomically renames or moves a file from [from] to [to]. */
     suspend fun moveFile(from: String, to: String)
 
-    /** Atomically renames or moves a directory (with all contents) from [from] to [to]. */
+    /**
+     * Atomically renames or moves a directory (with all contents) from
+     * [from] to [to], creating [to]'s parent directories first. [to] must
+     * not exist yet.
+     */
     suspend fun moveDirectory(from: String, to: String)
 
     /**
@@ -77,9 +85,9 @@ expect class FileSystem() {
 
     /**
      * Like [listDirectory] but returns each entry tagged with whether it is a
-     * directory. Used by the vault-tree footer to lazy-load one folder at a
-     * time without having to probe each child with a follow-up call. Returns
-     * an empty list if the directory does not exist. Does not recurse.
+     * directory. Returns an empty list if the directory does not exist. Does
+     * not recurse.
      */
     suspend fun listDirectoryEntries(path: String): List<VaultDirectoryEntry>
 }
+
