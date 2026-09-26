@@ -1,22 +1,42 @@
 /*
- * SubtreeCodec.kt
- * ---------------
- * Pure helpers used by `NoteRepository` to translate between an in-memory
- * composed outline and a directory tree of `.md` files connected by
- * `[Title](Title/Title.md)` markdown links.
+ * SubtreeCodec.kt (commonMain)
+ * ----------------------------
+ * Pure codec between the editor's composed outline and the on-disk
+ * `.treefacts` outline files.
  *
- * The on-disk format is plain CommonMark: each promoted bullet is a list
- * item whose entire content is an inline markdown link pointing at a
- * sibling subdirectory file. Parsing/formatting that link is what this
- * file does.
+ * ### On disk
  *
- * No I/O, no state — every function here is total and deterministic. This
- * is deliberate: the repository is the only thing that touches the
- * filesystem and the only thing that holds mutable promotion state.
- * Keeping the codec pure makes round-trip testing (parse → format → parse)
- * trivial.
+ * Every node folder holds one hidden `.treefacts` file listing only that
+ * node's **direct** children, so the file has no indentation:
  *
- * commonMain only.
+ * ```
+ * * Buy oat milk
+ * + [Recipes](Recipes)
+ * * Trip to **Lisbon**
+ * :::
+ * **Packing**: passport, charger, adapter
+ * :::
+ * ```
+ *
+ *  - `* text` — a leaf bullet; the text is inline Markdown.
+ *  - `+ [title](folder)` — a folder-backed bullet. The title keeps its
+ *    formatting (`[`, `]` and `\` backslash-escaped); the folder name is
+ *    stored explicitly and resolved relative to the file's own folder.
+ *  - `:::` … `:::` — a block. A block whose content contains a colon-only
+ *    line gets a longer fence (`::::`), so the content never closes it.
+ *  - Anything else is kept verbatim as a text line.
+ *
+ * ### In memory
+ *
+ * `Document` holds one flat, indented list of lines (the composed
+ * outline): bullets as `<indent>* title` — folder-backed bullets too; the
+ * document remembers which rows those are — and blocks as their fence and
+ * content lines, each prefixed with the block's indent. [parseComposed]
+ * turns that list back into a tree so `NoteRepository.save` can split it
+ * into per-folder files.
+ *
+ * No I/O and no state: `NoteRepository` is the only thing that touches the
+ * file system. commonMain only.
  */
 
 package se.soderbjorn.treefacts.data
@@ -24,75 +44,410 @@ package se.soderbjorn.treefacts.data
 import se.soderbjorn.treefacts.main.DocumentLayout
 
 /**
- * Parsed form of a `* [Title](path)` markdown-link bullet that promotes
- * its children into a separate file.
- *
- * @property line The original line as it appeared in the parent file.
- * @property bulletText The bullet content the editor sees in place of the
- *   raw link — `<indent>* <Title>`. Reconstructed from the link's label
- *   so renderers, cursor logic, and selection helpers can treat the row
- *   as an ordinary bullet.
- * @property refPath The link's URL, relative to the parent file's
- *   directory. Always shaped `<Name>/<Name>.md`.
- * @property indent Leading-space count of the line.
+ * One line (or, for blocks, one fenced run of lines) of a `.treefacts`
+ * file, as parsed by [SubtreeCodec.parseNodeFile].
  */
-data class SubtreeRef(
-    val line: String,
-    val bulletText: String,
-    val refPath: String,
-    val indent: Int,
-)
+sealed class NodeLine {
+    /**
+     * `* title` — a leaf bullet.
+     *
+     * @property title Inline-Markdown title, possibly empty.
+     */
+    data class Leaf(val title: String) : NodeLine()
 
-/** Result of [findSubtrees]: every bullet's row, end, indent, and descendant count. */
-data class SubtreeMeasurement(
-    val startRow: Int,
-    val endRowInclusive: Int,
-    val indent: Int,
-    val descendantCount: Int,
-)
+    /**
+     * `+ [title](folder)` — a folder-backed bullet.
+     *
+     * @property title Inline-Markdown title, unescaped.
+     * @property folder The backing folder's name, one path segment,
+     *   relative to the folder holding this file.
+     */
+    data class Folder(val title: String, val folder: String) : NodeLine()
+
+    /**
+     * A `:::`-fenced block.
+     *
+     * @property content The lines between the fences, verbatim.
+     */
+    data class Block(val content: List<String>) : NodeLine()
+
+    /**
+     * Any other line, kept verbatim so hand edits survive a round trip.
+     *
+     * @property raw The line exactly as it appeared in the file.
+     */
+    data class Text(val raw: String) : NodeLine()
+}
 
 /**
- * Pure helpers for the auto-promotion pipeline.
+ * One node of the tree [SubtreeCodec.parseComposed] builds from the
+ * composed outline.
+ */
+sealed class ComposedItem {
+    /** First row of the item in the composed outline. */
+    abstract val row: Int
+
+    /** Last row of the item and everything nested in it (inclusive). */
+    abstract val endRow: Int
+
+    /**
+     * A bullet row.
+     *
+     * @property row Row of the bullet line.
+     * @property endRow Last row of its subtree.
+     * @property indent Column of the `*` marker.
+     * @property title Text after `* `.
+     * @property children Items nested under it, in order.
+     */
+    data class Bullet(
+        override val row: Int,
+        override val endRow: Int,
+        val indent: Int,
+        val title: String,
+        val children: List<ComposedItem>,
+    ) : ComposedItem()
+
+    /**
+     * A fenced block.
+     *
+     * @property row Row of the opening fence.
+     * @property endRow Row of the closing fence.
+     * @property content Content lines with the block's indent removed.
+     */
+    data class Block(
+        override val row: Int,
+        override val endRow: Int,
+        val content: List<String>,
+    ) : ComposedItem()
+
+    /**
+     * Any other non-blank line.
+     *
+     * @property row Row of the line.
+     * @property text The line with its indentation removed.
+     */
+    data class Text(override val row: Int, val text: String) : ComposedItem() {
+        override val endRow: Int get() = row
+    }
+}
+
+/**
+ * Pure helpers for the outline storage format.
  *
  * ### Callers
- * - `NoteRepository.load` invokes [parseRef] on every line while resolving
- *   nested `.md` files into one composed outline.
- * - `NoteRepository.save` invokes [findSubtrees], [reindentBy], [safeFilename],
- *   and [uniqueFilename] when deciding which subtrees to spin out, rename, or
- *   inline back.
- *
- * ### The `#treefacts` URL fragment
- *
- * A markdown link bullet is treated as a TreeFacts promoted-ref boundary
- * **iff** its URL ends in the literal fragment `#treefacts`. Plain markdown
- * links (`[Foo](Foo.md)`) and links with any other fragment
- * (`[Foo](Foo.md#section)`) render as literal link bullets — TreeFacts
- * never reads or rewrites their target files.
- *
- * The fragment is invisible to the human reader in every CommonMark
- * viewer (Obsidian, VS Code, GitHub, …): the link still navigates to the
- * file, the unresolved `#treefacts` anchor is silently ignored. This is
- * what lets a TreeFacts tree round-trip through arbitrary markdown
- * tooling without ceremony — no per-file frontmatter, no custom syntax,
- * just a stale heading anchor that other tools shrug off.
+ * - `NoteRepository.loadFile` / `loadSubtree` use [parseNodeFile] +
+ *   [composeNodeLines] to turn a `.treefacts` file into editor lines.
+ * - `NoteRepository.save` uses [parseComposed] to split the editor's lines
+ *   into folders, and [formatNodeFile] to write each folder's file.
+ * - `Document` uses [composedSubtreeEnd] so collapsing a folder-backed
+ *   bullet removes exactly the rows save would attribute to it.
+ * - `PaneBackingViewModel`, `VaultIndex` and the Starred modal use
+ *   [titleOf], [parseAnyLinkBullet], [formatPlainLinkBullet],
+ *   [escapeLabel] and [formatLinkUrlForLabel].
  */
 object SubtreeCodec {
 
-    /** URL fragment that distinguishes a TreeFacts promoted-ref bullet. */
-    const val TREEFACTS_FRAGMENT: String = "#treefacts"
+    /** Shortest block fence. */
+    const val MIN_FENCE: String = ":::"
+
+    // ------------------------------------------------------------- node file
 
     /**
-     * A markdown link bullet's parts, returned by [parseAnyLinkBullet].
-     * Distinct from [SubtreeRef] because this captures the URL verbatim
-     * (including any fragment), which the caller may want to inspect to
-     * decide whether the bullet is a TreeFacts promoted ref, a hand-authored
-     * cross-reference (URL has a fragment other than `#treefacts`), or a
-     * legacy bare-URL link to a file (no fragment at all).
+     * Parses the text of one `.treefacts` file. Blank lines are dropped —
+     * they carry no meaning in the outline — except inside blocks, whose
+     * content is kept verbatim. An opening fence with no matching closing
+     * fence is kept as a text line so nothing is lost.
+     */
+    fun parseNodeFile(text: String): List<NodeLine> {
+        if (text.isEmpty()) return emptyList()
+        val raw = text.split("\n").map { it.removeSuffix("\r") }
+        val out = ArrayList<NodeLine>(raw.size)
+        var i = 0
+        while (i < raw.size) {
+            val line = raw[i]
+            if (isFence(line)) {
+                val fence = line.trim()
+                val close = (i + 1 until raw.size).firstOrNull { raw[it].trim() == fence }
+                if (close != null) {
+                    out += NodeLine.Block(raw.subList(i + 1, close).toList())
+                    i = close + 1
+                    continue
+                }
+            }
+            when {
+                line.isBlank() -> {}
+                line == "*" -> out += NodeLine.Leaf("")
+                line.startsWith("* ") -> out += NodeLine.Leaf(line.substring(2))
+                line.startsWith("+ ") -> out += parseFolderLine(line) ?: NodeLine.Text(line)
+                else -> out += NodeLine.Text(line)
+            }
+            i++
+        }
+        return out
+    }
+
+    /**
+     * Parses `+ [title](folder)`. The title may contain backslash-escaped
+     * `[`, `]` and `\`; the folder is everything between `](` and the
+     * line's final `)`, so folder names containing parentheses work.
+     *
+     * @return `null` when [line] does not have that shape.
+     */
+    private fun parseFolderLine(line: String): NodeLine.Folder? {
+        val s = line.trimEnd()
+        if (!s.startsWith("+ [")) return null
+        val title = StringBuilder()
+        var i = 3
+        while (i < s.length) {
+            val ch = s[i]
+            if (ch == '\\' && i + 1 < s.length && s[i + 1] in "[]\\") {
+                title.append(s[i + 1])
+                i += 2
+                continue
+            }
+            if (ch == ']') break
+            title.append(ch)
+            i++
+        }
+        if (i + 1 >= s.length || s[i] != ']' || s[i + 1] != '(') return null
+        if (!s.endsWith(")")) return null
+        val folder = s.substring(i + 2, s.length - 1)
+        if (folder.isEmpty() || '/' in folder || folder == "." || folder == "..") return null
+        return NodeLine.Folder(title.toString(), folder)
+    }
+
+    /**
+     * Renders [items] as the text of a `.treefacts` file, one line per
+     * item (blocks span several), with a trailing newline. Empty [items]
+     * render as the empty string.
+     */
+    fun formatNodeFile(items: List<NodeLine>): String {
+        if (items.isEmpty()) return ""
+        val sb = StringBuilder()
+        for (item in items) {
+            when (item) {
+                is NodeLine.Leaf -> sb.append("* ").append(item.title).append('\n')
+                is NodeLine.Folder -> sb.append(formatFolderLine(item.title, item.folder)).append('\n')
+                is NodeLine.Block -> {
+                    val fence = fenceFor(item.content)
+                    sb.append(fence).append('\n')
+                    for (c in item.content) sb.append(c).append('\n')
+                    sb.append(fence).append('\n')
+                }
+                is NodeLine.Text -> sb.append(item.raw).append('\n')
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Renders one folder-backed bullet line, `+ [title](folder)`, escaping
+     * `[`, `]` and `\` in the title.
+     */
+    fun formatFolderLine(title: String, folder: String): String {
+        val esc = StringBuilder(title.length)
+        for (ch in title) {
+            if (ch == '[' || ch == ']' || ch == '\\') esc.append('\\')
+            esc.append(ch)
+        }
+        return "+ [$esc]($folder)"
+    }
+
+    /**
+     * The fence for a block holding [content]: [MIN_FENCE], lengthened to
+     * one colon more than the longest colon-only line in the content so
+     * that line can never close the block early.
+     */
+    fun fenceFor(content: List<String>): String {
+        var longest = 0
+        for (line in content) {
+            val t = line.trim()
+            if (t.isNotEmpty() && t.all { it == ':' }) longest = maxOf(longest, t.length)
+        }
+        return ":".repeat(maxOf(MIN_FENCE.length, longest + 1))
+    }
+
+    /** `true` when [line], ignoring surrounding whitespace, is 3+ colons only. */
+    fun isFence(line: String): Boolean {
+        val t = line.trim()
+        return t.length >= MIN_FENCE.length && t.all { it == ':' }
+    }
+
+    /**
+     * Result of [composeNodeLines].
+     *
+     * @property lines Editor lines, each prefixed with the requested indent.
+     * @property folderByRow Row (in [lines]) → folder name, for every
+     *   `+` bullet.
+     */
+    data class Composed(val lines: List<String>, val folderByRow: Map<Int, String>)
+
+    /**
+     * Turns parsed [items] into composed editor lines at [indent]:
+     * bullets (leaf and folder alike) become `<indent>* title`, blocks
+     * become their fence plus content lines, text lines are kept.
+     *
+     * Every block content line, blank ones included, is prefixed with
+     * [indent] spaces so it still counts as nested under the parent
+     * bullet when [composedSubtreeEnd] measures it.
+     */
+    fun composeNodeLines(items: List<NodeLine>, indent: Int): Composed {
+        val pad = " ".repeat(indent)
+        val out = ArrayList<String>(items.size)
+        val folders = HashMap<Int, String>()
+        for (item in items) {
+            when (item) {
+                is NodeLine.Leaf -> out += "$pad* ${item.title}"
+                is NodeLine.Folder -> {
+                    folders[out.size] = item.folder
+                    out += "$pad* ${item.title}"
+                }
+                is NodeLine.Block -> {
+                    val fence = fenceFor(item.content)
+                    out += pad + fence
+                    for (c in item.content) out += pad + c
+                    out += pad + fence
+                }
+                is NodeLine.Text -> out += pad + item.raw
+            }
+        }
+        return Composed(out, folders)
+    }
+
+    // -------------------------------------------------------- composed tree
+
+    /**
+     * Builds the item tree of a composed outline.
+     *
+     * Ownership follows indentation: an item belongs to the nearest
+     * preceding bullet with a smaller indent. A fence line opens a block
+     * that runs to the next line with the identical fence; its content is
+     * opaque (a `* ` inside a block is not a bullet). Blank lines outside
+     * blocks belong to nobody and are dropped.
+     *
+     * @return The top-level items, in order.
+     */
+    fun parseComposed(lines: List<String>): List<ComposedItem> {
+        val root = Frame(indent = -1, row = -1, title = "")
+        val stack = ArrayDeque<Frame>()
+        stack.addLast(root)
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            if (line.isBlank()) { i++; continue }
+            val indent = line.indexOfFirst { it != ' ' }
+            if (isFence(line)) {
+                val fence = line.trim()
+                val close = (i + 1 until lines.size).firstOrNull { lines[it].trim() == fence }
+                if (close != null) {
+                    while (stack.last().indent >= indent) closeFrame(stack)
+                    val content = (i + 1 until close).map { stripIndent(lines[it], indent) }
+                    stack.last().children += ComposedItem.Block(i, close, content)
+                    i = close + 1
+                    continue
+                }
+            }
+            val bulletCol = DocumentLayout.bulletAsteriskColumn(line)
+            while (stack.last().indent >= indent) closeFrame(stack)
+            if (bulletCol >= 0) {
+                stack.addLast(Frame(indent = bulletCol, row = i, title = line.substring(bulletCol + 2)))
+            } else {
+                stack.last().children += ComposedItem.Text(i, line.substring(indent))
+            }
+            i++
+        }
+        while (stack.size > 1) closeFrame(stack)
+        return root.children
+    }
+
+    /** Mutable build frame for one open bullet in [parseComposed]. */
+    private class Frame(val indent: Int, val row: Int, val title: String) {
+        val children = ArrayList<ComposedItem>()
+    }
+
+    /**
+     * Pops the top frame of [stack] and appends it, as a finished
+     * [ComposedItem.Bullet], to its parent. The bullet ends at the last
+     * row any of its children own.
+     */
+    private fun closeFrame(stack: ArrayDeque<Frame>) {
+        val f = stack.removeLast()
+        val end = f.children.maxOfOrNull { it.endRow } ?: f.row
+        stack.last().children += ComposedItem.Bullet(f.row, end, f.indent, f.title, f.children.toList())
+    }
+
+    private fun stripIndent(line: String, indent: Int): String {
+        var drop = 0
+        while (drop < indent && drop < line.length && line[drop] == ' ') drop++
+        return line.substring(drop)
+    }
+
+    /**
+     * Last row owned by the bullet at [row] — its children, nested blocks
+     * and text included — using the same ownership rules as
+     * [parseComposed]. Returns [row] when the bullet owns nothing, or
+     * when [row] is not a bullet.
+     */
+    fun composedSubtreeEnd(lines: List<String>, row: Int): Int {
+        fun find(items: List<ComposedItem>): ComposedItem.Bullet? {
+            for (item in items) {
+                if (item !is ComposedItem.Bullet) continue
+                if (item.row == row) return item
+                if (row in item.row..item.endRow) return find(item.children)
+            }
+            return null
+        }
+        return find(parseComposed(lines))?.endRow ?: row
+    }
+
+    /**
+     * `true` when [items] hold real content: anything left after
+     * [trimTrailingEmpty].
+     */
+    fun hasContent(items: List<ComposedItem>): Boolean = trimTrailingEmpty(items).isNotEmpty()
+
+    /**
+     * Drops trailing empty leaf bullets (a `* ` with no text and no
+     * content of its own) from [items]. The editor freely creates such
+     * placeholders — Enter at the end of a list, zooming into a leaf — and
+     * they must neither reach disk nor make their parent folder-backed.
+     */
+    fun trimTrailingEmpty(items: List<ComposedItem>): List<ComposedItem> {
+        var end = items.size
+        while (end > 0) {
+            val last = items[end - 1]
+            val empty = last is ComposedItem.Bullet && last.title.isBlank() && !hasContent(last.children)
+            if (!empty) break
+            end--
+        }
+        return if (end == items.size) items else items.subList(0, end)
+    }
+
+    // -------------------------------------------------------------- titles
+
+    /**
+     * The title text of a bullet line: everything after the leading
+     * indent and `* ` marker. Empty for non-bullet lines and bullets with
+     * no text.
+     */
+    fun titleOf(line: String): String {
+        val indent = DocumentLayout.bulletAsteriskColumn(line)
+        if (indent < 0) return ""
+        val titleStart = indent + 2
+        if (titleStart >= line.length) return ""
+        return line.substring(titleStart)
+    }
+
+    // --------------------------------------------------- inline link bullets
+
+    /**
+     * A `* [Label](url)` bullet's parts, returned by [parseAnyLinkBullet].
+     * Used by the Starred bookmarks file, whose entries are plain
+     * Markdown-link bullets.
      *
      * @property indent Leading-space count of the line.
-     * @property bulletText The bullet's display form (`<indent>* <label>`)
-     *   — what the editor would show in place of the raw markdown.
-     * @property url The link's URL, **including** any `#…` fragment.
+     * @property bulletText The bullet's display form (`<indent>* <label>`).
+     * @property url The link's URL, including any `#…` fragment.
      */
     data class LinkBullet(
         val indent: Int,
@@ -101,70 +456,20 @@ object SubtreeCodec {
     )
 
     /**
-     * Detects a `* [Title](url#treefacts)` bullet and returns its parts.
+     * Parses a bullet whose whole content is an inline Markdown link,
+     * `<indent>* [Label](url)` (URL optionally wrapped in `<…>`).
      *
-     * The accepted shape is: indent, `* `, `[`, label (no unescaped `]`),
-     * `]`, `(`, URL (either bare or wrapped in `<…>` to allow spaces),
-     * `)`, optional trailing whitespace, AND the URL must end with the
-     * exact `#treefacts` fragment ([TREEFACTS_FRAGMENT]). Other markdown
-     * link bullets (no fragment, or any other fragment) return `null`
-     * here — they are not promoted refs and the editor renders them as
-     * literal links. Returned [SubtreeRef.refPath] has the fragment
-     * stripped; downstream code sees only the file path.
-     *
-     * The label is unescaped (CommonMark backslash escapes for `[`,
-     * `]`, `(`, `)`, `\` are resolved).
-     *
-     * @return A [SubtreeRef] when [line] is a TreeFacts promoted-ref
-     *   bullet, or `null` otherwise.
-     */
-    fun parseRef(line: String): SubtreeRef? {
-        val bullet = parseAnyLinkBullet(line) ?: return null
-        // Only links carrying the exact `#treefacts` fragment are TreeFacts
-        // promoted refs. Strip the fragment before storing the path so
-        // callers can pass `refPath` straight to the filesystem.
-        if (!bullet.url.endsWith(TREEFACTS_FRAGMENT)) return null
-        val refPath = bullet.url.substring(0, bullet.url.length - TREEFACTS_FRAGMENT.length)
-        if (refPath.isBlank()) return null
-        return SubtreeRef(
-            line = line,
-            bulletText = bullet.bulletText,
-            refPath = refPath,
-            indent = bullet.indent,
-        )
-    }
-
-    /**
-     * Parses any markdown-link bullet of the form
-     * `<indent>* [Label](url)` (URL optionally wrapped in `<…>`),
-     * regardless of whether the URL carries a `#treefacts` fragment.
-     *
-     * Returned for both promoted-ref bullets *and* hand-authored
-     * cross-references / legacy bare-URL bullets — the caller inspects
-     * [LinkBullet.url] to decide which kind it has. Use [parseRef] when
-     * you only want promoted refs.
-     *
-     * Returns `null` when the line is not a markdown-link bullet at all
-     * (plain bullets, non-bullet lines, malformed link syntax, or empty
-     * URL). An *empty label* is accepted: clearing a collapsed promoted
-     * ref's title in the editor saves the degenerate `* [](path#treefacts)`
-     * form, and rejecting it here would silently sever the ref on the next
-     * load — the child file would become a permanent orphan that no later
-     * row deletion could ever clean up.
+     * @return The parts, or `null` when [line] is not such a bullet or
+     *   the URL is empty.
      */
     fun parseAnyLinkBullet(line: String): LinkBullet? {
         val indent = DocumentLayout.bulletAsteriskColumn(line)
         if (indent < 0) return null
         val afterMarker = indent + 2
-        if (afterMarker >= line.length) return null
-        // Trim only the trailing whitespace; leading is `<indent>* `.
         val trimmedRight = line.trimEnd()
         if (trimmedRight.length <= afterMarker) return null
         if (trimmedRight[afterMarker] != '[') return null
-
-        // Find the matching `]` for the label, honoring backslash escapes.
-        val labelStart = afterMarker + 1
-        var i = labelStart
+        var i = afterMarker + 1
         val labelBuilder = StringBuilder()
         while (i < trimmedRight.length) {
             val ch = trimmedRight[i]
@@ -181,250 +486,52 @@ object SubtreeCodec {
             i++
         }
         if (i >= trimmedRight.length || trimmedRight[i] != ']') return null
-        // Next must be `(`, no space allowed (CommonMark requires no space
-        // between `]` and `(` for inline links).
         if (i + 1 >= trimmedRight.length || trimmedRight[i + 1] != '(') return null
-
         val urlStart = i + 2
-        // Match the closing `)` — last `)` of the line should be it. We
-        // don't support nested parens in URLs (rare, and CommonMark's
-        // rules are permissive only for balanced parens; keep it simple).
         if (!trimmedRight.endsWith(")")) return null
         val urlEnd = trimmedRight.length - 1
         if (urlEnd <= urlStart) return null
         var url = trimmedRight.substring(urlStart, urlEnd)
-        if (url.startsWith("<") && url.endsWith(">")) {
-            url = url.substring(1, url.length - 1)
-        }
+        if (url.startsWith("<") && url.endsWith(">")) url = url.substring(1, url.length - 1)
         if (url.isBlank()) return null
-
-        val label = labelBuilder.toString()
-        val bulletText = " ".repeat(indent) + "* " + label
+        val bulletText = " ".repeat(indent) + "* " + labelBuilder
         return LinkBullet(indent = indent, bulletText = bulletText, url = url)
     }
 
     /**
-     * Renders a TreeFacts promoted-ref markdown-link bullet for [title]
-     * pointing at [refPath]. The emitted URL always carries the
-     * [TREEFACTS_FRAGMENT] suffix so [parseRef] will recognize it as a
-     * TreeFacts ref on the next load.
+     * Renders a plain Markdown-link bullet, `<indent>* [label](href)`.
+     * Used for Starred bookmarks.
      *
      * @param indent Leading-space count for the rendered line.
-     * @param title Display label. Will be backslash-escaped per CommonMark
-     *   for the `[`, `]`, `(`, `)`, and `\` characters.
-     * @param refPath URL to point at, **without** the `#treefacts`
-     *   fragment — this function appends it. Wrapped in `<…>` if the
-     *   resulting URL contains a space, paren, `<`, or `>`.
-     */
-    fun formatRef(indent: Int, title: String, refPath: String): String =
-        " ".repeat(indent) + "* [" + escapeLinkLabel(title) + "](" + formatLinkUrl(refPath + TREEFACTS_FRAGMENT) + ")"
-
-    /**
-     * Renders a plain markdown-link bullet (no `#treefacts` fragment) so the
-     * link is treated as foreign by [parseRef] and never auto-spliced.
-     *
-     * Used for the Starred bookmarks file, where the link's purpose is
-     * navigation rather than subtree promotion. The caller may include a
-     * non-TreeFacts fragment in [href] (e.g. `#L=42`) to encode an
-     * intra-document anchor.
-     *
-     * @param indent Leading-space count for the rendered line.
-     * @param label Display label. Backslash-escaped per CommonMark for
-     *   `[`, `]`, `(`, `)`, and `\`.
-     * @param href URL to point at, verbatim. Wrapped in `<…>` when it
-     *   contains a space, paren, `<`, or `>`.
+     * @param label Display label; backslash-escaped via [escapeLabel].
+     * @param href URL, verbatim; wrapped in `<…>` via
+     *   [formatLinkUrlForLabel] when it contains spaces or parentheses.
      */
     fun formatPlainLinkBullet(indent: Int, label: String, href: String): String =
-        " ".repeat(indent) + "* [" + escapeLinkLabel(label) + "](" + formatLinkUrl(href) + ")"
+        " ".repeat(indent) + "* [" + escapeLabel(label) + "](" + formatLinkUrlForLabel(href) + ")"
 
     /**
-     * Computes per-bullet metrics over the whole [lines] list.
-     *
-     * Each entry corresponds to a bullet line in [lines]; non-bullet lines are
-     * skipped. The walk is single-pass and uses [DocumentLayout.subtreeEnd]
-     * for the end-row computation, so behaviour matches what the editor's
-     * zoom feature considers a "subtree".
+     * Backslash-escapes the Markdown link-label specials (`\`, `[`, `]`,
+     * `(`, `)`) in [label]. Used for inline links and images the editor
+     * inserts into titles (`PaneBackingViewModel.insertMarkdownLink`, …).
      */
-    fun findSubtrees(lines: List<String>): List<SubtreeMeasurement> {
-        val out = ArrayList<SubtreeMeasurement>(lines.size)
-        for (i in lines.indices) {
-            val indent = DocumentLayout.bulletAsteriskColumn(lines[i])
-            if (indent < 0) continue
-            val end = DocumentLayout.subtreeEnd(lines, i, indent)
-            out += SubtreeMeasurement(
-                startRow = i,
-                endRowInclusive = end,
-                indent = indent,
-                descendantCount = end - i,
-            )
-        }
-        return out
-    }
-
-    /**
-     * Returns [lines] with each bullet line's leading whitespace shifted by
-     * [delta] *characters*. Positive [delta] indents (used when inlining a
-     * promoted child file's contents into a parent), negative outdents (used
-     * when extracting a subtree to a child file at indent 0). Non-bullet
-     * lines are returned unchanged.
-     *
-     * Bullets whose indent would drop below zero stay at column 0; this keeps
-     * the operation total but should not happen in practice because the
-     * caller computes [delta] from a real subtree's root indent.
-     */
-    fun reindentBy(lines: List<String>, delta: Int): List<String> {
-        if (delta == 0) return lines
-        return lines.map { line ->
-            val indent = DocumentLayout.bulletAsteriskColumn(line)
-            if (indent < 0) {
-                line
-            } else if (delta > 0) {
-                " ".repeat(delta) + line
-            } else {
-                val drop = (-delta).coerceAtMost(indent)
-                line.substring(drop)
-            }
-        }
-    }
-
-    /**
-     * Extracts the title text from a bullet line — i.e. the content after the
-     * leading indent and `"* "` marker. Returns the empty string when [line]
-     * is not a bullet or carries no title yet.
-     *
-     * If [line] is a markdown-link bullet, the link's label is returned (so
-     * the title matches what the editor displays, not the raw link source).
-     */
-    fun titleOf(line: String): String {
-        val indent = DocumentLayout.bulletAsteriskColumn(line)
-        if (indent < 0) return ""
-        val ref = parseRef(line)
-        if (ref != null) {
-            // bulletText is `<indent>* <label>`; slice off the marker.
-            val titleStart = indent + 2
-            return if (titleStart >= ref.bulletText.length) "" else ref.bulletText.substring(titleStart)
-        }
-        val titleStart = indent + 2
-        if (titleStart >= line.length) return ""
-        return line.substring(titleStart)
-    }
-
-    // -------------------------------------------------------- link helpers
-
-    /**
-     * Backslash-escapes the CommonMark link-label specials (`\`, `[`,
-     * `]`, `(`, `)`) inside [label] so the label survives a round-trip
-     * through `[…](…)`. Used by [formatRef] / [formatPlainLinkBullet]
-     * for emitted bullets and by `PaneBackingViewModel.insertMarkdownLink`
-     * for user-inserted TreeFacts title-path links.
-     */
-    fun escapeLabel(label: String): String = escapeLinkLabel(label)
-
-    /**
-     * Wraps [url] in `<…>` when it contains a space, paren, or angle
-     * bracket — the CommonMark rule for embedding such characters in
-     * an inline link's URL. Bare URLs (no whitespace, no parens) are
-     * returned unchanged.
-     *
-     * Used both by [formatRef] / [formatPlainLinkBullet] and by the
-     * Insert Link feature's emitter so a `#treefacts-bullet=…` URL
-     * containing percent-encoded title parens still wraps correctly.
-     */
-    fun formatLinkUrlForLabel(url: String): String = formatLinkUrl(url)
-
-    private fun escapeLinkLabel(label: String): String {
+    fun escapeLabel(label: String): String {
         val sb = StringBuilder(label.length)
         for (ch in label) {
-            when (ch) {
-                '\\', '[', ']', '(', ')' -> {
-                    sb.append('\\'); sb.append(ch)
-                }
-                else -> sb.append(ch)
-            }
+            if (ch == '\\' || ch == '[' || ch == ']' || ch == '(' || ch == ')') sb.append('\\')
+            sb.append(ch)
         }
         return sb.toString()
     }
 
-    private fun formatLinkUrl(path: String): String {
-        val needsAngle = path.any { it == ' ' || it == '(' || it == ')' || it == '<' || it == '>' }
-        return if (needsAngle) "<$path>" else path
-    }
-
-    // -------------------------------------------------------------- filenames
-
-    private val FILESYSTEM_ILLEGAL = Regex("[\u0000/]")
-    private val WHITESPACE_RUN = Regex("\\s+")
-    private const val MAX_FILENAME_BYTES: Int = 200
-    private const val UNTITLED: String = "untitled"
-
     /**
-     * Returns [title] reshaped into a filesystem-safe basename, preserving as
-     * much of the original (case, spaces, non-ASCII) as possible. Strategy:
-     *
-     * 1. Strip leading/trailing whitespace.
-     * 2. Replace `/` and `NUL` (the only characters APFS forbids) with `-`.
-     * 3. Strip leading dots so the file isn't hidden in Finder/CLI listings.
-     * 4. Collapse runs of whitespace to a single space.
-     * 5. Cap to [MAX_FILENAME_BYTES] UTF-8 bytes (POSIX allows 255, but we
-     *    leave headroom for the `.md` extension and a possible ` 2`
-     *    disambiguator).
-     * 6. Fall back to `untitled` if the result is empty.
+     * Wraps an inline link's [url] in `<…>` when it contains a space,
+     * parenthesis or angle bracket, as inline Markdown requires; returns
+     * it unchanged otherwise. Only for links *inside titles* — folder
+     * names in `+` lines are stored bare.
      */
-    fun safeFilename(title: String): String {
-        var s = title.trim()
-        s = FILESYSTEM_ILLEGAL.replace(s, "-")
-        s = s.trimStart('.')
-        s = WHITESPACE_RUN.replace(s, " ")
-        s = trimToByteBudget(s, MAX_FILENAME_BYTES)
-        return if (s.isEmpty()) UNTITLED else s
-    }
-
-    /**
-     * Returns [base] if it's not in [used], otherwise `base 2`, `base 3`, …
-     * until a free name is found. The returned name is **not** automatically
-     * added to [used] — callers add it themselves once they've committed to
-     * the filename, since they may need to roll back in error paths.
-     */
-    fun uniqueFilename(base: String, used: Set<String>): String {
-        if (base !in used) return base
-        var n = 2
-        while (true) {
-            val candidate = "$base $n"
-            if (candidate !in used) return candidate
-            n++
-        }
-    }
-
-    /**
-     * Trims [s] from the right one Char at a time until its UTF-8 encoding fits
-     * within [maxBytes]. Strings already within budget are returned unchanged.
-     */
-    private fun trimToByteBudget(s: String, maxBytes: Int): String {
-        if (utf8Bytes(s) <= maxBytes) return s
-        var trimmed = s
-        while (trimmed.isNotEmpty() && utf8Bytes(trimmed) > maxBytes) {
-            trimmed = trimmed.substring(0, trimmed.length - 1)
-        }
-        return trimmed.trimEnd()
-    }
-
-    /** Counts the byte length of [s] when encoded as UTF-8 (no allocation of the bytes). */
-    private fun utf8Bytes(s: String): Int {
-        var bytes = 0
-        var i = 0
-        while (i < s.length) {
-            val c = s[i].code
-            bytes += when {
-                c < 0x80 -> 1
-                c < 0x800 -> 2
-                c in 0xD800..0xDBFF && i + 1 < s.length && s[i + 1].code in 0xDC00..0xDFFF -> {
-                    i++
-                    4
-                }
-                else -> 3
-            }
-            i++
-        }
-        return bytes
+    fun formatLinkUrlForLabel(url: String): String {
+        val needsAngle = url.any { it == ' ' || it == '(' || it == ')' || it == '<' || it == '>' }
+        return if (needsAngle) "<$url>" else url
     }
 }

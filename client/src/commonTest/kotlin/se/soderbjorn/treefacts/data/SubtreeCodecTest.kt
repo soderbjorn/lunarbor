@@ -1,266 +1,131 @@
+/*
+ * SubtreeCodecTest.kt (commonTest)
+ * Round-trip and parsing tests for the `.treefacts` outline format and for
+ * the composed-outline tree the save path splits into folders.
+ */
+
 package se.soderbjorn.treefacts.data
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotEquals
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.assertIs
 
 class SubtreeCodecTest {
 
-    // ---- parseRef -----------------------------------------------------------
+    private val sample = """
+        * Buy oat milk
+        + [Recipes](Recipes)
+        * Trip to **Lisbon**
+        :::
+        **Packing**: passport, charger, adapter
+        :::
+    """.trimIndent() + "\n"
 
     @Test
-    fun parseRef_returns_null_for_non_bullet_line() {
-        assertNull(SubtreeCodec.parseRef(""))
-        assertNull(SubtreeCodec.parseRef("plain text"))
-        assertNull(SubtreeCodec.parseRef("  not a bullet [X](X/X.md#treefacts)"))
+    fun parses_the_ticket_example() {
+        val items = SubtreeCodec.parseNodeFile(sample)
+        assertEquals(
+            listOf(
+                NodeLine.Leaf("Buy oat milk"),
+                NodeLine.Folder("Recipes", "Recipes"),
+                NodeLine.Leaf("Trip to **Lisbon**"),
+                NodeLine.Block(listOf("**Packing**: passport, charger, adapter")),
+            ),
+            items,
+        )
+        assertEquals(sample, SubtreeCodec.formatNodeFile(items))
     }
 
     @Test
-    fun parseRef_returns_null_for_bullet_without_link() {
-        assertNull(SubtreeCodec.parseRef("* Hello"))
-        assertNull(SubtreeCodec.parseRef("  * indented bullet"))
+    fun folder_titles_keep_formatting_and_escape_brackets() {
+        val line = SubtreeCodec.formatFolderLine("a [b] \\ **c**", "a %5Bb%5D")
+        assertEquals("+ [a \\[b\\] \\\\ **c**](a %5Bb%5D)", line)
+        assertEquals(listOf(NodeLine.Folder("a [b] \\ **c**", "a %5Bb%5D")), SubtreeCodec.parseNodeFile(line))
     }
 
     @Test
-    fun parseRef_returns_null_for_legacy_double_bracket_format() {
-        // The old `* Title  [[X/X.nogr]]` shape must NOT parse as a ref under
-        // the markdown-link codec — files using it surface as plain text so
-        // a stale import is obvious instead of silently corrupting.
-        assertNull(SubtreeCodec.parseRef("  * Recipes  [[Recipes/Recipes.nogr]]"))
+    fun folder_names_with_parentheses_round_trip() {
+        val line = SubtreeCodec.formatFolderLine("Untitled", "Untitled (2)")
+        assertEquals(listOf(NodeLine.Folder("Untitled", "Untitled (2)")), SubtreeCodec.parseNodeFile(line))
     }
 
     @Test
-    fun parseRef_returns_null_for_link_without_treefacts_fragment() {
-        // Plain markdown links and links with arbitrary fragments are NOT
-        // TreeFacts promoted refs — they render as literal link bullets and
-        // TreeFacts never reads or rewrites their target files.
-        assertNull(SubtreeCodec.parseRef("* [Foo](Foo.md)"))
-        assertNull(SubtreeCodec.parseRef("* [Section](Foo.md#section)"))
-        assertNull(SubtreeCodec.parseRef("* [Mixed](Foo.md#treefactsish)"))
+    fun block_containing_a_fence_gets_a_longer_fence() {
+        val block = NodeLine.Block(listOf("before", ":::", "after", "::::"))
+        val text = SubtreeCodec.formatNodeFile(listOf(block))
+        assertEquals(":::::\nbefore\n:::\nafter\n::::\n:::::\n", text)
+        assertEquals(listOf(block), SubtreeCodec.parseNodeFile(text))
     }
 
     @Test
-    fun parseRef_extracts_indent_label_and_path() {
-        val ref = SubtreeCodec.parseRef("  * [Recipes](Recipes/Recipes.md#treefacts)")
-        assertEquals(2, ref?.indent)
-        assertEquals("  * Recipes", ref?.bulletText)
-        assertEquals("Recipes/Recipes.md", ref?.refPath)
+    fun blank_lines_are_dropped_outside_blocks_and_kept_inside() {
+        val items = SubtreeCodec.parseNodeFile("* a\n\n* b\n:::\nx\n\ny\n:::\n")
+        assertEquals(
+            listOf(NodeLine.Leaf("a"), NodeLine.Leaf("b"), NodeLine.Block(listOf("x", "", "y"))),
+            items,
+        )
     }
 
     @Test
-    fun parseRef_handles_unicode_titles_and_paths() {
-        val ref = SubtreeCodec.parseRef("* [Möten](Bontouch/Möten/Möten.md#treefacts)")
-        assertEquals("* Möten", ref?.bulletText)
-        assertEquals("Bontouch/Möten/Möten.md", ref?.refPath)
+    fun unknown_lines_and_unclosed_fences_survive_as_text() {
+        val items = SubtreeCodec.parseNodeFile("hello\n:::\n* a\n+ not a link\n")
+        assertEquals(
+            listOf(NodeLine.Text("hello"), NodeLine.Text(":::"), NodeLine.Leaf("a"), NodeLine.Text("+ not a link")),
+            items,
+        )
     }
 
     @Test
-    fun parseRef_accepts_angle_bracket_url_for_paths_with_spaces() {
-        val ref = SubtreeCodec.parseRef("* [Shopping list](<Shopping list/Shopping list.md#treefacts>)")
-        assertEquals("* Shopping list", ref?.bulletText)
-        assertEquals("Shopping list/Shopping list.md", ref?.refPath)
+    fun compose_indents_and_records_folders() {
+        val composed = SubtreeCodec.composeNodeLines(SubtreeCodec.parseNodeFile(sample), indent = 2)
+        assertEquals(
+            listOf("  * Buy oat milk", "  * Recipes", "  * Trip to **Lisbon**", "  :::", "  **Packing**: passport, charger, adapter", "  :::"),
+            composed.lines,
+        )
+        assertEquals(mapOf(1 to "Recipes"), composed.folderByRow)
     }
 
     @Test
-    fun parseRef_unescapes_label_brackets() {
-        val ref = SubtreeCodec.parseRef("* [a\\[b\\]c](X/X.md#treefacts)")
-        assertEquals("* a[b]c", ref?.bulletText)
-        assertEquals("X/X.md", ref?.refPath)
-    }
-
-    @Test
-    fun parseRef_returns_null_for_empty_url() {
-        assertNull(SubtreeCodec.parseRef("* [Title]()"))
-        assertNull(SubtreeCodec.parseRef("* [Title](<>)"))
-        // URL with only the fragment has empty refPath after stripping.
-        assertNull(SubtreeCodec.parseRef("* [Title](#treefacts)"))
-    }
-
-    @Test
-    fun parseRef_accepts_empty_label() {
-        // Clearing a collapsed ref's title in the editor saves the
-        // degenerate `* [](path#treefacts)` form. It must still parse as
-        // a ref on the next load: rejecting it severs the association and
-        // the child file becomes a permanent orphan that no later row
-        // deletion can clean up.
-        val ref = SubtreeCodec.parseRef("* [](X/X.md#treefacts)")
-        assertEquals("* ", ref?.bulletText)
-        assertEquals("X/X.md", ref?.refPath)
-    }
-
-    // ---- formatRef + round-trip --------------------------------------------
-
-    @Test
-    fun formatRef_emits_bare_url_for_simple_paths() {
-        val line = SubtreeCodec.formatRef(0, "Recipes", "Recipes/Recipes.md")
-        assertEquals("* [Recipes](Recipes/Recipes.md#treefacts)", line)
-    }
-
-    @Test
-    fun formatRef_wraps_url_in_angle_brackets_when_path_contains_spaces() {
-        val line = SubtreeCodec.formatRef(2, "Shopping list", "Shopping list/Shopping list.md")
-        assertEquals("  * [Shopping list](<Shopping list/Shopping list.md#treefacts>)", line)
-    }
-
-    @Test
-    fun formatRef_escapes_label_specials() {
-        val line = SubtreeCodec.formatRef(0, "a[b]c", "ab/ab.md")
-        assertEquals("* [a\\[b\\]c](ab/ab.md#treefacts)", line)
-    }
-
-    @Test
-    fun formatRef_then_parseRef_round_trips_simple() {
-        val line = SubtreeCodec.formatRef(2, "Recipes", "Recipes/Recipes.md")
-        val parsed = SubtreeCodec.parseRef(line)
-        assertEquals("  * Recipes", parsed?.bulletText)
-        assertEquals("Recipes/Recipes.md", parsed?.refPath)
-    }
-
-    @Test
-    fun formatRef_then_parseRef_round_trips_spaces_and_angle_brackets() {
-        val line = SubtreeCodec.formatRef(0, "Shopping list", "Shopping list/Shopping list.md")
-        val parsed = SubtreeCodec.parseRef(line)
-        assertEquals("* Shopping list", parsed?.bulletText)
-        assertEquals("Shopping list/Shopping list.md", parsed?.refPath)
-    }
-
-    @Test
-    fun formatRef_then_parseRef_round_trips_label_brackets() {
-        val line = SubtreeCodec.formatRef(0, "a[b]c", "ab/ab.md")
-        val parsed = SubtreeCodec.parseRef(line)
-        assertEquals("* a[b]c", parsed?.bulletText)
-        assertEquals("ab/ab.md", parsed?.refPath)
-    }
-
-    // ---- findSubtrees -------------------------------------------------------
-
-    @Test
-    fun findSubtrees_emits_one_entry_per_bullet_with_correct_descendant_counts() {
+    fun parse_composed_builds_the_tree_with_blocks_owned_by_their_parent() {
         val lines = listOf(
             "* A",
             "  * B",
-            "    * C",
-            "    * D",
-            "  * E",
-            "* F",
+            "  :::",
+            "  * not a bullet",
+            "  :::",
+            "* C",
         )
-        val ms = SubtreeCodec.findSubtrees(lines)
-        assertEquals(6, ms.size)
-        assertEquals(4, ms[0].descendantCount)
-        assertEquals(4, ms[0].endRowInclusive)
-        assertEquals(2, ms[1].descendantCount)
-        assertEquals(0, ms.last().descendantCount)
+        val items = SubtreeCodec.parseComposed(lines)
+        assertEquals(2, items.size)
+        val a = assertIs<ComposedItem.Bullet>(items[0])
+        assertEquals(4, a.endRow)
+        assertEquals(2, a.children.size)
+        val block = assertIs<ComposedItem.Block>(a.children[1])
+        assertEquals(listOf("* not a bullet"), block.content)
+        assertEquals(4, SubtreeCodec.composedSubtreeEnd(lines, 0))
+        assertEquals(1, SubtreeCodec.composedSubtreeEnd(lines, 1))
+        assertEquals(5, SubtreeCodec.composedSubtreeEnd(lines, 5))
     }
 
     @Test
-    fun findSubtrees_skips_non_bullet_lines() {
-        val lines = listOf("not a bullet", "* X", "* Y")
-        val ms = SubtreeCodec.findSubtrees(lines)
-        assertEquals(2, ms.size)
-        assertEquals(1, ms[0].startRow)
-        assertEquals(2, ms[1].startRow)
-    }
-
-    // ---- reindentBy ---------------------------------------------------------
-
-    @Test
-    fun reindentBy_zero_is_identity() {
-        val input = listOf("* A", "  * B")
-        assertEquals(input, SubtreeCodec.reindentBy(input, 0))
+    fun trailing_empty_bullets_are_not_content() {
+        val items = SubtreeCodec.parseComposed(listOf("* A", "  * ", "  *  "))
+        val a = assertIs<ComposedItem.Bullet>(items[0])
+        assertEquals(false, SubtreeCodec.hasContent(a.children))
+        val withText = SubtreeCodec.parseComposed(listOf("* A", "  * ", "  * x"))
+        assertEquals(true, SubtreeCodec.hasContent(assertIs<ComposedItem.Bullet>(withText[0]).children))
     }
 
     @Test
-    fun reindentBy_positive_adds_leading_spaces_to_bullets() {
-        val out = SubtreeCodec.reindentBy(listOf("* A", "  * B"), 2)
-        assertEquals(listOf("  * A", "    * B"), out)
-    }
-
-    @Test
-    fun reindentBy_negative_drops_leading_spaces_capped_at_indent() {
-        val out = SubtreeCodec.reindentBy(listOf("    * A", "      * B"), -2)
-        assertEquals(listOf("  * A", "    * B"), out)
-    }
-
-    // ---- titleOf ------------------------------------------------------------
-
-    @Test
-    fun titleOf_returns_text_after_bullet_marker() {
-        assertEquals("Hello", SubtreeCodec.titleOf("* Hello"))
-        assertEquals("World", SubtreeCodec.titleOf("    * World"))
-        assertEquals("", SubtreeCodec.titleOf("* "))
-        assertEquals("", SubtreeCodec.titleOf("not a bullet"))
-    }
-
-    @Test
-    fun titleOf_extracts_label_from_markdown_link() {
-        assertEquals("Recipes", SubtreeCodec.titleOf("* [Recipes](Recipes/Recipes.md#treefacts)"))
+    fun title_and_link_bullet_helpers() {
+        assertEquals("Recipes", SubtreeCodec.titleOf("  * Recipes"))
+        assertEquals("", SubtreeCodec.titleOf("  * "))
+        val link = SubtreeCodec.parseAnyLinkBullet("* [Pasta (fresh)](<Recipes/Pasta.md#r=3>)")!!
+        assertEquals("Recipes/Pasta.md#r=3", link.url)
+        assertEquals("* Pasta (fresh)", link.bulletText)
         assertEquals(
-            "Shopping list",
-            SubtreeCodec.titleOf("* [Shopping list](<Shopping list/Shopping list.md#treefacts>)"),
+            "* [Pasta \\(fresh\\)](<Recipes/My Pasta.md>)",
+            SubtreeCodec.formatPlainLinkBullet(0, "Pasta (fresh)", "Recipes/My Pasta.md"),
         )
-    }
-
-    // ---- safeFilename -------------------------------------------------------
-
-    @Test
-    fun safeFilename_preserves_case_spaces_and_unicode() {
-        assertEquals("Shopping list", SubtreeCodec.safeFilename("Shopping list"))
-        assertEquals("Möten 2024", SubtreeCodec.safeFilename("Möten 2024"))
-    }
-
-    @Test
-    fun safeFilename_replaces_slash_with_dash() {
-        assertEquals("a-b", SubtreeCodec.safeFilename("a/b"))
-        assertEquals("path-segment", SubtreeCodec.safeFilename("path/segment"))
-    }
-
-    @Test
-    fun safeFilename_strips_leading_dots() {
-        assertEquals("hidden", SubtreeCodec.safeFilename(".hidden"))
-        assertEquals("nested", SubtreeCodec.safeFilename("...nested"))
-    }
-
-    @Test
-    fun safeFilename_collapses_whitespace_runs() {
-        assertEquals("a b c", SubtreeCodec.safeFilename("a   b\tc"))
-    }
-
-    @Test
-    fun safeFilename_falls_back_to_untitled_when_empty() {
-        assertEquals("untitled", SubtreeCodec.safeFilename(""))
-        assertEquals("untitled", SubtreeCodec.safeFilename("   "))
-        assertEquals("untitled", SubtreeCodec.safeFilename("..."))
-    }
-
-    @Test
-    fun safeFilename_caps_long_titles() {
-        val title = "x".repeat(500)
-        val result = SubtreeCodec.safeFilename(title)
-        assertTrue(result.length <= 200, "expected <= 200 chars but was ${result.length}")
-        assertNotEquals(title, result)
-    }
-
-    // ---- uniqueFilename -----------------------------------------------------
-
-    @Test
-    fun uniqueFilename_returns_base_when_free() {
-        assertEquals("Recipes", SubtreeCodec.uniqueFilename("Recipes", emptySet()))
-    }
-
-    @Test
-    fun uniqueFilename_appends_2_3_on_collision() {
-        val used = mutableSetOf("Recipes")
-        assertEquals("Recipes 2", SubtreeCodec.uniqueFilename("Recipes", used))
-        used += "Recipes 2"
-        assertEquals("Recipes 3", SubtreeCodec.uniqueFilename("Recipes", used))
-    }
-
-    @Test
-    fun uniqueFilename_does_not_mutate_used_set() {
-        val used = mutableSetOf("Recipes")
-        SubtreeCodec.uniqueFilename("Recipes", used)
-        assertEquals(setOf("Recipes"), used)
     }
 }

@@ -3,11 +3,12 @@
  * -------------
  * App-scoped, lazy outline index used by the Insert Link feature.
  *
- * TreeFacts's "vault" is a tree of `.md` files connected by promoted-ref
- * markdown links (`[Title](path#treefacts)`). Logically, all of those files
- * compose into a single outline tree rooted at `Home.md`: a file's
- * children are its top-level bullets, and a bullet that is a promoted-ref
- * has its children replaced by the linked file's top-level bullets.
+ * TreeFacts's vault is a tree of node folders, each with a `.treefacts`
+ * outline whose `+ [Title](folder)` bullets point at child folders (see
+ * `NoteRepository`). Logically they compose into a single outline tree
+ * rooted at the vault's own `.treefacts`: a node's children are its
+ * outline's bullets, and a folder-backed bullet's children are its
+ * folder's outline's bullets. Loose `.md` notes join the tree by path.
  *
  * `VaultIndex` exposes that unified outline as an addressable space:
  *
@@ -48,26 +49,23 @@ import se.soderbjorn.treefacts.main.DocumentLayout
  *
  * The vault root's logical children are:
  *
- *  1. The configured root file's top-level bullets (Home.md
- *     contributes its bullets directly into the vault root, so a
- *     bullet "Recipes" at Home.md's top level is reachable as
- *     `/Recipes`).
- *  2. Every other `.md` file in the vault, treated as a node whose
- *     title is the file's basename (without `.md`). These "loose"
- *     files are not promoted-ref children of any other file but the
- *     user still wants them in search and as link targets.
+ *  1. The root outline's top-level bullets (a bullet "Recipes" in the
+ *     vault's `.treefacts` is reachable as `/Recipes`).
+ *  2. Every other note file in the vault — `.md` notes, and node
+ *     outlines no `+` bullet reaches — treated as a node whose title
+ *     path is its folder path (plus the basename, for `.md` files).
  *
  * @param loadFromDisk Cold-read entry point: returns a file's parsed
  *   [NoteRepository.Loaded] from disk. Production callers pass
  *   `repository::loadFile`; tests pass a map-backed fake so the index
  *   can be exercised without a real filesystem.
- * @param listAllMdFiles Returns every `.md` file in the vault, by
- *   vault-relative path. Used to discover loose files that the
- *   Home.md → promoted-ref walk doesn't reach. Production callers pass
- *   `repository::listAllMdFiles`; tests pass a list of known fakes.
- * @param rootFileName Vault-relative path of the configured root file
- *   — typically `Home.md`. The vault root's children are this file's
- *   top-level bullets plus every other `.md` file under the vault.
+ * @param listAllMdFiles Returns every note file in the vault (`.md`
+ *   notes and `<dir>/.treefacts` outlines), by vault-relative path. Used
+ *   to discover loose files the root → `+` bullet walk doesn't reach.
+ *   Production callers pass `repository::listAllNoteFiles`; tests pass a
+ *   list of known fakes.
+ * @param rootFileName Vault-relative path of the root outline —
+ *   `.treefacts`.
  * @param openDocuments Snapshot accessor: returns the live `Document`
  *   for each `fileRel` currently held by `DocumentRegistry`. Wired up
  *   by the registry; `VaultIndex` calls it on every lookup so the live
@@ -144,12 +142,12 @@ class VaultIndex(
      *   whose subtree lives in a separate file. Drives the
      *   "external files rank above sparse bullets" tier.
      * @property isFolderStub `true` when this hit represents a vault
-     *   directory that does **not yet** have its own doubled-name anchor
-     *   file `<dir>/<dir>.md`. [fileRel] is the would-be path of that
-     *   anchor; the caller must materialise it before treating the hit
+     *   directory that does **not yet** have its own outline file
+     *   `<dir>/.treefacts`. [fileRel] is the would-be path of that
+     *   outline; the caller must materialise it before treating the hit
      *   as a real link target (see `DocumentRegistry.ensureFolderStub`).
      *   Mutually exclusive with [isFileBoundary] in practice — once the
-     *   anchor file exists the directory ceases to be a stub and the
+     *   outline exists the directory ceases to be a stub and the
      *   loose-file enumeration produces a normal file-boundary hit
      *   instead.
      */
@@ -311,14 +309,14 @@ class VaultIndex(
      * are followed transparently; cycles (a malformed vault that links
      * back to itself) are broken by a per-walk visited set on `fileRel`.
      *
-     * After the Home.md walk, every remaining `.md` file in the vault
+     * After the root-outline walk, every remaining note file in the vault
      * is enumerated as a loose file: its file root is emitted as a
      * single hit (title = basename, fileRel = its path,
      * titlePathInFile = empty), then its bullets are walked under
      * that title.
      *
-     * Finally, every vault directory that holds at least one `.md`
-     * descendant but does **not** have its own doubled-name anchor file
+     * Finally, every vault directory that holds at least one note-file
+     * descendant but does **not** have its own `.treefacts` outline
      * is emitted as a "folder stub" hit (`isFolderStub = true`). Picking
      * one of these in the Insert Link modal materialises the anchor
      * file on the fly — see `DocumentRegistry.ensureFolderStub`.
@@ -358,8 +356,8 @@ class VaultIndex(
 
     /**
      * Emits one [SearchHit] per vault directory that lacks its own
-     * doubled-name anchor file. A directory's anchor is
-     * `<dir>/<basename>.md`; when it exists the directory is already
+     * outline file. A directory's outline is `<dir>/.treefacts`; when it
+     * exists the directory is already
      * reachable as a loose-file hit via the regular enumeration and a
      * stub would just duplicate it.
      *
@@ -384,12 +382,11 @@ class VaultIndex(
             }
         }
         for (dir in directories) {
-            val basename = dir.substringAfterLast('/')
-            val anchorPath = "$dir/$basename.md"
+            val anchorPath = NoteRepository.outlineFileOf(dir)
             if (anchorPath in mdFileSet) continue
-            val titlePath = dir.split('/')
+            val titlePath = dir.split('/').map { FolderName.decode(it) }
             out += SearchHit(
-                title = basename,
+                title = titlePath.last(),
                 titlePathFromRoot = titlePath,
                 fileRel = anchorPath,
                 titlePathInFile = emptyList(),
@@ -429,14 +426,15 @@ class VaultIndex(
     }
 
     /**
-     * Vault-root title path for a loose file — the directory chain
-     * leading to the file plus the filename basename. Doubled-name
-     * pairs (TreeFacts's own promoted-file convention `<X>/<X>.md`) are
-     * collapsed so the path doesn't carry a redundant duplicate of
-     * the parent directory's name.
+     * Vault-root title path for a loose file — the decoded folder chain
+     * leading to the file plus the filename basename. A node outline
+     * (`<dir>/.treefacts`) is just its folder chain. Doubled-name
+     * pairs (`<X>/<X>.md`) are collapsed so the path doesn't carry a
+     * redundant duplicate of the parent directory's name.
      *
      * Examples:
      *   - `Starred.md` → `["Starred"]`
+     *   - `Recipes/Pasta/.treefacts` → `["Recipes", "Pasta"]`
      *   - `Framna/Framna.md` → `["Framna"]` (doubled-name collapse)
      *   - `Work/Framna/Framna.md` → `["Work", "Framna"]`
      *   - `Personal/Tech & programming.md` → `["Personal", "Tech & programming"]`
@@ -448,10 +446,11 @@ class VaultIndex(
      */
     private fun titlePathForLooseFile(fileRel: String): List<String> {
         val parts = fileRel.split('/')
-        val fileName = parts.last().removeSuffix(".md")
         val out = ArrayList<String>(parts.size)
-        out.addAll(parts.dropLast(1))
-        out.add(fileName)
+        out.addAll(parts.dropLast(1).map { FolderName.decode(it) })
+        // A node outline (`<dir>/.treefacts`) stands for its folder.
+        if (parts.last() == NoteRepository.OUTLINE_FILE_NAME) return out
+        out.add(parts.last().removeSuffix(".md"))
         if (out.size >= 2 &&
             out[out.size - 1].equals(out[out.size - 2], ignoreCase = true)
         ) {
@@ -595,7 +594,7 @@ class VaultIndex(
         val visited = HashSet<String>()
         populateFileMap(rootFileName, fileHostPath = emptyList(), out, visited)
         // Augment with loose files: every `.md` file in the vault that
-        // wasn't reached by the Home.md → promoted-ref walk above. Their
+        // wasn't reached by the root → `+` bullet walk above. Their
         // host path is `[basename]` so bullets inside them resolve with
         // the file's title as the leading vault-root segment.
         for (fileRel in listAllMdFiles()) {

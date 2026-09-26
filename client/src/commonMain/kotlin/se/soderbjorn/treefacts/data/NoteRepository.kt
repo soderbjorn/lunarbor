@@ -1,80 +1,57 @@
 /*
- * NoteRepository.kt
- * -----------------
- * Persistence boundary for TreeFacts. The in-memory model is a single flat
- * outline (`lines: List<String>`), but on disk that outline is split across
- * a tree of `.md` files connected by `[Title](path/to/file.md#treefacts)`
- * markdown links. This class owns the splitting/composition: `load()` reads
- * the disk tree and returns one flat outline plus a row→[PromotedRef] map;
- * `save()` accepts the flat outline plus the map and writes the disk tree,
- * applying [PromotionPolicy] to decide which subtrees should be promoted,
- * demoted, or live-renamed.
+ * NoteRepository.kt (commonMain)
+ * ------------------------------
+ * Persistence boundary for TreeFacts, and the only class that touches
+ * [FileSystem].
  *
- * ### How TreeFacts distinguishes its own bullets
+ * ### Storage model: one folder per parent bullet
  *
- * A markdown link bullet is a TreeFacts promoted-ref boundary if-and-only-if
- * its URL ends in the literal `#treefacts` fragment (see [SubtreeCodec]).
- * Plain markdown links and links with any other fragment render as
- * literal link bullets — TreeFacts never splices their target files, never
- * rewrites them. Files themselves carry no TreeFacts-specific syntax (no
- * frontmatter ceremony, no custom keys). User-authored YAML frontmatter
- * is preserved verbatim across load/save round-trips via the per-file
- * [frontmatterByFile] cache.
+ *  - A bullet is backed by a folder if and only if it has content: child
+ *    bullets, blocks, or files in that folder.
+ *  - Every node folder holds one hidden outline file, `.treefacts`, with
+ *    that node's direct children only (format: [SubtreeCodec]). The vault
+ *    root is the root node; its outline is `<vault>/.treefacts`.
+ *  - Leaf bullets are lines in their parent's outline file.
+ *  - Every folder is a node: a folder without an outline file is a node
+ *    with no bullets yet.
  *
- * ### File paths
+ * In memory the editor still works on one flat, indented outline per open
+ * document. [loadFile] reads one node file; [loadSubtree] reads a child
+ * node for splicing under its `+` bullet when the user expands it. [save]
+ * takes the flat outline back and, in one pass, compares it with the
+ * folders on disk and applies every promotion (leaf gets its first child),
+ * demotion (last child removed), rename (title edited), move (subtree
+ * indented, outdented, moved or cut and pasted) and trash (folder-backed
+ * bullet deleted). The rules are documented on [save].
  *
- * Each promoted ref carries an explicit [PromotedRef.fileRel] — the file's
- * path relative to the vault root, including its `.md` extension. This
- * lets adopted-foreign files live at arbitrary paths (`links.md` at the
- * vault root, `Recipes/Quick Granola.md` next to siblings, …) without
- * forcing them into the doubled-name `<Name>/<Name>.md` shape TreeFacts's
- * own auto-promotion uses for files it creates.
+ * Files that are not `.treefacts` outlines (`Starred.md`, other `.md`
+ * notes) are loaded and saved as plain lines: no folders, no promotion.
  *
- * Pure split/compose helpers live in [SubtreeCodec]. The repository is
- * the only place that touches [FileSystem].
+ * Pure parsing/formatting lives in [SubtreeCodec]; folder naming in
+ * [FolderName].
  */
 
 package se.soderbjorn.treefacts.data
 
 import se.soderbjorn.treefacts.main.DocumentLayout
 import se.soderbjorn.treefacts.platform.FileSystem
+import se.soderbjorn.treefacts.platform.VaultDirectoryEntry
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 
 /**
  * One entry in the filesystem-tree footer's lazy-loaded directory listing.
  *
- * @property name Display name. For `.md` files this is the basename minus
- *   the extension; for image files it's the full basename including the
- *   extension (so `.png` and `.jpg` siblings of the same stem don't
- *   collide visually); for directories it's the directory name.
+ * @property name Display name. For directories, the decoded folder name
+ *   ([FolderName.decode]); for `.md` files the basename minus the
+ *   extension; for images the full basename.
  * @property pathRel Path relative to the vault root.
  * @property isDirectory `true` for subdirectories, `false` for files.
  * @property isImage `true` when [pathRel] points at an image file
- *   (extension in [NoteRepository.IMAGE_EXTENSIONS]). The footer renders
- *   image rows with an image glyph and no navigation handler — images
- *   can't be loaded as documents, so clicking is a no-op.
+ *   (extension in [NoteRepository.IMAGE_EXTENSIONS]).
  * @property lastEditedMs Last-modified timestamp of the underlying file in
  *   milliseconds since the Unix epoch. `0` for directories and on platforms
- *   that cannot provide one. Used by the vault footer's last-edit sort mode.
- * @property hasAnchor `true` for a directory that contains its own
- *   doubled-name anchor file (`<dir>/<dir>.md`) — the shape every
- *   TreeFacts-managed tree has, whether auto-promoted or hand-created.
- *   Always `false` for files. The footer uses this to distinguish
- *   TreeFacts page-folders from foreign directories.
- * @property isSpace `true` for a directory whose anchor ([hasAnchor])
- *   carries the `treefacts-space: true` marker (see [SpaceMetadata]) — a
- *   declared *space*: a structural boundary that never auto-demotes and
- *   can hold its own settings. Position-free: a space may live at any
- *   depth, not just the vault root. For backward compatibility a
- *   root-level anchored tree the root file never references is still
- *   recognized as a legacy (marker-less) space. Spaces are structurally
- *   invisible to the auto-demote logic, so their content can never
- *   migrate back into a parent file; the footer gives them a dedicated
- *   icon. Always `false` for files and for promoted trees.
- * @property aiAllowed `true` when the space's anchor frontmatter carries
- *   the `treefacts-ai: allowed` opt-in (see [SpaceMetadata]). Only ever
- *   `true` for entries with [isSpace]; the footer renders it as a badge
- *   on the space icon. Fail-closed: missing file, missing frontmatter,
- *   or any other value all read as `false`.
+ *   that cannot provide one. Used by the footer's last-edit sort mode.
  */
 data class VaultEntry(
     val name: String,
@@ -82,80 +59,52 @@ data class VaultEntry(
     val isDirectory: Boolean,
     val isImage: Boolean = false,
     val lastEditedMs: Long = 0L,
-    val hasAnchor: Boolean = false,
-    val isSpace: Boolean = false,
-    val aiAllowed: Boolean = false,
 )
 
 /**
- * One promoted-subtree boundary's persistence metadata.
+ * The folder backing one folder-backed bullet.
  *
- * @property fileRel The file's path relative to the vault root, including
- *   its `.md` extension (e.g. `Recipes/Recipes.md`, `links.md`,
- *   `Recipes/Quick Granola.md`). TreeFacts's own auto-promotion produces
- *   doubled-name `<Name>/<Name>.md` paths; adopted-foreign files keep
- *   whatever path the user navigated to.
- * @property noAutoPromote When `true`, the autosave loop pins the file at
- *   [fileRel] forever — it never demotes (regardless of subtree size) and
- *   never renames on title edits. Set on adoption of foreign markdown
- *   files so TreeFacts doesn't surprise-restructure files it didn't create.
- *   Files TreeFacts auto-promoted itself leave this `false` and follow the
- *   existing rename-on-title-edit / demote-when-small rules.
+ * @property folderRel The folder's path relative to the vault root, e.g.
+ *   `Recipes` or `Recipes/Pasta`. While the bullet sits in the trash (it
+ *   was deleted this session) this is its path under `.trash/`.
  */
-data class PromotedRef(
-    val fileRel: String,
-    val noAutoPromote: Boolean,
-)
+data class PromotedRef(val folderRel: String) {
+    /** Vault-relative path of the folder's outline file. */
+    val fileRel: String get() = NoteRepository.outlineFileOf(folderRel)
+}
 
 /**
- * @property fileSystem Platform filesystem used for all I/O.
- * @property rootDirectory Absolute directory under which `Home.md` and the
- *   nested `<Title>/<Title>.md` tree live.
- * @property rootFileName Filename of the top-level outline. Defaults to
- *   `Home.md`.
+ * Reads and writes the vault.
+ *
+ * ### Callers
+ * - `Document` for loading, splicing and saving one open outline.
+ * - `DocumentRegistry` for vault listings, images and folder stubs.
+ * - The web Starred modal for `Starred.md`.
+ *
+ * @property rootDirectory Absolute path to the vault root. Public so
+ *   platform glue (the web renderer's image-asset URL builder) can resolve
+ *   vault-relative paths against the same root. Deliberately has no
+ *   default: each platform resolves it (on Electron from `TREEFACTS_VAULT`
+ *   / `TREEFACTS_LOCAL_DATA`, falling back to `~/treefacts-db`).
+ * @property rootFileName The file panes open with; the vault root's
+ *   outline, [OUTLINE_FILE_NAME], by default.
+ * @param fileSystem Platform (or, in tests, in-memory) filesystem.
+ * @param nowMillis Wall clock, used only to stamp trash folder names.
  */
 class NoteRepository(
     private val fileSystem: FileSystem,
-    /**
-     * Absolute path to the vault root. Public so platform glue (e.g. the
-     * web renderer's image-asset URL builder) can resolve a stored
-     * vault-relative path like `Images/foo.png` against the same root the
-     * repository uses for `.md` I/O.
-     *
-     * Deliberately has no default: each platform resolves it (on Electron
-     * from `TREEFACTS_VAULT` / `TREEFACTS_LOCAL_DATA`, falling back to
-     * `~/treefacts-db`) so no run can silently land on a hardcoded path.
-     */
     val rootDirectory: String,
-    val rootFileName: String = DEFAULT_FILE_NAME,
+    val rootFileName: String = OUTLINE_FILE_NAME,
+    private val nowMillis: () -> Long = ::systemNowMillis,
 ) {
 
     /**
-     * Per-file YAML frontmatter cache, keyed by [PromotedRef.fileRel] for
-     * promoted files and by [rootFileName] for the root. Populated on every
-     * read, consumed on every write so user-authored frontmatter (Obsidian
-     * `tags`, `aliases`, …) round-trips byte-perfectly. Files that have no
-     * frontmatter on disk get no entry — [save] writes their bodies as-is.
+     * Result of [loadFile] / [loadSubtree].
      *
-     * Maps to the verbatim frontmatter block including the surrounding
-     * `---\n…\n---\n` fences and the trailing newline. Re-prepending it
-     * unchanged is the simplest way to preserve user data.
-     */
-    private val frontmatterByFile: MutableMap<String, String> = mutableMapOf()
-
-    /**
-     * Result of [loadFile] / [loadSubtree]: the composed flat outline plus
-     * per-row metadata the document VM needs to keep auto-promotion
-     * idempotent across saves.
-     *
-     * @property lines One entry per logical line of the composed outline.
-     *   Always non-empty for [loadFile] — an empty document is `listOf("")`.
-     * @property promotedByRow Maps row index in [lines] to the
-     *   [PromotedRef] metadata for that subtree's child file. Populated
-     *   only for `[Title](path#treefacts)` bullets; the line text in
-     *   [lines] for these rows is the plain `* Title` form the editor
-     *   displays. Markdown link bullets without the `#treefacts` fragment
-     *   render as literal text and are not in this map.
+     * @property lines Composed editor lines. Always non-empty for
+     *   [loadFile] — an empty document is `listOf("")`.
+     * @property promotedByRow Row in [lines] → the backing folder of each
+     *   folder-backed (`+`) bullet on that row.
      */
     data class Loaded(
         val lines: List<String>,
@@ -163,494 +112,460 @@ class NoteRepository(
     )
 
     /**
-     * Reads the file at [fileRel] (vault-relative, including `.md`) and
-     * returns its body as the editor's flat row list. Children files are
-     * not followed; the document VM lazy-loads each subtree via
-     * [loadSubtree] when the user expands the corresponding `#treefacts`
-     * bullet.
+     * Result of [save].
      *
-     * Missing files return an empty `Loaded` — the editor shows an empty
-     * document. Used for the initial load of `Home.md` and for switching
-     * the active document when the user clicks a file in the footer.
+     * @property promotedByRow Row → backing folder of every bullet that is
+     *   folder-backed after this save, at its new path. Rows missing here
+     *   are leaves.
+     * @property trashed Old folder path → path under `.trash/` for every
+     *   dead ref passed to [save] whose folder was moved to the trash
+     *   (including folders nested inside another trashed folder).
+     */
+    data class SaveResult(
+        val promotedByRow: Map<Int, PromotedRef>,
+        val trashed: Map<String, String> = emptyMap(),
+    )
+
+    // ------------------------------------------------------------------ load
+
+    /**
+     * Reads [fileRel] (vault-relative) as editor lines. A `.treefacts`
+     * outline is parsed per [SubtreeCodec]: bullets at column 0, each `+`
+     * bullet recorded in [Loaded.promotedByRow]. Any other file is read as
+     * plain lines. A missing file reads as an empty document.
+     *
+     * Children of `+` bullets are not followed; `Document` lazy-loads each
+     * one through [loadSubtree] when the user expands it.
      */
     suspend fun loadFile(fileRel: String): Loaded {
         fileSystem.ensureDirectory(rootDirectory)
-        val text = fileSystem.readFileIfExists("$rootDirectory/$fileRel")
-        if (text.isNullOrEmpty()) {
-            frontmatterByFile.remove(fileRel)
-            return Loaded(listOf(""), emptyMap())
+        val text = fileSystem.readFileIfExists(abs(fileRel))
+        if (!isOutlineFile(fileRel)) {
+            if (text.isNullOrEmpty()) return Loaded(listOf(""), emptyMap())
+            return Loaded(text.split("\n"), emptyMap())
         }
-        val (frontmatter, body) = splitFrontmatter(text)
-        if (frontmatter != null) frontmatterByFile[fileRel] = frontmatter
-        else frontmatterByFile.remove(fileRel)
-        val parentDir = fileRel.substringBeforeLast('/', missingDelimiterValue = "")
-        return parseFileShallow(parentDir = parentDir, fileText = body)
+        val node = composeNode(folderOfOutline(fileRel), text ?: "", indent = 0)
+        return if (node.lines.isEmpty()) Loaded(listOf(""), emptyMap()) else node
     }
 
-    /** Convenience alias: loads the configured root file. */
-    suspend fun loadRoot(): Loaded = loadFile(rootFileName)
-
     /**
-     * Loads the file at `<rootDirectory>/<fileRel>` without recursing into
-     * nested links. The returned [Loaded.lines] are reindented by
-     * [parentIndent] + [TAB_SIZE] so they slot under the parent bullet at
-     * the correct depth in the composed outline.
+     * Reads the node folder [folderRel]'s outline for splicing under its
+     * `+` bullet, every line indented to [parentIndent] + 2. A missing
+     * outline (a folder with no bullets yet) splices nothing.
      *
-     * Used by [se.soderbjorn.treefacts.main.Document] when
-     * the user expands a previously-collapsed reference bullet.
+     * Called by `Document` when a pane expands a folder-backed bullet.
      *
-     * Missing files produce an empty splice (the chevron flips open with
-     * no children, same UX as before).
-     *
-     * @param fileRel File path of the child, relative to [rootDirectory],
-     *   including the `.md` extension.
-     * @param parentIndent The bullet column of the parent reference row in
-     *   the composed outline. The child file's lines are deepened by
-     *   `parentIndent + TAB_SIZE` so the topmost child sits one indent step
-     *   below its parent.
+     * @param folderRel The bullet's backing folder, vault-relative.
+     * @param parentIndent Column of the parent bullet's `*`.
      */
-    suspend fun loadSubtree(fileRel: String, parentIndent: Int): Loaded {
-        if (fileRel.isEmpty()) return Loaded(listOf(""), emptyMap())
-        val absChildPath = "$rootDirectory/$fileRel"
-        val childText = fileSystem.readFileIfExists(absChildPath) ?: return Loaded(emptyList(), emptyMap())
-        val (frontmatter, body) = splitFrontmatter(childText)
-        if (frontmatter != null) frontmatterByFile[fileRel] = frontmatter
-        else frontmatterByFile.remove(fileRel)
-        val parentDir = fileRel.substringBeforeLast('/', missingDelimiterValue = "")
-        val shallow = parseFileShallow(parentDir = parentDir, fileText = body)
-        if (shallow.lines.isEmpty()) return shallow
-        // A file ending in `\n` produces a trailing empty line under
-        // `split("\n")`. That empty would splice into the parent right after
-        // the subtree's last bullet, where it survives a subsequent collapse
-        // and accumulates one extra blank line per expand/collapse cycle.
-        // Trim trailing empties so the spliced content is exactly the rows.
-        val trimmed = shallow.lines.dropLastWhile { it.isEmpty() }
-        if (trimmed.isEmpty()) return Loaded(emptyList(), emptyMap())
-        val reindented = SubtreeCodec.reindentBy(trimmed, parentIndent + TAB_SIZE)
-        return Loaded(reindented, shallow.promotedByRow)
+    suspend fun loadSubtree(folderRel: String, parentIndent: Int): Loaded {
+        val text = fileSystem.readFileIfExists(abs(outlineFileOf(folderRel)))
+            ?: return Loaded(emptyList(), emptyMap())
+        return composeNode(folderRel, text, parentIndent + TAB_SIZE)
     }
 
-    /**
-     * Parses one file's body (frontmatter already stripped) into lines
-     * without following any nested references. Each `* [Title](path#treefacts)`
-     * markdown-link bullet is rewritten to its plain `* Title` form
-     * (matching the shape the editor sees) and the row is recorded in
-     * [Loaded.promotedByRow] keyed by its index. The caller (or the
-     * document VM) restores the link on save via [SubtreeCodec.formatRef].
-     *
-     * Markdown-link bullets without the `#treefacts` fragment are passed
-     * through verbatim — the bullet renders the raw `[Title](path)` text,
-     * no chevron, no splice. This makes Obsidian-style cross-references
-     * coexist safely with TreeFacts-managed bullets in the same file.
-     *
-     * @param parentDir Directory of the file being parsed, relative to
-     *   [rootDirectory]. References inside the file resolve relative to
-     *   this directory; the resulting [PromotedRef.fileRel] always carries
-     *   the path from the vault root.
-     * @param fileText Verbatim file body with any leading frontmatter
-     *   already removed.
-     */
-    private fun parseFileShallow(parentDir: String, fileText: String): Loaded {
-        val rawLines = if (fileText.isEmpty()) listOf("") else fileText.split("\n")
-        val out = ArrayList<String>(rawLines.size)
-        val promoted = HashMap<Int, PromotedRef>()
-        for (line in rawLines) {
-            val ref = SubtreeCodec.parseRef(line)
-            if (ref == null) {
-                // Plain text, plain bullet, or markdown link without the
-                // `#treefacts` fragment — render as literal text. The
-                // footer's switchTo flow lets the user navigate to any
-                // file directly; we don't need to track bare-URL links
-                // here.
-                out += line
-                continue
-            }
-            // refPath has the `#treefacts` fragment stripped. Resolve to
-            // a vault-root-relative path by joining with the parent dir.
-            val childFileRel = if (parentDir.isEmpty()) ref.refPath else "$parentDir/${ref.refPath}"
-            promoted[out.size] = PromotedRef(fileRel = childFileRel, noAutoPromote = false)
-            out += ref.bulletText
-        }
-        return Loaded(out, promoted)
+    /** Parses one outline file and composes it at [indent]. */
+    private fun composeNode(folderRel: String, text: String, indent: Int): Loaded {
+        val composed = SubtreeCodec.composeNodeLines(SubtreeCodec.parseNodeFile(text), indent)
+        val refs = composed.folderByRow.mapValues { (_, name) -> PromotedRef(join(folderRel, name)) }
+        return Loaded(composed.lines, refs)
     }
 
+    // ------------------------------------------------------------------ save
+
     /**
-     * Writes the composed [lines] back to disk, applying [PromotionPolicy] to
-     * decide which subtrees should live in their own files.
+     * Writes one document's composed [lines] back to the vault, applying
+     * the storage rules in a single pass:
      *
-     * @param lines The composed outline to persist.
-     * @param promotedByRow Row→[PromotedRef] map carried over from the
-     *   previous load or save. Entries here describe subtrees that are
-     *   *currently* on disk as their own files; the save may rename, demote,
-     *   or leave them alone (refs flagged [PromotedRef.noAutoPromote] are
-     *   always left alone).
-     * @param expandedRefRows Subset of [promotedByRow]'s keys whose subtrees
-     *   are currently spliced into [lines] in memory. Rows in [promotedByRow]
-     *   but *not* in this set are file boundaries the user has folded —
-     *   their children are absent from [lines] and must be left untouched
-     *   on disk.
-     * @param deletedRefFiles [PromotedRef.fileRel]s of promoted refs whose
-     *   bullet rows were deleted from the outline since the last save. They
-     *   appear in neither [promotedByRow] nor [lines], so the step-4 orphan
-     *   sweep can't discover them on its own; passing them here gets their
-     *   on-disk files (and empty parent dirs) deleted. `Document` computes
-     *   this set at save time and already excludes adopted-foreign refs
-     *   ([PromotedRef.noAutoPromote]) — deleting the bullet of an adopted
-     *   file only unlinks it, never deletes it. A path that a promotion in
-     *   *this* save re-claims is kept, not deleted.
-     * @param onPhaseChange Invoked with `true` immediately before the save
-     *   begins fanning out file writes/deletes for a *restructuring* tick
-     *   (one that promotes a fresh subtree, demotes a previously promoted
-     *   one, or deletes files for [deletedRefFiles]), and with `false` once
-     *   those writes complete.
-     * @return The new row→[PromotedRef] map, ready to be stashed in the
-     *   document VM for the next save.
+     *  - **A leaf gets its first child:** create `<name>/.treefacts`, move
+     *    the children into it, write the parent line as `+ [title](name)`.
+     *  - **The last child bullet or block is removed:** if the folder holds
+     *    nothing else, delete it and write the line back as `* title`; if
+     *    it still holds files, keep the folder and the `+` line. User files
+     *    are never deleted.
+     *  - **A title is edited:** rename the folder to the newly encoded name.
+     *  - **A subtree is moved** (indent, outdent, move, cut and paste):
+     *    `rename` the folder, so attachments travel with it.
+     *  - **A folder-backed bullet is deleted** ([deadRefs]): move its
+     *    folder to `<vault>/.trash/<timestamp> <name>/`. Passing a ref
+     *    whose folder is in the trash as a live row moves it back (that is
+     *    how undo restores it).
+     *  - **Empty title with children:** name the folder `Untitled`,
+     *    `Untitled (2)`, …; renamed once a title is typed.
+     *
+     * Folder names come from [FolderName]; sibling collisions (with other
+     * bullets and with anything already on disk) are case-insensitive.
+     * Unchanged outline files are not rewritten.
+     *
+     * Non-outline files are written verbatim (trailing empty bullets
+     * dropped).
+     *
+     * @param fileRel The document's file. For an outline, its folder is
+     *   the root node of [lines].
+     * @param lines The composed outline.
+     * @param promotedByRow Rows known to be folder-backed and where their
+     *   folder currently is (as returned by the previous load or save).
+     * @param unloadedRows Subset of [promotedByRow]'s rows whose children
+     *   are *not* in [lines] (a collapsed, never-spliced `+` bullet). Their
+     *   outline files are left untouched. Any in-memory rows under such a
+     *   bullet are appended to its outline rather than dropped.
+     * @param deadRefs Folders of `+` bullets deleted from [lines] since the
+     *   last save; moved to the trash.
+     * @param onPhaseChange Called with `true` before a save that changes
+     *   the folder structure and `false` once it is done. Pure content
+     *   saves do not call it.
      */
     suspend fun save(
-        activeFileRel: String,
+        fileRel: String,
         lines: List<String>,
         promotedByRow: Map<Int, PromotedRef>,
-        expandedRefRows: Set<Int> = promotedByRow.keys,
-        deletedRefFiles: Collection<String> = emptyList(),
+        unloadedRows: Set<Int> = emptySet(),
+        deadRefs: Collection<PromotedRef> = emptyList(),
         onPhaseChange: (Boolean) -> Unit = {},
-    ): Map<Int, PromotedRef> {
+    ): SaveResult {
         fileSystem.ensureDirectory(rootDirectory)
-
-        val measurements = SubtreeCodec.findSubtrees(lines)
-        val measurementByStartRow = measurements.associateBy { it.startRow }
-
-        // Step 1: decide which rows are promoted in this save.
-        val promotedRowsOut = HashSet<Int>()
-        for (m in measurements) {
-            val title = SubtreeCodec.titleOf(lines[m.startRow])
-            val span = SubtreeSpan(
-                startRow = m.startRow,
-                endRowInclusive = m.endRowInclusive,
-                indent = m.indent,
-                descendantCount = m.descendantCount,
-                globalDepth = m.indent / TAB_SIZE,
-                titleLength = title.length,
-            )
-            val existing = promotedByRow[m.startRow]
-            val wasPromoted = existing != null
-            val isUnloaded = wasPromoted && m.startRow !in expandedRefRows
-            val keep = when {
-                // Unloaded refs are file boundaries whose children aren't in
-                // [lines]. We have no view into their real descendant count
-                // and must not rename or demote them — pass through as-is.
-                isUnloaded -> true
-                // Adopted-foreign files (noAutoPromote=true) are pinned: never
-                // demoted, never renamed, regardless of size or title edits.
-                existing?.noAutoPromote == true -> true
-                wasPromoted ->
-                    // An already-promoted (and loaded) subtree stays unless it
-                    // shrinks below the demote line OR loses its title.
-                    title.isNotEmpty() && !PromotionPolicy.shouldDemote(m.descendantCount)
-                else ->
-                    // Starred.md is exempt from new auto-promotion: its bullet
-                    // tree is a hand-curated bookmark list that must never
-                    // fragment into subfiles regardless of size.
-                    activeFileRel != STARRED_FILE_NAME &&
-                    PromotionPolicy.shouldPromote(span, alreadyPromoted = false)
-            }
-            if (keep) promotedRowsOut += m.startRow
+        if (!isOutlineFile(fileRel)) {
+            val body = stripTrailingEmptyBullets(lines).joinToString("\n")
+            if (fileSystem.readFileIfExists(abs(fileRel)) != body) fileSystem.writeFile(abs(fileRel), body)
+            return SaveResult(emptyMap())
         }
-
-        // Compare against the previous map to detect whether this tick will
-        // actually reshape the on-disk tree. Pure-content saves skip the
-        // phase signal entirely.
-        val willPromote = promotedRowsOut.any { it !in promotedByRow }
-        val willDemote = promotedByRow.keys.any { it !in promotedRowsOut }
-        val isRestructuring = willPromote || willDemote || deletedRefFiles.isNotEmpty()
-
-        if (isRestructuring) onPhaseChange(true)
+        val docFolder = folderOfOutline(fileRel)
+        var phaseOpen = false
+        fun openPhase() {
+            if (!phaseOpen) { phaseOpen = true; onPhaseChange(true) }
+        }
         try {
-            // Step 2: walk the outline once, building per-file content lists
-            // and assigning child file paths with collision resolution.
-            val plans = mutableListOf<FilePlan>()
-            val newPromotedByRow = HashMap<Int, PromotedRef>()
-            val usedByDir = HashMap<String, MutableSet<String>>()
-            // Reserve the active file's basename in its parent directory
-            // so a top-level promotion can't try to write a child file
-            // that shadows it.
-            val activeParentDir = activeFileRel.substringBeforeLast('/', missingDelimiterValue = "")
-            usedByDir.getOrPut(activeParentDir) { HashSet() }.add(basenameOf(activeFileRel))
+            // Phase 1: trash deleted folder-backed bullets. Done first so
+            // their names are free and the planning below sees the
+            // post-trash disk.
+            if (deadRefs.isNotEmpty()) openPhase()
+            val trashed = trashFolders(deadRefs.map { it.folderRel })
 
-            decomposeIntoFiles(
-                lines = lines,
-                measurementByStartRow = measurementByStartRow,
-                promotedRowsOut = promotedRowsOut,
-                promotedByRow = promotedByRow,
-                expandedRefRows = expandedRefRows,
-                start = 0,
-                endExclusive = lines.size,
-                indentBaseline = 0,
-                parentFileRel = activeFileRel,
-                usedByDir = usedByDir,
-                plansOut = plans,
-                newPromotedByRow = newPromotedByRow,
+            // Live refs whose folder sat inside a trashed folder travelled
+            // with it; follow them there.
+            val current = HashMap<Int, String>(promotedByRow.size)
+            for ((row, ref) in promotedByRow) current[row] = remapUnder(ref.folderRel, trashed)
+
+            // Phase 2: plan.
+            val plan = Planner(lines, current, unloadedRows)
+            plan.planRoot(docFolder)
+            if (plan.moves.isNotEmpty() || plan.demotions.isNotEmpty() || plan.promotions > 0) openPhase()
+
+            // Phase 3: apply. Demoted outlines go first (at their current
+            // paths), then the moves, then every write at its new path.
+            for (d in plan.demotions) fileSystem.deleteFile(abs(outlineFileOf(d)))
+            applyMoves(plan.moves)
+            for (d in plan.demotions.sortedByDescending { depth(it) }) {
+                val now = postMovePath(d, plan.moves)
+                if (now.isNotEmpty()) fileSystem.deleteDirectoryIfEmpty(abs(now))
+            }
+            for ((folder, text) in plan.writes) {
+                val path = abs(outlineFileOf(folder))
+                val onDisk = fileSystem.readFileIfExists(path)
+                if (onDisk == text) continue
+                // An empty node never creates its outline file.
+                if (text.isEmpty() && onDisk == null) continue
+                println("[autosave]   write $path")
+                fileSystem.writeFile(path, text)
+            }
+            for (folder in plan.clearedOutlines) fileSystem.deleteFile(abs(outlineFileOf(folder)))
+            for ((folder, extra) in plan.appends) {
+                val path = abs(outlineFileOf(folder))
+                val existing = fileSystem.readFileIfExists(path) ?: ""
+                val merged = SubtreeCodec.parseNodeFile(existing) + extra
+                fileSystem.writeFile(path, SubtreeCodec.formatNodeFile(merged))
+            }
+            return SaveResult(
+                promotedByRow = plan.assigned.mapValues { (_, folder) -> PromotedRef(folder) },
+                trashed = trashed,
             )
-
-            // Step 3: write all files. Each file's verbatim user-authored
-            // frontmatter (if any) is re-prepended; TreeFacts itself adds no
-            // frontmatter ceremony — promoted-ref-ness lives in link URLs.
-            for (plan in plans) {
-                val parentDir = plan.fileRel.substringBeforeLast('/', missingDelimiterValue = "")
-                val absDir = if (parentDir.isEmpty()) rootDirectory else "$rootDirectory/$parentDir"
-                fileSystem.ensureDirectory(absDir)
-            }
-            for (plan in plans) {
-                val absFile = "$rootDirectory/${plan.fileRel}"
-                val stripped = stripTrailingEmptyBullets(plan.content)
-                val body = stripped.joinToString("\n")
-                val frontmatter = frontmatterByFile[plan.fileRel] ?: ""
-                println("[autosave]   write $absFile (${stripped.size} lines)")
-                fileSystem.writeFile(absFile, frontmatter + body)
-            }
-
-            // Step 4: collect orphaned old paths — files registered in
-            // promotedByRow whose fileRel is no longer used by any current
-            // promotion (demoted or renamed-and-moved subtrees), plus files
-            // whose ref bullets were deleted outright ([deletedRefFiles]).
-            // The keptFiles filter protects both kinds from a same-tick
-            // promotion that re-claims the path (e.g. delete + undo landing
-            // a fresh promotion on the same title).
-            val keptFiles = newPromotedByRow.values.map { it.fileRel }.toHashSet()
-            val orphanedFiles = (promotedByRow.values.map { it.fileRel } + deletedRefFiles)
-                .filter { it !in keptFiles }
-                .toHashSet()
-
-            // Drop frontmatter cache entries for orphans so a future re-load
-            // of the same path starts clean.
-            for (orphan in orphanedFiles) frontmatterByFile.remove(orphan)
-
-            // Delete deepest first so a dir's contents are gone before we
-            // try to remove the dir itself.
-            val sortedOrphans = orphanedFiles.sortedByDescending { it.count { ch -> ch == '/' } }
-            for (orphanFile in sortedOrphans) {
-                fileSystem.deleteFile("$rootDirectory/$orphanFile")
-                val parentDir = orphanFile.substringBeforeLast('/', missingDelimiterValue = "")
-                if (parentDir.isNotEmpty()) {
-                    fileSystem.deleteDirectoryIfEmpty("$rootDirectory/$parentDir")
-                }
-            }
-
-            return newPromotedByRow
         } finally {
-            if (isRestructuring) onPhaseChange(false)
+            if (phaseOpen) onPhaseChange(false)
         }
     }
 
     /**
-     * Recursive helper for [save]. Walks one file's slice of the composed
-     * outline, decomposing nested promoted subtrees into their own
-     * [FilePlan]s and accumulating the current file's plan into [plansOut].
+     * One save's plan, computed from the composed outline and the disk as
+     * it is after trashing. Reads directories; writes nothing.
+     *
+     * All "current" folder paths are pre-move paths; all "desired" paths
+     * are where things end up.
+     *
+     * @param lines The composed outline.
+     * @param current Row → current folder of every known folder-backed row.
+     * @param unloadedRows Rows whose children are not in [lines].
      */
-    private fun decomposeIntoFiles(
-        lines: List<String>,
-        measurementByStartRow: Map<Int, SubtreeMeasurement>,
-        promotedRowsOut: Set<Int>,
-        promotedByRow: Map<Int, PromotedRef>,
-        expandedRefRows: Set<Int>,
-        start: Int,
-        endExclusive: Int,
-        indentBaseline: Int,
-        parentFileRel: String,
-        usedByDir: MutableMap<String, MutableSet<String>>,
-        plansOut: MutableList<FilePlan>,
-        newPromotedByRow: MutableMap<Int, PromotedRef>,
+    private inner class Planner(
+        private val lines: List<String>,
+        private val current: Map<Int, String>,
+        private val unloadedRows: Set<Int>,
     ) {
-        // Pre-pass: collect every row promoted at THIS file scope.
-        val topLevelPromoted = mutableListOf<Int>()
-        run {
-            var i = start
-            while (i < endExclusive) {
-                if (i in promotedRowsOut) {
-                    val m = measurementByStartRow.getValue(i)
-                    topLevelPromoted += i
-                    i = m.endRowInclusive + 1
-                } else {
-                    i++
+        /** Row → desired folder of every bullet that ends up folder-backed. */
+        val assigned = HashMap<Int, String>()
+
+        /** Explicit folder moves; a folder that moves with its parent is not listed. */
+        val moves = ArrayList<Pair<String, String>>()
+
+        /** Current paths of folders whose bullet lost its last child. */
+        val demotions = ArrayList<String>()
+
+        /** Desired folder → full outline text, for every node whose children are known. */
+        val writes = ArrayList<Pair<String, String>>()
+
+        /** Desired folders that stay (they still hold files) but have no bullets. */
+        val clearedOutlines = ArrayList<String>()
+
+        /** Desired folder → rows to append to an unloaded node's outline. */
+        val appends = ArrayList<Pair<String, List<NodeLine>>>()
+
+        /** Number of bullets newly backed by a folder in this save. */
+        var promotions = 0
+
+        /** Every folder currently known to belong to a live bullet. */
+        private val trackedFolders: Set<String> = current.values.toHashSet()
+
+        private val listingCache = HashMap<String, List<VaultDirectoryEntry>>()
+
+        private suspend fun listing(folder: String): List<VaultDirectoryEntry> =
+            listingCache.getOrPut(folder) { fileSystem.listDirectoryEntries(abs(folder)) }
+
+        private suspend fun dirExists(folder: String): Boolean {
+            if (folder.isEmpty()) return true
+            val name = folder.substringAfterLast('/')
+            return listing(parentOf(folder)).any { it.isDirectory && it.name == name }
+        }
+
+        /**
+         * `true` when [folder] holds anything other than its outline file
+         * and the folders of live bullets (which stay tracked, or are
+         * about to move elsewhere).
+         */
+        private suspend fun holdsOtherEntries(folder: String): Boolean =
+            listing(folder).any { e ->
+                e.name != OUTLINE_FILE_NAME && join(folder, e.name) !in trackedFolders
+            }
+
+        /** Plans the document's root node, which lives at [docFolder]. */
+        suspend fun planRoot(docFolder: String) {
+            val rootLines = planChildren(SubtreeCodec.parseComposed(lines), docFolder, docFolder)
+            writes += docFolder to SubtreeCodec.formatNodeFile(rootLines)
+        }
+
+        /**
+         * Plans one node's children and returns the node's outline lines.
+         *
+         * @param kids The node's direct children in the composed outline.
+         * @param desired Where the node's folder ends up.
+         * @param cur Where the node's folder is now, or `null` when it does
+         *   not exist yet.
+         */
+        private suspend fun planChildren(
+            kids: List<ComposedItem>,
+            desired: String,
+            cur: String?,
+        ): List<NodeLine> {
+            val trimmed = trimTrailingEmpty(kids)
+            val bullets = trimmed.filterIsInstance<ComposedItem.Bullet>()
+
+            // Decide which bullets are folder-backed.
+            val curOf = HashMap<Int, String?>()
+            val backed = HashSet<Int>()
+            for (b in bullets) {
+                val tracked = current[b.row]
+                val existing = if (tracked != null && dirExists(tracked)) tracked else null
+                curOf[b.row] = existing
+                val isBacked = when {
+                    tracked != null && b.row in unloadedRows -> true
+                    hasContent(b.children) -> true
+                    existing != null -> holdsOtherEntries(existing)
+                    else -> false
+                }
+                if (isBacked) backed += b.row
+                else if (existing != null) demotions += existing
+            }
+
+            // Name them. Anything already on disk in this folder that does
+            // not belong to a live bullet is reserved.
+            val used = HashSet<String>()
+            if (cur != null) {
+                for (e in listing(cur)) {
+                    if (join(cur, e.name) !in trackedFolders) used += e.name.lowercase()
                 }
             }
-        }
-
-        val parentDir = parentFileRel.substringBeforeLast('/', missingDelimiterValue = "")
-        val used = usedByDir.getOrPut(parentDir) { HashSet() }
-
-        // Decide each promoted row's child fileRel + carry forward the
-        // noAutoPromote flag from existing entries.
-        val refOfRow = HashMap<Int, PromotedRef>()
-        // Two passes: pinned (existing or unloaded) first, so their basenames
-        // are reserved before fresh title-derived names try to claim them.
-        val pinned = topLevelPromoted.filter { row ->
-            val ex = promotedByRow[row]
-            ex != null && (ex.noAutoPromote || row !in expandedRefRows)
-        }
-        val loadedAuto = topLevelPromoted.filter { row ->
-            val ex = promotedByRow[row]
-            ex != null && !ex.noAutoPromote && row in expandedRefRows
-        }
-        val newlyPromoted = topLevelPromoted.filter { row -> row !in promotedByRow }
-
-        for (row in pinned) {
-            val ex = promotedByRow.getValue(row)
-            refOfRow[row] = ex
-            used += basenameOf(ex.fileRel)
-        }
-        for (row in loadedAuto) {
-            val ex = promotedByRow.getValue(row)
-            val title = SubtreeCodec.titleOf(lines[row])
-            val desired = SubtreeCodec.safeFilename(title)
-            val currentBasename = basenameOf(ex.fileRel)
-            // For TreeFacts-auto-promoted files we keep them in the doubled-name
-            // shape under [parentDir]. If the title's safe filename matches the
-            // current basename, keep the existing fileRel as-is. Otherwise emit
-            // a fresh `<parentDir>/<newName>/<newName>.md` path; the orphan-
-            // collection step in [save] will delete the old path.
-            val newFileRel = if (desired == currentBasename) {
-                used += currentBasename
-                ex.fileRel
-            } else {
-                val unique = SubtreeCodec.uniqueFilename(desired, used)
-                used += unique
-                if (parentDir.isEmpty()) "$unique/$unique$NOTE_EXTENSION"
-                else "$parentDir/$unique/$unique$NOTE_EXTENSION"
-            }
-            refOfRow[row] = PromotedRef(fileRel = newFileRel, noAutoPromote = false)
-        }
-        for (row in newlyPromoted) {
-            val title = SubtreeCodec.titleOf(lines[row])
-            val desired = SubtreeCodec.safeFilename(title)
-            val name = SubtreeCodec.uniqueFilename(desired, used)
-            used += name
-            val newFileRel = if (parentDir.isEmpty()) "$name/$name$NOTE_EXTENSION"
-                             else "$parentDir/$name/$name$NOTE_EXTENSION"
-            refOfRow[row] = PromotedRef(fileRel = newFileRel, noAutoPromote = false)
-        }
-
-        // Build phase: walk lines, emit content for this file, recurse into
-        // each promoted subtree.
-        val content = mutableListOf<String>()
-        var i = start
-        while (i < endExclusive) {
-            if (i in promotedRowsOut && i in refOfRow) {
-                val m = measurementByStartRow.getValue(i)
-                val ref = refOfRow.getValue(i)
-                newPromotedByRow[i] = ref
-
-                val rebasedHead = rebase(lines[i], indentBaseline)
-                val headIndent = DocumentLayout.bulletAsteriskColumn(rebasedHead).coerceAtLeast(0)
-                val title = SubtreeCodec.titleOf(rebasedHead)
-                val relativeUrl = relativizeFromParent(parentDir, ref.fileRel)
-                content += SubtreeCodec.formatRef(headIndent, title, relativeUrl)
-
-                // Reserve the child's directory entry so deeper promotions
-                // can't collide with it. Only meaningful when the child
-                // lives in its own subdirectory (the doubled-name case).
-                val childDir = ref.fileRel.substringBeforeLast('/', missingDelimiterValue = "")
-                if (childDir.isNotEmpty() && childDir != parentDir) {
-                    usedByDir.getOrPut(childDir) { HashSet() }.add(basenameOf(ref.fileRel))
+            val nameOf = HashMap<Int, String>()
+            // First pass: keep a current name that still fits the title.
+            for (b in bullets) {
+                if (b.row !in backed) continue
+                val existing = curOf[b.row] ?: continue
+                if (cur == null || parentOf(existing) != cur) continue
+                val name = existing.substringAfterLast('/')
+                val base = FolderName.forTitle(b.title)
+                if (FolderName.isVariantOf(name, base) && name.lowercase() !in used) {
+                    nameOf[b.row] = name
+                    used += name.lowercase()
                 }
-
-                // Recurse for any row whose children are physically in
-                // `lines`: newly promoted rows and previously-promoted rows
-                // the user has expanded. Skip for previously-promoted-but-
-                // unloaded rows: their children are not in `lines`, and
-                // rewriting from `lines` would truncate the child file.
-                val isUnloadedRef = i in promotedByRow && i !in expandedRefRows
-                if (!isUnloadedRef) {
-                    decomposeIntoFiles(
-                        lines = lines,
-                        measurementByStartRow = measurementByStartRow,
-                        promotedRowsOut = promotedRowsOut,
-                        promotedByRow = promotedByRow,
-                        expandedRefRows = expandedRefRows,
-                        start = i + 1,
-                        endExclusive = m.endRowInclusive + 1,
-                        indentBaseline = m.indent + TAB_SIZE,
-                        parentFileRel = ref.fileRel,
-                        usedByDir = usedByDir,
-                        plansOut = plansOut,
-                        newPromotedByRow = newPromotedByRow,
-                    )
-                }
-                // Unloaded refs: skip recursion; the existing child file on
-                // disk is left untouched. m.endRowInclusive equals i for an
-                // unloaded ref (no descendants in `lines`), so the increment
-                // below also works for that case.
-
-                i = m.endRowInclusive + 1
-            } else {
-                content += rebase(lines[i], indentBaseline)
-                i++
             }
+            // Second pass: fresh names for everything else.
+            for (b in bullets) {
+                if (b.row !in backed || b.row in nameOf) continue
+                val name = FolderName.unique(FolderName.forTitle(b.title), used)
+                nameOf[b.row] = name
+                used += name.lowercase()
+            }
+
+            // Record moves and recurse.
+            val out = ArrayList<NodeLine>(trimmed.size)
+            for (item in trimmed) {
+                when (item) {
+                    is ComposedItem.Bullet -> {
+                        if (item.row !in backed) {
+                            out += NodeLine.Leaf(item.title)
+                            continue
+                        }
+                        val name = nameOf.getValue(item.row)
+                        val target = join(desired, name)
+                        assigned[item.row] = target
+                        val existing = curOf[item.row]
+                        if (current[item.row] == null) promotions++
+                        if (existing != null && existing != target) {
+                            val travelsWithParent = cur != null && parentOf(existing) == cur &&
+                                existing.substringAfterLast('/') == name
+                            if (!travelsWithParent) moves += existing to target
+                        }
+                        out += NodeLine.Folder(item.title, name)
+                        if (item.row in unloadedRows && current[item.row] != null) {
+                            if (item.children.isNotEmpty()) {
+                                appends += target to planChildren(item.children, target, existing)
+                            }
+                            continue
+                        }
+                        val childLines = planChildren(item.children, target, existing)
+                        if (childLines.isEmpty()) clearedOutlines += target
+                        else writes += target to SubtreeCodec.formatNodeFile(childLines)
+                    }
+                    is ComposedItem.Block -> out += NodeLine.Block(item.content)
+                    is ComposedItem.Text -> out += NodeLine.Text(item.text)
+                }
+            }
+            return out
         }
 
-        plansOut += FilePlan(fileRel = parentFileRel, content = content)
+        private fun hasContent(items: List<ComposedItem>): Boolean = trimTrailingEmpty(items).isNotEmpty()
+
+        /**
+         * [SubtreeCodec.trimTrailingEmpty], except that a known
+         * folder-backed bullet is never trimmed: its content may be on
+         * disk only.
+         */
+        private fun trimTrailingEmpty(items: List<ComposedItem>): List<ComposedItem> {
+            var end = items.size
+            while (end > 0) {
+                val last = items[end - 1]
+                val empty = last is ComposedItem.Bullet && last.title.isBlank() &&
+                    last.row !in current && !hasContent(last.children)
+                if (!empty) break
+                end--
+            }
+            return if (end == items.size) items else items.subList(0, end)
+        }
     }
 
     /**
-     * Drops up to [indentBaseline] leading spaces from [line] so it can be
-     * written into a file whose depth-0 corresponds to the composed
-     * outline's column [indentBaseline].
-     */
-    private fun rebase(line: String, indentBaseline: Int): String {
-        if (indentBaseline <= 0) return line
-        var drop = 0
-        while (drop < indentBaseline && drop < line.length && line[drop] == ' ') drop++
-        return if (drop > 0) line.substring(drop) else line
-    }
-
-    /**
-     * Returns [childFileRel]'s URL when the bullet that points at it is
-     * emitted into the file at [parentDir]. When the child lives under
-     * the parent's directory we return the suffix; otherwise we fall back
-     * to the absolute (vault-root-relative) path. CommonMark resolves both
-     * shapes correctly when followed manually from the parent.
-     */
-    private fun relativizeFromParent(parentDir: String, childFileRel: String): String {
-        if (parentDir.isEmpty()) return childFileRel
-        val prefix = "$parentDir/"
-        return if (childFileRel.startsWith(prefix)) childFileRel.substring(prefix.length)
-        else childFileRel
-    }
-
-    /** Strips the `.md` extension from a fileRel's last segment. */
-    private fun basenameOf(fileRel: String): String =
-        fileRel.substringAfterLast('/').removeSuffix(NOTE_EXTENSION)
-
-    /** A single file ready to be written. */
-    private data class FilePlan(
-        val fileRel: String,
-        val content: List<String>,
-    )
-
-    /**
-     * Drops trailing empty-bullet rows (and trailing blank lines) from the
-     * tail of [content]. An "empty bullet" is a row matching
-     * [DocumentLayout.isEmptyBulletLine] — `"  * "`, `"* "`, etc. with no
-     * actual text after the marker.
+     * Moves each folder in [folders] to `.trash/<timestamp> <name>/`.
+     * Folders nested inside another listed folder travel with it. Folders
+     * already under `.trash/` and folders missing from disk are skipped.
      *
-     * Implements the "don't write any trailing bullets without content on
-     * the last line" rule: the editor freely materializes empty
-     * placeholder bullets at zoom-into-leaf time and at the bottom of
-     * the file as the user types, but those should never reach disk if
-     * they end up at the very end of the file. Pure-content saves with a
-     * fully populated file are unaffected.
-     *
-     * Always preserves at least one row so an emptied-out file still
-     * round-trips through [loadFile] as `listOf("")`.
+     * @return Old path → trash path, for every folder that is now in the
+     *   trash.
+     */
+    private suspend fun trashFolders(folders: List<String>): Map<String, String> {
+        if (folders.isEmpty()) return emptyMap()
+        val paths = folders.filter { it.isNotEmpty() && !isInTrash(it) }.distinct().sortedBy { it.length }
+        val tops = paths.filter { p -> paths.none { q -> q != p && p.startsWith("$q/") } }
+        val out = HashMap<String, String>()
+        val stamp = formatTimestamp(nowMillis())
+        for (p in tops) {
+            val name = p.substringAfterLast('/')
+            val exists = fileSystem.listDirectoryEntries(abs(parentOf(p))).any { it.isDirectory && it.name == name }
+            if (!exists) continue
+            val taken = fileSystem.listDirectory(abs(TRASH_DIR)).map { it.lowercase() }.toHashSet()
+            val dest = "$TRASH_DIR/" + FolderName.unique("$stamp $name", taken)
+            println("[autosave]   trash $p -> $dest")
+            fileSystem.moveDirectory(abs(p), abs(dest))
+            out[p] = dest
+        }
+        for (p in paths) {
+            if (p in out) continue
+            val top = tops.firstOrNull { p.startsWith("$it/") } ?: continue
+            val dest = out[top] ?: continue
+            out[p] = dest + p.substring(top.length)
+        }
+        return out
+    }
+
+    /**
+     * Applies explicit folder moves without ever renaming onto an occupied
+     * path: every mover is first parked in `.trash/.moving/` (deepest
+     * first, so a nested mover leaves before its parent does), then placed
+     * at its destination (shallowest first, so a destination's parent is
+     * in place before the child arrives). Parking inside the trash means a
+     * crash mid-save can never lose a folder.
+     */
+    private suspend fun applyMoves(moves: List<Pair<String, String>>) {
+        if (moves.isEmpty()) return
+        val taken = fileSystem.listDirectory(abs(MOVING_DIR)).toHashSet()
+        var n = 0
+        val parked = ArrayList<Pair<String, String>>(moves.size)
+        for ((from, to) in moves.sortedByDescending { depth(it.first) }) {
+            var slot: String
+            do { slot = "m${++n}" } while (slot in taken)
+            val park = "$MOVING_DIR/$slot"
+            fileSystem.moveDirectory(abs(from), abs(park))
+            parked += park to to
+        }
+        for ((park, to) in parked.sortedBy { depth(it.second) }) {
+            println("[autosave]   move -> $to")
+            fileSystem.moveDirectory(abs(park), abs(to))
+        }
+        fileSystem.deleteDirectoryIfEmpty(abs(MOVING_DIR))
+    }
+
+    /**
+     * Where [path] (a pre-move folder path) is after [moves]: follows the
+     * deepest move whose source contains it.
+     */
+    private fun postMovePath(path: String, moves: List<Pair<String, String>>): String {
+        var best: Pair<String, String>? = null
+        for (m in moves) {
+            if ((path == m.first || path.startsWith(m.first + "/")) &&
+                (best == null || m.first.length > best.first.length)
+            ) best = m
+        }
+        val b = best ?: return path
+        return b.second + path.substring(b.first.length)
+    }
+
+    /** Maps [path] into the trash if it sat inside a folder that [trashed] moved. */
+    private fun remapUnder(path: String, trashed: Map<String, String>): String {
+        trashed[path]?.let { return it }
+        var best: String? = null
+        for (k in trashed.keys) {
+            if (path.startsWith("$k/") && (best == null || k.length > best.length)) best = k
+        }
+        val b = best ?: return path
+        return trashed.getValue(b) + path.substring(b.length)
+    }
+
+    /**
+     * Drops trailing empty bullets and blank lines from a plain file's
+     * [content], keeping at least one row. Plain files only; outline
+     * trimming is structural (see [SubtreeCodec.trimTrailingEmpty]).
      */
     private fun stripTrailingEmptyBullets(content: List<String>): List<String> {
-        if (content.isEmpty()) return content
         var end = content.size
         while (end > 0) {
             val last = content[end - 1]
-            val isStrippable = last.isEmpty() ||
-                last.all { it.isWhitespace() } ||
-                DocumentLayout.isEmptyBulletLine(last)
-            if (!isStrippable) break
+            if (!(last.isBlank() || DocumentLayout.isEmptyBulletLine(last))) break
             end--
         }
         if (end == content.size) return content
@@ -658,120 +573,86 @@ class NoteRepository(
         return content.subList(0, end).toList()
     }
 
-    // ----------------------------------------------------------- frontmatter
-
-    /**
-     * Splits a leading YAML frontmatter block (`---\n…\n---\n`) off [text].
-     * Returns `(frontmatterBlockOrNull, body)` where the frontmatter block,
-     * if present, includes the surrounding fences and the trailing newline
-     * — so re-prepending it at save time is a verbatim concatenation.
-     *
-     * Files without a frontmatter block return `(null, text)` unchanged.
-     * Malformed frontmatter (opening `---` without a closing one) is left
-     * unstripped — better to show the user weird text than silently delete
-     * content.
-     *
-     * TreeFacts does **not** read or write the `treefacts: true` marker
-     * anymore; promoted-ref-ness is signalled per-link via the `#treefacts`
-     * URL fragment in [SubtreeCodec]. Frontmatter is preserved purely as
-     * user data.
-     */
-    internal fun splitFrontmatter(text: String): Pair<String?, String> {
-        if (!text.startsWith("---\n")) return Pair(null, text)
-        val close = findFenceLine(text, startAt = 4)
-        if (close < 0) return Pair(null, text)
-        val afterFence = (close + 3).let { if (it < text.length && text[it] == '\n') it + 1 else it }
-        val frontmatter = text.substring(0, afterFence)
-        val body = text.substring(afterFence)
-        return Pair(frontmatter, body)
-    }
-
-    /** Returns the byte offset of the next line that is exactly `---`, or -1. */
-    private fun findFenceLine(text: String, startAt: Int): Int {
-        var pos = startAt
-        while (pos < text.length) {
-            val end = text.indexOf('\n', pos).let { if (it < 0) text.length else it }
-            if (end - pos == 3 &&
-                text[pos] == '-' && text[pos + 1] == '-' && text[pos + 2] == '-'
-            ) return pos
-            pos = end + 1
-        }
-        return -1
-    }
-
     // -------------------------------------------------------- vault listing
 
     /**
-     * Recursively walks every `.md` file under [rootDirectory] and returns
-     * their vault-relative paths. Used by `VaultIndex` to discover loose
-     * files (those not reachable from the configured root via promoted-ref
-     * links) so the Insert Link search can offer them as targets too.
-     *
-     * Skips dotfiles and any non-`.md` entries. The walk is breadth-first
-     * by directory level — order within a directory follows the platform
-     * filesystem's listing order, which is what every file-tree consumer
-     * in TreeFacts already relies on.
+     * Every note file in the vault, vault-relative: `.md` files and node
+     * outlines (`<folder>/.treefacts`), excluding the root outline and
+     * anything under a dot-folder (the trash). Used by `VaultIndex` to
+     * find nodes and notes not reachable through `+` bullets.
      */
-    suspend fun listAllMdFiles(): List<String> {
+    suspend fun listAllNoteFiles(): List<String> {
         fileSystem.ensureDirectory(rootDirectory)
         val out = mutableListOf<String>()
-        walkAllMdFiles("", out)
+        walkNoteFiles("", out)
         return out
     }
 
-    private suspend fun walkAllMdFiles(dirRel: String, out: MutableList<String>) {
-        val absPath = if (dirRel.isEmpty()) rootDirectory else "$rootDirectory/$dirRel"
-        val raw = fileSystem.listDirectoryEntries(absPath)
-        for (entry in raw) {
-            if (entry.name.startsWith(".")) continue
-            val pathRel = if (dirRel.isEmpty()) entry.name else "$dirRel/${entry.name}"
-            if (entry.isDirectory) {
-                walkAllMdFiles(pathRel, out)
-            } else if (entry.name.endsWith(NOTE_EXTENSION)) {
-                out += pathRel
+    private suspend fun walkNoteFiles(dirRel: String, out: MutableList<String>) {
+        for (entry in fileSystem.listDirectoryEntries(abs(dirRel))) {
+            val pathRel = join(dirRel, entry.name)
+            if (entry.name == OUTLINE_FILE_NAME && !entry.isDirectory) {
+                if (dirRel.isNotEmpty()) out += pathRel
+                continue
             }
+            if (entry.name.startsWith(".")) continue
+            if (entry.isDirectory) walkNoteFiles(pathRel, out)
+            else if (entry.name.endsWith(NOTE_EXTENSION)) out += pathRel
         }
     }
 
     /**
-     * Lists the direct entries under `<rootDirectory>/<dirRel>`. Pass `""`
-     * to list the vault root. Filters to `.md` files plus subdirectories;
-     * dotfiles and other extensions are dropped. The body of `.md` files is
-     * never read here — the listing is purely structural.
+     * Lists the direct entries under `<rootDirectory>/<dirRel>` for the
+     * filesystem-tree footer: subdirectories, `.md` files and images.
+     * Dotfiles (the outline file, the trash) are left out. Directories
+     * come first; the footer reorders within each group.
      *
-     * Used by the vault-tree footer in the editor view to render one folder
-     * level at a time. Each subsequent folder click triggers another call
-     * with the deeper [dirRel], so deep vaults don't pay an upfront walk.
-     *
-     * Sort order: directories first, then files. Ordering within each group
-     * is the platform filesystem's listing order — the renderer reorders to
-     * honour the user's active sort mode (name/last-edit, ascending/descending),
-     * so doing it here would be wasted work.
-     *
-     * @param dirRel Directory path relative to [rootDirectory]. Empty
-     *   string means the vault root.
+     * @param dirRel Directory relative to [rootDirectory]; `""` is the
+     *   vault root.
      */
+    suspend fun listVaultLevel(dirRel: String): List<VaultEntry> {
+        val raw = fileSystem.listDirectoryEntries(abs(dirRel))
+        val dirs = ArrayList<VaultEntry>()
+        val files = ArrayList<VaultEntry>()
+        for (entry in raw) {
+            if (entry.name.startsWith(".")) continue
+            val pathRel = join(dirRel, entry.name)
+            when {
+                entry.isDirectory -> dirs += VaultEntry(
+                    name = FolderName.decode(entry.name),
+                    pathRel = pathRel,
+                    isDirectory = true,
+                )
+                entry.name.endsWith(NOTE_EXTENSION) -> files += VaultEntry(
+                    name = entry.name.removeSuffix(NOTE_EXTENSION),
+                    pathRel = pathRel,
+                    isDirectory = false,
+                    lastEditedMs = entry.lastModifiedMs,
+                )
+                isImagePath(entry.name) -> files += VaultEntry(
+                    name = entry.name,
+                    pathRel = pathRel,
+                    isDirectory = false,
+                    isImage = true,
+                    lastEditedMs = entry.lastModifiedMs,
+                )
+            }
+        }
+        return dirs + files
+    }
+
+    // ---------------------------------------------------------------- images
+
     /**
-     * Writes the byte contents of a pasted image into the vault under
-     * `Images/`. Returns the vault-relative path actually written
-     * (e.g. `Images/Pasted-2026-05-16-14-32-01.png`) so the caller can
-     * thread it straight into [PaneBackingViewModel.insertImageRef].
+     * Writes a pasted image into the vault's `Images/` folder and returns
+     * the vault-relative path actually written. Name collisions get `-2`,
+     * `-3`, … before the extension.
      *
-     * Filename collisions get a `-2`, `-3`, … suffix before the
-     * extension. This is a coarse policy — we don't hash to dedupe
-     * identical bytes (that's deferred to a polish slice; the typical
-     * paste-an-image flow is one-shot and won't collide). Always
-     * ensures `Images/` exists.
-     *
-     * @param suggestedName Filename including extension (no path
-     *   component); typically the timestamp-based name the pane VM
-     *   generates from the clipboard mime.
-     * @param bytes Raw image data, as the renderer received it from the
-     *   `ClipboardEvent`.
-     * @return Vault-relative path written.
+     * @param suggestedName Filename including extension, no path.
+     * @param bytes Raw image data.
      */
     suspend fun saveImageBytes(suggestedName: String, bytes: ByteArray): String {
-        val imagesAbs = "$rootDirectory/$IMAGES_DIR"
+        val imagesAbs = abs(IMAGES_DIR)
         fileSystem.ensureDirectory(imagesAbs)
         val existing = fileSystem.listDirectory(imagesAbs).toSet()
         val finalName = uniqueImageFilename(suggestedName, existing)
@@ -779,11 +660,6 @@ class NoteRepository(
         return "$IMAGES_DIR/$finalName"
     }
 
-    /**
-     * Pick a non-colliding name from [suggested] given the [existing]
-     * filenames in the same folder. Appends `-2`, `-3`, … before the
-     * extension until a free slot is found.
-     */
     private fun uniqueImageFilename(suggested: String, existing: Set<String>): String {
         if (suggested !in existing) return suggested
         val dot = suggested.lastIndexOf('.')
@@ -798,258 +674,29 @@ class NoteRepository(
     }
 
     /**
-     * Lists the image files directly under the vault's `Images/` folder.
-     * Returned paths are vault-root-relative (e.g. `Images/foo.png`),
-     * sorted alphabetically. Returns an empty list when the folder does
-     * not exist or contains no images.
-     *
-     * Filters to the canonical web-supported image extensions —
-     * `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`. Non-image files
-     * (a stray `README.md` etc.) are skipped silently so the palette
-     * never accidentally offers them as image picks. Match is case
-     * insensitive — Windows screenshots often arrive as `.PNG`.
-     *
-     * Not cached: autosave fires every ~5s and writes to the same vault
-     * tree, so a stale list would surface deleted images or miss newly
-     * pasted ones. The `Images/` folder is small in practice and the
-     * cost of a fresh `readdir` per palette open is negligible.
+     * Image files directly under `Images/`, vault-relative, sorted.
+     * Not cached: saves and pastes change the folder at any time.
      */
-    suspend fun listImageFiles(): List<String> {
-        val absPath = "$rootDirectory/$IMAGES_DIR"
-        val names = fileSystem.listDirectory(absPath)
-        if (names.isEmpty()) return emptyList()
-        val out = ArrayList<String>(names.size)
-        for (name in names) {
-            if (name.startsWith(".")) continue
-            val lower = name.lowercase()
-            if (IMAGE_EXTENSIONS.any { lower.endsWith(it) }) {
-                out += "$IMAGES_DIR/$name"
-            }
-        }
-        out.sort()
-        return out
-    }
+    suspend fun listImageFiles(): List<String> =
+        fileSystem.listDirectory(abs(IMAGES_DIR))
+            .filter { !it.startsWith(".") && isImagePath(it) }
+            .map { "$IMAGES_DIR/$it" }
+            .sorted()
 
-    suspend fun listVaultLevel(dirRel: String): List<VaultEntry> {
-        val absPath = if (dirRel.isEmpty()) rootDirectory else "$rootDirectory/$dirRel"
-        val raw = fileSystem.listDirectoryEntries(absPath)
-        if (raw.isEmpty()) return emptyList()
-        // Promoted-ref targets of the vault's root file, fetched lazily on
-        // the first directory entry of a root-level listing. Used to split
-        // anchored root dirs into promoted trees (referenced from the root
-        // file, can auto-demote back into it) vs spaces (loose, can't).
-        var rootRefs: Set<String>? = null
-        val out = ArrayList<VaultEntry>(raw.size)
-        for (entry in raw) {
-            if (entry.name.startsWith(".")) continue
-            val pathRel = if (dirRel.isEmpty()) entry.name else "$dirRel/${entry.name}"
-            if (entry.isDirectory) {
-                val anchorRel = "$pathRel/${entry.name}$NOTE_EXTENSION"
-                val hasAnchor = fileSystem
-                    .listDirectory("$rootDirectory/$pathRel")
-                    .contains("${entry.name}$NOTE_EXTENSION")
-                // Read the anchor's frontmatter once and derive both the
-                // space marker and (for spaces) the AI opt-in from it — one
-                // file read instead of the previous two.
-                var isSpace = false
-                var aiAllowed = false
-                if (hasAnchor) {
-                    val fm = splitFrontmatter(
-                        fileSystem.readFileIfExists("$rootDirectory/$anchorRel") ?: "",
-                    ).first
-                    // A space is declared explicitly by the anchor's
-                    // `treefacts-space: true` marker. Legacy fallback: spaces
-                    // created before the marker existed are root-level
-                    // anchored trees the root file never references — keep
-                    // recognizing them so existing vaults don't lose their
-                    // space status. New spaces always carry the marker.
-                    val marked = SpaceMetadata.isSpaceOf(fm)
-                    val legacy = !marked && dirRel.isEmpty() && run {
-                        val refs = rootRefs ?: rootPromotedRefPaths().also { rootRefs = it }
-                        anchorRel !in refs
-                    }
-                    isSpace = marked || legacy
-                    aiAllowed = isSpace && SpaceMetadata.aiAllowedOf(fm)
-                }
-                out += VaultEntry(
-                    name = entry.name,
-                    pathRel = pathRel,
-                    isDirectory = true,
-                    lastEditedMs = 0L,
-                    hasAnchor = hasAnchor,
-                    isSpace = isSpace,
-                    aiAllowed = aiAllowed,
-                )
-                continue
-            }
-            if (entry.name.endsWith(NOTE_EXTENSION)) {
-                val displayName = entry.name.removeSuffix(NOTE_EXTENSION)
-                out += VaultEntry(
-                    name = displayName,
-                    pathRel = pathRel,
-                    isDirectory = false,
-                    lastEditedMs = entry.lastModifiedMs,
-                )
-                continue
-            }
-            if (isImagePath(entry.name)) {
-                out += VaultEntry(
-                    name = entry.name,
-                    pathRel = pathRel,
-                    isDirectory = false,
-                    isImage = true,
-                    lastEditedMs = entry.lastModifiedMs,
-                )
-            }
-        }
-        return out
-    }
+    // --------------------------------------------------------------- starred
 
     /**
-     * The vault-root-relative file paths of every `#treefacts`
-     * promoted-ref link in the vault's root file. Used by
-     * [listVaultLevel] to classify root-level anchored directories:
-     * a tree whose anchor appears here was auto-promoted out of the
-     * root file (and can auto-demote back into it); a tree whose
-     * anchor does not is a loose *space*.
+     * Appends one bookmark bullet to [STARRED_FILE_NAME], creating the
+     * file when missing. Called by the Starred modal.
      *
-     * Only the root file is scanned. Auto-promotion is the sole
-     * producer of `#treefacts` refs, and for root-level trees it only
-     * ever writes them into the root file — a hand-authored ref to a
-     * root-level tree from some deeper file would be missed here, but
-     * nothing in the app creates that shape. Missing root file means
-     * no refs.
+     * @param title Label shown in the bookmark list.
+     * @param targetPathRel Vault-relative path of the bookmarked file.
+     * @param targetRow Optional 0-based row in that file; encoded as a
+     *   `#r=<row>` fragment. `null` bookmarks the whole file.
      */
-    private suspend fun rootPromotedRefPaths(): Set<String> {
-        val text = fileSystem.readFileIfExists("$rootDirectory/$rootFileName")
-            ?: return emptySet()
-        val (_, body) = splitFrontmatter(text)
-        val out = HashSet<String>()
-        for (line in body.split("\n")) {
-            val ref = SubtreeCodec.parseRef(line) ?: continue
-            // The root file lives at the vault root, so its refs are
-            // already vault-root-relative.
-            out += ref.refPath
-        }
-        return out
-    }
-
-    // ------------------------------------------------------ space metadata
-
-    /**
-     * Reads the AI opt-in from the frontmatter of the space anchor at
-     * [fileRel]. Returns `null` when no file exists at that path — the
-     * caller (typically the Space settings modal) uses this to tell
-     * "space with AI denied" apart from "not a space at all".
-     *
-     * @param fileRel Vault-relative path of the space's anchor file,
-     *   e.g. `Work/Work.md`.
-     */
-    suspend fun readSpaceAiAllowed(fileRel: String): Boolean? {
-        val text = fileSystem.readFileIfExists("$rootDirectory/$fileRel") ?: return null
-        return SpaceMetadata.aiAllowedOf(splitFrontmatter(text).first)
-    }
-
-    /**
-     * Sets the AI opt-in in the frontmatter of the space anchor at
-     * [fileRel], preserving every other user-authored frontmatter line
-     * (see [SpaceMetadata.withAiAllowed]). Creates the file when it is
-     * missing (the New space flow writes metadata right after
-     * [createEmptyFile]).
-     *
-     * Also updates the [frontmatterByFile] cache so a currently-open
-     * [se.soderbjorn.treefacts.main.Document]'s next autosave re-prepends
-     * the *new* frontmatter instead of clobbering the edit with a stale
-     * cached block.
-     *
-     * Known benign race: the body written here is the current *on-disk*
-     * body. If the document is open with unflushed edits, disk briefly
-     * regresses to the last-saved body — the next autosave tick (≤ 5s)
-     * rewrites it from memory, now with the updated frontmatter from the
-     * cache. No user content is lost.
-     *
-     * @param fileRel Vault-relative path of the space's anchor file.
-     * @param allowed `true` writes `treefacts-ai: allowed`; `false`
-     *   removes the key (and drops the whole block when nothing else
-     *   is in it).
-     */
-    suspend fun writeSpaceAiAllowed(fileRel: String, allowed: Boolean) {
-        val absPath = "$rootDirectory/$fileRel"
-        val text = fileSystem.readFileIfExists(absPath) ?: ""
-        val (frontmatter, body) = splitFrontmatter(text)
-        val newFrontmatter = SpaceMetadata.withAiAllowed(frontmatter, allowed)
-        if (newFrontmatter != null) frontmatterByFile[fileRel] = newFrontmatter
-        else frontmatterByFile.remove(fileRel)
-        fileSystem.writeFile(absPath, (newFrontmatter ?: "") + body)
-    }
-
-    /**
-     * Reads the `treefacts-space: true` marker from the frontmatter of the
-     * anchor at [fileRel]. Returns `null` when no file exists at that path.
-     * See [SpaceMetadata.isSpaceOf] for semantics.
-     *
-     * @param fileRel Vault-relative path of the folder's anchor file,
-     *   e.g. `Work/Work.md`.
-     */
-    suspend fun readSpaceMarker(fileRel: String): Boolean? {
-        val text = fileSystem.readFileIfExists("$rootDirectory/$fileRel") ?: return null
-        return SpaceMetadata.isSpaceOf(splitFrontmatter(text).first)
-    }
-
-    /**
-     * Sets (or clears) the `treefacts-space` marker in the anchor at
-     * [fileRel], preserving every other user-authored frontmatter line
-     * (see [SpaceMetadata.withSpaceMarker]). Creates the file when it is
-     * missing — the New space flow calls this right after
-     * [createEmptyFile] to stamp the freshly created anchor.
-     *
-     * Also updates the [frontmatterByFile] cache so a currently-open
-     * `Document`'s next autosave re-prepends the *new* frontmatter, exactly
-     * as [writeSpaceAiAllowed] does; the same benign disk-regression race
-     * applies and self-heals on the next tick.
-     *
-     * @param fileRel Vault-relative path of the folder's anchor file.
-     * @param isSpace `true` writes `treefacts-space: true`; `false` removes
-     *   the key (and drops the whole block when nothing else is in it).
-     */
-    suspend fun writeSpaceMarker(fileRel: String, isSpace: Boolean) {
-        val absPath = "$rootDirectory/$fileRel"
-        val text = fileSystem.readFileIfExists(absPath) ?: ""
-        val (frontmatter, body) = splitFrontmatter(text)
-        val newFrontmatter = SpaceMetadata.withSpaceMarker(frontmatter, isSpace)
-        if (newFrontmatter != null) frontmatterByFile[fileRel] = newFrontmatter
-        else frontmatterByFile.remove(fileRel)
-        fileSystem.writeFile(absPath, (newFrontmatter ?: "") + body)
-    }
-
-    /**
-     * Appends a single bookmark entry to the vault's [STARRED_FILE_NAME]
-     * file (creating it with no frontmatter if it does not exist yet).
-     *
-     * The entry is rendered as a plain markdown-link bullet via
-     * [SubtreeCodec.formatPlainLinkBullet] — explicitly *not* a TreeFacts
-     * promoted ref, so the autosave loop never tries to splice the target
-     * file's contents into Starred.md.
-     *
-     * @param title Human-readable label shown in the bookmark list.
-     * @param targetPathRel Vault-relative path of the file the bookmark
-     *   points at, including `.md`. Pass exactly what
-     *   [se.soderbjorn.treefacts.main.PaneBackingViewModel.navigateToVaultFile]
-     *   would accept.
-     * @param targetRow Optional 0-indexed row within [targetPathRel];
-     *   when non-null the link's URL fragment becomes `#r=<row>` so the
-     *   click handler can re-zoom precisely after the file loads. Row
-     *   indices are used (rather than `LineId`s) because they survive
-     *   cold reloads — `LineId`s are reassigned every time a file is
-     *   loaded from disk. Pass `null` to bookmark the whole file.
-     */
-    suspend fun appendStarredEntry(
-        title: String,
-        targetPathRel: String,
-        targetRow: Int?,
-    ) {
+    suspend fun appendStarredEntry(title: String, targetPathRel: String, targetRow: Int?) {
         fileSystem.ensureDirectory(rootDirectory)
-        val absPath = "$rootDirectory/$STARRED_FILE_NAME"
+        val absPath = abs(STARRED_FILE_NAME)
         val existing = fileSystem.readFileIfExists(absPath) ?: ""
         val href = if (targetRow != null) "$targetPathRel#r=$targetRow" else targetPathRel
         val newBullet = SubtreeCodec.formatPlainLinkBullet(indent = 0, label = title, href = href)
@@ -1062,127 +709,139 @@ class NoteRepository(
     }
 
     /**
-     * Removes every bookmark line in [STARRED_FILE_NAME] whose markdown
-     * link points at the same `(targetPathRel, targetRow)` tuple as the
-     * arguments. Used by the Starred modal's "Remove from starred" toggle
-     * to undo a prior [appendStarredEntry] without leaving duplicates
-     * behind.
-     *
-     * Matching mirrors the logic the Starred modal uses to decide whether
-     * a target is "currently starred":
-     *
-     * - If the bookmark URL ends with `#r=<n>`, the path part and the row
-     *   must both match.
-     * - Otherwise the URL is matched against [targetPathRel] verbatim, and
-     *   only when [targetRow] is `null`.
-     *
-     * Lines that are not markdown-link bullets are preserved as-is so any
-     * hand-authored content the user added to `Starred.md` (headings,
-     * notes, plain bullets) survives the rewrite.
-     *
-     * @param targetPathRel Vault-relative path of the file the bookmark
-     *   points at, including `.md`.
-     * @param targetRow Optional 0-indexed row within [targetPathRel].
-     *   Pass `null` to remove a whole-file bookmark.
+     * Removes every bookmark in [STARRED_FILE_NAME] that points at
+     * `(targetPathRel, targetRow)`; other lines are kept verbatim. Called
+     * by the Starred modal's un-star toggle.
      */
-    suspend fun removeStarredEntry(
-        targetPathRel: String,
-        targetRow: Int?,
-    ) {
-        val absPath = "$rootDirectory/$STARRED_FILE_NAME"
+    suspend fun removeStarredEntry(targetPathRel: String, targetRow: Int?) {
+        val absPath = abs(STARRED_FILE_NAME)
         val existing = fileSystem.readFileIfExists(absPath) ?: return
         val rowMarker = "#r="
-        val lines = existing.split("\n")
-        val kept = ArrayList<String>(lines.size)
-        for (line in lines) {
-            val link = SubtreeCodec.parseAnyLinkBullet(line)
-            if (link == null) {
-                kept += line
-                continue
-            }
+        val kept = existing.split("\n").filter { line ->
+            val link = SubtreeCodec.parseAnyLinkBullet(line) ?: return@filter true
             val url = link.url
             val hashIdx = url.indexOf(rowMarker)
             val (path, row) = if (hashIdx >= 0) {
-                val tail = url.substring(hashIdx + rowMarker.length)
-                val n = tail.toIntOrNull()
-                if (n != null) url.substring(0, hashIdx) to n
-                else url to null
+                val n = url.substring(hashIdx + rowMarker.length).toIntOrNull()
+                if (n != null) url.substring(0, hashIdx) to n else url to null
             } else {
                 url to null
             }
-            if (path == targetPathRel && row == targetRow) continue
-            kept += line
+            !(path == targetPathRel && row == targetRow)
         }
-        val nextContent = kept.joinToString("\n")
-        fileSystem.writeFile(absPath, nextContent)
+        fileSystem.writeFile(absPath, kept.joinToString("\n"))
     }
 
     /**
-     * Writes an empty `.md` file at [fileRel] if and only if no file
-     * already exists at that path. Ensures all parent directories first.
-     * No-op when the file is already present — never overwrites
-     * hand-authored content.
+     * Creates an empty file at [fileRel] unless something already exists
+     * there. Used by `DocumentRegistry.ensureFolderStub` to give a folder
+     * picked in the Insert Link modal its outline file.
      *
-     * Used by `DocumentRegistry.ensureFolderStub` to materialise a
-     * folder's doubled-name anchor on demand when the Insert Link modal
-     * picks a folder-stub hit. The created file is genuinely empty
-     * (zero bytes); TreeFacts no longer uses any per-file marker — see
-     * the file-level comment for the `#treefacts` URL-fragment rule.
-     *
-     * @return `true` when a new file was written, `false` when the path
-     *   already existed.
+     * @return `true` when a new file was written.
      */
     suspend fun createEmptyFile(fileRel: String): Boolean {
-        val absPath = "$rootDirectory/$fileRel"
+        val absPath = abs(fileRel)
         if (fileSystem.readFileIfExists(absPath) != null) return false
-        val parentDir = fileRel.substringBeforeLast('/', missingDelimiterValue = "")
-        val absDir = if (parentDir.isEmpty()) rootDirectory else "$rootDirectory/$parentDir"
-        fileSystem.ensureDirectory(absDir)
         fileSystem.writeFile(absPath, "")
         return true
     }
 
-    companion object {
-        const val NOTE_EXTENSION: String = ".md"
-        const val DEFAULT_FILE_NAME: String = "Home$NOTE_EXTENSION"
-        /**
-         * Vault-relative filename for the Starred bookmarks list. Has two
-         * roles:
-         * 1. The Starred-modal in the web UI loads/displays/appends to it.
-         * 2. [save] suppresses **new** auto-promotion when this file is the
-         *    active document, so the bookmark list never spontaneously
-         *    fragments into subfiles even if it grows large.
-         */
-        const val STARRED_FILE_NAME: String = "Starred$NOTE_EXTENSION"
-        private const val TAB_SIZE: Int = 2
+    private fun abs(rel: String): String = if (rel.isEmpty()) rootDirectory else "$rootDirectory/$rel"
 
-        /**
-         * Vault-relative folder where inline images live. Paste-an-image
-         * writes here; `Insert Image` reads from here. Kept under the
-         * vault root so the whole `.md`-plus-assets tree is portable.
-         */
+    companion object {
+        /** Name of the hidden outline file every node folder holds. */
+        const val OUTLINE_FILE_NAME: String = ".treefacts"
+
+        /** Extension of Markdown notes. */
+        const val NOTE_EXTENSION: String = ".md"
+
+        /** Vault-relative Starred bookmarks file; a plain (non-outline) file. */
+        const val STARRED_FILE_NAME: String = "Starred$NOTE_EXTENSION"
+
+        /** Vault-relative trash folder. Never emptied automatically. */
+        const val TRASH_DIR: String = ".trash"
+
+        /** Parking area for folders mid-move; see [applyMoves]. */
+        const val MOVING_DIR: String = "$TRASH_DIR/.moving"
+
+        /** Vault-relative folder where pasted images live. */
         const val IMAGES_DIR: String = "Images"
 
-        /**
-         * Case-insensitive extension set used by [listImageFiles] and
-         * the paste handler to decide what counts as an image. Limited
-         * to formats every Chromium-based renderer (Electron's webview)
-         * loads natively without an external decoder.
-         */
+        private const val TAB_SIZE: Int = 2
+
+        /** Image extensions the renderer loads natively (case-insensitive). */
         val IMAGE_EXTENSIONS: List<String> =
             listOf(".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
 
-        /**
-         * `true` when [pathRel] points at a file whose extension is one of
-         * [IMAGE_EXTENSIONS]. The pane VM and the web view layer use this
-         * to branch on file kind — markdown navigation acquires a
-         * [Document]; image navigation skips the registry, sets
-         * `documentState = null`, and lets the editor surface swap to a
-         * read-only image viewer instead.
-         */
+        /** `true` when [pathRel] has one of [IMAGE_EXTENSIONS]. */
         fun isImagePath(pathRel: String): Boolean {
             val lower = pathRel.lowercase()
             return IMAGE_EXTENSIONS.any { lower.endsWith(it) }
         }
+
+        /** `true` when [fileRel] is a node outline (`.treefacts`) file. */
+        fun isOutlineFile(fileRel: String): Boolean =
+            fileRel == OUTLINE_FILE_NAME || fileRel.endsWith("/$OUTLINE_FILE_NAME")
+
+        /** Outline file of the node folder [folderRel] (`""` = vault root). */
+        fun outlineFileOf(folderRel: String): String =
+            if (folderRel.isEmpty()) OUTLINE_FILE_NAME else "$folderRel/$OUTLINE_FILE_NAME"
+
+        /** Node folder of the outline file [fileRel]; the inverse of [outlineFileOf]. */
+        fun folderOfOutline(fileRel: String): String =
+            fileRel.removeSuffix(OUTLINE_FILE_NAME).removeSuffix("/")
+
+        /** Display name of the vault root's outline in titles and tabs. */
+        const val ROOT_DISPLAY_NAME: String = "Home"
+
+        /**
+         * Human-readable name of [fileRel] for titles, tabs and bookmark
+         * labels: a node outline shows its decoded folder name (the root
+         * outline shows [ROOT_DISPLAY_NAME]); a `.md` note its basename
+         * without the extension; anything else its basename.
+         */
+        fun displayNameOf(fileRel: String): String {
+            if (isOutlineFile(fileRel)) {
+                val folder = folderOfOutline(fileRel)
+                return if (folder.isEmpty()) ROOT_DISPLAY_NAME else FolderName.decode(folder.substringAfterLast('/'))
+            }
+            return fileRel.substringAfterLast('/').removeSuffix(NOTE_EXTENSION)
+        }
+
+        /** `true` when [folderRel] is inside the trash. */
+        fun isInTrash(folderRel: String): Boolean =
+            folderRel == TRASH_DIR || folderRel.startsWith("$TRASH_DIR/")
+
+        private fun join(parent: String, name: String): String = if (parent.isEmpty()) name else "$parent/$name"
+
+        private fun parentOf(path: String): String = path.substringBeforeLast('/', missingDelimiterValue = "")
+
+        private fun depth(path: String): Int = if (path.isEmpty()) 0 else path.count { it == '/' } + 1
+
+        /**
+         * Formats [millis] (UTC) as `yyyy-MM-dd HH.mm.ss` for trash folder
+         * names. Dots rather than colons, which Finder shows as slashes.
+         */
+        fun formatTimestamp(millis: Long): String {
+            val secs = millis.floorDiv(1000L)
+            val days = secs.floorDiv(86_400L)
+            val rem = secs - days * 86_400L
+            // Civil-from-days (Howard Hinnant).
+            val z = days + 719_468L
+            val era = z.floorDiv(146_097L)
+            val doe = z - era * 146_097L
+            val yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365
+            val doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+            val mp = (5 * doy + 2) / 153
+            val d = doy - (153 * mp + 2) / 5 + 1
+            val m = if (mp < 10) mp + 3 else mp - 9
+            val y = yoe + era * 400 + if (m <= 2) 1 else 0
+            fun two(v: Long) = v.toString().padStart(2, '0')
+            return "$y-${two(m)}-${two(d)} ${two(rem / 3600)}.${two(rem % 3600 / 60)}.${two(rem % 60)}"
+        }
     }
 }
+
+/** Default wall clock for [NoteRepository]. */
+@OptIn(ExperimentalTime::class)
+private fun systemNowMillis(): Long = Clock.System.now().toEpochMilliseconds()
