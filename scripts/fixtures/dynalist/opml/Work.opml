@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<opml version="2.0">
+  <head>
+    <title>Work</title>
+  </head>
+  <body>
+    <outline text="Meetings">
+      <outline text="Weekly **sync**" _note="Agenda:&#10;- status&#10;- blockers&#10;">
+        <outline text="Prepare slides"/>
+      </outline>
+      <outline text="1:1 with Anna"/>
+    </outline>
+    <outline text="Q3/Q4 plan">
+      <outline text="Hire" complete="true"/>
+      <outline text="Ship"/>
+    </outline>
+    <outline text="Call Bob"/>
+    <outline text="Fence note" _note="Before&#10;:::&#10;After"/>
+    <outline text="Ideas">
+      <outline text="One"/>
+    </outline>
+    <outline text="ideas">
+      <outline text="Two"/>
+    </outline>
+    <outline text="">
+      <outline text="Orphan child"/>
+    </outline>
+    <outline text="See [the site](https://example.com) [draft]">
+      <outline text="Link child"/>
+    </outline>
+    <outline text="50% done...">
+      <outline text="Tail"/>
+    </outline>
+    <outline text="Blank note" _note="  "/>
+  </body>
+</opml>

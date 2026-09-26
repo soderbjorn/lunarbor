@@ -1,461 +1,505 @@
 #!/usr/bin/env python3
-"""Convert a Dynalist OPML backup folder into the live TreeFacts database.
+"""
+Imports a Dynalist OPML backup into a TreeFacts vault, in the
+folder-per-bullet format (TRF-3). Terminal-only: there is no in-app import.
 
-Writes the imported outline as one promoted child folder under the live
-TreeFacts on-disk database at TREEFACTS_DB. The wrapper folder name is
-IMPORT_NAME ("Dynalist Import" by default). Existing notes are not touched.
-The script also patches TREEFACTS_DB/Root.md (with a timestamped backup) so
-the wrapper bullet is referenced and visible in the running app.
+Usage:
+  python3 scripts/dynalist_to_treefacts.py <opml-folder> [<vault>]
 
-The on-disk format is plain Markdown — files end in `.md` and have no
-TreeFacts-specific frontmatter. Promoted-subtree bullets are standard
-CommonMark inline links whose URLs end with the `#treefacts` fragment,
-e.g. `* [Title](Title/Title.md#treefacts)` (paths with spaces are wrapped
-in `<…>`). The fragment is the marker TreeFacts uses to recognize its own
-promoted refs; in any other markdown viewer (Obsidian, VS Code, GitHub)
-the fragment resolves to a non-existent heading anchor and is silently
-ignored, so the link still navigates to the file.
+  <opml-folder>  Folder of Dynalist `.opml` files. Subfolders (Dynalist
+                 folders) are imported as parent bullets holding their
+                 documents.
+  <vault>        Vault root. Defaults like the Electron app (RunPaths.kt):
+                 $TREEFACTS_VAULT, else $TREEFACTS_LOCAL_DATA/vault, else
+                 ~/treefacts-db.
 
-Promotion thresholds mirror `auto-promote-plan.md`:
+Quit TreeFacts (or at least close the vault root) before running it: an
+open root outline with unsaved edits would be saved over the patched file.
 
-    PROMOTE_MIN_DESCENDANTS = 40
-    MAX_DEPTH_TO_PROMOTE    = 4
-    MIN_TITLE_LENGTH        = 1
+Output, under the vault root:
 
-Note: the live app currently runs with PromotionPolicy.DEBUG = true (threshold
-3). The first edit-and-save inside TreeFacts will reshard the imported tree to
-those thresholds. Content is preserved; only on-disk layout shifts.
+  <vault>/.treefacts                 root outline; gets one line appended:
+                                     `+ [Dynalist Import](Dynalist Import)`
+  <vault>/Dynalist Import/.treefacts one bullet per OPML document / folder
+  <vault>/Dynalist Import/<doc>/...  one folder per item with children
 
-On-disk layout produced under the live database:
+Storage rules mirrored from the app (NoteRepository.kt, SubtreeCodec.kt):
+  - every node folder holds a hidden `.treefacts` outline listing only its
+    direct children, with no indentation;
+  - `* text` is a leaf; `+ [title](folder)` a folder-backed bullet, the
+    title's `[`, `]` and `\\` backslash-escaped;
+  - an item with children, or with a note, gets a folder;
+  - a Dynalist `_note` becomes a `:::`-fenced block as the item's first
+    child (a longer fence when the note holds a colon-only line);
+  - folder names are encoded exactly as `FolderName.forTitle` does: the
+    title's plain text (inline Markdown markers and `# ` / `> ` prefixes
+    removed), percent-encoding `/ \\ : * ? " < > |` and `%`, a leading dot,
+    trailing dots and spaces and control characters, capped at 120 UTF-8
+    bytes; empty names become `Untitled`; sibling collisions get ` (2)`,
+    ` (3)`, ... case-insensitively.
 
-    TREEFACTS_DB/
-        Root.md                              (patched: wrapper bullet appended)
-        Dynalist Import/
-            Dynalist Import.md
-            Bontouch/
-                Bontouch.md
-                Möten/
-                    Möten.md
-            Privat/
-                Privat.md
-                ...
+Re-running replaces the previous import: the old `Dynalist Import` folder
+is moved to `<vault>/.trash/<UTC timestamp> Dynalist Import/` (the same
+naming the app uses; the trash is never emptied automatically), the old
+root line is dropped and a fresh one appended. Nothing else in the vault is
+read or written.
 
-Each promoted bullet creates a sibling `<Title>/` directory containing
-`<Title>.md`; further-promoted descendants nest inside, mirroring the
-outline. References inside a file are always relative to that file's own
-directory and follow the form `<Title>/<Title>.md`.
-
-Each bullet is one line: leading "  " * depth + "* " + title.
-Dynalist `_note` text is preserved as additional sub-bullets (one per line),
-since TreeFacts has no first-class note concept yet.
-
-Filenames preserve the original bullet title verbatim (case, spaces, non-ASCII)
-except where the filesystem disallows it. Collisions inside the same directory
-are resolved by appending " 2", " 3", … to the second and later occurrences.
-
-Re-running is idempotent: any existing TREEFACTS_DB/<IMPORT_NAME>/ tree is
-removed before writing fresh files, and any pre-existing wrapper ref line in
-Root.md is stripped before the new one is appended.
+The fixture test is scripts/test_dynalist_to_treefacts.py.
 """
 from __future__ import annotations
 
-import re
+import argparse
+import os
 import shutil
+import sys
+import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
 from pathlib import Path
 
-# --- Config -------------------------------------------------------------------
-
-SOURCE = Path(__file__).resolve().parent.parent / "dynalist-opml-snapshot"
-TREEFACTS_DB = Path("/Users/soderbjorn/treefacts-db")
 IMPORT_NAME = "Dynalist Import"
-IMPORT_DIR = TREEFACTS_DB / IMPORT_NAME
-NOTE_EXTENSION = ".md"
-ROOT_FILE = TREEFACTS_DB / f"Root{NOTE_EXTENSION}"
-INDENT = "  "  # 2 spaces per depth level
-
-# URL fragment TreeFacts appends to every promoted-ref link's URL so it can
-# distinguish its own subtree boundaries from hand-authored markdown links.
-# Mirrors `SubtreeCodec.TREEFACTS_FRAGMENT`. No file-level frontmatter — the
-# marker lives on each link, not on each file.
-TREEFACTS_FRAGMENT = "#treefacts"
-
-PROMOTE_MIN_DESCENDANTS = 40
-MAX_DEPTH_TO_PROMOTE = 4
-MIN_TITLE_LENGTH = 1
-
-# Path of the wrapper file relative to its parent (here: Root.md's directory).
-WRAPPER_REF_PATH = f"{IMPORT_NAME}/{IMPORT_NAME}{NOTE_EXTENSION}"
+OUTLINE_FILE_NAME = ".treefacts"
+TRASH_DIR = ".trash"
+STAGING_DIR = ".dynalist-import-staging"
+MIN_FENCE = ":::"
 
 
-# --- Data ---------------------------------------------------------------------
+# --------------------------------------------------------------- vault path
+
+def default_vault() -> Path:
+    """Resolves the vault the same way the Electron app does (RunPaths.kt)."""
+    vault = os.environ.get("TREEFACTS_VAULT", "").strip()
+    if vault:
+        return Path(vault).expanduser().resolve()
+    data = os.environ.get("TREEFACTS_LOCAL_DATA", "").strip()
+    if data:
+        return Path(data).expanduser().resolve() / "vault"
+    return Path.home() / "treefacts-db"
+
+
+# ------------------------------------------------------ folder-name codec
+# A port of FolderName.kt, InlineMarkdownTokenizer.kt (display text only)
+# and LineMarkdownPrefix.kt. Keep it in step with them: the golden cases in
+# test_dynalist_to_treefacts.py are pinned on the Kotlin side too
+# (DynalistImportTest.kt), so a drift fails one of the two tests.
+
+MAX_NAME_BYTES = 120
+UNTITLED = "Untitled"
+_ALWAYS_ENCODED = "/\\:*?\"<>|%"
+_LINE_PREFIXES = ("###### ", "##### ", "#### ", "### ", "## ", "# ", "> ")
+_CODE = ("`", "`")
+# (open, close) in InlineStyle precedence order: code, bold, strike, italic.
+_STYLES = (_CODE, ("**", "**"), ("~~", "~~"), ("*", "*"))
+
+
+def _parse_link_syntax(text: str, bracket: int):
+    """Mirror of `parseLinkSyntaxAtTopLevel`: `(label_end, closing_paren,
+    destination)` for a `[label](dest)` starting at `bracket`, else None."""
+    if bracket >= len(text) or text[bracket] != "[":
+        return None
+    i = bracket + 1
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if c == "]":
+            break
+        if c == "[":
+            return None
+        i += 1
+    if i >= len(text) or text[i] != "]":
+        return None
+    label_end = i
+    if label_end + 1 >= len(text) or text[label_end + 1] != "(":
+        return None
+    url_open = label_end + 2
+    if url_open < len(text) and text[url_open] == "<":
+        angle_end = text.find(">", url_open + 1)
+        if angle_end < 0 or angle_end + 1 >= len(text) or text[angle_end + 1] != ")":
+            return None
+        return label_end, angle_end + 1, text[url_open + 1:angle_end]
+    paren_end = text.find(")", url_open)
+    if paren_end < 0:
+        return None
+    return label_end, paren_end, text[url_open:paren_end]
+
+
+def _has_matching_closer(text: str, start: int, closer: str, italic: bool) -> bool:
+    """Mirror of `Parser.hasMatchingCloser`."""
+    i = start
+    while i <= len(text) - len(closer):
+        if italic and text[i] == "*" and i + 1 < len(text) and text[i + 1] == "*":
+            i += 2
+            continue
+        if text.startswith(closer, i):
+            return True
+        i += 1
+    return False
+
+
+def inline_display_text(text: str) -> str:
+    """Mirror of `InlineMarkdownTokenizer.tokenize(text).displayText`: the
+    visible text of one line with bold / italic / strike / code markers,
+    link syntax and images removed. Hashtags stay visible, so they need no
+    case of their own here."""
+    out: list[str] = []
+    active: list[tuple[str, str]] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        # Inline code is opaque: only its closing backtick ends it.
+        if _CODE in active:
+            if text[pos] == "`":
+                active.pop()
+            else:
+                out.append(text[pos])
+            pos += 1
+            continue
+        if text[pos] == "!" and pos + 1 < n and text[pos + 1] == "[":
+            parsed = _parse_link_syntax(text, pos + 1)
+            if parsed is not None:
+                label_end, close, dest = parsed
+                if not (label_end == pos + 2 and dest == ""):
+                    pos = close + 1
+                    continue
+        if text[pos] == "[":
+            parsed = _parse_link_syntax(text, pos)
+            if parsed is not None:
+                label_end, close, _dest = parsed
+                out.append(text[pos + 1:label_end])
+                pos = close + 1
+                continue
+        opener = None
+        for style in _STYLES:
+            if style in active:
+                continue
+            op = style[0]
+            if not text.startswith(op, pos):
+                continue
+            if op == "*" and pos + 1 < n and text[pos + 1] == "*":
+                continue
+            if _has_matching_closer(text, pos + len(op), style[1], italic=(op == "*")):
+                opener = style
+                break
+        if opener is not None:
+            active.append(opener)
+            pos += len(opener[0])
+            continue
+        if active and text.startswith(active[-1][1], pos):
+            pos += len(active[-1][1])
+            active.pop()
+            continue
+        out.append(text[pos])
+        pos += 1
+    return "".join(out)
+
+
+def plain_text_of(title: str) -> str:
+    """Mirror of `FolderName.plainTextOf`."""
+    for prefix in _LINE_PREFIXES:
+        if title.startswith(prefix):
+            title = title[len(prefix):]
+            break
+    return inline_display_text(title)
+
+
+def _encode_uncapped(plain: str) -> str:
+    trailing = len(plain)
+    while trailing > 0 and plain[trailing - 1] in ". ":
+        trailing -= 1
+    out = []
+    for i, ch in enumerate(plain):
+        code = ord(ch)
+        if (ch in _ALWAYS_ENCODED or code < 0x20 or code == 0x7F
+                or (i == 0 and ch == ".") or i >= trailing):
+            out.append("%%%02X" % code)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def encode_name(plain: str) -> str:
+    """Mirror of `FolderName.encode`: percent-encode, then drop whole
+    characters from the end of the plain text until the result fits
+    MAX_NAME_BYTES."""
+    text = plain
+    encoded = _encode_uncapped(text)
+    while len(encoded.encode("utf-8")) > MAX_NAME_BYTES and text:
+        text = text[:-1]
+        encoded = _encode_uncapped(text)
+    return encoded
+
+
+def folder_name_for_title(title: str) -> str:
+    """Mirror of `FolderName.forTitle`."""
+    plain = plain_text_of(title)
+    return encode_name(plain) if plain else UNTITLED
+
+
+def unique_name(base: str, used_lower: set[str]) -> str:
+    """Mirror of `FolderName.unique`; also records the result in `used_lower`."""
+    candidate = base
+    n = 2
+    while candidate.lower() in used_lower:
+        candidate = f"{base} ({n})"
+        n += 1
+    used_lower.add(candidate.lower())
+    return candidate
+
+
+# ------------------------------------------------------------ outline file
+
+def format_folder_line(title: str, folder: str) -> str:
+    """Mirror of `SubtreeCodec.formatFolderLine`."""
+    esc = "".join("\\" + ch if ch in "[]\\" else ch for ch in title)
+    return f"+ [{esc}]({folder})"
+
+
+def fence_for(content: list[str]) -> str:
+    """Mirror of `SubtreeCodec.fenceFor`."""
+    longest = 0
+    for line in content:
+        t = line.strip()
+        if t and all(c == ":" for c in t):
+            longest = max(longest, len(t))
+    return ":" * max(len(MIN_FENCE), longest + 1)
+
+
+def is_fence(line: str) -> bool:
+    """Mirror of `SubtreeCodec.isFence`."""
+    t = line.strip()
+    return len(t) >= len(MIN_FENCE) and all(c == ":" for c in t)
+
+
+def parse_folder_line(line: str) -> tuple[str, str] | None:
+    """Mirror of `SubtreeCodec.parseFolderLine`: `(title, folder)` or None."""
+    s = line.rstrip()
+    if not s.startswith("+ ["):
+        return None
+    title = []
+    i = 3
+    while i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s) and s[i + 1] in "[]\\":
+            title.append(s[i + 1])
+            i += 2
+            continue
+        if ch == "]":
+            break
+        title.append(ch)
+        i += 1
+    if i + 1 >= len(s) or s[i] != "]" or s[i + 1] != "(" or not s.endswith(")"):
+        return None
+    folder = s[i + 2:-1]
+    if not folder or "/" in folder or folder in (".", ".."):
+        return None
+    return "".join(title), folder
+
+
+# --------------------------------------------------------------- the tree
 
 @dataclass
-class Bullet:
-    depth: int  # depth within its containing file (root of a file = 0)
-    text: str
+class Item:
+    """One imported bullet.
+
+    title: inline-Markdown title, one line.
+    note: the Dynalist `_note` lines, written as a block first child;
+          empty when the item has no note.
+    children: nested items, in order.
+    """
+    title: str
+    note: list[str] = field(default_factory=list)
+    children: list["Item"] = field(default_factory=list)
+
+    @property
+    def has_content(self) -> bool:
+        """An item with content is folder-backed, as in the app."""
+        return bool(self.note or self.children)
 
 
-# --- OPML parsing -------------------------------------------------------------
+def _one_line(text: str) -> str:
+    """Titles are one outline line: newlines become spaces, ends trimmed."""
+    return " ".join(text.replace("\r", "").split("\n")).strip()
 
-def get_doc_title(path: Path) -> str:
-    tree = ET.parse(path)
-    root = tree.getroot()
+
+def _note_lines(note: str) -> list[str]:
+    """Note text as block lines: verbatim, minus `\\r` and blank lines at
+    either end. Empty when the note is blank."""
+    lines = [ln.rstrip("\r") for ln in note.split("\n")]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def _from_outline(node: ET.Element) -> Item:
+    item = Item(_one_line(node.get("text") or ""), _note_lines(node.get("_note") or ""))
+    item.children = [_from_outline(c) for c in node if c.tag == "outline"]
+    return item
+
+
+def parse_opml(path: Path) -> Item:
+    """One OPML document as an item titled by `<head><title>` (else the file
+    name), holding the document's top-level outlines."""
+    root = ET.parse(path).getroot()
+    title = ""
     head = root.find("head")
-    if head is not None:
-        title_el = head.find("title")
-        if title_el is not None and (title_el.text or "").strip():
-            return title_el.text.strip()
-    return path.stem
+    title_el = head.find("title") if head is not None else None
+    if title_el is not None:
+        title = _one_line(title_el.text or "")
+    body = root.find("body")
+    children = [] if body is None else [_from_outline(c) for c in body if c.tag == "outline"]
+    return Item(title or path.stem, children=children)
 
 
-def parse_opml(path: Path) -> list[Bullet]:
-    """Return the OPML's outline as a flat list of bullets at depths 0+."""
-    tree = ET.parse(path)
-    body = tree.getroot().find("body")
-    bullets: list[Bullet] = []
-    if body is not None:
-        for child in body:
-            if child.tag == "outline":
-                _walk_opml(child, depth=0, out=bullets)
-    return bullets
-
-
-def _walk_opml(node: ET.Element, depth: int, out: list[Bullet]) -> None:
-    text = (node.get("text") or "").strip()
-    out.append(Bullet(depth, text))
-    note = node.get("_note") or ""
-    if note:
-        # One sub-bullet per non-empty line of note text.
-        for line in note.splitlines():
-            stripped = line.strip()
-            if stripped:
-                out.append(Bullet(depth + 1, stripped))
-    for child in node:
-        if child.tag == "outline":
-            _walk_opml(child, depth + 1, out)
-
-
-# --- Filename helpers ---------------------------------------------------------
-
-# Strip only what the filesystem cannot handle. macOS/APFS forbids '/' and NUL;
-# leading dots make the file hidden in most tools so we trim them too.
-_FS_ILLEGAL = re.compile(r"[\x00/]")
-
-
-def safe_filename(title: str) -> str:
-    """Return the title as a filesystem-safe filename, preserving as much of the
-    original (case, spaces, non-ASCII) as possible."""
-    s = title.strip()
-    s = _FS_ILLEGAL.sub("-", s)
-    s = s.lstrip(".")
-    s = re.sub(r"\s+", " ", s)
-    if len(s.encode("utf-8")) > 200:
-        while s and len(s.encode("utf-8")) > 200:
-            s = s[:-1]
-        s = s.rstrip()
-    return s or "untitled"
-
-
-def unique_in(base: str, used: set[str]) -> str:
-    """Return `base` if it isn't taken in `used`, else `base 2`, `base 3`, …
-    Mutates `used` to record the chosen name."""
-    if base not in used:
-        used.add(base)
-        return base
-    n = 2
-    while True:
-        candidate = f"{base} {n}"
-        if candidate not in used:
-            used.add(candidate)
-            return candidate
-        n += 1
-
-
-# --- Promotion ----------------------------------------------------------------
-
-def _spans(bullets: list[Bullet]) -> list[tuple[int, int, int, int]]:
-    """For each bullet i, return (i, j_exclusive, depth, descendant_count)."""
-    n = len(bullets)
+def parse_source(folder: Path) -> list[Item]:
+    """Every `.opml` file and every subfolder holding some, sorted by name
+    (case-insensitive). A subfolder becomes an item titled by its name."""
+    entries = sorted(folder.iterdir(), key=lambda p: (p.name.lower(), p.name))
     out = []
-    for i in range(n):
-        d = bullets[i].depth
-        j = i + 1
-        while j < n and bullets[j].depth > d:
-            j += 1
-        out.append((i, j, d, j - i - 1))
+    for entry in entries:
+        if entry.name.startswith("."):
+            continue
+        if entry.is_dir():
+            kids = parse_source(entry)
+            if kids:
+                out.append(Item(entry.name, children=kids))
+        elif entry.suffix.lower() == ".opml":
+            out.append(parse_opml(entry))
     return out
 
 
-def split_and_emit(
-    bullets: list[Bullet],
-    files_to_write: list[tuple[str, list[Bullet], dict[int, str]]],
-    current_dir_rel: str,
-    file_basename: str,
-    depth_offset: int,
-    used_per_dir: dict[str, set[str]],
-) -> None:
-    """Process `bullets`, schedule writing this file at
-    `current_dir_rel/<file_basename>.md`, and recurse into each promoted
-    subtree (which becomes its own file under `current_dir_rel/<unique>/`).
-
-    Names are unique-resolved per-directory: two files would collide only if
-    they live in the same parent directory, so collision tracking is scoped to
-    `current_dir_rel`.
-    """
-    spans = _spans(bullets)
-
-    candidates = []
-    for (i, j, d, descendants) in spans:
-        global_depth = d + depth_offset
-        title = bullets[i].text.strip()
-        if (descendants >= PROMOTE_MIN_DESCENDANTS
-                and global_depth <= MAX_DEPTH_TO_PROMOTE
-                and len(title) >= MIN_TITLE_LENGTH):
-            candidates.append((i, j, d, descendants))
-
-    candidates.sort(key=lambda x: x[0])
-    chosen: list[tuple[int, int, int, int]] = []
-    last_end = -1
-    for s in candidates:
-        if s[0] >= last_end:
-            chosen.append(s)
-            last_end = s[1]
-
-    used = used_per_dir.setdefault(current_dir_rel, set())
-    used.add(file_basename)  # this file occupies its own basename slot
-
-    new_bullets: list[Bullet] = []
-    refs: dict[int, str] = {}
-    cursor = 0
-    for (i, j, d, _c) in chosen:
-        new_bullets.extend(bullets[cursor:i])
-        head = bullets[i]
-
-        title = head.text.strip() or "untitled"
-        unique = unique_in(safe_filename(title), used)
-
-        # Ref is always relative to this file's directory; symmetric for every file.
-        ref_path = f"{unique}/{unique}{NOTE_EXTENSION}"
-        refs[len(new_bullets)] = ref_path
-        new_bullets.append(head)
-
-        # Subtree content rebased to depth 0 in the new child file.
-        subtree = [Bullet(b.depth - (d + 1), b.text) for b in bullets[i + 1:j]]
-        child_dir_rel = f"{current_dir_rel}/{unique}" if current_dir_rel else unique
-        split_and_emit(
-            subtree, files_to_write, child_dir_rel, unique,
-            depth_offset=(d + 1 + depth_offset),
-            used_per_dir=used_per_dir,
-        )
-
-        cursor = j
-
-    new_bullets.extend(bullets[cursor:])
-
-    file_rel = (
-        f"{current_dir_rel}/{file_basename}{NOTE_EXTENSION}"
-        if current_dir_rel else f"{file_basename}{NOTE_EXTENSION}"
-    )
-    files_to_write.append((file_rel, new_bullets, refs))
-
-
-# --- Rendering ----------------------------------------------------------------
-
-# CommonMark requires `[`, `]`, `(`, `)`, `\` in link labels to be backslash-
-# escaped. Most note titles need no escaping, but it's cheap to be safe.
-_LABEL_ESCAPES = {ord(c): "\\" + c for c in "\\[]()"}
-
-
-def _escape_label(text: str) -> str:
-    return text.translate(_LABEL_ESCAPES)
-
-
-def _format_link_url(path: str) -> str:
-    """Wrap [path] in `<…>` when CommonMark requires it, otherwise return bare."""
-    if any(c in path for c in (" ", "(", ")", "<", ">")):
-        return f"<{path}>"
-    return path
-
-
-def _format_ref(indent: int, title: str, ref_path: str) -> str:
-    """Emit a TreeFacts promoted-ref bullet. The URL always carries the
-    `#treefacts` fragment so the runtime recognizes the link as a subtree
-    boundary on the next load."""
-    return (
-        " " * indent
-        + "* ["
-        + _escape_label(title)
-        + "]("
-        + _format_link_url(ref_path + TREEFACTS_FRAGMENT)
-        + ")"
-    )
-
-
-def render(bullets: list[Bullet], refs: dict[int, str]) -> str:
-    out = []
-    for idx, b in enumerate(bullets):
-        if idx in refs:
-            out.append(_format_ref(b.depth * len(INDENT), b.text, refs[idx]))
+def write_node(folder: Path, note: list[str], children: list[Item]) -> int:
+    """Writes `folder/.treefacts` for a node whose content is the block
+    `note` (if any) followed by `children`, recursing into a folder for
+    every child with content. Returns the number of bullets written."""
+    folder.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if note:
+        fence = fence_for(note)
+        lines += [fence, *note, fence]
+    used: set[str] = set()
+    count = 0
+    for child in children:
+        count += 1
+        if child.has_content:
+            name = unique_name(folder_name_for_title(child.title), used)
+            lines.append(format_folder_line(child.title, name))
+            count += write_node(folder / name, child.note, child.children)
         else:
-            out.append(INDENT * b.depth + "* " + b.text)
-    body = "\n".join(out) + ("\n" if out else "")
-    return body
+            lines.append("* " + child.title)
+    if lines:
+        (folder / OUTLINE_FILE_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return count
 
 
-# --- Entry point --------------------------------------------------------------
+# ------------------------------------------------------ replacing an import
 
-WRAPPER_LINE = _format_ref(0, IMPORT_NAME, WRAPPER_REF_PATH)
+def trash_stamp(now: float) -> str:
+    """Mirror of `NoteRepository.formatTimestamp` (UTC)."""
+    return time.strftime("%Y-%m-%d %H.%M.%S", time.gmtime(now))
 
 
-def _split_frontmatter(text: str) -> tuple[str, str]:
-    """Mirror of `NoteRepository.splitFrontmatter`.
+def trash_previous(vault: Path, now: float) -> list[Path]:
+    """Moves every root entry named `Dynalist Import` (case-insensitive) to
+    `.trash/<stamp> <name>`. Returns the trash paths."""
+    moved = []
+    for entry in sorted(vault.iterdir()):
+        if entry.name.lower() != IMPORT_NAME.lower():
+            continue
+        trash = vault / TRASH_DIR
+        trash.mkdir(exist_ok=True)
+        taken = {p.name.lower() for p in trash.iterdir()}
+        dest = trash / unique_name(f"{trash_stamp(now)} {entry.name}", taken)
+        entry.rename(dest)
+        moved.append(dest)
+    return moved
 
-    Returns `(frontmatter_block, body)` where `frontmatter_block` is the
-    verbatim leading `---\\n…\\n---\\n` block (or the empty string when
-    none is present) and `body` is the rest of the file. Re-prepending
-    `frontmatter_block` to a transformed `body` round-trips user-authored
-    YAML (Obsidian tags, aliases, …) byte-perfectly.
+
+def import_bullet_rows(lines: list[str]) -> list[int]:
+    """Indices of the `+` lines in an outline that point at the import
+    folder (case-insensitive), skipping block content: a line inside a
+    `:::` fence is never a bullet."""
+    rows = []
+    fence = None
+    for i, line in enumerate(lines):
+        if fence is not None:
+            if line.strip() == fence:
+                fence = None
+        elif is_fence(line):
+            fence = line.strip()
+        else:
+            parsed = parse_folder_line(line.rstrip("\r"))
+            if parsed is not None and parsed[1].lower() == IMPORT_NAME.lower():
+                rows.append(i)
+    return rows
+
+
+def patch_root(vault: Path) -> None:
+    """Drops every root `+` line pointing at the import folder and appends
+    one fresh line. Every other line, block content included, is kept byte
+    for byte. Written through a temp file + rename."""
+    path = vault / OUTLINE_FILE_NAME
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    drop = set(import_bullet_rows(lines))
+    kept = [line for i, line in enumerate(lines) if i not in drop]
+    kept.append(format_folder_line(IMPORT_NAME, IMPORT_NAME))
+    tmp = vault / (OUTLINE_FILE_NAME + ".import-tmp")
+    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def run_import(source: Path, vault: Path, now: float | None = None) -> dict:
+    """Imports `source` into `vault`, replacing any previous import.
+
+    The new tree is built in a hidden staging folder first, so a parse or
+    write error leaves the vault as it was. `now` (epoch seconds) stamps
+    the trash folder; defaults to the wall clock. Returns counts for the
+    summary.
     """
-    if not text.startswith("---\n"):
-        return "", text
-    rest = text[4:]
-    # Find the next line that is exactly `---`.
-    pos = 0
-    close = -1
-    while pos < len(rest):
-        end = rest.find("\n", pos)
-        if end < 0:
-            end = len(rest)
-        if rest[pos:end] == "---":
-            close = pos
-            break
-        pos = end + 1
-    if close < 0:
-        return "", text
-    after = close + 3
-    if after < len(rest) and rest[after] == "\n":
-        after += 1
-    return text[: 4 + after], rest[after:]
+    if not source.is_dir():
+        raise SystemExit(f"OPML folder not found: {source}")
+    docs = parse_source(source)
+    if not docs:
+        raise SystemExit(f"No .opml files in {source}")
+    vault.mkdir(parents=True, exist_ok=True)
+    staging = vault / STAGING_DIR
+    if staging.exists():
+        shutil.rmtree(staging)
+    try:
+        count = write_node(staging, [], docs)
+        trashed = trash_previous(vault, time.time() if now is None else now)
+        staging.rename(vault / IMPORT_NAME)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    patch_root(vault)
+    return {"entries": len(docs), "bullets": count, "trashed": trashed}
 
 
-def patch_root_file() -> str:
-    """Backup and patch TREEFACTS_DB/Root.md so the wrapper bullet is visible.
-
-    Reads the existing Root.md (empty if missing), preserves any
-    user-authored YAML frontmatter, removes any pre-existing wrapper-ref
-    line (idempotency for re-runs), appends a single fresh wrapper line,
-    re-prepends the original frontmatter, and writes the result back.
-    A timestamped backup is created if the file existed.
-
-    @return Description of the backup taken (or a "no prior" sentinel) so
-    main() can print it in the summary.
-    """
-    existed = ROOT_FILE.exists()
-    backup_msg: str
-    if existed:
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_path = ROOT_FILE.with_name(f"Root{NOTE_EXTENSION}.bak-{ts}")
-        shutil.copy2(ROOT_FILE, backup_path)
-        backup_msg = str(backup_path)
-        existing_raw = ROOT_FILE.read_text()
-    else:
-        backup_msg = f"no prior Root{NOTE_EXTENSION} — creating fresh"
-        existing_raw = ""
-
-    frontmatter, existing = _split_frontmatter(existing_raw)
-
-    # Drop any prior wrapper-ref lines so the file stays at exactly one ref.
-    # Match both the new `…#treefacts` form we emit and any legacy bare-URL
-    # form that may have been written by an older version of this script.
-    bare_url = WRAPPER_REF_PATH + TREEFACTS_FRAGMENT
-    angle_url = f"<{WRAPPER_REF_PATH}{TREEFACTS_FRAGMENT}>"
-    legacy_bare = WRAPPER_REF_PATH
-    legacy_angle = f"<{WRAPPER_REF_PATH}>"
-    suffixes = (
-        f"]({bare_url})",
-        f"]({angle_url})",
-        f"]({legacy_bare})",
-        f"]({legacy_angle})",
-    )
-    kept = [ln for ln in existing.splitlines()
-            if not any(ln.rstrip().endswith(s) for s in suffixes)]
-
-    body = "\n".join(kept).rstrip("\n")
-    if body:
-        body += "\n"
-    body += WRAPPER_LINE + "\n"
-
-    ROOT_FILE.write_text(frontmatter + body)
-    return backup_msg
-
-
-def main() -> None:
-    if not SOURCE.exists():
-        raise SystemExit(f"Source folder missing: {SOURCE}")
-    TREEFACTS_DB.mkdir(parents=True, exist_ok=True)
-
-    # Wipe any prior import only — never touch the rest of TREEFACTS_DB.
-    if IMPORT_DIR.exists():
-        shutil.rmtree(IMPORT_DIR)
-
-    # Build the combined outline: one heading bullet per OPML doc, each holding
-    # that doc's outline at depth+1.
-    combined: list[Bullet] = []
-    docs = sorted(SOURCE.glob("*.opml"))
-    for opml in docs:
-        title = get_doc_title(opml)
-        combined.append(Bullet(0, title))
-        for b in parse_opml(opml):
-            combined.append(Bullet(b.depth + 1, b.text))
-
-    # Wrap the combined outline as one promoted child of root: it lands at
-    # TREEFACTS_DB/<IMPORT_NAME>/<IMPORT_NAME>.md with descendants nested
-    # underneath. depth_offset=1 mirrors how the recursion treats top-level
-    # promoted children (their content is globally one level deep).
-    files_to_write: list[tuple[str, list[Bullet], dict[int, str]]] = []
-    used_per_dir: dict[str, set[str]] = {}
-    split_and_emit(
-        combined, files_to_write,
-        current_dir_rel=IMPORT_NAME, file_basename=IMPORT_NAME,
-        depth_offset=1, used_per_dir=used_per_dir,
-    )
-
-    total_bytes = 0
-    for rel_path, bullets, refs in files_to_write:
-        full_path = TREEFACTS_DB / rel_path
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        text = render(bullets, refs)
-        full_path.write_text(text)
-        total_bytes += len(text.encode("utf-8"))
-
-    backup_msg = patch_root_file()
-
-    wrapper_rel = f"{IMPORT_NAME}/{IMPORT_NAME}{NOTE_EXTENSION}"
-    wrapper_entry = next(f for f in files_to_write if f[0] == wrapper_rel)
-    children = [f for f in files_to_write if f[0] != wrapper_rel]
-
-    print(f"Wrote {IMPORT_DIR}")
-    print(f"  source docs:    {len(docs)}")
-    print(f"  combined input: {len(combined)} bullets")
-    print(f"  wrapper file:   {wrapper_rel} — "
-          f"{len(wrapper_entry[1])} bullets, {len(wrapper_entry[2])} promoted refs")
-    print(f"  child files:    {len(children)}")
-    print(f"  total bytes:    {total_bytes}")
-    if children:
-        sizes = sorted(len(b) for _, b, _ in children)
-        print(f"    child file sizes — min={sizes[0]} med={sizes[len(sizes)//2]} "
-              f"p90={sizes[int(0.9*len(sizes))-1]} max={sizes[-1]} mean={sum(sizes)//len(sizes)}")
-        print(f"    files with further-promoted children: "
-              f"{sum(1 for _, _, r in children if r)}")
-        max_dirs = max(p.count("/") for p, _, _ in files_to_write)
-        print(f"    deepest nesting (path separators): {max_dirs}")
-    print(f"Patched {ROOT_FILE}")
-    print(f"  backup:         {backup_msg}")
-    print(f"  appended line:  {WRAPPER_LINE}")
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("opml_folder", type=Path, help="folder of Dynalist .opml files")
+    parser.add_argument("vault", type=Path, nargs="?", default=None,
+                        help="vault root (default: $TREEFACTS_VAULT, "
+                             "$TREEFACTS_LOCAL_DATA/vault, ~/treefacts-db)")
+    args = parser.parse_args(argv)
+    source = args.opml_folder.expanduser().resolve()
+    vault = args.vault.expanduser().resolve() if args.vault else default_vault()
+    print(f"Importing {source}\n     into {vault / IMPORT_NAME}")
+    result = run_import(source, vault)
+    for t in result["trashed"]:
+        print(f"Previous import moved to {t}")
+    print(f"Done: {result['entries']} top-level entries, {result['bullets']} bullets.")
+    print(f"Root outline {vault / OUTLINE_FILE_NAME} ends with "
+          f"{format_folder_line(IMPORT_NAME, IMPORT_NAME)}")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
