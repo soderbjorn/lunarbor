@@ -1539,40 +1539,6 @@ class AppShell(
                 pointer-events: none;
                 cursor: default;
             }
-            /* ── Modal action button (termtastic-style) ─────────────────
-               Filled accent button for modal dialogs' primary action
-               (e.g. a confirm action). Mirrors termtastic's
-               .news-update-download pattern: accent fill, 6px radius,
-               bold small label, hover brightens, active presses down.
-               The palette rows are keyboard-highlight driven and have
-               no :hover, so modals need their own button class for a
-               real click affordance. */
-            .treefacts-modal-btn {
-                display: block;
-                margin: 4px 14px 14px;
-                width: calc(100% - 28px);
-                padding: 7px 16px;
-                border: none;
-                border-radius: 6px;
-                background: var(--t-accent, #7aa2f7);
-                color: var(--t-bg, #1b1b1b);
-                font-size: 13px;
-                font-weight: 700;
-                text-align: center;
-                cursor: pointer;
-                transition: filter 100ms ease, transform 60ms ease;
-            }
-            .treefacts-modal-btn:hover {
-                filter: brightness(1.12);
-            }
-            .treefacts-modal-btn:active {
-                filter: brightness(0.92);
-                transform: translateY(1px);
-            }
-            .treefacts-modal-btn:focus-visible {
-                outline: 2px solid var(--t-text, #e6e6e6);
-                outline-offset: 2px;
-            }
             /* ── Sidebar brand logo (termtastic-style) ──────────────────
                Status dot + lowercase "treefacts" wordmark in the left
                sidebar's header slot (built in AppLogo.kt). The dot shows
