@@ -58,11 +58,11 @@ Structure:
 
 ### 5. DocumentRegistry (common)
 
-`client/src/commonMain/.../DocumentRegistry.kt`. App-scoped singleton owning every loaded `Document` plus the shared vault-listings cache (the lazy directory tree the editor's filesystem-tree footer renders).
+`client/src/commonMain/.../DocumentRegistry.kt`. App-scoped singleton owning every loaded `Document` plus the shared vault-listings cache (one raw listing per folder a pane has looked at, read by the folder contents list and the count badges).
 
 - `acquire(fileRel)` → returns the live `Document`, refcount += 1, lazy-creates + `start()`s on the first call.
 - `release(fileRel)` → refcount −= 1; on zero, the `Document.shutdown()` flushes one final save and the slot is dropped.
-- `vaultListingsFlow` is observed by every pane so the footer can render shared folder state.
+- `vaultListingsFlow` is observed by every pane so the folder contents list can render shared folder state. It is refreshed after every save, when the window regains focus, and (per folder) when a pane lands on a node.
 - The only thing that touches `NoteRepository`. Both `Document` (for content I/O via `repository.loadFile` / `repository.save`) and the registry itself (for `repository.listVaultLevel`) go through this single instance.
 
 ## Dependency injection (Metro)
@@ -144,6 +144,15 @@ One folder per parent bullet. A bullet is backed by a folder if and only if it h
 - **Save rules** (`NoteRepository.save`, run 1 s after the last edit and at most 5 s apart): a leaf that gets its first child becomes a folder; a folder whose last child is removed is deleted unless it still holds files; title edits rename the folder; moves (indent, outdent, drag, cut and paste) `rename` the folder so attachments travel; a deleted folder-backed bullet's folder goes to `<vault>/.trash/<timestamp> <name>/` (undo in the same session moves it back; the trash is never emptied automatically).
 - **Parser/codec**: `client/src/commonMain/.../data/SubtreeCodec.kt` parses and emits the outline format; `NoteRepository.kt` is the only thing that touches `FileSystem`. Files that are not `.treefacts` outlines (`Starred.md`, other `.md` notes) are read and written as plain lines.
 
+## Folder contents list
+
+Under the bullets of the node a pane is showing (the zoom target, or the root of the open outline) the web view draws everything in that node's folder that is not already a bullet (`web/.../main/FolderContentsList.kt`). The rules live in commonMain (`main/FolderContents.kt`, tested in `FolderContentsTest`):
+
+- **Shown:** `.md` notes, images, other files, foreign subfolders, TreeFacts folders no bullet references. **Hidden:** folders a `+` line of the node's own outline points at (`VaultEntry.isReferenced`, set by `NoteRepository.listVaultLevel`), dotfiles (including `.treefacts`) and `.trash`.
+- **Order:** folders first, then files, each group by `FolderContents.naturalCompare` (case-insensitive, `Note 2` before `Note 10`).
+- **Which folder:** `PaneBackingViewModel.currentNodeFolder` — the zoomed bullet's folder, the open outline's folder, or none (a zoomed leaf, a `.md` note).
+- An expanded folder-backed bullet carries a count badge (`FolderContents.badgeLabel`, e.g. `2 folders, 3 files`) computed from the same list. Clicking a folder row opens it as a node (`openFolderAsNode`); "New Markdown file" in the palette creates `Untitled.md`, `Untitled 2.md`, … in the current folder and opens it.
+
 ## Zoom navigation
 
 `PaneBackingViewModel` keeps three zoom-related fields:
@@ -167,6 +176,7 @@ client/src/commonMain/.../main/
   SelectionHelper.kt                  ← pure helpers (selection, breadcrumb)
   DocumentLayout.kt                   ← pure layout helpers (visible rows, hit-test)
   BlockLayout.kt                      ← block rows: markers, block ranges
+  FolderContents.kt                   ← folder contents list: filter, order, badge
 
 client/src/commonMain/.../data/
   NoteRepository.kt                   ← vault I/O + folder-per-bullet save rules
@@ -181,6 +191,7 @@ web/src/jsMain/.../
   di/JsAppGraph.kt                    ← Metro DI graph
   main/MainViewModel.kt               ← thin facade (one per pane)
   main/MainScreen.kt                  ← DOM rendering + event handling
+  main/FolderContentsList.kt          ← folder contents list under the bullets
   main/AppShell.kt                    ← per-pane VM construction + lifecycle
 ```
 

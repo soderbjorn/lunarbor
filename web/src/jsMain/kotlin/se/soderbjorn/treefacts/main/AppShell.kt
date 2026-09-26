@@ -331,6 +331,7 @@ class AppShell(
         installStarredShortcut()
         installEditorKeyDelegate()
         installHotkeysMenuBridge()
+        installFolderRefreshOnFocus()
 
         val tabSource = TreeFactsTabSource(
             onTabSelected = { id ->
@@ -631,6 +632,19 @@ class AppShell(
     }
 
     /**
+     * Re-reads every cached folder listing whenever the window regains
+     * focus (TRF-6), so a file added in Finder — or by any other program
+     * — shows up in the folder contents lists and count badges as soon as
+     * the user comes back to the app. Delegates to
+     * [DocumentRegistry.refreshVaultListings].
+     */
+    private fun installFolderRefreshOnFocus() {
+        window.addEventListener("focus", { _: Event ->
+            scope.launch { documentRegistry.refreshVaultListings() }
+        })
+    }
+
+    /**
      * Subscribes to the Electron preload's `treefacts:show-hotkeys` channel,
      * dispatched when the user picks `TreeFacts → Hotkeys…` from the macOS
      * application menu. No-op when running in a plain browser (no
@@ -722,6 +736,10 @@ class AppShell(
         // caret's bullet, and its removal (both undoable).
         addStyleCmd("insert-block", "Insert block") { it.insertBlock() }
         addStyleCmd("delete-block", "Delete block") { it.deleteBlockAtCursor() }
+        // Folder contents (TRF-6): an empty `Untitled.md` (then
+        // `Untitled 2.md`, …) in the current node's folder, opened in the
+        // focused pane.
+        addStyleCmd("new-markdown-file", "New Markdown file") { it.newMarkdownFile() }
         out += CommandPalette.Command(
             id = "open-new-pane",
             title = "Open new pane",

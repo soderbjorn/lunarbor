@@ -7,11 +7,12 @@
  * sync); when the last pane navigates away, the registry flushes one
  * final save and tears the [Document] down.
  *
- * Also owns the shared vault-listings cache — the lazy directory tree
- * the editor's filesystem-tree footer renders. The cache lives here
- * (not on any one document) because folder structure isn't tied to any
- * particular file: when one save creates or removes a file, every
- * pane's footer wants to see the change.
+ * Also owns the shared vault-listings cache — one listing per folder a
+ * pane has looked at, read by the folder contents list under the bullets
+ * and by the count badges on expanded folder-backed bullets. The cache
+ * lives here (not on any one document) because folder structure isn't
+ * tied to any particular file: when one save creates or removes a
+ * folder, every pane's list wants to see the change.
  *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
@@ -38,8 +39,8 @@ import se.soderbjorn.treefacts.data.VaultIndex
  * - One instance per app, created by the platform DI graph.
  * - [acquire] / [release] are called by `PaneBackingViewModel` whenever
  *   a pane is created, navigates to a different file, or is torn down.
- * - [vaultListingsFlow] is observed by panes so the footer can render
- *   the shared lazy directory tree.
+ * - [vaultListingsFlow] is observed by panes so the folder contents list
+ *   and count badges can render from one shared cache.
  *
  * @param repository The single [NoteRepository] used for all disk I/O.
  * @param scope App-scoped coroutine scope passed to each [Document]
@@ -82,7 +83,7 @@ class DocumentRegistry(
      * its own cache for files the registry currently holds — always
      * reads from [Document.stateFlow] for those — so the autosave loop
      * does not invalidate anything. Closed-file entries are invalidated
-     * here whenever a save tick completes ([refreshLoadedVaultListings])
+     * here whenever a save tick completes ([refreshVaultListings])
      * or a [Document] is shut down.
      */
     val vaultIndex: VaultIndex = VaultIndex(
@@ -116,13 +117,16 @@ class DocumentRegistry(
     /**
      * Observable stream of the shared vault-listings cache. Keys are
      * directory paths relative to the vault root (`""` for the root).
-     * Values are the direct entries. Missing keys mean "not yet
-     * fetched"; the footer renders a "Loading…" placeholder until the
-     * pane's call to [ensureVaultListing] populates the entry.
+     * Values are the raw direct entries ([NoteRepository.listVaultLevel]);
+     * views filter them with [FolderContents.visible]. Missing keys mean
+     * "not yet fetched"; the view draws nothing until the pane's call to
+     * [ensureVaultListing] populates the entry.
      *
-     * Refreshed after every save (via [Document]'s `onAfterSave` hook)
-     * so folders created, renamed or trashed by a save surface in the
-     * footer right away.
+     * Refreshed after every save (via [Document]'s `onAfterSave` hook) so
+     * folders created, renamed or trashed by a save surface right away,
+     * and by [refreshVaultListings] / [refreshVaultListing] so changes
+     * made outside the app (a file added in Finder) show up at the next
+     * refresh: window focus and pane navigation.
      */
     val vaultListingsFlow: StateFlow<Map<String, List<VaultEntry>>> =
         _vaultListings.asStateFlow()
@@ -143,8 +147,8 @@ class DocumentRegistry(
     val unsavedFilesFlow: StateFlow<Set<String>> = _unsavedFiles.asStateFlow()
 
     init {
-        // Eagerly populate the vault root listing so the footer's first
-        // level paints without a flash of "Loading…" right after boot.
+        // Eagerly populate the vault root listing so the root's contents
+        // list paints right after boot.
         scope.launch { ensureVaultListing("") }
     }
 
@@ -174,7 +178,7 @@ class DocumentRegistry(
             saveDebounceMillis = saveDebounceMillis,
             maxSaveDelayMillis = maxSaveDelayMillis,
             onAfterSave = {
-                refreshLoadedVaultListings()
+                refreshVaultListings()
                 // The save may have promoted/demoted bullets inside this
                 // file; drop the cache entry so the next non-live lookup
                 // (which only happens once this file is closed again)
@@ -255,7 +259,7 @@ class DocumentRegistry(
     suspend fun ensureFolderStub(fileRel: String): Boolean {
         val created = repository.createEmptyFile(fileRel)
         if (!created) return false
-        refreshLoadedVaultListings()
+        refreshVaultListings()
         vaultIndex.invalidate(fileRel)
         return true
     }
@@ -277,19 +281,47 @@ class DocumentRegistry(
         repository.saveImageBytes(suggestedName, bytes)
 
     /**
+     * Creates `Untitled.md` (or `Untitled 2.md`, …) in the folder
+     * [dirRel] and refreshes that folder's listing so the new note shows
+     * in every pane's contents list at once. Delegates the naming to
+     * [NoteRepository.createMarkdownFile].
+     *
+     * Called by `PaneBackingViewModel.newMarkdownFile`.
+     *
+     * @param dirRel An existing folder, vault-relative (`""` = root).
+     * @return The new note's vault-relative path.
+     */
+    suspend fun createMarkdownFile(dirRel: String): String {
+        val rel = repository.createMarkdownFile(dirRel)
+        refreshVaultListing(dirRel)
+        return rel
+    }
+
+    /**
+     * Re-reads the one folder [dirRel] and replaces (or adds) its cached
+     * listing. Called when a pane navigates to a node, so the list it
+     * shows is fresh even if nothing was saved since the last read.
+     */
+    suspend fun refreshVaultListing(dirRel: String) {
+        val entries = repository.listVaultLevel(dirRel)
+        _vaultListings.update { it + (dirRel to entries) }
+    }
+
+    /**
      * Re-fetches every directory currently in [vaultListingsFlow] and
      * replaces each entry with the fresh result. Triggered by
-     * [Document]'s `onAfterSave` hook after every save tick so files
-     * created/removed by the save (or by another editor) surface in
-     * the footer within one autosave cycle.
+     * [Document]'s `onAfterSave` hook after every save tick so folders
+     * created/removed by the save surface at once, and by the web shell
+     * whenever the window regains focus so files added in Finder (or by
+     * any other program) show up at that refresh.
      */
-    private suspend fun refreshLoadedVaultListings() {
+    suspend fun refreshVaultListings() {
         val keys = _vaultListings.value.keys.toList()
         if (keys.isEmpty()) return
         val updates = HashMap<String, List<VaultEntry>>()
         for (k in keys) {
             updates[k] = repository.listVaultLevel(k)
         }
-        _vaultListings.value = _vaultListings.value + updates
+        _vaultListings.update { it + updates }
     }
 }

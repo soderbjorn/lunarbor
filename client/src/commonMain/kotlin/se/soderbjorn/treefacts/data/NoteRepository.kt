@@ -40,26 +40,54 @@ import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
 /**
- * One entry in the filesystem-tree footer's lazy-loaded directory listing.
+ * What kind of thing a [VaultEntry] is; drives the type glyph in the
+ * folder contents list.
+ */
+enum class VaultEntryKind {
+    /** A subfolder: a TreeFacts node folder or a foreign folder. */
+    FOLDER,
+
+    /** A `.md` note. */
+    MARKDOWN,
+
+    /** An image the renderer can show (extension in [NoteRepository.IMAGE_EXTENSIONS]). */
+    IMAGE,
+
+    /** Any other file. */
+    FILE,
+}
+
+/**
+ * One entry of a folder listing, as produced by
+ * [NoteRepository.listVaultLevel] and filtered for display by
+ * `FolderContents.visible`.
  *
- * @property name Display name. For directories, the decoded folder name
+ * @property name Display name. For folders, the decoded folder name
  *   ([FolderName.decode]); for `.md` files the basename minus the
- *   extension; for images the full basename.
+ *   extension; for every other file the full basename.
  * @property pathRel Path relative to the vault root.
- * @property isDirectory `true` for subdirectories, `false` for files.
- * @property isImage `true` when [pathRel] points at an image file
- *   (extension in [NoteRepository.IMAGE_EXTENSIONS]).
+ * @property kind Folder, Markdown note, image or other file.
+ * @property isReferenced `true` for a folder that a `+` line of the listed
+ *   folder's own outline (`.treefacts`) points at — the folder of one of
+ *   the node's bullets. Such folders are already shown as bullets, so the
+ *   contents list hides them. Always `false` for files.
  * @property lastEditedMs Last-modified timestamp of the underlying file in
  *   milliseconds since the Unix epoch. `0` for directories and on platforms
- *   that cannot provide one. Used by the footer's last-edit sort mode.
+ *   that cannot provide one.
  */
 data class VaultEntry(
     val name: String,
     val pathRel: String,
-    val isDirectory: Boolean,
-    val isImage: Boolean = false,
+    val kind: VaultEntryKind,
+    val isReferenced: Boolean = false,
     val lastEditedMs: Long = 0L,
-)
+) {
+    /** `true` for subfolders. */
+    val isDirectory: Boolean get() = kind == VaultEntryKind.FOLDER
+
+    /** `true` for images. */
+    val isImage: Boolean get() = kind == VaultEntryKind.IMAGE
+}
 
 /**
  * The folder backing one folder-backed bullet.
@@ -604,43 +632,86 @@ class NoteRepository(
     }
 
     /**
-     * Lists the direct entries under `<rootDirectory>/<dirRel>` for the
-     * filesystem-tree footer: subdirectories, `.md` files and images.
-     * Dotfiles (the outline file, the trash) are left out. Directories
-     * come first; the footer reorders within each group.
+     * Lists the direct entries under `<rootDirectory>/<dirRel>`: every
+     * subfolder and every file, except dotfiles (the `.treefacts` outline,
+     * the `.trash` folder, `.DS_Store`, …). Each folder is flagged
+     * [VaultEntry.isReferenced] when `<dirRel>/.treefacts` has a `+` line
+     * pointing at it (compared case-insensitively, like folder names on a
+     * default macOS volume). Unsorted; `FolderContents.visible` filters and
+     * orders the entries for display.
+     *
+     * Called by `DocumentRegistry` to fill and refresh its shared
+     * listings cache.
      *
      * @param dirRel Directory relative to [rootDirectory]; `""` is the
      *   vault root.
      */
     suspend fun listVaultLevel(dirRel: String): List<VaultEntry> {
         val raw = fileSystem.listDirectoryEntries(abs(dirRel))
-        val dirs = ArrayList<VaultEntry>()
-        val files = ArrayList<VaultEntry>()
+        val outline = fileSystem.readFileIfExists(abs(outlineFileOf(dirRel)))
+        val referenced = if (outline == null) emptySet() else referencedFolderNames(outline)
+        val out = ArrayList<VaultEntry>(raw.size)
         for (entry in raw) {
             if (entry.name.startsWith(".")) continue
             val pathRel = join(dirRel, entry.name)
-            when {
-                entry.isDirectory -> dirs += VaultEntry(
+            out += when {
+                entry.isDirectory -> VaultEntry(
                     name = FolderName.decode(entry.name),
                     pathRel = pathRel,
-                    isDirectory = true,
+                    kind = VaultEntryKind.FOLDER,
+                    isReferenced = entry.name.lowercase() in referenced,
                 )
-                entry.name.endsWith(NOTE_EXTENSION) -> files += VaultEntry(
+                entry.name.endsWith(NOTE_EXTENSION) -> VaultEntry(
                     name = entry.name.removeSuffix(NOTE_EXTENSION),
                     pathRel = pathRel,
-                    isDirectory = false,
+                    kind = VaultEntryKind.MARKDOWN,
                     lastEditedMs = entry.lastModifiedMs,
                 )
-                isImagePath(entry.name) -> files += VaultEntry(
+                isImagePath(entry.name) -> VaultEntry(
                     name = entry.name,
                     pathRel = pathRel,
-                    isDirectory = false,
-                    isImage = true,
+                    kind = VaultEntryKind.IMAGE,
+                    lastEditedMs = entry.lastModifiedMs,
+                )
+                else -> VaultEntry(
+                    name = entry.name,
+                    pathRel = pathRel,
+                    kind = VaultEntryKind.FILE,
                     lastEditedMs = entry.lastModifiedMs,
                 )
             }
         }
-        return dirs + files
+        return out
+    }
+
+    /**
+     * Lower-cased folder names of every `+` line in one outline file's
+     * [text] — its direct children that are folder-backed.
+     */
+    private fun referencedFolderNames(text: String): Set<String> =
+        SubtreeCodec.parseNodeFile(text)
+            .filterIsInstance<NodeLine.Folder>()
+            .map { it.folder.lowercase() }
+            .toHashSet()
+
+    /**
+     * Creates an empty Markdown note in the folder [dirRel], named
+     * `Untitled.md`, or `Untitled 2.md`, `Untitled 3.md`, … when that name
+     * is taken (compared case-insensitively against everything in the
+     * folder). Never overwrites anything.
+     *
+     * Called by `DocumentRegistry.createMarkdownFile` for the "New
+     * Markdown file" palette command.
+     *
+     * @param dirRel An existing folder, vault-relative (`""` = root).
+     * @return The new file's vault-relative path.
+     */
+    suspend fun createMarkdownFile(dirRel: String): String {
+        val taken = fileSystem.listDirectoryEntries(abs(dirRel)).map { it.name.lowercase() }.toHashSet()
+        val name = untitledNoteName(taken)
+        val rel = join(dirRel, name)
+        fileSystem.writeFile(abs(rel), "")
+        return rel
     }
 
     // ---------------------------------------------------------------- images
@@ -811,6 +882,23 @@ class NoteRepository(
                 return if (folder.isEmpty()) ROOT_DISPLAY_NAME else FolderName.decode(folder.substringAfterLast('/'))
             }
             return fileRel.substringAfterLast('/').removeSuffix(NOTE_EXTENSION)
+        }
+
+        /** Base name of notes made by [createMarkdownFile]. */
+        const val UNTITLED_NOTE_BASE: String = "Untitled"
+
+        /**
+         * First of `Untitled.md`, `Untitled 2.md`, `Untitled 3.md`, … whose
+         * lower-cased name is not in [takenLowercase].
+         */
+        fun untitledNoteName(takenLowercase: Set<String>): String {
+            var n = 1
+            while (true) {
+                val stem = if (n == 1) UNTITLED_NOTE_BASE else "$UNTITLED_NOTE_BASE $n"
+                val candidate = stem + NOTE_EXTENSION
+                if (candidate.lowercase() !in takenLowercase) return candidate
+                n++
+            }
         }
 
         /** `true` when [folderRel] is inside the trash. */

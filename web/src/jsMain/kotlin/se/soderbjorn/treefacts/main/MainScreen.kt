@@ -68,7 +68,7 @@ class MainScreen(
     /**
      * Root container the screen mounts into (the per-pane slot the shell
      * passes to [render]). Captured so [maybePlayNavFade] can fade the
-     * entire pane content (headline, editor, footer) as a single block on
+     * entire pane content (headline, editor, folder contents list) as a single block on
      * navigation transitions, rather than each child fading independently.
      */
     private var rootElement: HTMLElement? = null
@@ -84,13 +84,13 @@ class MainScreen(
 
     /**
      * Sibling div positioned immediately after [editorElement] inside the
-     * shared scroll container. Hosts the filesystem-tree footer (see
-     * `VaultFooter.paintVaultFooter`). Distinct from the editor so the
-     * footer's DOM is never wiped by `OutlinePaintLoop.paint`'s
+     * shared scroll container. Hosts the folder contents list (see
+     * `FolderContentsList.paintFolderContents`). Distinct from the editor so the
+     * list's DOM is never wiped by `OutlinePaintLoop.paint`'s
      * `editor.innerHTML = ""` and never participates in DOM-to-model
      * selection mapping.
      */
-    private var vaultFooterElement: HTMLElement? = null
+    private var folderContentsElement: HTMLElement? = null
 
     /**
      * Sibling div positioned next to [editorElement] inside the shared
@@ -104,7 +104,7 @@ class MainScreen(
 
     /**
      * Wrapper element that owns the page's vertical scroll. Holds the
-     * editor and the vault footer as siblings so they scroll together.
+     * editor and the folder contents list as siblings so they scroll together.
      * The editor itself no longer scrolls — its content height grows as
      * needed and the wrapper's `overflow-y: auto` carries the scrollbar.
      */
@@ -158,7 +158,7 @@ class MainScreen(
      * For same-file zoom transitions the new content is already loaded
      * on the same emission, so this stays `null` end-to-end and the
      * crossfade plays immediately as before. The deferral matters only
-     * for cross-file navigation (footer click → `navigateToVaultFile`),
+     * for cross-file navigation (contents-list click → `navigateToVaultFile`),
      * where `switchTo` flips `isLoaded` to false before the new content
      * arrives.
      */
@@ -215,9 +215,9 @@ class MainScreen(
         scrollWrapper.appendChild(editor)
         editorElement = editor
 
-        val vaultFooter = buildVaultFooterElement()
-        scrollWrapper.appendChild(vaultFooter)
-        vaultFooterElement = vaultFooter
+        val folderContents = buildFolderContentsElement()
+        scrollWrapper.appendChild(folderContents)
+        folderContentsElement = folderContents
 
         val imageViewer = buildImageViewerElement()
         scrollWrapper.appendChild(imageViewer)
@@ -233,7 +233,7 @@ class MainScreen(
         // content, so the scroll wrapper's background below the rows is
         // dead space to the browser's caret placement. Route a click that
         // lands on the wrapper (or the editor host's own empty area — not
-        // a row, footer, link, or bullet) to "caret at end of document"
+        // a row, the folder contents list, a link, or a bullet) to "caret at end of document"
         // so a fresh/empty vault isn't an un-clickable black void.
         scrollWrapper.addEventListener("mousedown", { event ->
             val me = event as MouseEvent
@@ -257,7 +257,7 @@ class MainScreen(
                 // overlay then crossfades over the freshly-rendered new
                 // content underneath, avoiding a blank middle frame.
                 //
-                // Cross-file navigation (footer click) emits an interim
+                // Cross-file navigation (contents-list click) emits an interim
                 // `isLoaded=false` "Loading…" state before the new file's
                 // content lands. We snapshot on that first emission (so
                 // we capture the *outgoing* file's content), then hold
@@ -272,13 +272,17 @@ class MainScreen(
                 // Pull DOM focus back into the editor whenever the pane
                 // changes file or zoom target. The trigger may have come
                 // from a click on a toolbar button (back/forward, zoom up,
-                // home), the vault footer, the starred modal, or the
+                // home), the folder contents list, the starred modal, or the
                 // command palette — none of which leave focus on the
                 // editor. Mirrors the on-pane-focus behaviour so the
                 // caret is ready for keystrokes the moment the new view
                 // lands. Cursor position itself is restored from the
                 // pane VM during reconcile, so this only re-arms input.
                 if (navigated) editor.focus()
+                // Landing on a new node re-reads its folder, so the
+                // contents list picks up files added outside the app
+                // (Finder) since the folder was last read.
+                if (navigated) viewModel.refreshCurrentFolderListing()
                 // Skip the paint while a crossfade is pending and the new
                 // file is still loading: reconcile would wipe the editor
                 // and stamp "Loading…" underneath the overlay, which —
@@ -301,12 +305,12 @@ class MainScreen(
                         editor.style.display = "none"
                         imageViewer.style.display = "flex"
                         paintImageViewer(imageViewer, backing.activeFileRel)
-                        paintVaultFooter(vaultFooter, backing, viewModel, style)
+                        paintFolderContents(folderContents, backing, viewModel, style)
                     } else {
                         imageViewer.style.display = "none"
                         editor.style.display = ""
                         reconcile(editor, backing)
-                        paintVaultFooter(vaultFooter, backing, viewModel, style)
+                        paintFolderContents(folderContents, backing, viewModel, style)
                     }
                     updateTitle(title, backing)
                     updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
@@ -1685,7 +1689,7 @@ class MainScreen(
             setProperty("box-sizing", "border-box")
         }
         // Clone every direct child of the root so the snapshot mirrors the
-        // user's current view (headline, editor, footer, restructure
+        // user's current view (headline, editor, folder contents list, restructure
         // banner). Deep clone preserves text content and inline styles.
         // Children are walked by index because a live HTMLCollection
         // shifts as we append into the overlay.
@@ -1769,10 +1773,9 @@ class MainScreen(
     }
 
     /**
-     * Builds the scroll wrapper that hosts the editor and the vault-tree
-     * footer side by side (vertically). Owns the page's vertical scrollbar
-     * so the document and the footer scroll together — the user sees the
-     * filesystem index roll up under the document as they scroll down.
+     * Builds the scroll wrapper that hosts the editor and the folder
+     * contents list stacked vertically. Owns the page's vertical scrollbar
+     * so the bullets and the list scroll together.
      */
     private fun buildScrollWrapper(): HTMLElement {
         val wrapper = document.createElement("div") as HTMLElement
@@ -1813,16 +1816,17 @@ class MainScreen(
     }
 
     /**
-     * Builds the sibling div that hosts the filesystem-tree footer. The
+     * Builds the sibling div that hosts the folder contents list. The
      * `contenteditable="false"` attribute keeps caret placement out of
-     * this subtree even if a drag-selection sweeps into it. Padding mirrors
-     * the editor's so footer rows align horizontally with document rows.
+     * this subtree even if a drag-selection sweeps into it, so its rows
+     * are never editable text. Padding mirrors the editor's so the list
+     * lines up horizontally with the bullets.
      */
-    private fun buildVaultFooterElement(): HTMLElement {
-        val footer = document.createElement("div") as HTMLElement
-        footer.className = "treefacts-vault-footer"
-        footer.setAttribute("contenteditable", "false")
-        footer.style.apply {
+    private fun buildFolderContentsElement(): HTMLElement {
+        val list = document.createElement("div") as HTMLElement
+        list.className = "treefacts-folder-contents"
+        list.setAttribute("contenteditable", "false")
+        list.style.apply {
             paddingTop = "${style.editorPaddingTopPx}px"
             paddingRight = "${style.editorPaddingRightPx}px"
             paddingBottom = "${style.editorPaddingBottomPx + 32}px"
@@ -1834,7 +1838,7 @@ class MainScreen(
             setProperty("word-break", "break-word")
             color = "var(--t-text, #e6e6e6)"
         }
-        return footer
+        return list
     }
 
     /**

@@ -22,8 +22,8 @@ package se.soderbjorn.treefacts.platform
 
 /**
  * One direct entry in a directory listing produced by [FileSystem.listDirectoryEntries].
- * Used by the filesystem-tree footer in the editor view to lazy-load each
- * folder's contents without recursing.
+ * Used by `NoteRepository` (folder listings for the folder contents list,
+ * the save planner) to read one folder at a time without recursing.
  *
  * @property name Basename of the entry (no leading path).
  * @property isDirectory `true` for subdirectories, `false` for regular files.

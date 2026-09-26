@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import se.soderbjorn.treefacts.data.InlineStyle
 import se.soderbjorn.treefacts.data.LineStyle
+import se.soderbjorn.treefacts.data.VaultEntry
 import se.soderbjorn.treefacts.data.VaultIndex
 
 /**
@@ -206,10 +207,6 @@ class MainViewModel(
     /** See `PaneBackingViewModel.zoomInfo`. */
     fun zoomInfo(state: PaneBackingViewModel.State) = paneBackingViewModel.zoomInfo(state)
 
-    /** See `PaneBackingViewModel.zoomedPromotedRefFileRel`. */
-    fun zoomedPromotedRefFileRel(state: PaneBackingViewModel.State): String? =
-        paneBackingViewModel.zoomedPromotedRefFileRel(state)
-
     /** See `PaneBackingViewModel.bulletAncestors`. */
     fun bulletAncestors(state: PaneBackingViewModel.State) =
         paneBackingViewModel.bulletAncestors(state)
@@ -267,25 +264,34 @@ class MainViewModel(
     /** See `PaneBackingViewModel.activeLineStyle`. */
     fun activeLineStyle(): LineStyle? = paneBackingViewModel.activeLineStyle()
 
-    // ---- vault-footer intents -------------------------------------------
+    // ---- folder contents intents ----------------------------------------
 
     /** Vault-relative path of the root file. Forwarded from the document VM. */
     val rootFileName: String get() = paneBackingViewModel.rootFileName
 
-    /** See `PaneBackingViewModel.toggleVaultFooter`. */
-    fun toggleVaultFooter() = paneBackingViewModel.toggleVaultFooter()
-
-    /** See `PaneBackingViewModel.cycleFilesSort`. */
-    fun cycleFilesSort(mode: FilesSortMode) = paneBackingViewModel.cycleFilesSort(mode)
-
-    /** See `PaneBackingViewModel.toggleVaultFolder`. */
-    fun toggleVaultFolder(dirRel: String) = paneBackingViewModel.toggleVaultFolder(dirRel)
-
     /** See `PaneBackingViewModel.navigateToVaultFile`. */
     fun navigateToVaultFile(pathRel: String) = paneBackingViewModel.navigateToVaultFile(pathRel)
 
-    /** See `PaneBackingViewModel.ensureVaultListing`. */
-    fun ensureVaultListing(dirRel: String) = paneBackingViewModel.ensureVaultListing(dirRel)
+    /** See `PaneBackingViewModel.currentNodeFolder`. */
+    fun currentNodeFolder(state: PaneBackingViewModel.State): String? =
+        paneBackingViewModel.currentNodeFolder(state)
+
+    /** See `PaneBackingViewModel.folderContentsOf`. */
+    fun folderContentsOf(state: PaneBackingViewModel.State, dirRel: String): List<VaultEntry>? =
+        paneBackingViewModel.folderContentsOf(state, dirRel)
+
+    /** See `PaneBackingViewModel.folderContentsOfBullet`. */
+    fun folderContentsOfBullet(state: PaneBackingViewModel.State, lineId: LineId): List<VaultEntry>? =
+        paneBackingViewModel.folderContentsOfBullet(state, lineId)
+
+    /** See `PaneBackingViewModel.openFolderAsNode`. */
+    fun openFolderAsNode(dirRel: String) = paneBackingViewModel.openFolderAsNode(dirRel)
+
+    /** See `PaneBackingViewModel.newMarkdownFile`. */
+    fun newMarkdownFile() = paneBackingViewModel.newMarkdownFile()
+
+    /** See `PaneBackingViewModel.refreshCurrentFolderListing`. */
+    fun refreshCurrentFolderListing() = paneBackingViewModel.refreshCurrentFolderListing()
 
     // ---- link intents ---------------------------------------------------
 

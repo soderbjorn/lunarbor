@@ -285,6 +285,7 @@ private fun buildRowElement(
 
         rowDiv.appendChild(buildBulletPrefix(absoluteRow, onBulletMouseDown))
         rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2)))
+        if (rowId != null) buildFolderBadge(absoluteRow, rowId, state, viewModel)?.let(rowDiv::appendChild)
     } else if (block != null && BlockLayout.markerColumn(line) >= 0) {
         decorateBlockRow(rowDiv, absoluteRow, line, viewOriginCol, block, state, docState, viewModel, style)
     } else {
@@ -297,6 +298,42 @@ private fun buildRowElement(
     }
 
     return rowDiv
+}
+
+/**
+ * The count badge of an expanded folder-backed bullet (TRF-6), e.g.
+ * `3 files`: how many items zooming into the bullet would list under its
+ * bullets (the same [FolderContents.visible] entries, so the numbers
+ * match). `null` — no badge — when the bullet is a leaf, is folded in
+ * this pane, or its folder holds nothing besides its child bullets'
+ * folders. Clicking the badge zooms into the bullet, where the list is.
+ *
+ * @param absoluteRow The bullet's document row, for the zoom.
+ * @param rowId The bullet's id.
+ */
+private fun buildFolderBadge(
+    absoluteRow: Int,
+    rowId: LineId,
+    state: PaneBackingViewModel.State,
+    viewModel: MainViewModel,
+): HTMLElement? {
+    if (!viewModel.isPromotedRef(rowId)) return null
+    if (rowId in state.collapsedIds) return null
+    val entries = viewModel.folderContentsOfBullet(state, rowId) ?: return null
+    val label = FolderContents.badgeLabel(entries) ?: return null
+    val badge = document.createElement("span") as HTMLElement
+    badge.className = "treefacts-folder-badge"
+    badge.setAttribute("contenteditable", "false")
+    badge.title = "Zoom in to see them"
+    badge.textContent = label
+    badge.addEventListener("mousedown", { ev ->
+        // Keep the press away from the editor's caret placement and drag
+        // handlers, which listen on the editor itself.
+        ev.preventDefault()
+        ev.stopPropagation()
+        viewModel.zoomInto(absoluteRow)
+    })
+    return badge
 }
 
 /**
@@ -981,87 +1018,80 @@ fun ensureStyles() {
             border-radius: 50%;
             animation: treefacts-spinner-rotate 0.8s linear infinite;
         }
-        /* Filesystem-tree footer: rendered in a sibling block under the
-           contenteditable editor host so it scrolls with the document but
-           can never receive caret/selection. Styled to look like another
-           outline. */
-        .treefacts-vault-footer {
+        /* Folder contents list (TRF-6): everything in the current node's
+           folder that is not a bullet, in a sibling block under the
+           contenteditable editor host, so it scrolls with the bullets but
+           never takes the caret. A divider and a smaller, dimmer type set
+           it apart from the outline. */
+        .treefacts-folder-contents {
             border-top: 1px solid var(--t-border, #4a4a4a);
-            margin-top: 32px;
+            margin-top: 24px;
+            font-size: 0.92em !important;
         }
-        /* When the active file is a directory anchor with nothing to
-           list, `paintVaultFooter` returns without appending any
-           children. The container element itself stays mounted (it's a
-           permanent sibling of the editor host so the paint loop never
-           wipes it), so we strip the divider, margin, and padding here
-           to make the empty footer take zero vertical space. The
-           `!important`s override `buildVaultFooterElement`'s inline
-           padding, which would otherwise win the cascade. */
-        .treefacts-vault-footer:empty {
+        /* Nothing to list: the element stays mounted (the paint loop never
+           removes it) but takes no space. The `!important`s beat the
+           inline padding set by `buildFolderContentsElement`. */
+        .treefacts-folder-contents:empty {
             border-top: none !important;
             margin-top: 0 !important;
             padding: 0 !important;
         }
-        .treefacts-vault-header {
+        .treefacts-folder-entry {
             display: flex;
             align-items: center;
-            gap: 6px;
-            padding-top: 8px;
-            padding-bottom: 6px;
-            opacity: 0.65;
-            font-size: 13px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
+            gap: 8px;
             cursor: pointer;
             user-select: none;
+            border-radius: 4px;
+            padding: 0 6px;
+            margin: 0 -6px;
+            color: var(--t-text, #e6e6e6);
         }
-        .treefacts-vault-header:hover {
-            opacity: 0.85;
+        .treefacts-folder-entry:hover {
+            background: var(--t-surface-alt, rgba(127, 127, 127, 0.12));
         }
-        .treefacts-vault-header-chevron {
-            position: relative;
-            width: 16px;
-            height: 16px;
+        .treefacts-folder-entry-inert {
+            cursor: default;
+            color: var(--t-text-dim, #7a7a7a);
+        }
+        .treefacts-folder-entry-inert:hover {
+            background: none;
+        }
+        .treefacts-folder-entry-glyph {
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            flex: 0 0 auto;
             color: var(--t-text-dim, #7a7a7a);
         }
-        .treefacts-vault-row {
-            position: relative;
-            cursor: pointer;
+        .treefacts-folder-entry[data-entry-kind="folder"] .treefacts-folder-entry-glyph {
+            color: var(--t-accent, #5ab0ff);
+        }
+        .treefacts-folder-entry-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        /* Count badge on an expanded folder-backed bullet ("3 files"):
+           the items zooming into it would list under its bullets. Not
+           editable and not part of the text, so caret mapping (which
+           reads only `.treefacts-text`) never sees it. */
+        .treefacts-folder-badge {
+            display: inline-block;
+            margin-left: 10px;
+            padding: 0 6px;
+            border-radius: 8px;
+            font-size: 11px;
+            line-height: 16px;
+            vertical-align: 1px;
+            color: var(--t-text-dim, #7a7a7a);
+            border: 1px solid var(--t-border, #4a4a4a);
             user-select: none;
+            cursor: pointer;
+            white-space: nowrap;
         }
-        .treefacts-vault-text {
+        .treefacts-folder-badge:hover {
             color: var(--t-text, #e6e6e6);
-        }
-        .treefacts-vault-folder {
-            opacity: 0.85;
-        }
-        /* Footer rows use an icon in place of the bullet dot: a folder icon
-           for folders, a document/image icon for files. Both sit inline
-           where a document bullet would, so file and folder labels line up
-           in one column. */
-        .treefacts-vault-folder-glyph,
-        .treefacts-vault-file-glyph {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 0.15em;
-            vertical-align: -0.15em;
-            color: var(--t-text-dim, #7a7a7a);
-            transition: color 120ms ease-out, transform 120ms ease-out;
-        }
-        .treefacts-vault-folder-prefix:hover .treefacts-vault-folder-glyph,
-        .treefacts-vault-file-prefix:hover .treefacts-vault-file-glyph {
-            color: var(--t-text, #e6e6e6);
-            transform: scale(1.1);
-        }
-        .treefacts-vault-loading {
-            opacity: 0.5;
-            font-style: italic;
-            color: var(--t-text-dim, #7a7a7a);
         }
         /* WYSIWYG markdown styles: the marker characters (**, *, <u>, ~~,
            `) are not in the DOM at all, so styling here only affects the

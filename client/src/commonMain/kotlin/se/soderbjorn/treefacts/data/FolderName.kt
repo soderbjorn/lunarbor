@@ -29,7 +29,7 @@ package se.soderbjorn.treefacts.data
  * ### Callers
  * - `NoteRepository.save` names every folder it creates or renames with
  *   [forTitle] + [unique].
- * - `VaultIndex` and the web footer show folder names as titles via [decode].
+ * - `VaultIndex` and the folder contents list show folder names as titles via [decode].
  */
 object FolderName {
 

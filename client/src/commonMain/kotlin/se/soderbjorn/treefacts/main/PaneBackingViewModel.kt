@@ -50,14 +50,6 @@ import se.soderbjorn.treefacts.data.VaultEntry
 import se.soderbjorn.treefacts.data.VaultIndex
 
 /**
- * Sort modes the vault footer's "Files" list can be in. Direction
- * (ascending vs descending) is tracked separately per mode in
- * [PaneBackingViewModel.State] so toggling modes preserves each side's
- * preferred direction.
- */
-enum class FilesSortMode { NAME, EDITED }
-
-/**
  * Per-pane backing view-model. Mirrors the active [Document]'s content
  * and adds cursor, selection, zoom, file navigation, undo/redo, and
  * per-pane fold state on top.
@@ -105,9 +97,12 @@ class PaneBackingViewModel(
      *   state, or `null` before the first emission. Kept in sync by
      *   the inner collector and by [patch] after every edit, so every
      *   emission is a consistent snapshot of document + pane state.
-     * @property vaultListings Mirror of the registry's shared vault-tree
-     *   directory cache. Mirrored here so view code can read pane state
-     *   alone without a separate registry handle.
+     * @property vaultListings Mirror of the registry's shared folder
+     *   listings cache ([DocumentRegistry.vaultListingsFlow]), raw and
+     *   unfiltered. Mirrored here so view code can read pane state alone
+     *   without a separate registry handle; read it through
+     *   [folderContentsOf] / [folderContentsOfBullet], which apply
+     *   [FolderContents.visible].
      * @property cursorRow Row of the caret, in absolute document coords.
      * @property cursorCol Column of the caret on [cursorRow].
      * @property anchorRow If non-null, together with [anchorCol] defines
@@ -145,21 +140,6 @@ class PaneBackingViewModel(
      *   it reaches disk.
      * @property seenLineIds Internal: the set of [LineId]s the
      *   default-collapse pass has already processed.
-     * @property isVaultFooterExpanded Master toggle for the editor's
-     *   filesystem-tree footer.
-     * @property expandedVaultPaths Per-pane open folders in the
-     *   filesystem-tree footer.
-     * @property filesSortMode Active sort mode for the vault footer's
-     *   "Files" listing. [FilesSortMode.NAME] sorts alphabetically by
-     *   display name (case-insensitive); [FilesSortMode.EDITED] sorts by
-     *   the file's last-modified timestamp. Directories always come
-     *   first regardless of mode.
-     * @property filesSortNameDescending Direction for [FilesSortMode.NAME].
-     *   Remembered across mode switches so toggling Edited → Name returns
-     *   to the user's last-used name direction. Defaults to ascending.
-     * @property filesSortEditedDescending Direction for [FilesSortMode.EDITED].
-     *   Defaults to descending — most-recent-edit first matches the usual
-     *   "what did I touch last" intuition.
      * @property pendingInlineStyles Inline styles armed via Cmd-B / etc
      *   while the caret was collapsed.
      */
@@ -180,11 +160,6 @@ class PaneBackingViewModel(
         val expandedRefIdsLocal: Set<LineId> = emptySet(),
         val pendingLeafZoomChild: LineId? = null,
         internal val seenLineIds: Set<LineId> = emptySet(),
-        val isVaultFooterExpanded: Boolean = true,
-        val expandedVaultPaths: Set<String> = emptySet(),
-        val filesSortMode: FilesSortMode = FilesSortMode.NAME,
-        val filesSortNameDescending: Boolean = false,
-        val filesSortEditedDescending: Boolean = true,
         val pendingInlineStyles: Set<InlineStyle> = emptySet(),
     ) {
         /** `true` once the document has loaded from disk at least once. */
@@ -209,44 +184,6 @@ class PaneBackingViewModel(
 
         /** Convenience accessor — never null, falls back to a single empty line. */
         val lines: List<String> get() = documentState?.lines ?: listOf("")
-
-        /**
-         * `true` when the editor is currently displaying the configured
-         * root file (so the vault-tree footer should render).
-         */
-        fun isAtRootFile(rootFileName: String): Boolean =
-            activeFileRel == rootFileName
-
-        /**
-         * The vault-relative node folder whose contents the pane is
-         * showing, or `null` when the active file is not a node outline.
-         * The root outline (`.treefacts`) is the vault root (`""`); a
-         * node outline `A/B/.treefacts` is `A/B`; an image is the folder
-         * it lives in. Used by the filesystem-tree footer to decide
-         * whether — and which folder — to list.
-         *
-         * @param rootFileName Vault-relative path of the configured root
-         *   outline (typically `.treefacts`).
-         */
-        fun anchoredDirectoryOf(rootFileName: String): String? =
-            anchoredDirectoryFor(activeFileRel, rootFileName)
-
-        /**
-         * Same as [anchoredDirectoryOf] for an arbitrary [fileRel]. Used by
-         * the footer when the pane is zoomed into a folder-backed bullet:
-         * the footer then lists that bullet's folder.
-         *
-         * @param fileRel Vault-relative path of a node outline or image.
-         * @param rootFileName Vault-relative path of the configured root.
-         */
-        fun anchoredDirectoryFor(fileRel: String, rootFileName: String): String? {
-            if (fileRel == rootFileName) return ""
-            if (NoteRepository.isImagePath(fileRel)) {
-                return fileRel.substringBeforeLast('/', missingDelimiterValue = "")
-            }
-            if (!NoteRepository.isOutlineFile(fileRel)) return null
-            return NoteRepository.folderOfOutline(fileRel)
-        }
     }
 
     /**
@@ -936,27 +873,6 @@ class PaneBackingViewModel(
     /** See [ZoomNavigation.zoomInfo]. */
     fun zoomInfo(state: State = _stateFlow.value): ZoomInfo? = zoomNavigation.zoomInfo(state)
 
-    /**
-     * When this pane is zoomed into a bullet that is a promoted-ref
-     * (i.e. its subtree's content lives in another file), returns that
-     * child file's vault-relative path. Returns `null` when there is no
-     * zoom, the zoomed bullet is a plain inline bullet, or the zoomed
-     * row can't be resolved in the current document.
-     *
-     * The footer uses this to decide whether the visible zoom region
-     * "really belongs to" a child anchor file — if so, the footer
-     * renders that child's directory listing instead of staying hidden.
-     */
-    fun zoomedPromotedRefFileRel(state: State = _stateFlow.value): String? {
-        val zoomedId = state.zoomedLineId ?: return null
-        val doc = document ?: return null
-        if (!doc.isPromotedRef(zoomedId)) return null
-        val docState = doc.stateFlow.value
-        val row = docState.lineIds.indexOf(zoomedId)
-        if (row < 0) return null
-        return doc.promotedByRow()[row]?.fileRel
-    }
-
     /** See [ZoomNavigation.bulletAncestors]. */
     fun bulletAncestors(state: State = _stateFlow.value): List<BreadcrumbAncestor> =
         zoomNavigation.bulletAncestors(state)
@@ -1085,31 +1001,118 @@ class PaneBackingViewModel(
     /** See [MarkdownStyleViewModel.activeLineStyle]. */
     fun activeLineStyle(): LineStyle? = markdownStyle.activeLineStyle()
 
-    // ----------------------------------------------------------- vault footer
+    // ------------------------------------------------------ folder contents
 
-    /** Flips [State.isVaultFooterExpanded]. */
-    fun toggleVaultFooter() {
-        patch { it.copy(isVaultFooterExpanded = !it.isVaultFooterExpanded) }
+    /**
+     * The vault-relative folder of the node this pane is showing — the
+     * folder whose contents list is drawn under the bullets and where
+     * "New Markdown file" creates its note — or `null` when there is none:
+     *
+     * - Zoomed into a folder-backed bullet: that bullet's folder.
+     * - Zoomed into a leaf bullet (no folder yet): `null`.
+     * - Not zoomed, viewing a node outline: the outline's folder (`""`
+     *   for the vault root's `.treefacts`).
+     * - Viewing an image: the folder the image is in, so the list still
+     *   leads to its siblings.
+     * - Viewing a `.md` note: `null`.
+     *
+     * A folder in the trash (its bullet was just deleted) also gives
+     * `null`.
+     *
+     * Called by the web `FolderContentsList`, [newMarkdownFile] and
+     * [refreshCurrentFolderListing].
+     *
+     * @param state The pane state to resolve against; defaults to the
+     *   latest.
+     */
+    fun currentNodeFolder(state: State = _stateFlow.value): String? {
+        val file = state.activeFileRel
+        if (NoteRepository.isImagePath(file)) return file.substringBeforeLast('/', missingDelimiterValue = "")
+        val zoomed = state.zoomedLineId
+        val folder = when {
+            zoomed != null -> document?.folderOf(zoomed)
+            NoteRepository.isOutlineFile(file) -> NoteRepository.folderOfOutline(file)
+            else -> null
+        } ?: return null
+        return if (NoteRepository.isInTrash(folder)) null else folder
     }
 
     /**
-     * Toggles the vault footer's file-list sort. Clicking the icon for
-     * the currently-active [mode] flips that mode's direction; clicking
-     * the icon for the inactive mode switches to it (keeping that mode's
-     * remembered direction). The per-mode direction memory means the
-     * UI feels like "two sticky toggles" rather than a single carousel.
+     * The visible contents of the folder [dirRel] ([FolderContents.visible]
+     * over the cached listing), or `null` while the listing has not been
+     * read yet — in which case the read is started, so the next emission
+     * carries it.
+     *
+     * Called by the web `FolderContentsList` for the current node's
+     * folder.
      */
-    fun cycleFilesSort(mode: FilesSortMode) {
-        patch {
-            if (it.filesSortMode != mode) {
-                it.copy(filesSortMode = mode)
-            } else when (mode) {
-                FilesSortMode.NAME ->
-                    it.copy(filesSortNameDescending = !it.filesSortNameDescending)
-                FilesSortMode.EDITED ->
-                    it.copy(filesSortEditedDescending = !it.filesSortEditedDescending)
-            }
+    fun folderContentsOf(state: State, dirRel: String): List<VaultEntry>? {
+        val raw = state.vaultListings[dirRel]
+        if (raw == null) {
+            ensureVaultListing(dirRel)
+            return null
         }
+        return FolderContents.visible(raw)
+    }
+
+    /**
+     * The visible contents of the folder backing the bullet [lineId], for
+     * its count badge; `null` when the bullet is not folder-backed or its
+     * folder's listing is still being read (the read is then started).
+     *
+     * Called by the web paint loop for every expanded folder-backed
+     * bullet; the badge wording is [FolderContents.badgeLabel].
+     */
+    fun folderContentsOfBullet(state: State, lineId: LineId): List<VaultEntry>? {
+        val folder = document?.folderOf(lineId) ?: return null
+        if (NoteRepository.isInTrash(folder)) return null
+        return folderContentsOf(state, folder)
+    }
+
+    /**
+     * Opens the folder [dirRel] as a node: navigates this pane to its
+     * outline file, `<dirRel>/.treefacts`. Works for foreign folders and
+     * for TreeFacts folders no bullet references — a folder without an
+     * outline file opens as an empty node, and its outline file is only
+     * written once the user types a bullet. Pushes file history like any
+     * other file navigation.
+     *
+     * Called when the user clicks a folder row in the contents list.
+     */
+    fun openFolderAsNode(dirRel: String) {
+        navigateToVaultFile(NoteRepository.outlineFileOf(dirRel))
+    }
+
+    /**
+     * "New Markdown file": creates `Untitled.md` (then `Untitled 2.md`,
+     * …) in [currentNodeFolder] and opens it in this pane. Saves the
+     * document first, so a bullet that just got its first child (and is
+     * zoomed into) has its folder on disk before the note goes in.
+     * No-op when the pane has no current folder (a zoom into a leaf
+     * bullet, a `.md` note).
+     *
+     * Called from the command palette.
+     */
+    fun newMarkdownFile() {
+        scope.launch {
+            document?.flush()
+            val folder = currentNodeFolder() ?: return@launch
+            val rel = registry.createMarkdownFile(folder)
+            navigateToVaultFile(rel)
+        }
+    }
+
+    /**
+     * Re-reads the listing of [currentNodeFolder], so what the contents
+     * list shows reflects the disk even when nothing was saved since the
+     * last read (a file dropped in from Finder). Fire-and-forget.
+     *
+     * Called by the web view whenever the pane lands on a new node (file
+     * or zoom navigation).
+     */
+    fun refreshCurrentFolderListing() {
+        val folder = currentNodeFolder() ?: return
+        scope.launch { registry.refreshVaultListing(folder) }
     }
 
     /**
@@ -1129,39 +1132,15 @@ class PaneBackingViewModel(
     /**
      * Fire-and-forget request that the registry populate
      * [DocumentRegistry.vaultListingsFlow] with the entries under
-     * [dirRel] if they are not already cached. Used by the
-     * filesystem-tree footer when the active file is a directory
-     * anchor whose folder hasn't yet been visited via
-     * [toggleVaultFolder] (so the lazy expand never fired). The
+     * [dirRel] if they are not already cached. Used by
+     * [folderContentsOf] the first time a folder is looked at. The
      * registry's own [DocumentRegistry.ensureVaultListing] is a no-op
-     * when the entry is already present, so calling this repeatedly
-     * on every repaint is safe.
+     * when the entry is already present, so calling this on every
+     * repaint is safe.
      */
     fun ensureVaultListing(dirRel: String) {
         if (_stateFlow.value.vaultListings[dirRel] != null) return
         scope.launch { registry.ensureVaultListing(dirRel) }
-    }
-
-    /**
-     * Toggles whether the folder at [dirRel] is open in the
-     * filesystem-tree footer. Adding a path also kicks off
-     * `DocumentRegistry.ensureVaultListing(dirRel)` so the folder's
-     * direct children are fetched on first expand.
-     */
-    fun toggleVaultFolder(dirRel: String) {
-        val current = _stateFlow.value
-        val isOpening = dirRel !in current.expandedVaultPaths
-        patch {
-            val next = if (dirRel in it.expandedVaultPaths) {
-                it.expandedVaultPaths - dirRel
-            } else {
-                it.expandedVaultPaths + dirRel
-            }
-            it.copy(expandedVaultPaths = next)
-        }
-        if (isOpening) {
-            scope.launch { registry.ensureVaultListing(dirRel) }
-        }
     }
 
     /**

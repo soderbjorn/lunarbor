@@ -5,11 +5,11 @@
  * pane's `activeFileRel` points at an image (extension in
  * `NoteRepository.IMAGE_EXTENSIONS`) — `MainScreen` hides the
  * contenteditable host and shows this viewer in its place. The Files
- * footer remains visible below so the user can navigate to a sibling.
+ * folder contents list remains visible below so the user can navigate to a sibling.
  *
  * No editing affordances, no resize handle, no popover — image view is
  * deliberately a "look at the file" mode. To leave: click another file in
- * the footer, or use the pane chrome's back / parent / root buttons.
+ * the folder contents list, or use the pane chrome's back / parent / root buttons.
  *
  * Image source resolution piggy-backs on `treefactsAssetUrl` from
  * `OutlinePaintLoop.kt`, the same `treefacts-asset://` URL builder the
@@ -43,7 +43,7 @@ fun paintImageViewer(container: HTMLElement, vaultRelPath: String) {
     img.draggable = false
     img.className = "treefacts-image-viewer-img"
     // Drop in a "missing image" placeholder when the protocol fails to
-    // resolve (file deleted between footer paint and click, path typo,
+    // resolve (file deleted between list paint and click, path typo,
     // unsupported codec). Mirrors the inline image-run error handler in
     // `createImageRunElement` so behavior is consistent across surfaces.
     img.addEventListener("error", { _ ->

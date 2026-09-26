@@ -513,6 +513,16 @@ class Document(
     fun isPromotedRef(lineId: LineId): Boolean = lineId in promotedSubtrees
 
     /**
+     * Vault-relative folder backing the bullet [lineId], or `null` when
+     * the bullet is a leaf (or not in this document). A bullet deleted
+     * this session reports its path under `.trash/`.
+     *
+     * Called by `PaneBackingViewModel` to find the folder whose contents
+     * list a zoomed pane shows, and the folder behind a count badge.
+     */
+    fun folderOf(lineId: LineId): String? = promotedSubtrees[lineId]?.folderRel
+
+    /**
      * Folder-backed rows of the current [State.lines], keyed by row, with
      * each row's backing folder. Same shape as
      * [NoteRepository.Loaded.promotedByRow]; `VaultIndex` reads it to walk
