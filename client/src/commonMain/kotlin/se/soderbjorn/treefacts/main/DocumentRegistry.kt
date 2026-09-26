@@ -44,13 +44,16 @@ import se.soderbjorn.treefacts.data.VaultIndex
  * @param repository The single [NoteRepository] used for all disk I/O.
  * @param scope App-scoped coroutine scope passed to each [Document]
  *   for its initial load and autosave loop.
- * @param autoSaveIntervalMillis Forwarded to every [Document] this
- *   registry creates.
+ * @param saveDebounceMillis Forwarded to every [Document] this registry
+ *   creates; see [Document.DEFAULT_SAVE_DEBOUNCE_MILLIS].
+ * @param maxSaveDelayMillis Forwarded likewise; see
+ *   [Document.DEFAULT_MAX_SAVE_DELAY_MILLIS].
  */
 class DocumentRegistry(
     private val repository: NoteRepository,
     private val scope: CoroutineScope,
-    private val autoSaveIntervalMillis: Long = 5_000L,
+    private val saveDebounceMillis: Long = Document.DEFAULT_SAVE_DEBOUNCE_MILLIS,
+    private val maxSaveDelayMillis: Long = Document.DEFAULT_MAX_SAVE_DELAY_MILLIS,
 ) {
 
     /** Vault-relative path of the configured root file. */
@@ -84,7 +87,7 @@ class DocumentRegistry(
      */
     val vaultIndex: VaultIndex = VaultIndex(
         loadFromDisk = repository::loadFile,
-        listAllMdFiles = repository::listAllMdFiles,
+        listAllMdFiles = repository::listAllNoteFiles,
         rootFileName = repository.rootFileName,
         openDocuments = ::openDocumentsSnapshot,
     )
@@ -117,9 +120,9 @@ class DocumentRegistry(
      * fetched"; the footer renders a "Loading…" placeholder until the
      * pane's call to [ensureVaultListing] populates the entry.
      *
-     * Refreshed after every successful save tick (via [Document]'s
-     * `onAfterSave` hook) so newly created or removed files surface in
-     * the footer within one autosave cycle.
+     * Refreshed after every save (via [Document]'s `onAfterSave` hook)
+     * so folders created, renamed or trashed by a save surface in the
+     * footer right away.
      */
     val vaultListingsFlow: StateFlow<Map<String, List<VaultEntry>>> =
         _vaultListings.asStateFlow()
@@ -168,10 +171,11 @@ class DocumentRegistry(
             repository = repository,
             scope = scope,
             fileRel = fileRel,
-            autoSaveIntervalMillis = autoSaveIntervalMillis,
+            saveDebounceMillis = saveDebounceMillis,
+            maxSaveDelayMillis = maxSaveDelayMillis,
             onAfterSave = {
                 refreshLoadedVaultListings()
-                // The save may have promoted/demoted nodes inside this
+                // The save may have promoted/demoted bullets inside this
                 // file; drop the cache entry so the next non-live lookup
                 // (which only happens once this file is closed again)
                 // re-reads from disk. Live lookups bypass the cache
@@ -238,32 +242,15 @@ class DocumentRegistry(
     }
 
     /**
-     * Materialises the doubled-name anchor file `<dir>/<dir>.md` for a
-     * folder picked from the Insert Link modal's folder-stub results.
-     * No-op when the file already exists. After a successful write,
-     * refreshes [vaultListingsFlow] entries that touch the folder so
-     * the new file appears in the filesystem-tree footer without
-     * waiting for an autosave tick.
+     * Gives a folder picked from the Insert Link modal's folder-stub
+     * results its (empty) outline file, `<dir>/.treefacts`, so it becomes
+     * a node the link resolver can walk to. No-op when the file already
+     * exists. After a write, refreshes [vaultListingsFlow] and drops the
+     * [VaultIndex] cache entry so the new node is visible at once.
      *
-     * The file body is empty — TreeFacts no longer uses any per-file
-     * marker. Promoted-ref-ness is per-link via the `#treefacts` URL
-     * fragment in [se.soderbjorn.treefacts.data.SubtreeCodec], so the
-     * link the modal inserts is what carries the semantics.
-     *
-     * Also invalidates the [VaultIndex] cache entries for the new file
-     * and its parent directory so a subsequent `shortestUrlFor` /
-     * `resolve` lookup re-reads from disk and finds the new file.
-     *
-     * @param fileRel Vault-relative path of the anchor file to create
-     *   — must be of the form `<dir>/<basename>.md` (the doubled-name
-     *   shape TreeFacts uses for folder anchors). Callers are the
-     *   Insert Link pick handler (path from the picked
-     *   [se.soderbjorn.treefacts.data.VaultIndex.SearchHit.fileRel])
-     *   and `PaneBackingViewModel.createSpaceAndNavigate`.
-     * @return `true` when a new file was written, `false` when the path
-     *   already existed. The New space flow uses this to apply initial
-     *   metadata only to genuinely fresh spaces, never to an existing
-     *   one the user happened to re-create by name.
+     * @param fileRel Vault-relative outline path, `<dir>/.treefacts`, as
+     *   carried by [se.soderbjorn.treefacts.data.VaultIndex.SearchHit.fileRel].
+     * @return `true` when a new file was written.
      */
     suspend fun ensureFolderStub(fileRel: String): Boolean {
         val created = repository.createEmptyFile(fileRel)
@@ -271,50 +258,6 @@ class DocumentRegistry(
         refreshLoadedVaultListings()
         vaultIndex.invalidate(fileRel)
         return true
-    }
-
-    /**
-     * Reads the AI opt-in of the space anchored at [fileRel]. `null`
-     * means no file exists there (not a space). Delegates to
-     * [NoteRepository.readSpaceAiAllowed]; see
-     * [se.soderbjorn.treefacts.data.SpaceMetadata] for semantics.
-     */
-    suspend fun spaceAiAllowed(fileRel: String): Boolean? =
-        repository.readSpaceAiAllowed(fileRel)
-
-    /**
-     * Sets the AI opt-in of the space anchored at [fileRel] and
-     * refreshes shared state that renders it: the vault listings (the
-     * footer's space-icon badge reads [VaultEntry.aiAllowed]) and the
-     * outline index cache entry for the rewritten file.
-     */
-    suspend fun setSpaceAiAllowed(fileRel: String, allowed: Boolean) {
-        repository.writeSpaceAiAllowed(fileRel, allowed)
-        refreshLoadedVaultListings()
-        vaultIndex.invalidate(fileRel)
-    }
-
-    /**
-     * Reads the `treefacts-space` marker of the anchor at [fileRel].
-     * `null` means no file exists there. Delegates to
-     * [NoteRepository.readSpaceMarker]; see
-     * [se.soderbjorn.treefacts.data.SpaceMetadata] for semantics.
-     */
-    suspend fun spaceMarker(fileRel: String): Boolean? =
-        repository.readSpaceMarker(fileRel)
-
-    /**
-     * Sets (or clears) the `treefacts-space` marker of the anchor at
-     * [fileRel] and refreshes the shared state that renders it: the vault
-     * listings (the footer's space icon reads [VaultEntry.isSpace]) and
-     * the outline index cache entry for the rewritten file. Called by
-     * `PaneBackingViewModel.createSpaceAndNavigate` to stamp a freshly
-     * created space's anchor.
-     */
-    suspend fun setSpaceMarker(fileRel: String, isSpace: Boolean) {
-        repository.writeSpaceMarker(fileRel, isSpace)
-        refreshLoadedVaultListings()
-        vaultIndex.invalidate(fileRel)
     }
 
     /**

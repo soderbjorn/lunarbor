@@ -84,7 +84,7 @@ internal class ZoomNavigation(
         val id = targetId
         // If the zoom target is a folded ref FOR THIS PANE, lazy-load its
         // file first then re-enter zoomInto with the now-loaded subtree.
-        // We consult per-pane intent (not the shared `expandedRefIds`)
+        // We consult per-pane intent (not the shared `unloadedRefIds`)
         // because another pane may already have the ref open — but this
         // pane still needs to record its own intent and bump the
         // refcount so a later collapse here actually evicts.

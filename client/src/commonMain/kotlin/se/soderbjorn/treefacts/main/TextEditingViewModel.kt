@@ -429,10 +429,17 @@ internal class TextEditingViewModel(
         return tokenized.stylesAt(col)
     }
 
+    /**
+     * Types or pastes [text] at the caret, replacing any selection. When
+     * [text] is exactly the last cut, the document re-attaches the cut
+     * bullets' folders to the pasted rows ([Document.adoptCut]).
+     */
     fun insertText(text: String) {
         if (!state.isLoaded) return
         deleteSelectionIfAny()
+        val startRow = state.cursorRow
         insertWithPendingStyles(text)
+        document.adoptCut(startRow, text)
     }
 
     /**
@@ -979,8 +986,16 @@ internal class TextEditingViewModel(
         }
     }
 
+    /**
+     * Cuts the selection: returns its text for the clipboard and deletes
+     * it. Before deleting, tells the document which folder-backed bullets
+     * the cut holds ([Document.rememberCut]) so pasting the same text
+     * moves their folders instead of trashing them.
+     */
     fun onCutRequested(): String? {
         val text = getSelectedText() ?: return null
+        val sel = selectionOf(state)
+        if (sel != null) document.rememberCut(sel.startRow, sel.startCol, sel.endRow, sel.endCol, text)
         deleteSelectionIfAny()
         return text
     }

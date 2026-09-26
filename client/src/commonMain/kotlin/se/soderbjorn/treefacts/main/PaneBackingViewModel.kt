@@ -129,8 +129,8 @@ class PaneBackingViewModel(
      * @property expandedRefIdsLocal Per-pane intent: which promoted-ref
      *   ids THIS pane wants expanded. Drives chevron direction and
      *   visibility for refs without coupling to other panes' choices.
-     *   Distinct from `Document.State.expandedRefIds`, which is the
-     *   shared "currently spliced into lines" set; the document
+     *   Distinct from `Document.State.unloadedRefIds`, the shared
+     *   "children on disk only" set; the document
      *   refcounts these per-pane intents to decide when to evict
      *   children from `lines`.
      * @property pendingLeafZoomChild When non-null, the [LineId] of an
@@ -218,59 +218,34 @@ class PaneBackingViewModel(
             activeFileRel == rootFileName
 
         /**
-         * The vault-relative directory that [activeFileRel] is the
-         * "anchor" for, or `null` when the active file is not a
-         * directory anchor.
+         * The vault-relative node folder whose contents the pane is
+         * showing, or `null` when the active file is not a node outline.
+         * The root outline (`.treefacts`) is the vault root (`""`); a
+         * node outline `A/B/.treefacts` is `A/B`; an image is the folder
+         * it lives in. Used by the filesystem-tree footer to decide
+         * whether — and which folder — to list.
          *
-         * A file is the anchor for a directory in two cases:
-         *
-         *  - The active file is the configured root file — it anchors
-         *    the vault root (returns `""`).
-         *  - The active file's path has the doubled-name shape
-         *    `<dir>/<basename>.md` where the last directory segment
-         *    equals the file's basename without `.md` (returns
-         *    `<dir>` — the full directory path from the vault root).
-         *
-         * Used by the filesystem-tree footer to decide whether to
-         * render — and, when rendering, which directory to scope the
-         * listing to. The root case is special-cased so we don't have
-         * to teach every caller about it.
-         *
-         * @param rootFileName Vault-relative path of the configured
-         *   root file (typically `Home.md`).
+         * @param rootFileName Vault-relative path of the configured root
+         *   outline (typically `.treefacts`).
          */
         fun anchoredDirectoryOf(rootFileName: String): String? =
             anchoredDirectoryFor(activeFileRel, rootFileName)
 
         /**
-         * Same anchor logic as [anchoredDirectoryOf], but resolved against
-         * an arbitrary [fileRel] instead of [activeFileRel]. Used by the
-         * footer when the pane is zoomed into a promoted-ref bullet whose
-         * subtree *is* a doubled-name anchor file — in that case the
-         * footer should render the child file's directory listing, not
-         * the active file's.
+         * Same as [anchoredDirectoryOf] for an arbitrary [fileRel]. Used by
+         * the footer when the pane is zoomed into a folder-backed bullet:
+         * the footer then lists that bullet's folder.
          *
-         * @param fileRel Vault-relative path of the candidate anchor file.
+         * @param fileRel Vault-relative path of a node outline or image.
          * @param rootFileName Vault-relative path of the configured root.
          */
         fun anchoredDirectoryFor(fileRel: String, rootFileName: String): String? {
             if (fileRel == rootFileName) return ""
-            // Image paths anchor on their containing directory — viewing
-            // an image keeps the Files footer scoped to the folder the
-            // image lives in, so the user can navigate to its siblings.
-            // A top-level image (no `/` in its path) anchors the vault
-            // root, same as the configured root file.
             if (NoteRepository.isImagePath(fileRel)) {
                 return fileRel.substringBeforeLast('/', missingDelimiterValue = "")
             }
-            if (!fileRel.endsWith(".md")) return null
-            val basename = fileRel.substringAfterLast('/').removeSuffix(".md")
-            if (basename.isEmpty()) return null
-            val parentDir = fileRel.substringBeforeLast('/', missingDelimiterValue = "")
-            if (parentDir.isEmpty()) return null
-            val lastSegment = parentDir.substringAfterLast('/')
-            if (!lastSegment.equals(basename, ignoreCase = false)) return null
-            return parentDir
+            if (!NoteRepository.isOutlineFile(fileRel)) return null
+            return NoteRepository.folderOfOutline(fileRel)
         }
     }
 
@@ -537,7 +512,13 @@ class PaneBackingViewModel(
         if (!current.isLoaded) return
         val doc = document ?: return
         val isRef = doc.isPromotedRef(lineId)
-        if (isRef) {
+        // A folder-backed bullet whose children are already in `lines`
+        // without this pane holding an expansion — it was just promoted by
+        // a save, or another pane expanded it — folds like an ordinary
+        // parent: nothing to load, nothing to release.
+        val materializedWithoutHold = isRef && lineId !in current.expandedRefIdsLocal &&
+            lineId !in doc.stateFlow.value.unloadedRefIds && lineId !in current.collapsedIds
+        if (isRef && !materializedWithoutHold) {
             val isExpandedInPane = lineId in current.expandedRefIdsLocal
             if (isExpandedInPane) {
                 patch {
@@ -803,34 +784,14 @@ class PaneBackingViewModel(
         if (drop == src0 || drop == src1 + 1) return@recordEdit
         if (src0 == 0 && src1 == lines0.lastIndex) return@recordEdit
 
-        val deletedRowCount = src1 - src0 + 1
         val sourceTopIndent = leadingSpaceCount(lines0[src0])
         val shift = targetIndent - sourceTopIndent
-        val movedText = (src0..src1).joinToString("\n") { reindentLine(lines0[it], shift) }
+        val movedText = (src0..src1).map { reindentLine(lines0[it], shift) }
 
-        if (src0 > 0) {
-            val above = lines0[src0 - 1]
-            val tailRow = src1
-            doc.delete(src0 - 1, above.length, tailRow, lines0[tailRow].length)
-        } else {
-            doc.delete(0, 0, src1 + 1, 0)
-        }
-
-        val postDeleteInsertRow = if (drop <= src0) drop else drop - deletedRowCount
-
-        val newLines = doc.stateFlow.value.lines
-        val landedFirst: Int
-        val landedLast: Int
-        if (postDeleteInsertRow > newLines.lastIndex) {
-            val lastIdx = newLines.lastIndex
-            doc.insertText(lastIdx, newLines[lastIdx].length, "\n" + movedText)
-            landedFirst = lastIdx + 1
-            landedLast = landedFirst + deletedRowCount - 1
-        } else {
-            doc.insertText(postDeleteInsertRow, 0, movedText + "\n")
-            landedFirst = postDeleteInsertRow
-            landedLast = landedFirst + deletedRowCount - 1
-        }
+        // Move the rows with their ids, so a folder-backed bullet keeps its
+        // folder (the next save moves it on disk) instead of reading as a
+        // delete plus a new bullet.
+        val landedFirst = doc.moveRows(src0, src1, drop, movedText)
 
         val finalLines = doc.stateFlow.value.lines
         val safeFirst = landedFirst.coerceIn(0, finalLines.lastIndex)
@@ -843,9 +804,6 @@ class PaneBackingViewModel(
                 cursorCol = caretCol,
             )
         }
-        // Suppress an unused-value warning on landedLast: it's purely
-        // for documentation that the logic computed the correct range.
-        @Suppress("UNUSED_EXPRESSION") landedLast
     }
 
     private fun leadingSpaceCount(line: String): Int {
@@ -1115,109 +1073,17 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Materialises the doubled-name anchor file for a folder picked
-     * from the Insert Link modal's folder-stub results. Delegates to
+     * Gives a folder picked from the Insert Link modal's folder-stub
+     * results its outline file. Delegates to
      * [DocumentRegistry.ensureFolderStub].
      *
      * Suspends so the Insert Link pick handler can `await` the file
      * creation before computing the link URL via
      * [se.soderbjorn.treefacts.data.VaultIndex.shortestUrlFor] — the
-     * resolver only sees the new anchor once it exists on disk.
+     * resolver only sees the new node once its outline exists on disk.
      */
     suspend fun ensureFolderStub(fileRel: String) {
         registry.ensureFolderStub(fileRel)
-    }
-
-    /**
-     * Vault-relative path of the anchor file of the space containing
-     * this pane's active file, or `null` when the pane is at the vault
-     * root (the root file has no space). Derived purely from the path:
-     * the space is the first path segment, its anchor the doubled-name
-     * file — `Work/Sub/Deep.md` → `Work/Work.md`.
-     *
-     * Purely syntactic — does **not** verify the anchor exists or is a
-     * genuine space (vs a promoted tree or foreign folder). The Space
-     * settings modal resolves that by probing [spaceAiAllowed], which
-     * returns `null` for a missing anchor.
-     */
-    fun currentSpaceAnchorFileRel(): String? {
-        val active = _stateFlow.value.activeFileRel
-        val segment = active.substringBefore('/', missingDelimiterValue = "")
-        if (segment.isEmpty()) return null
-        return "$segment/$segment${NoteRepository.NOTE_EXTENSION}"
-    }
-
-    /**
-     * Reads the AI opt-in of the space anchored at [fileRel]. `null`
-     * means no anchor file exists (not a space). See
-     * [DocumentRegistry.spaceAiAllowed].
-     */
-    suspend fun spaceAiAllowed(fileRel: String): Boolean? =
-        registry.spaceAiAllowed(fileRel)
-
-    /**
-     * Sets the AI opt-in of the space anchored at [fileRel]. See
-     * [DocumentRegistry.setSpaceAiAllowed]. Called by the web Space
-     * settings modal's save action.
-     */
-    suspend fun setSpaceAiAllowed(fileRel: String, allowed: Boolean) =
-        registry.setSpaceAiAllowed(fileRel, allowed)
-
-    /**
-     * Creates a new *space* — a self-contained top-level tree in the
-     * vault — and navigates this pane into it. The space gets the
-     * doubled-name shape TreeFacts uses for all its folder anchors:
-     * `<Name>/<Name>.md` directly under the vault root.
-     *
-     * Creation goes through [DocumentRegistry.ensureFolderStub], which
-     * is a strict no-op when the anchor file already exists — so
-     * invoking this with the name of an existing tree simply opens it,
-     * never overwrites. Either way the pane then navigates to the
-     * anchor file via [navigateToVaultFile].
-     *
-     * The created file is a *loose* tree: nothing links to it with a
-     * `#treefacts` promoted-ref URL, so it can never be auto-demoted
-     * (inlined back into another file and deleted) — demotion only
-     * applies to expanded promoted refs tracked in a parent document's
-     * `promotedByRow`. On top of that structural fact, a fresh anchor is
-     * stamped with the `treefacts-space: true` marker (see
-     * [se.soderbjorn.treefacts.data.SpaceMetadata]) so its space identity
-     * is *declared* rather than inferred, and the footer renders it with
-     * the dedicated space icon. Auto-promotion *inside* the new tree works as
-     * usual, and always stays under the tree's own folder.
-     *
-     * Called by the web command palette's "New space" command.
-     *
-     * @param name Raw user-typed space name. A trailing `.md` is dropped
-     *   (typing "Notes.md" means the note "Notes", not a doubled
-     *   extension), then the rest is reshaped into a filesystem-safe
-     *   basename via [SubtreeCodec.safeFilename] (slashes replaced,
-     *   whitespace collapsed, byte-capped); blank input falls back to
-     *   `untitled`.
-     * @param aiAllowed Initial AI opt-in from the New space modal's
-     *   checkbox. Applied **only when the anchor file was genuinely
-     *   created by this call** — re-creating an existing space by name
-     *   just opens it and leaves its metadata untouched (edit it via
-     *   the Space settings command instead). Fail-closed default:
-     *   `false` writes no marker at all.
-     */
-    fun createSpaceAndNavigate(name: String, aiAllowed: Boolean = false) {
-        val safe = SubtreeCodec.safeFilename(
-            name.trim().removeSuffix(NoteRepository.NOTE_EXTENSION),
-        )
-        val fileRel = "$safe/$safe${NoteRepository.NOTE_EXTENSION}"
-        scope.launch {
-            val created = registry.ensureFolderStub(fileRel)
-            if (created) {
-                // Stamp the declarative space marker so the folder is a
-                // space by declaration, not by the legacy "loose top-level
-                // tree" inference. Only genuinely fresh anchors are marked;
-                // re-creating an existing space by name leaves it untouched.
-                registry.setSpaceMarker(fileRel, true)
-                if (aiAllowed) registry.setSpaceAiAllowed(fileRel, true)
-            }
-            navigateToVaultFile(fileRel)
-        }
     }
 
     /**
@@ -1714,7 +1580,7 @@ class PaneBackingViewModel(
     private data class Snapshot(
         val lines: List<String>,
         val lineIds: List<LineId>,
-        val expandedRefIds: Set<LineId>,
+        val unloadedRefIds: Set<LineId>,
         val cursorRow: Int,
         val cursorCol: Int,
         val anchorRow: Int?,
@@ -1743,7 +1609,7 @@ class PaneBackingViewModel(
         return Snapshot(
             lines = doc.lines,
             lineIds = doc.lineIds,
-            expandedRefIds = doc.expandedRefIds,
+            unloadedRefIds = doc.unloadedRefIds,
             cursorRow = view.cursorRow,
             cursorCol = view.cursorCol,
             anchorRow = view.anchorRow,
@@ -1826,7 +1692,7 @@ class PaneBackingViewModel(
 
     private fun restoreSnapshot(snap: Snapshot) {
         val doc = document ?: return
-        doc.replaceContent(snap.lines, snap.lineIds, snap.expandedRefIds)
+        doc.replaceContent(snap.lines, snap.lineIds, snap.unloadedRefIds)
         patch {
             it.copy(
                 cursorRow = snap.cursorRow,
