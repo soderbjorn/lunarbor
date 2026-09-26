@@ -70,7 +70,8 @@ class TfLinkTest {
     fun rejects_other_urls_and_malformed_paths() {
         assertNull(TfLink.parse("https://example.com"))
         assertNull(TfLink.parse("Recipes/Soups"))
-        assertNull(TfLink.parse("#treefacts-bullet=/Recipes"))
+        assertNull(TfLink.parse("#Recipes"))
+        assertNull(TfLink.parse("tf:Recipes"))
         assertNull(TfLink.parse("tf:/a//b"))
         assertNull(TfLink.parse("tf:/a/../b"))
         assertNull(TfLink.parse("tf:/./a"))

@@ -302,8 +302,8 @@ internal fun zoomInfoOf(
     val indent = DocumentLayout.bulletAsteriskColumn(lines[row])
     if (indent < 0) return null
     // The zoom region is exactly the bullet's subtree. Every row an edit
-    // creates inside it is a bullet at a deeper indent (TRF-4), so there
-    // is no stray prose row that needs the region stretched to reach it.
+    // creates inside it is a bullet or block row at a deeper indent, so
+    // there is no stray row that needs the region stretched to reach it.
     val end = DocumentLayout.subtreeEnd(lines, row, indent)
     val rawTitle = lines[row].substring(minOf(indent + 2, lines[row].length))
     val prefix = LineMarkdownPrefix.detect(rawTitle, 0)

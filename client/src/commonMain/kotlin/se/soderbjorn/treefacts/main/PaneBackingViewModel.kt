@@ -214,7 +214,7 @@ class PaneBackingViewModel(
 
         /**
          * `true` while the document is mid-save on a tick that
-         * promotes or demotes a subtree across the per-file boundary
+         * turns a bullet into a folder or a folder back into a bullet
          * — see [Document.State.isRestructuring].
          */
         val isRestructuring: Boolean get() = documentState?.isRestructuring == true

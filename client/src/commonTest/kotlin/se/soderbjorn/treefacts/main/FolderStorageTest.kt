@@ -49,7 +49,6 @@ class FolderStorageTest {
 
     private fun Document.lines() = stateFlow.value.lines
     private fun Document.id(row: Int) = stateFlow.value.lineIds[row]
-    private fun Document.rowOf(text: String) = lines().indexOf(text)
 
     private fun Document.setLine(row: Int, text: String) {
         delete(row, 0, row, lines()[row].length)

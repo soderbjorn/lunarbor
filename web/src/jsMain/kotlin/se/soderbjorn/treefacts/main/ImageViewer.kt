@@ -4,7 +4,7 @@
  * Renders the editor surface's read-only image view. Active whenever the
  * pane's `activeFileRel` points at an image (extension in
  * `NoteRepository.IMAGE_EXTENSIONS`) — `MainScreen` hides the
- * contenteditable host and shows this viewer in its place. The Files
+ * contenteditable host and shows this viewer in its place. The
  * folder contents list remains visible below so the user can navigate to a sibling.
  *
  * No editing affordances, no resize handle, no popover — image view is

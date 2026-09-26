@@ -69,7 +69,7 @@ class MainScreen(
 
     /**
      * Root container the screen mounts into (the per-pane slot the shell
-     * passes to [render]). Captured so [maybePlayNavFade] can fade the
+     * passes to [render]). Captured so [snapshotForCrossfade] can fade the
      * entire pane content (headline, editor, folder contents list) as a single block on
      * navigation transitions, rather than each child fading independently.
      */

@@ -373,7 +373,7 @@ class MainViewModel(
 
     /**
      * Releases the underlying [Document] back to the registry. Call
-     * from `AppShell.closePane` so the registry can drop the doc when
+     * from `AppShell.closeFloatingPane` so the registry can drop the doc when
      * its last pane goes away.
      */
     suspend fun release() = paneBackingViewModel.release()

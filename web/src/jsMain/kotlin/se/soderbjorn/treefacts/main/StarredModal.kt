@@ -155,7 +155,7 @@ internal class StarredModal(
     /**
      * Permanently dispose this modal — closes it and cancels the parent
      * registration's hold on this instance. Called from
-     * [AppShell.closePane] when a pane is removed.
+     * [AppShell.closeFloatingPane] when a pane is removed.
      */
     fun dispose() {
         closeInternal()

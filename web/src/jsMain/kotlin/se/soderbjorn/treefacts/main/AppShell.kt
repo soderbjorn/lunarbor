@@ -124,7 +124,7 @@ class AppShell(
      * created on first click of the pane's Starred toolbar button. Each
      * modal is bound to its owning pane so "Add to starred" captures
      * *that* pane's current navigation target. Cleared when a pane is
-     * removed in [closePane].
+     * removed in [closeFloatingPane].
      */
     private val starredModals: MutableMap<String, StarredModal> = mutableMapOf()
 
@@ -132,21 +132,21 @@ class AppShell(
      * Per-pane Insert Link / "Link to node…" modals, keyed by
      * `"<paneId>|<placeholder>"`. Same lifecycle
      * pattern as [starredModals]: lazily created on first open from the
-     * command palette, reused thereafter, cleared in [closePane].
+     * command palette, reused thereafter, cleared in [closeFloatingPane].
      */
     private val insertLinkModals: MutableMap<String, LinkSearchModal> = mutableMapOf()
 
     /**
      * Per-pane Navigate-to modals (Cmd-O / "Navigate to" command).
      * Same lifecycle pattern as [insertLinkModals]: lazy first-open
-     * create, reuse thereafter, cleared in [closePane].
+     * create, reuse thereafter, cleared in [closeFloatingPane].
      */
     private val navigateToModals: MutableMap<String, LinkSearchModal> = mutableMapOf()
 
     /**
      * Per-pane Insert Image modals ("Insert Image" command). Same lifecycle
      * pattern as [insertLinkModals]: lazy first-open create, reuse
-     * thereafter, cleared in [closePane].
+     * thereafter, cleared in [closeFloatingPane].
      */
     private val insertImageModals: MutableMap<String, ImageSearchModal> = mutableMapOf()
 
@@ -1306,7 +1306,7 @@ class AppShell(
             // Inside a bullet zoom: walk one ancestor up (or clear the
             // zoom if we were already at a root-level zoomed bullet).
             backing.zoomedLineId != null -> paneVm.zoomTo(ancestors.lastOrNull()?.lineId)
-            // No bullet zoom — interpret "up" as "go to the parent file".
+            // No bullet zoom — interpret "up" as "open the parent folder's outline".
             else -> {
                 val fileRel = backing.activeFileRel
                 if (fileRel.isEmpty()) return
@@ -1425,7 +1425,7 @@ class AppShell(
             handler = if (canStyle) ({ openStyleMenu(paneId) }) else ({}),
             extraClass = "treefacts-pane-action-style" + if (!canStyle) " $DISABLED_CLASS" else "",
         )
-        // Starred lives in the tab toolbar (see [buildTopbarStarredAction]).
+        // Starred lives in the tab toolbar (see [topbarStarredModal]).
         // The toolkit auto-inserts a separator between this list and its
         // standard window-control cluster — no manual `separator()` needed.
         return out
@@ -1508,7 +1508,7 @@ class AppShell(
     /**
      * Opens the per-pane Insert Image modal. Same lifecycle pattern as
      * [openInsertLinkModal]: lazy first-open create, reuse thereafter,
-     * cleared in [closePane].
+     * cleared in [closeFloatingPane].
      */
     private fun openInsertImageModal(paneId: String) {
         if (paneViewModels[paneId] == null) return
@@ -1892,7 +1892,7 @@ class AppShell(
     /**
      * `true` when the up-one-level action has somewhere to go: either the
      * pane is currently zoomed (so up walks the bullet tree) or the active
-     * file is a non-root file (so up navigates to the parent file).
+     * file is not the root outline (so up opens the parent folder's outline).
      */
     private fun canNavigateUp(
         paneVm: MainViewModel,
