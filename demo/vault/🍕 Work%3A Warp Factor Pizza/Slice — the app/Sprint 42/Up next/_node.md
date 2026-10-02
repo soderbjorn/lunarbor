@@ -1,0 +1,3 @@
+- Android widget: pizza ETA as a warp factor #android #idea #todo
+- Dark mode for the receipt (Dana's request; she orders at 2 AM) #todo
+- Accessibility pass on the topping picker #todo

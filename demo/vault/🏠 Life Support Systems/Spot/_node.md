@@ -1,0 +1,6 @@
+- Orange tabby, 6 years old, named after Data's cat. Chief Morale Officer of Deck 4.
+- ![Spot|200](spot-the-cat.svg)
+- Likes: keyboards (warm), empty boxes, the 1541 drive's spin-up sound
+- Dislikes: the vacuum (aka "the Borg"), Mondays, closed doors (all of them)
+- Vet: annual checkup in November #todo
+- Food: the salmon one. *Not* the chicken one. She will know.

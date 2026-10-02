@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 272" width="384" height="272">
+<rect width="384" height="272" fill="#7c70da"/>
+<rect x="32" y="36" width="320" height="200" fill="#40318d"/>
+<g font-family="monospace" font-size="12" font-weight="bold" fill="#a59bf0" xml:space="preserve">
+<text x="34" y="50" textLength="266.0" lengthAdjust="spacingAndGlyphs">    **** COMMODORE 64 BASIC V2 ****</text>
+<text x="34" y="76" textLength="296.4" lengthAdjust="spacingAndGlyphs"> 64K RAM SYSTEM  38911 BASIC BYTES FREE</text>
+<text x="34" y="102" textLength="45.6" lengthAdjust="spacingAndGlyphs">READY.</text>
+<text x="34" y="115" textLength="83.6" lengthAdjust="spacingAndGlyphs">LOAD"*",8,1</text>
+<text x="34" y="141" textLength="114.0" lengthAdjust="spacingAndGlyphs">SEARCHING FOR *</text>
+<text x="34" y="154" textLength="53.2" lengthAdjust="spacingAndGlyphs">LOADING</text>
+<text x="34" y="167" textLength="45.6" lengthAdjust="spacingAndGlyphs">READY.</text>
+</g>
+<rect x="34" y="170" width="8" height="11" fill="#a59bf0"><animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1s" repeatCount="indefinite"/></rect>
+</svg>

@@ -1,0 +1,296 @@
+{
+  "lunarborOpenFolders": {
+    "vault": "/demo-vault",
+    "folders": [
+      "🍕 Work%3A Warp Factor Pizza/Slice — the app/Sprint 42/Doing",
+      "🍕 Work%3A Warp Factor Pizza/Slice — the app/Sprint 42/Up next",
+      "🖖 Captain's Log/2026",
+      "🖖 Captain's Log/2026/October",
+      "🖖 Captain's Log/2026/October/Stardate 2026.10.02 — Friday",
+      "🚀 Start here%3A the 3-minute tour/1 · Everything is a bullet, and bullets nest",
+      "🚀 Start here%3A the 3-minute tour/10 · Windows, palette, stars and themes",
+      "🚀 Start here%3A the 3-minute tour/11 · It's all just files",
+      "🚀 Start here%3A the 3-minute tour/2 · Click a dot to zoom in",
+      "🚀 Start here%3A the 3-minute tour/3 · Inline Markdown, tags and links",
+      "🚀 Start here%3A the 3-minute tour/4 · Blocks hold free-form Markdown",
+      "🚀 Start here%3A the 3-minute tour/5 · Search the tree you're looking at",
+      "🚀 Start here%3A the 3-minute tour/6 · Search nodes%3A saved searches that stay live",
+      "🚀 Start here%3A the 3-minute tour/7 · Link previews",
+      "🚀 Start here%3A the 3-minute tour/8 · Images, drawings and web pages",
+      "🚀 Start here%3A the 3-minute tour/9 · Files live next to your notes"
+    ]
+  },
+  "darkness.layout": {
+    "schemaVersion": 1,
+    "leftSidebar": {
+      "widthPx": 260,
+      "visible": true,
+      "collapsed": false
+    },
+    "rightSidebar": {
+      "widthPx": 260,
+      "visible": false,
+      "collapsed": false
+    },
+    "activeTabId": "tab-default",
+    "tabs": [
+      {
+        "id": "tab-default",
+        "title": "🏠 Home",
+        "floatingPanes": [
+          {
+            "id": "pane-tab-default",
+            "x": 0,
+            "y": 0,
+            "w": 0.58,
+            "h": 1,
+            "z": 1
+          },
+          {
+            "id": "tab-default-pane-2",
+            "x": 0.58,
+            "y": 0,
+            "w": 0.42,
+            "h": 1,
+            "z": 2
+          }
+        ]
+      },
+      {
+        "id": "tab-work",
+        "title": "🍕 Work",
+        "floatingPanes": [
+          {
+            "id": "tab-work-pane-1",
+            "x": 0,
+            "y": 0,
+            "w": 0.5,
+            "h": 1,
+            "z": 1
+          },
+          {
+            "id": "tab-work-pane-2",
+            "x": 0.5,
+            "y": 0,
+            "w": 0.5,
+            "h": 0.6,
+            "z": 2
+          },
+          {
+            "id": "tab-work-pane-3",
+            "x": 0.5,
+            "y": 0.6,
+            "w": 0.5,
+            "h": 0.4,
+            "z": 3
+          }
+        ]
+      },
+      {
+        "id": "tab-retro",
+        "title": "🕹️ Retro Lab",
+        "floatingPanes": [
+          {
+            "id": "tab-retro-pane-1",
+            "x": 0,
+            "y": 0,
+            "w": 0.55,
+            "h": 1,
+            "z": 1
+          },
+          {
+            "id": "tab-retro-pane-2",
+            "x": 0.55,
+            "y": 0,
+            "w": 0.45,
+            "h": 1,
+            "z": 2
+          }
+        ]
+      },
+      {
+        "id": "tab-life",
+        "title": "🐈 Life",
+        "floatingPanes": [
+          {
+            "id": "tab-life-pane-1",
+            "x": 0,
+            "y": 0,
+            "w": 0.4,
+            "h": 1,
+            "z": 1
+          },
+          {
+            "id": "tab-life-pane-2",
+            "x": 0.4,
+            "y": 0,
+            "w": 0.6,
+            "h": 1,
+            "z": 2
+          }
+        ]
+      }
+    ]
+  },
+  "darkness.layoutState": {
+    "presetByTab": {
+      "tab-default": "auto",
+      "tab-work": "auto",
+      "tab-retro": "auto",
+      "tab-life": "auto"
+    },
+    "paneOrderByTab": {
+      "tab-default": [
+        "pane-tab-default",
+        "tab-default-pane-2"
+      ],
+      "tab-work": [
+        "tab-work-pane-1",
+        "tab-work-pane-2",
+        "tab-work-pane-3"
+      ],
+      "tab-retro": [
+        "tab-retro-pane-1",
+        "tab-retro-pane-2"
+      ],
+      "tab-life": [
+        "tab-life-pane-1",
+        "tab-life-pane-2"
+      ]
+    },
+    "geometryByTab": {
+      "tab-default": {
+        "pane-tab-default": {
+          "xPct": 0,
+          "yPct": 0,
+          "widthPct": 0.58,
+          "heightPct": 1,
+          "zIndex": 1,
+          "isMaximized": false,
+          "isMinimized": false
+        },
+        "tab-default-pane-2": {
+          "xPct": 0.58,
+          "yPct": 0,
+          "widthPct": 0.42,
+          "heightPct": 1,
+          "zIndex": 2,
+          "isMaximized": false,
+          "isMinimized": false
+        }
+      },
+      "tab-work": {
+        "tab-work-pane-1": {
+          "xPct": 0,
+          "yPct": 0,
+          "widthPct": 0.5,
+          "heightPct": 1,
+          "zIndex": 1,
+          "isMaximized": false,
+          "isMinimized": false
+        },
+        "tab-work-pane-2": {
+          "xPct": 0.5,
+          "yPct": 0,
+          "widthPct": 0.5,
+          "heightPct": 0.6,
+          "zIndex": 2,
+          "isMaximized": false,
+          "isMinimized": false
+        },
+        "tab-work-pane-3": {
+          "xPct": 0.5,
+          "yPct": 0.6,
+          "widthPct": 0.5,
+          "heightPct": 0.4,
+          "zIndex": 3,
+          "isMaximized": false,
+          "isMinimized": false
+        }
+      },
+      "tab-retro": {
+        "tab-retro-pane-1": {
+          "xPct": 0,
+          "yPct": 0,
+          "widthPct": 0.55,
+          "heightPct": 1,
+          "zIndex": 1,
+          "isMaximized": false,
+          "isMinimized": false
+        },
+        "tab-retro-pane-2": {
+          "xPct": 0.55,
+          "yPct": 0,
+          "widthPct": 0.45,
+          "heightPct": 1,
+          "zIndex": 2,
+          "isMaximized": false,
+          "isMinimized": false
+        }
+      },
+      "tab-life": {
+        "tab-life-pane-1": {
+          "xPct": 0,
+          "yPct": 0,
+          "widthPct": 0.4,
+          "heightPct": 1,
+          "zIndex": 1,
+          "isMaximized": false,
+          "isMinimized": false
+        },
+        "tab-life-pane-2": {
+          "xPct": 0.4,
+          "yPct": 0,
+          "widthPct": 0.6,
+          "heightPct": 1,
+          "zIndex": 2,
+          "isMaximized": false,
+          "isMinimized": false
+        }
+      }
+    }
+  },
+  "lunarborPaneLocations": {
+    "pane-tab-default": {
+      "file": "_node.md",
+      "zoom": []
+    },
+    "tab-default-pane-2": {
+      "file": "🚀 Start here%3A the 3-minute tour/_node.md",
+      "zoom": []
+    },
+    "tab-work-pane-1": {
+      "file": "🍕 Work%3A Warp Factor Pizza/Slice — the app/Sprint 42/_node.md",
+      "zoom": []
+    },
+    "tab-work-pane-2": {
+      "file": "🍕 Work%3A Warp Factor Pizza/Slice — the app/Architecture/_node.md",
+      "zoom": []
+    },
+    "tab-work-pane-3": {
+      "file": "🖖 Captain's Log/2026/October/Stardate 2026.10.02 — Friday/_node.md",
+      "zoom": []
+    },
+    "tab-retro-pane-1": {
+      "file": "🕹️ Retro Lab/Commodore 64 %22Breadbin%22/C64 simulator.html",
+      "zoom": []
+    },
+    "tab-retro-pane-2": {
+      "file": "🕹️ Retro Lab/Amiga 500 %22Denise%22/_node.md",
+      "zoom": []
+    },
+    "tab-life-pane-1": {
+      "file": "🏠 Life Support Systems/Spot/_node.md",
+      "zoom": []
+    },
+    "tab-life-pane-2": {
+      "file": "🏠 Life Support Systems/Kobayashi Maru 5K/_node.md",
+      "zoom": []
+    }
+  },
+  "darkness.theme.v2.selection": {
+    "darkThemeName": "Lunarbor Dark",
+    "lightThemeName": "Lunarbor Light",
+    "appearance": "Dark"
+  }
+}

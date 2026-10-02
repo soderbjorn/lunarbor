@@ -1,0 +1,2 @@
+- Stardate 2026.10.02 — Friday [↳](<Stardate 2026.10.02 — Friday/_node.md>)
+- Stardate 2026.10.01 — Thursday [↳](<Stardate 2026.10.01 — Thursday/_node.md>)

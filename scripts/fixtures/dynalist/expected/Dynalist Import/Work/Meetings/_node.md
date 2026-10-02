@@ -1,0 +1,2 @@
+- Weekly **sync** [↳](<Weekly sync/_node.md>)
+- 1:1 with Anna

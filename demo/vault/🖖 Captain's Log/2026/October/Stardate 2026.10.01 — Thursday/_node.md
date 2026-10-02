@@ -1,0 +1,3 @@
+- First day of October: rebooted the Kobayashi Maru 5K training plan. Ran 3 km. Survived. [Training plan](lunarbor:/🏠%20Life%20Support%20Systems/Kobayashi%20Maru%205K) #running
+- Priya showed me SwiftUI previews running our shared Kotlin view models. Whole iOS team cheered. Then Xcode crashed. #kmp #ios
+- Idea: an Android widget that shows pizza ETA as a warp factor #idea #android

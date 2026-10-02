@@ -1,0 +1,2 @@
+- Told you. Folds are remembered per node, so the tree stays the way you left it.
+- `Tab` indents, `⇧Tab` outdents. Try it on this line, then `⌘Z`.

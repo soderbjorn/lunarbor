@@ -1,0 +1,1 @@
+- Even deeper. Every bullet with children is a **real folder on disk**, so your notes are never locked inside an app.

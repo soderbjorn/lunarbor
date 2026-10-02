@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500" width="800" height="500" font-family="'Courier New', monospace">
+  <defs>
+    <pattern id="fine" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M10 0 H0 V10" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="0.6"/></pattern>
+    <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse"><rect width="50" height="50" fill="url(#fine)"/><path d="M50 0 H0 V50" fill="none" stroke="#ffffff" stroke-opacity="0.2" stroke-width="0.8"/></pattern>
+    <marker id="dot" viewBox="0 0 6 6" refX="3" refY="3" markerWidth="6" markerHeight="6"><circle cx="3" cy="3" r="2.2" fill="#fff"/></marker>
+  </defs>
+  <rect width="800" height="500" fill="#1f4f9c"/>
+  <rect width="800" height="500" fill="url(#grid)"/>
+  <rect x="12" y="12" width="776" height="476" fill="none" stroke="#fff" stroke-opacity="0.7" stroke-width="1.5"/>
+  <rect x="18" y="18" width="764" height="464" fill="none" stroke="#fff" stroke-opacity="0.4" stroke-width="0.6"/>
+
+  <g fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round">
+    <!-- saucer (top-down, ship points left) -->
+    <ellipse cx="270" cy="250" rx="130" ry="118"/>
+    <ellipse cx="270" cy="250" rx="100" ry="90" stroke-dasharray="5 4" stroke-opacity="0.7"/>
+    <ellipse cx="270" cy="250" rx="34" ry="30"/>
+    <circle cx="270" cy="250" r="12"/>
+    <!-- deflector ring (SID) -->
+    <circle cx="160" cy="250" r="16"/>
+    <circle cx="160" cy="250" r="8" stroke-dasharray="2 2"/>
+    <!-- neck -->
+    <path d="M392 232 L470 238 L470 262 L392 268"/>
+    <!-- engineering hull: a breadbin-ish rounded wedge -->
+    <path d="M470 222 L600 214 Q 640 216 646 250 Q 640 284 600 286 L470 278 Z"/>
+    <path d="M488 230 H 590 M488 270 H 590" stroke-opacity="0.6"/>
+    <g stroke-opacity="0.8">
+      <rect x="500" y="240" width="8" height="5"/><rect x="514" y="240" width="8" height="5"/><rect x="528" y="240" width="8" height="5"/>
+      <rect x="542" y="240" width="8" height="5"/><rect x="556" y="240" width="8" height="5"/><rect x="570" y="240" width="8" height="5"/>
+      <rect x="500" y="252" width="8" height="5"/><rect x="514" y="252" width="8" height="5"/><rect x="528" y="252" width="8" height="5"/>
+      <rect x="542" y="252" width="8" height="5"/><rect x="556" y="252" width="8" height="5"/><rect x="570" y="252" width="8" height="5"/>
+    </g>
+    <!-- pylons -->
+    <path d="M540 222 L590 140 M560 220 L606 140"/>
+    <path d="M540 278 L590 360 M560 280 L606 360"/>
+    <!-- nacelles: boxy like a disk drive -->
+    <rect x="540" y="112" width="200" height="34" rx="4"/>
+    <rect x="540" y="354" width="200" height="34" rx="4"/>
+    <path d="M560 126 H 680 M560 368 H 680" stroke-width="3"/>
+    <path d="M700 118 v22 M712 118 v22 M724 118 v22 M700 360 v22 M712 360 v22 M724 360 v22" stroke-opacity="0.8"/>
+    <circle cx="550" cy="129" r="4"/><circle cx="550" cy="371" r="4"/>
+    <!-- cat bay: little door with a flap -->
+    <path d="M622 238 h16 v24 h-16 z"/>
+    <path d="M624 248 q 6 -8 12 0" stroke-opacity="0.8"/>
+    <!-- pizza oven (deck 4) -->
+    <circle cx="330" cy="300" r="14"/>
+    <path d="M330 300 L344 300 M330 300 L320 290 M330 300 L322 312" stroke-opacity="0.8"/>
+  </g>
+
+  <!-- dimension line -->
+  <g stroke="#fff" stroke-width="0.8" stroke-opacity="0.8" fill="none">
+    <path d="M140 440 H740"/><path d="M140 432 v16 M740 432 v16"/>
+  </g>
+  <text x="440" y="458" fill="#fff" font-size="12" text-anchor="middle" opacity="0.85">LENGTH: 64 KB (approx. 38,911 bytes free)</text>
+
+  <!-- callouts -->
+  <g stroke="#fff" stroke-width="1" fill="none" marker-start="url(#dot)">
+    <path d="M640 112 L620 70 H 560"/>
+    <path d="M160 250 L 90 180 H 40"/>
+    <path d="M630 250 L 690 270 H 760"/>
+    <path d="M330 300 L 350 410 H 410"/>
+  </g>
+  <g fill="#fff" font-size="13">
+    <text x="372" y="64">warp nacelles (salvaged from a 1541 drive)</text>
+    <text x="40" y="172">SID-powered deflector</text>
+    <text x="760" y="262" text-anchor="end">cat bay</text>
+    <text x="414" y="414">pizza oven (deck 4)</text>
+  </g>
+
+  <!-- title block -->
+  <g>
+    <rect x="30" y="30" width="270" height="74" fill="#1f4f9c" stroke="#fff" stroke-width="1.2"/>
+    <line x1="30" y1="62" x2="300" y2="62" stroke="#fff" stroke-width="0.8"/>
+    <text x="42" y="54" fill="#fff" font-size="17" font-weight="bold">USS Breadbin</text>
+    <text x="210" y="54" fill="#fff" font-size="13">NCC-6502</text>
+    <text x="42" y="80" fill="#fff" font-size="11">DRAWN: R. KEPLER  SHEET 1/1</text>
+    <text x="42" y="96" fill="#fff" font-size="11">SCALE: 1:"fits on a napkin"</text>
+  </g>
+  <text x="770" y="474" fill="#fff" font-size="10" text-anchor="end" opacity="0.6">TOP VIEW · NOT APPROVED BY ANY ADMIRALTY</text>
+</svg>

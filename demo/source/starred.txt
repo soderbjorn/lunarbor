@@ -1,0 +1,5 @@
+* [Slice — the app](lb:slice)
+* [Amiga 500 "Denise"](lb:amiga)
+* [C64 simulator](lb:c64/C64%20simulator.html)
+* [Captain's Log](lb:log)
+* [Kobayashi Maru 5K](lb:5k)

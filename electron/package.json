@@ -1,0 +1,55 @@
+{
+  "name": "lunarbor-electron",
+  "productName": "Lunarbor",
+  "version": "0.1.0",
+  "description": "Electron desktop wrapper for the Lunarbor web app",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "prestart": "node scripts/dev-brand.js",
+    "start": "electron .",
+    "brand:dev": "node scripts/dev-brand.js",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "se.soderbjorn.lunarbor",
+    "productName": "Lunarbor",
+    "copyright": "Copyright © 2026 Robert Söderbjörn",
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      "resources/web/**/*",
+      "resources/main/**/*"
+    ],
+    "directories": {
+      "buildResources": "icons",
+      "output": "dist"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity",
+      "icon": "icons/icon.icns",
+      "identity": "Robert Söderbjörn (CCJP95ZXG4)",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
+      "notarize": {
+        "teamId": "CCJP95ZXG4"
+      }
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "icons/icon.png"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "icons/icon.png"
+    }
+  }
+}

@@ -1,0 +1,5 @@
+- Where old computers come to be loved. Everything here works, mostly. #retro
+- Boot the [C64 simulator](lunarbor:/🕹️%20Retro%20Lab/Commodore%2064%20%2522Breadbin%2522/C64%20simulator.html) and type `RUN`, read Denise's [Guru Meditation log](lunarbor:/🕹️%20Retro%20Lab/Amiga%20500%20%2522Denise%2522/Guru%20Meditation%20log), or see how her chips talk to each other in [a hand-drawn diagram](lunarbor:/🕹️%20Retro%20Lab/Amiga%20500%20%2522Denise%2522).
+- Commodore 64 "Breadbin" [↳](<Commodore 64 %2522Breadbin%2522/_node.md>)
+- Amiga 500 "Denise" [↳](<Amiga 500 %2522Denise%2522/_node.md>)
+- Flea market hunting list [↳](<Flea market hunting list/_node.md>)

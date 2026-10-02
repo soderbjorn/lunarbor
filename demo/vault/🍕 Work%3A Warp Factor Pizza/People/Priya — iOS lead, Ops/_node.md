@@ -1,0 +1,3 @@
+- Doesn't love Gradle, does love shared view models. Net positive.
+- Wants to give a talk on SwiftUI + KMP at the meetup in November #idea
+- Lend her the Amiga for her daughter's school project #todo

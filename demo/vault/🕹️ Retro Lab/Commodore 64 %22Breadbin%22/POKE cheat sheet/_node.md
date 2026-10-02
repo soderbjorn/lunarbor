@@ -1,0 +1,4 @@
+- `POKE 53280,0` — black border
+- `POKE 53281,0` — black background
+- `POKE 646,5` — green text, for that hacker look
+- `SYS 64738` — reset (the polite way)

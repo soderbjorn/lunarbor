@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<opml version="2.0">
+  <head>
+    <title>Möten</title>
+  </head>
+  <body>
+    <outline text="Tandläkare" _note="Tisdag 10:00"/>
+    <outline text="Middag">
+      <outline text="Handla">
+        <outline text="Mjölk"/>
+        <outline text="Bröd"/>
+      </outline>
+    </outline>
+  </body>
+</opml>

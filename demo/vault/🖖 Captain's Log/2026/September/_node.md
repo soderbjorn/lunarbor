@@ -1,0 +1,4 @@
+- Stardate 2026.09.30 — Wednesday [↳](<Stardate 2026.09.30 — Wednesday/_node.md>)
+- Stardate 2026.09.27 — Saturday [↳](<Stardate 2026.09.27 — Saturday/_node.md>)
+- Stardate 2026.09.24 — Wednesday: a long rant about build tools [↳](<Stardate 2026.09.24 — Wednesday%253A a long rant about build tools/_node.md>)
+- Stardate 2026.09.20 — Saturday [↳](<Stardate 2026.09.20 — Saturday/_node.md>)

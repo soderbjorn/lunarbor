@@ -1,0 +1,2 @@
+- Hover a bullet to see its **−/+** control, or put the caret on it and press `⌘↑` / `⌘↓` to fold and unfold.
+- Like this one — it has secrets underneath [↳](<Like this one — it has secrets underneath/_node.md>)

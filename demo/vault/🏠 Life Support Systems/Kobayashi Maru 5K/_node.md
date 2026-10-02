@@ -1,0 +1,4 @@
+- The no-win race: 5 km, November 7. The goal is to finish without walking. #running
+- ![The route|520](Kobayashi Maru 5K route.excalidraw)
+- Training plan [↳](<Training plan/_node.md>)
+- Playlist: SID tunes, obviously. The *Commando* theme for the last kilometre.

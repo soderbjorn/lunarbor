@@ -1,0 +1,1 @@
+- 500 g flour, 325 g water, 10 g salt, 2 g yeast. 48 hours in the fridge. Patience is a superpower.

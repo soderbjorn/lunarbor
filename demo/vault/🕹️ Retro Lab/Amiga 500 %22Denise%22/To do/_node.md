@@ -1,0 +1,4 @@
+- Install the Gotek floppy emulator ~~(it's in the drawer)~~ — done! #done #amiga
+- Back up the mystery floppies from the flea market with the Greaseweazle #todo #amiga
+- Find a replacement for the sticky left mouse button #todo #amiga
+- Retrobrite the case, it's the colour of a 1990s smoker's ceiling #someday

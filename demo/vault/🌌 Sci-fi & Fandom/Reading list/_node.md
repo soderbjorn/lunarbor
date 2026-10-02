@@ -1,0 +1,4 @@
+- Books, mostly with spaceships #toread
+- Currently reading: *The Murderbot Diaries* — a security robot that just wants to watch its shows. Relatable.
+- Up next [↳](<Up next/_node.md>)
+- Finished, and loved [↳](<Finished, and loved/_node.md>)

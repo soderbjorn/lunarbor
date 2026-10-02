@@ -1,0 +1,10 @@
+- Meetings [↳](<Meetings/_node.md>)
+- Q3/Q4 plan [↳](<Q3%252FQ4 plan/_node.md>)
+- Call Bob
+- Fence note [↳](<Fence note/_node.md>)
+- Ideas [↳](<Ideas/_node.md>)
+- ideas [↳](<ideas (2)/_node.md>)
+- [↳](<Untitled/_node.md>)
+- See [the site](https://example.com) [draft] [↳](<See the site [draft]/_node.md>)
+- 50% done... [↳](<50%2525 done%252E%252E%252E/_node.md>)
+- Blank note

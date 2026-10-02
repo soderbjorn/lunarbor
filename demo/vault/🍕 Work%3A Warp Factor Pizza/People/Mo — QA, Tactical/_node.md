@@ -1,0 +1,2 @@
+- Finds bugs by "holding the phone wrong on purpose". Genius.
+- Owes me the Competition Pro joystick from the LAN party #waiting

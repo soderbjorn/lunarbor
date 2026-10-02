@@ -1,0 +1,5 @@
+- The essentials: my original [starship blueprints](lunarbor:/🌌%20Sci-fi%20&%20Fandom/Star%20Trek), the [captains, ranked](lunarbor:/🌌%20Sci-fi%20&%20Fandom/Star%20Trek/Captains,%20ranked%20%28final,%20non-negotiable,%20changes%20weekly%29), and the burning question [Is the transporter murder?](lunarbor:/🌌%20Sci-fi%20&%20Fandom/Star%20Trek/Is%20the%20transporter%20murder.md)
+- Star Trek [↳](<Star Trek/_node.md>)
+- Reading list [↳](<Reading list/_node.md>)
+- Hot takes [↳](<Hot takes/_node.md>)
+- TrekCon Göteborg 2026 [↳](<TrekCon Göteborg 2026/_node.md>)

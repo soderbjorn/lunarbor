@@ -1,0 +1,1 @@
+- ![Office bridge seating|520](Office bridge seating.excalidraw)

@@ -1,0 +1,2 @@
+- Spent the whole day writing a raster-bar effect on the C64 in assembler. 14 lines of code, 6 hours of debugging. Peak happiness. #c64
+- Mental note: the border is at `$D020`, NOT `$D021`. Every. Single. Time.

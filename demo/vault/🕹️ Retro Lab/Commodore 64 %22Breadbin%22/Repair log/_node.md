@@ -1,0 +1,4 @@
+- Replaced the 7805 voltage regulator — the original "PSU of death" is retired with honors
+- New heat sinks on the VIC-II and the SID
+- Recap done (all electrolytic capacitors). Smelled like 1986.
+- Re-paste the VIC-II heat sink (it's getting warm again) #todo

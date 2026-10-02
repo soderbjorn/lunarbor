@@ -1,0 +1,5 @@
+- "It works on my emulator."
+- "Have you tried clearing derived data?"
+- "It's not a bug, it's an Android 7 vendor skin feature."
+- "We'll share the business logic. Only the business logic. …and the view models. …and the navigation."
+- "Just one more Gradle sync."

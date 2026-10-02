@@ -1,0 +1,6 @@
+- The crew. Notes from our 1:1s. #1on1
+- Dana — CEO, Captain [↳](<Dana — CEO, Captain/_node.md>)
+- Priya — iOS lead, Ops [↳](<Priya — iOS lead, Ops/_node.md>)
+- Mo — QA, Tactical [↳](<Mo — QA, Tactical/_node.md>)
+- Lars — backend, Science officer [↳](<Lars — backend, Science officer/_node.md>)
+- Jules — design, Conn [↳](<Jules — design, Conn/_node.md>)

@@ -1,0 +1,2 @@
+- Every idea I've had, anywhere, live: {{search: #idea in:/}}
+- Click the magnifier on a search node's line to see its query. Edit a tagged bullet anywhere and the list updates by itself.

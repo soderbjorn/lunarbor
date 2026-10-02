@@ -1,0 +1,6 @@
+- 1\. Picard — would hold a 1:1 with a Borg cube
+- 2\. Sisko — built a baseball team on a space station
+- 3\. Janeway — coffee is a valid fuel source
+- 4\. Kirk — the original "move fast and break things"
+- 5\. Archer — good with dogs
+- 6\. Pike — the hair

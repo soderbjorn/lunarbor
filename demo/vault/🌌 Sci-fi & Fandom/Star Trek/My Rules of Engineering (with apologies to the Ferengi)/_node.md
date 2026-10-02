@@ -1,0 +1,5 @@
+- Rule 1: Once you have their pull request, you never give it back.
+- Rule 7: Keep your ears open, and your build logs scrolled up.
+- Rule 34: A sprint is never too short for a refactor. It is always too short for the refactor.
+- Rule 62: The riskier the deploy, the later on Friday it happens.
+- Rule 208: Sometimes the only thing more dangerous than a question is a Gradle answer.

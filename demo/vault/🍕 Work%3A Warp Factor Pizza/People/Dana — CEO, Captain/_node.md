@@ -1,0 +1,2 @@
+- Wants "AI" in the app. Explained that the pizza is not sentient. Yet.
+- Prefers decisions in one sentence. Learning to write ADR summaries in one sentence.

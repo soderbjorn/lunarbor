@@ -1,0 +1,4 @@
+- A "Make it so" button that reorders your last pizza #idea
+- Pizza ETA expressed in warp factors, with a nerd-mode toggle #idea
+- Haptic feedback that feels like a transporter when the pizza arrives #idea #ios
+- Wear OS complication: slices remaining #idea #android

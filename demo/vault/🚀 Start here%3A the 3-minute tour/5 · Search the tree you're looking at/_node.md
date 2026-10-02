@@ -1,0 +1,2 @@
+- Press `⌘F` (or the magnifier in the window header). It searches **this node and everything under it**.
+- Try these at the root: `#amiga` · `pizza OR tribble` · `#todo -#done` · `"guru meditation"` · `in:/ spot`

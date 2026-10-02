@@ -1,0 +1,4 @@
+- Oat milk #todo
+- Coffee beans (the replicator is offline) #todo
+- Cat food (salmon) — see [[Spot]] #todo
+- ~~Pizza dough~~ — I work at a pizza company #done

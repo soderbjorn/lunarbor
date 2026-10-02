@@ -1,0 +1,59 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Near-black "darkness" tile with a faint red cast, matching the
+         Lunarbor Dark theme. -->
+    <linearGradient id="bg" x1="512" y1="112" x2="512" y2="912" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1A0B0E"/>
+      <stop offset="1" stop-color="#0C0607"/>
+    </linearGradient>
+    <!-- Red content palette (Lunarbor Dark's deep red). -->
+    <linearGradient id="red" x1="330" y1="300" x2="700" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F23345"/>
+      <stop offset="1" stop-color="#B3101E"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="512" r="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E01B34" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#E01B34" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="10" stdDeviation="20" flood-color="#E0102A" flood-opacity="0.30"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded-square app tile + red glow. -->
+  <rect x="112" y="112" width="800" height="800" rx="196" fill="url(#bg)"/>
+  <rect x="112" y="112" width="800" height="800" rx="196" fill="url(#glow)"/>
+
+  <!-- Outline tree: a root bullet branching upward into child + leaf
+       nodes — the hierarchical-note metaphor fused with a growing tree.
+       Red content on the dark tile, centered with side padding. -->
+  <g filter="url(#soft)">
+    <g stroke="url(#red)" stroke-width="22" stroke-linecap="round" fill="none">
+      <!-- Trunk -->
+      <path d="M512 704 C512 650 512 620 512 568"/>
+      <!-- Primary branches -->
+      <path d="M512 596 C468 520 436 486 404 458"/>
+      <path d="M512 596 C556 520 588 486 620 458"/>
+      <!-- Leaf branches, left cluster -->
+      <path d="M404 452 C368 392 350 356 340 328"/>
+      <path d="M404 452 C430 392 442 352 452 312"/>
+      <!-- Leaf branches, right cluster -->
+      <path d="M620 452 C594 392 582 352 572 312"/>
+      <path d="M620 452 C656 392 674 356 684 328"/>
+    </g>
+
+    <!-- Bullet nodes. Root is largest (echoing the app's click-the-dot
+         zoom navigation); leaves a touch brighter. -->
+    <g fill="url(#red)">
+      <circle cx="512" cy="714" r="40"/>
+      <circle cx="404" cy="452" r="28"/>
+      <circle cx="620" cy="452" r="28"/>
+    </g>
+    <g fill="#FF5767">
+      <circle cx="340" cy="322" r="24"/>
+      <circle cx="452" cy="306" r="24"/>
+      <circle cx="572" cy="306" r="24"/>
+      <circle cx="684" cy="322" r="24"/>
+    </g>
+  </g>
+</svg>

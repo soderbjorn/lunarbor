@@ -1,0 +1,4 @@
+- A second Amiga (for parts) (for Denise) (she deserves a sister)
+- C64C in the slim case
+- A 1084S monitor, the holy grail
+- Literally any boxed Infocom game

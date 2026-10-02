@@ -1,0 +1,3 @@
+- November 14–15. Tickets bought. #event
+- Costume: Starfleet engineer, but with a Commodore 64 as the tricorder #todo
+- Find out if they'll let me bring the C64 into the venue #todo

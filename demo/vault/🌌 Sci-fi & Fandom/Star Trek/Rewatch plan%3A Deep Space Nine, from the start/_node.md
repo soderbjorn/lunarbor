@@ -1,0 +1,4 @@
+- Season 1 ~~(push through, it gets good)~~ #done
+- Season 2 #done
+- Season 3 — currently on *The Search* #todo
+- Seasons 4–7 #someday

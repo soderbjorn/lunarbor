@@ -1,0 +1,5 @@
+- Every crash, documented with love. Most recent first.
+- ![Guru Meditation|420](guru-meditation.svg)
+- 2026-09-29: Deluxe Paint, mid-masterpiece. #00000004 — illegal instruction. I blame the trapdoor RAM.
+- 2026-09-12: Inserted the floppy upside down. Not even a Guru, she just looked at me.
+- 2026-08-30: Workbench 1.3 + too many windows. Proud of her.

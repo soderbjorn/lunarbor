@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" width="640" height="200">
+  <rect width="640" height="200" fill="#000"/>
+  <rect x="12" y="10" width="616" height="74" fill="none" stroke="#ff2a1a" stroke-width="8">
+    <animate attributeName="stroke-opacity" values="1;1;0;0" keyTimes="0;0.5;0.5;1" dur="1.6s" repeatCount="indefinite"/>
+  </rect>
+  <g font-family="monospace" font-size="17" font-weight="bold" fill="#ff2a1a" text-anchor="middle" xml:space="preserve">
+    <text x="320" y="42">Software Failure.    Press left mouse button to continue.</text>
+    <text x="320" y="68">Guru Meditation #00000004.0000AAC0</text>
+  </g>
+  <text x="320" y="150" text-anchor="middle" font-family="monospace" font-size="12" fill="#555">(Denise would like a moment. Please do not touch the floppy.)</text>
+</svg>

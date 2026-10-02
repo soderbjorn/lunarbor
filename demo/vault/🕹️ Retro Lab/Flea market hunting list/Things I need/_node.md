@@ -1,0 +1,2 @@
+- Floppy disks (I have 400) #todo
+- Joystick microswitches

@@ -1,0 +1,5 @@
+- 1\. *Turrican II* — the music alone
+- 2\. *Lemmings* — taught me project management
+- 3\. *Another World* — cinematic before cinema was a thing in games
+- 4\. *State of the Art* by Spaceballs — the demo that made me want to code
+- 5\. *Sensible Soccer* — ruined friendships, built character

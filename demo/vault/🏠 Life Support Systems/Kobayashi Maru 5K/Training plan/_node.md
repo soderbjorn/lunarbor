@@ -1,0 +1,4 @@
+- Week 1: run 3 × 2 km ~~walk~~ #done
+- Week 2: run 3 × 3 km #todo
+- Week 3: one 4 km run, one interval session #todo
+- Week 4: rest, carb-load with pizza (for science)

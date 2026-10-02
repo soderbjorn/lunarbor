@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C64 Simulator</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1a1f; overflow: hidden; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; font-family: monospace; }
+  #wrap { position: relative; width: min(96vw, calc((100vh - 40px) * 4 / 3)); aspect-ratio: 4 / 3; }
+  #border { position: absolute; inset: 0; background: #7c70da; display: flex; align-items: center; justify-content: center; cursor: text; outline: none; }
+  #border.focused { box-shadow: 0 0 0 2px #a59bf0; }
+  #screen { width: 83.3%; height: 73.5%; background: #40318d; position: relative; overflow: hidden; }
+  #text { position: absolute; inset: 0; margin: 0; color: #a59bf0; font-family: ui-monospace, Menlo, "DejaVu Sans Mono", Consolas, "Courier New", monospace; font-weight: bold;
+          white-space: pre; line-height: 1; letter-spacing: 0; }
+  .cur { background: #a59bf0; color: #40318d; }
+  .cur.off { background: transparent; color: inherit; }
+  #hint { color: #8a8aa0; font-size: 13px; margin-top: 10px; height: 20px; }
+</style>
+</head>
+<body>
+<div id="wrap"><div id="border" tabindex="0"><div id="screen"><pre id="text"></pre></div></div></div>
+<div id="hint">Click the screen and type HELP</div>
+<script>
+(function () {
+  var COLS = 40, ROWS = 25;
+  var lines = [];
+  var input = "";
+  var busy = false;      // a program is running / loading
+  var stopReq = false;
+  var cursorOn = true;
+  var textEl = document.getElementById("text");
+  var screenEl = document.getElementById("screen");
+  var borderEl = document.getElementById("border");
+  var BORDER = "#7c70da";
+
+  function fit() {
+    var w = screenEl.clientWidth, h = screenEl.clientHeight;
+    // pick font size so 40 cols x 25 rows fill the screen
+    var probe = document.createElement("span");
+    probe.textContent = "MMMMMMMMMM";
+    probe.style.font = "bold 100px ui-monospace, Menlo, 'DejaVu Sans Mono', Consolas, 'Courier New', monospace";
+    probe.style.position = "absolute"; probe.style.visibility = "hidden";
+    document.body.appendChild(probe);
+    var cw = probe.getBoundingClientRect().width / 10 / 100;
+    document.body.removeChild(probe);
+    var fs = Math.min(w / (COLS * cw), h / ROWS);
+    textEl.style.fontSize = fs + "px";
+    textEl.style.lineHeight = (h / ROWS) + "px";
+    textEl.style.transform = "scaleX(" + (w / (COLS * cw * fs)) + ")";
+    textEl.style.transformOrigin = "0 0";
+  }
+
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+  function render() {
+    var view = lines.slice();
+    var showInput = !busy;
+    var cur = '<span class="cur' + (cursorOn ? "" : " off") + '"> </span>';
+    var html;
+    if (showInput) {
+      // wrap input across lines
+      var rows = [];
+      var s = input;
+      while (s.length >= COLS) { rows.push(s.slice(0, COLS)); s = s.slice(COLS); }
+      rows.push(s);
+      var all = view.concat(rows);
+      all = all.slice(Math.max(0, all.length - ROWS));
+      html = all.map(esc);
+      html[html.length - 1] += cur;
+      html = html.join("\n");
+    } else {
+      html = view.slice(Math.max(0, view.length - ROWS)).map(esc).join("\n");
+    }
+    textEl.innerHTML = html;
+  }
+
+  function print(s) {
+    String(s).split("\n").forEach(function (l) {
+      if (l.length === 0) { lines.push(""); return; }
+      while (l.length > COLS) { lines.push(l.slice(0, COLS)); l = l.slice(COLS); }
+      lines.push(l);
+    });
+    if (lines.length > 200) lines = lines.slice(lines.length - 200);
+    render();
+  }
+
+  function boot() {
+    lines = [];
+    borderEl.style.background = BORDER;
+    print("");
+    print("    **** COMMODORE 64 BASIC V2 ****");
+    print("");
+    print(" 64K RAM SYSTEM  38911 BASIC BYTES FREE");
+    print("");
+    print("READY.");
+  }
+
+  function ready() { busy = false; print("READY."); }
+
+  var program = '10 PRINT CHR$(205.5+RND(1));:GOTO 10';
+
+  function runMaze() {
+    busy = true; stopReq = false;
+    var cur = "";
+    var count = 0;
+    function step() {
+      if (stopReq) {
+        if (cur) lines.push(cur);
+        print("");
+        print("BREAK IN 10");
+        ready();
+        return;
+      }
+      for (var i = 0; i < 6; i++) {
+        cur += Math.random() < 0.5 ? "╱" : "╲";
+        if (cur.length >= COLS) { lines.push(cur); cur = ""; if (lines.length > 200) lines.shift(); }
+      }
+      var view = lines.concat([cur]);
+      textEl.textContent = view.slice(Math.max(0, view.length - ROWS)).join("\n");
+      count++;
+      setTimeout(step, 16);
+    }
+    step();
+  }
+
+  function load() {
+    busy = true;
+    print("");
+    print("PRESS PLAY ON TAPE");
+    var colors = ["#000000","#ffffff","#880000","#aaffee","#cc44cc","#00cc55","#0000aa","#eeee77","#dd8855","#664400","#ff7777","#333333","#777777","#aaff66","#0088ff","#bbbbbb"];
+    setTimeout(function () {
+      print("OK");
+      print("");
+      print("SEARCHING");
+      print("FOUND SLICE.PRG");
+      print("LOADING");
+      var t0 = Date.now();
+      var iv = setInterval(function () {
+        if (Date.now() - t0 > 3000) {
+          clearInterval(iv);
+          borderEl.style.background = BORDER;
+          ready();
+          return;
+        }
+        var stops = [], y = 0;
+        while (y < 100) {
+          var h = 1 + Math.random() * 6;
+          var c = colors[(Math.random() * 16) | 0];
+          stops.push(c + " " + y + "%", c + " " + Math.min(100, y + h) + "%");
+          y += h;
+        }
+        borderEl.style.background = "linear-gradient(" + stops.join(",") + ")";
+      }, 60);
+    }, 900);
+  }
+
+  function help() {
+    print("");
+    print("AVAILABLE COMMANDS (SOME OF THEM):");
+    print(" LIST      SHOW THE PROGRAM");
+    print(" RUN       MAZE! ANY KEY STOPS IT");
+    print(" LOAD      PRETEND IT IS 1984");
+    print(" PRINT \"HI\" SAY THINGS");
+    print(" SYS 64738 HAVE YOU TRIED TURNING IT");
+    print("           OFF AND ON AGAIN?");
+    print(" HELP      YOU ARE HERE");
+    print(" FEED SPOT NOT IMPLEMENTED. SPOT ATE IT.");
+  }
+
+  function exec(cmd) {
+    var c = cmd.trim();
+    var u = c.toUpperCase();
+    if (u === "") { render(); return; }
+    if (u === "LIST") { print(""); print(program); ready(); return; }
+    if (u === "RUN") { runMaze(); return; }
+    if (u === "HELP") { help(); ready(); return; }
+    if (u === "LOAD" || /^LOAD\b/.test(u)) { load(); return; }
+    if (/^SYS\s*64738$/.test(u)) { busy = true; textEl.textContent = ""; setTimeout(function () { busy = false; boot(); }, 500); return; }
+    if (/^FEED\s+SPOT$/.test(u)) { print("?OUT OF TUNA  ERROR"); ready(); return; }
+    var m = c.match(/^(PRINT|\?)\s*(.*)$/i);
+    if (m) {
+      var arg = m[2].trim();
+      var sm = arg.match(/^"([^"]*)"?;?$/);
+      if (sm) { print(sm[1]); ready(); return; }
+      if (/^[0-9+\-*/(). ]+$/.test(arg) && arg) {
+        try { var v = Function("return (" + arg + ")")(); print(" " + v); ready(); return; } catch (e) {}
+      }
+      if (arg === "") { print(""); ready(); return; }
+    }
+    print("?SYNTAX  ERROR");
+    ready();
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (busy) {
+      stopReq = true;
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      var cmd = input;
+      input = "";
+      print(cmd);
+      exec(cmd);
+    } else if (e.key === "Backspace") {
+      e.preventDefault();
+      input = input.slice(0, -1); render();
+    } else if (e.key.length === 1) {
+      e.preventDefault();
+      if (input.length < 80) input += e.key.toUpperCase();
+      render();
+    }
+  });
+
+  borderEl.addEventListener("click", function () { borderEl.focus(); });
+  borderEl.addEventListener("focus", function () { borderEl.classList.add("focused"); });
+  borderEl.addEventListener("blur", function () { borderEl.classList.remove("focused"); });
+
+  setInterval(function () { cursorOn = !cursorOn; if (!busy) render(); }, 500);
+  window.addEventListener("resize", fit);
+  fit();
+  boot();
+  borderEl.focus();
+})();
+</script>
+</body>
+</html>

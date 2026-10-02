@@ -1,0 +1,3 @@
+- Priya: the *Swift* programming book, but bound like a Starfleet manual #idea
+- Mo: a new Competition Pro, so maybe I'll get mine back #idea
+- Mum: a C64 Mini, so she finally understands #idea

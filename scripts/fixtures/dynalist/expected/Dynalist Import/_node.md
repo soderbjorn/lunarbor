@@ -1,0 +1,3 @@
+- Empty doc
+- Privat [↳](<Privat/_node.md>)
+- Work [↳](<Work/_node.md>)

@@ -1,0 +1,3 @@
+- Images and Excalidraw drawings sit right inside bullets. Click a drawing to open it in a full **Excalidraw editor** — it saves back into the tree.
+- See the architecture sketch in [Slice](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Slice%20—%20the%20app/Architecture), the chip diagram in [the Amiga corner](lunarbor:/🕹️%20Retro%20Lab/Amiga%20500%20%2522Denise%2522) and the blueprints in [Star Trek](lunarbor:/🌌%20Sci-fi%20&%20Fandom/Star%20Trek).
+- `.html` files open as live pages: try [Ship status](lunarbor:/Ship%20status.html) or the [C64 simulator](lunarbor:/🕹️%20Retro%20Lab/Commodore%2064%20%2522Breadbin%2522/C64%20simulator.html) (type `RUN`).

@@ -1,0 +1,4 @@
+- `⌘P` opens the **command palette** — insert blocks, search nodes, drawings, sort children, expand everything…
+- `⌘O` jumps to any node or file by name. `⌘S` shows your ⭐ Starred places (star the current one from the palette).
+- The **+** in the top bar opens another window. Put the Captain's Log next to the sprint and drag things between them.
+- Bored of the colors? The theme button in the top bar has a whole fleet of themes.

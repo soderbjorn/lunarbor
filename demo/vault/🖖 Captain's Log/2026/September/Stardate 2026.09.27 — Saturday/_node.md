@@ -1,0 +1,3 @@
+- Flea market haul: a boxed *Turrican II*, a Competition Pro joystick, and a mystery box of floppies labelled "DO NOT ERASE 1991". #retro #amiga
+- Mystery floppies: back them up before reading them on real hardware #todo #amiga
+- Spot sat in the empty joystick box for four hours. Best purchase of the day.

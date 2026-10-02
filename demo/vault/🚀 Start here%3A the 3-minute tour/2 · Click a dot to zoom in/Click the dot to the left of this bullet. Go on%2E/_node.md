@@ -1,0 +1,3 @@
+- 🎉 You're zoomed in. The title flew up to the top and the breadcrumb above shows where you are.
+- Click **Home** in the breadcrumb, or press `⌥⌘←` to go back. `⌃⌘↑` goes up one level.
+- Zoom as deep as you like — try the dot on the next one [↳](<Zoom as deep as you like — try the dot on the next one/_node.md>)

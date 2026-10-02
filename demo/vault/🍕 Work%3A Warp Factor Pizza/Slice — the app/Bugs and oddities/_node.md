@@ -1,0 +1,4 @@
+- Price shows `NaN kr` when the coupon code is "TRIBBLE" #bug #todo
+- iOS: the keyboard covers the "Place order" button on the iPhone SE #bug #ios #todo
+- Android: rotating the phone during checkout orders the pizza twice. Customers aren't complaining. #bug #android
+- ~~Delivery ETA said "-3 minutes"~~ — the driver really was that fast #bug #done

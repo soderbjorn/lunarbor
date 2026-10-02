@@ -1,0 +1,5 @@
+- 😀 Went well: shared view models on both platforms; the new CI runner (*Enterprise*) is fast
+- 😐 Meh: standups drift into Star Trek debates (my fault)
+- 😩 Not great: Gradle sync on Monday took the whole morning
+- Action: timebox Trek debates to the last 5 minutes of standup #todo
+- Action: Maya writes ADR-005 "Upgrade AGP on Tuesdays, never Fridays" #todo

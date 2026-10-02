@@ -1,0 +1,8 @@
+- Everything that keeps the crew alive: food, cat, running, apartment. #life
+- Meet [[Spot]], follow the [Kobayashi Maru 5K](lunarbor:/🏠%20Life%20Support%20Systems/Kobayashi%20Maru%205K) training (route drawn by hand), or check the live [ship status](lunarbor:/Ship%20status.html) of my apartment.
+- Spot [↳](<Spot/_node.md>)
+- Kobayashi Maru 5K [↳](<Kobayashi Maru 5K/_node.md>)
+- Groceries [↳](<Groceries/_node.md>)
+- Recipes [↳](<Recipes/_node.md>)
+- Apartment ("Deck 4") [↳](<Apartment (%2522Deck 4%2522)/_node.md>)
+- Gift ideas [↳](<Gift ideas/_node.md>)

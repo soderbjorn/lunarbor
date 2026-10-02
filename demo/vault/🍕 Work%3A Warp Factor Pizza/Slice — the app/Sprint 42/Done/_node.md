@@ -1,0 +1,3 @@
+- ~~Migrate to Kotlin 2.x~~ #done
+- ~~Fix the "pineapple" filter accidentally hiding all Hawaiian pizzas~~ #bug #done
+- ~~Replace the loading spinner with a rotating pizza~~ (best PR of the year) #done

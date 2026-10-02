@@ -1,0 +1,4 @@
+- Goal: ship **Pizza Tracker 2.0** — live map of your pizza, with a warp-speed animation. #sprint
+- Doing [↳](<Doing/_node.md>)
+- Up next [↳](<Up next/_node.md>)
+- Done [↳](<Done/_node.md>)

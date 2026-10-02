@@ -1,0 +1,3 @@
+- Babylon 5 did the long story arc first and deserves more love.
+- The best sci-fi computer interface is still a C64 `READY.` prompt.
+- Holodeck safety protocols should be opt-out, not opt-in. Wait, other way round.

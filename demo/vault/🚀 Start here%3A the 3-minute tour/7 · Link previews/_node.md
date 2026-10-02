@@ -1,0 +1,3 @@
+- A bullet holding just one link to a node can be **unfolded** like a parent — try the + on the next one:
+- [The current sprint](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Slice%20—%20the%20app/Sprint%2042)
+- It's a read-only preview of the real thing. Click a line in it to go there.

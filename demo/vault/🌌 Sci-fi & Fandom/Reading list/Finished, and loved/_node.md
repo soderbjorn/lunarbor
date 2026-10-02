@@ -1,0 +1,3 @@
+- *The Hitchhiker's Guide to the Galaxy* — reread yearly. Always know where your towel is.
+- *A Fire Upon the Deep*
+- *Consider Phlebas* — the Culture ship names are better than our microservice names

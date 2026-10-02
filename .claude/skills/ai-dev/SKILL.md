@@ -1,0 +1,737 @@
+---
+name: ai-dev
+description: One cycle of autonomous ticket work. Snapshots the "ready for agent development" column of every Lunicle board named in config.json, claims every ticket in them immediately, and drives each to a pull request in a sibling worktree via its own subagent. Tickets sharing an epic are one unit — one worktree, one branch, one pull request, children built one after another in the epic's order. Tickets whose "Blocked by" issues are neither merged nor built earlier in the same cycle are left in the column for a later cycle. A child that fails in an epic chain resets the worktree to the last good commit and skips only the siblings that depend on it. The cycle lock carries a heartbeat, so a long chain is never mistaken for a dead cycle. Pass --review to have each pull request code-reviewed too. A ticket sent back with maintainer feedback is reworked on its existing PR rather than reimplemented. Project-agnostic — everything repo-specific lives in config.json.
+---
+
+Arguments: $ARGUMENTS
+
+Run **one cycle** of autonomous ticket work against this repo's Lunicle project.
+Work fully autonomously — never ask the user for input. The person who armed this
+may be asleep. Make reasonable assumptions, record them, and keep going.
+
+`/watch-ai-dev` arms this on a timer. This skill is a single cycle; it does not
+loop and does not schedule itself.
+
+## 0. Load the configuration
+
+Read `config.json`, `repos.md` and `github.md` from this skill's own directory.
+`config.json` is the only per-repo file — every path, project name, column name
+and build command below comes from it. Never hardcode any of them into your
+reasoning.
+
+`$ARGUMENTS` may contain:
+
+- `--max <n>` — override `maxConcurrent` for this cycle.
+- `--review` — run the code review in §7.1. Review is **off by default**; this
+  turns it on for the whole cycle.
+- `--force` — run even though another cycle holds the lock. See §1; only ever
+  meaningful when typed by a human, so a loop tick must never pass it.
+- One or more issue keys (`LNL-190 LNL-191`) — restrict the cycle to those tickets
+  *if they are in the ready column*. A key that is not in that column is skipped
+  with a note; this skill never pulls work that has not been marked ready.
+- Anything else is ignored.
+
+## 1. Take the cycle lock
+
+**Before the first board call.** A tick can fire while the previous cycle is still
+working, and two overlapping cycles break things the frozen snapshot cannot
+protect: both hand out ports from `config.basePort` upward and collide on every
+one of them, both run up to `maxConcurrent` subagents so the cap silently doubles,
+and a tick landing in the narrow window between §2's snapshot and the end of its
+claim loop sees the same tickets twice — which does not fail, because §5 appends
+`-2` to a taken worktree name, it just quietly works one ticket twice and opens
+two pull requests for it.
+
+The lock is `<config.worktreeParent>/.ai-dev/cycle.lock`. One per repo, so a
+Lunicle sweep and a Lunula sweep are free to run at the same time.
+
+```
+mkdir -p <config.worktreeParent>/.ai-dev
+```
+
+**Age means the file's mtime, not the timestamp written inside it.** The owning
+cycle refreshes the mtime as it goes (the heartbeat below), so the mtime says
+when the cycle last showed signs of life, while the timestamp inside still says
+when it started. Test it with
+
+```
+find <config.worktreeParent>/.ai-dev/cycle.lock -mmin -360
+```
+
+which prints the path when the file was touched in the last 6 hours and nothing
+otherwise.
+
+If the file exists and is **younger than 6 hours**, a cycle is already running.
+Print `Skipped — a cycle started <when> (last heartbeat <mtime>) is still running.`
+and stop. Do not snapshot, do not claim, do not touch the board at all. The loop will try again
+next tick, which is the correct behaviour: there is nothing to catch up on,
+because the running cycle already claimed everything that was ready.
+
+**Unless `--force` was passed**, in which case run anyway — but *unlocked*, and
+say so:
+
+```
+Forcing — a cycle started <when> is still running. This one runs unlocked, on
+ports <base>–<base+n>, and will not touch that cycle's lock.
+```
+
+Running unlocked means three things, and all three matter:
+
+- **Do not take the lock and do not overwrite it.** It belongs to the other
+  cycle, which will delete it when it finishes. A forced cycle that stamped its
+  own timestamp over it would extend the other cycle's apparent life, and one
+  that deleted it at §10 would unlock a cycle still running.
+- **Offset the ports by 20** (`config.basePort + 20 + i` rather than
+  `config.basePort + i`), because colliding with the live cycle's ports is the
+  thing that would actually break — both run scripts refuse a held port. Two
+  *forced* cycles at once would collide again; don't do that.
+- **Expect the ready column to be nearly empty.** The running cycle claimed
+  everything that was ready when it started, so unless tickets have landed since,
+  a forced cycle finds nothing and idles. That is usually the honest answer to
+  "why is nothing happening" — the work is already in flight.
+
+`--force` exists for a human who knows the other cycle is wedged or irrelevant.
+It is never the right thing for a loop tick to pass.
+
+If it exists and is **older than 6 hours**, treat it as stale — a cycle that died
+before §10 could clean up, since a live one would have touched it — and say so in
+your final report, because a cycle that died mid-flight probably left tickets sitting in `config.statuses.claimed` with
+nobody working them.
+
+Otherwise write it, with the current timestamp and one line naming this cycle.
+Six hours is chosen to be far longer than any single subagent's run; a human who
+knows better can always delete the file.
+
+### The heartbeat
+
+**If you own the lock, `touch` it every time a subagent returns** — each child of
+an epic chain, each single-ticket unit, each reviewer — and again whenever you
+dispatch one. An epic of eight children can run far longer than 6 hours in total,
+and judged by its start time it would look dead halfway through: the next tick
+would take the lock, reuse the same ports, and launch a second copy of the app on
+every one of them. Judged by the heartbeat it stays alive for as long as work is
+still finishing, and a cycle that really died goes stale 6 hours after its last
+sign of life.
+
+`touch` only updates the mtime; never rewrite the file's contents, and never
+touch a lock you do not own (a `--force` cycle leaves it alone, as above).
+
+**If you took the lock you own it, and you must remove it before you exit — on
+every path.** Idle cycle, conflicting arguments, an error partway through: all of
+them remove it on the way out. A lock left behind by a cycle that simply finished
+is worse than no lock at all, because it silently disables the automation for six
+hours.
+
+**If you did not take it, never touch it.** A forced cycle releases nothing. Carry
+"do I own the lock?" through the whole cycle and check it at §10 — releasing a lock
+you do not own is the one way this design fails open.
+
+## 2. Snapshot the ready column
+
+`config.project` is one project name or a list of them — a repo whose work is
+tracked on more than one board (a main board and a security board, say) names
+them all, in the order it wants them swept. Everything below treats the single
+name as a list of one; ticket keys carry their own prefix, so nothing downstream
+cares which board a ticket came from.
+
+`list_projects` → find each project named in `config.project` → `get_board` per
+project with that id and `status: "<config.statuses.ready>"`. A configured name
+that `list_projects` does not return is a configuration error: skip that board,
+sweep the ones that do exist, and name the miss in your final report.
+
+Two failure modes to expect, because the board being read is a **deployed** server
+that may be older than this checkout:
+
+- **The `status` parameter is not supported yet.** An older server ignores the
+  unknown argument and returns the whole board. Detect this by checking whether
+  the `issues` array contains anything outside the ready column, and filter
+  locally if so.
+- **The response is too large for one tool result.** The tool then spills to a
+  file and returns its path instead of the content. Do not retry the call — read
+  and parse that file.
+
+From each result, take **every** issue whose `status` is
+`config.statuses.ready`, and concatenate the boards' lists in `config.project`
+order into one snapshot.
+
+**This snapshot is frozen for the whole cycle.** Tickets that land in the column
+while you are working belong to the *next* cycle. Never re-query it mid-cycle.
+
+**Keep the order the board gave you.** The `issues` array already arrives in board
+order: priority group first (the board's own `priorities` ranking, index 0 most
+urgent), and *within* a group the order a human dragged the cards into, oldest
+last. Take the ready column's issues in the order they appear in that array and do
+not sort them yourself — the intra-group order is the maintainer's ranking, it is
+carried by array position alone, and every re-sort you can write throws it away.
+In particular, do not break ties by issue id: that reads a column somebody
+deliberately arranged as if it were unordered. When more than one board was
+swept, the boards keep their `config.project` order and each board's issues keep
+their own array order — the combined snapshot is a concatenation, never a
+merge-sort across boards.
+
+That order is the claim order and the dispatch order, and it does not change for
+the rest of the cycle.
+
+### Drop what is still waiting on a blocker
+
+A board whose project has blocking relation kinds (`relationKinds` entries with
+`marksBlocked: true`) reports `isBlocked` and `blockedBy` per issue, computed over
+the whole project. **A ticket is only workable once every blocker is satisfied.**
+The maintainer uses this to queue a chain of tickets in the ready column all at
+once and let the cycles work through them in the right order. So a blocked ticket
+in the ready column is not a mistake to report. It is waiting its turn.
+
+For every snapshot ticket with `isBlocked: true`, check each issue in `blockedBy`.
+A blocker is **satisfied** when any of these holds:
+
+1. **It is built earlier in this same cycle, in this same tree.** The blocker is
+   in the snapshot too, and shares the ticket's parent (so §4 makes them one unit).
+   The chain builds the blocker first and the ticket sees its work.
+2. **Its work is already on `main`.** `get_issue` the blocker. If one of your own
+   comments on it carries a pull request URL, and `gh pr view <url> --json state`
+   says `MERGED`, the blocker is satisfied even though its card hasn't been closed.
+   A human merged it and just hasn't finished testing it.
+
+Anything else is unsatisfied: an open PR not merged yet, no PR at all, or a
+blocker that is not in this snapshot and is not merged.
+
+**Drop every ticket with an unsatisfied blocker from the snapshot, and repeat
+until nothing changes.** Dropping a ticket can break rule 1 for a ticket that
+depended on it, so iterate to a fixpoint. A dependency cycle among snapshot
+tickets never resolves under rule 1; drop every ticket in it.
+
+A dropped ticket is **left exactly where it is.** Do not claim it, do not move
+it, and do not comment on it. Otherwise every 15-minute sweep would post the
+same "still waiting" comment. It is picked up by the first cycle after its
+blockers clear. List each one in the §10 report as `waiting on <KEYS>`.
+
+A ticket with no `isBlocked` field, or on a board with no blocking kinds, is
+never dropped here.
+
+If the snapshot is empty across every board: release the lock if you own it,
+print `Idle cycle — nothing in "<ready column>".`, send no e-mail, and stop. If
+tickets were dropped as waiting, add one line per ticket underneath:
+`  • <KEY> — waiting on <KEYS>`.
+
+## 3. Claim every ticket, immediately
+
+Before fetching detail, before creating a single worktree, walk the ordered
+snapshot and for each ticket:
+
+1. `move_issue(issue_id, status: "<config.statuses.claimed>", agent_name: "Claude Code")`
+2. `add_comment(issue_id, agent_name: "Claude Code", body: …)`:
+
+```
+**Claude Code** (an AI coding agent) picked this up via the `/ai-dev` automation. A subagent has been assigned and is starting work now.
+
+I'll comment again with a summary when it's done, or with what I'm stuck on if I can't finish it.
+
+🤖 Posted by [Claude Code](https://claude.com/claude-code) acting autonomously.
+```
+
+**Write every comment body one paragraph per line**, as above, however long the
+line gets. Lunicle renders a single newline inside a paragraph as a line break,
+so a body hard-wrapped at 80 columns renders as a narrow column down the left of
+a wide card. Blank lines between paragraphs; let the browser wrap. Lists and code
+fences are structure and keep their newlines. `github.md` says the same thing
+about GitHub, for the same reason.
+
+Claiming first is the point of the design: it is what stops the next cycle — or a
+human glancing at the board — from picking up work that is already in flight.
+
+## 4. Read each ticket, and decide what kind of work it is
+
+Subagents **must not touch the Lunicle MCP**, and may not even have it: the server
+is registered per project directory in `~/.claude.json`, and a sibling worktree path
+is not one of those directories. You are the only writer to the board — that is what
+keeps two concurrent tickets from fighting over a column move. So everything a
+subagent needs must be written down for it now.
+
+`get_issue(issue_id)` for each ticket in the snapshot. Then classify it.
+
+### Epics group into one unit
+
+`get_issue` reports a ticket's `parent`. **Tickets in the snapshot that share a
+parent are one unit of work**: one worktree, one branch, one pull request, and
+their subagents run *one at a time* rather than concurrently. A ticket with no
+parent is a unit of one, which is what every ticket used to be.
+
+This is the whole reason epics exist here. Children of an epic are the parts of a
+change that genuinely touch each other — the same files, the same schema, the same
+helpers — and giving each its own worktree means hand-authoring, in prose, every
+piece of coordination a shared directory would have given for free: which
+migration number is whose, who owns which half of a file, what must merge before
+what. In one tree the second child simply *sees* the first child's work and builds
+on it.
+
+**Serial execution is not optional.** Two subagents editing one file in one
+directory at the same time is last-write-wins: no merge, no conflict markers,
+nothing to resolve, and no way to tell it happened. Separate worktrees at least
+fail loudly. A shared worktree is only safe because the children take turns.
+
+**The epic card itself is never work.** It is a coordination sheet its children
+read. If an epic appears in the ready column, do not implement it and do not
+dispatch a subagent for it: move it back to the board's first column, say so in
+your report, and treat its children in the snapshot as the unit.
+
+**Order within a unit comes from the epic's own `children` array.** `get_issue` the
+parent: its `children` come back in the maintainer's deliberate order, which is a
+separate axis from where the cards sit on the board. Sort the unit's tickets by
+their position in that array and build them in that order — it is the ranking, not
+a coincidence of when each child was attached.
+
+**Blockers override that order.** If a ticket in the unit is "blocked by" a
+sibling that the array places *after* it, move the ticket to just after its
+last blocker in the unit. Otherwise keep the array order: this is a stable
+topological sort, and it changes nothing when the array already respects the
+links. §2 has already dropped any dependency cycles.
+
+Only some of an epic's children may be in your snapshot; the rest are not ready.
+Order the ones you have by that array and ignore the gaps. A ticket that names a
+parent absent from `children` — which should not happen — keeps the §2 snapshot
+order.
+
+Read the epic's description too, and pass it to every child. It carries the things
+the array cannot: what the whole change is for, which constants are defined by
+which child, what nobody is allowed to touch.
+
+Give every child the epic's description as context in its brief, in full, and tell
+each one which position it holds and which siblings ran before it. A child that
+does not know it is part of a chain will duplicate its predecessor's helpers,
+renumber its migration, or open a second pull request.
+
+### Fresh, or rework?
+
+**A ticket is rework if one of your own earlier comments on it contains a pull
+request URL.** That comment is the record that this ticket has been round the loop
+before: implemented, moved to review, and sent back. Nothing else is needed to
+detect it — not the history, not the column it came from.
+
+A rework ticket is **not reimplemented**. The implementation exists and is in
+review; the job is to do what the maintainer asked for on the branch that already
+exists.
+
+### What the maintainer asked for
+
+For a rework ticket, collect **every comment by `config.maintainer` that is newer
+than your most recent comment on that ticket.** That set is the job, and the rule
+is self-maintaining: it cannot re-address an instruction that has already been
+answered, and it works the same on the third lap as the second.
+
+Comments by anybody else are context, not orders. `config.maintainer` is the one
+voice this automation obeys.
+
+Then judge whether that set actually contains an instruction — "please address the
+code review findings", "change X to Y", "this should also handle Z". Free-flowing
+commentary, thinking aloud, or a note to themselves is **not** an instruction.
+
+**If there is no instruction, the ticket is blocked.** Do not guess, and do not
+default to "probably the review findings". Claim it as normal, then close it out
+through §7's blocked path: a comment asking what they want changed, the ticket
+left in `config.statuses.claimed`, an e-mail. A ticket visibly waiting on a human
+beats one quietly reimplemented against its author's wishes. Dispatch no subagent
+for it.
+
+### Which brief
+
+| Situation | Brief |
+|---|---|
+| no prior pull request | `brief-implement.md` |
+| prior pull request, and an instruction to act on | `brief-rework.md` |
+| prior pull request, no instruction | none — blocked, see above |
+
+Fill it in, give the ticket the port §6 assigns it, and write the filled-in copy to
+`<config.worktreeParent>/.ai-dev/<KEY>.md` — outside every repo, so it can never
+pollute a diff.
+
+## 5. Create the worktrees
+
+**Rework reuses the branch that already exists — read this first.** A reworked
+ticket pushes to the pull request that is already open, so it must land on that
+same branch. Take the branch name from the existing PR
+(`gh pr view <n> --repo <config.github> --json headRefName`), never invent a new
+slug, and never append `-2`. Then:
+
+- **Worktree still there** — use it. `git -C <path> fetch origin` first; the branch
+  may have moved.
+- **Worktree gone**, cleaned up or deleted by hand — recreate it on the same
+  branch: `git -C <config.repoRoot> worktree add <path> <branch>` (no `-b`; the
+  branch exists). Tell the subagent it was recreated, so it does not go looking for
+  uncommitted state from the original run.
+- **Pull request merged or closed** — it is not rework any more. There is nothing
+  to add to. Treat the ticket as fresh: new slug, new branch off `origin/main`,
+  `brief-implement.md`, and say so in the ticket comment so nobody wonders why a
+  second pull request appeared.
+
+Everything below is for a fresh ticket.
+
+**One worktree per unit, not per ticket.** An epic's children share a single
+worktree and a single branch — see §4. Create it once, before the first child
+runs, and hand the same path to every child in the chain. Name it from the *epic*:
+its key and its title, not the first child's.
+
+A unit whose children are a mix of fresh and rework is a rework unit: take the
+branch from the existing pull request, per the rules above, and let the fresh
+children commit onto it.
+
+Slug: 3–5 kebab-case words from the title, feature-descriptive (not `fix`, not
+`update`). Branch and directory share the name `<key-lowercase>-<slug>`. If either
+already exists, append `-2`, `-3` until unique.
+
+```
+git -C <config.repoRoot> fetch origin main
+git -C <config.repoRoot> worktree add -b <slug-branch> <config.worktreeParent>/<slug-branch> origin/main
+```
+
+Always branch from freshly fetched `origin/main`, never from local `HEAD`.
+
+If `config.toolkit` is not null, create a **paired toolkit worktree** with the same
+branch name:
+
+```
+git -C <config.toolkit.repoRoot> fetch origin main
+git -C <config.toolkit.repoRoot> worktree add -b <slug-branch> <config.toolkit.worktreeParent>/<slug-branch> origin/main
+```
+
+Every sibling worktree would otherwise resolve the one shared toolkit checkout, and
+concurrent tickets would corrupt each other's edits. See `repos.md` for why, and for
+the relative-path trap in `-P<config.toolkit.gradleProperty>`.
+
+## 6. Dispatch, capped
+
+Spawn one subagent per ticket via the Agent tool:
+
+- `subagent_type`: `"general-purpose"`
+- `run_in_background`: `true`
+- `description`: `"<KEY>"`
+- `prompt`: the filled-in brief from §8 — `brief-implement.md` or
+  `brief-rework.md`, chosen in §4 — in full
+
+Launch in the §2 board order, holding at most `maxConcurrent` **units** in flight
+(3 by default). Start the next as each one returns. The cap exists because
+concurrent Gradle builds contend on the shared caches and RAM — it is not a
+correctness constraint, so `--max 1` is always safe.
+
+**An epic unit occupies one slot for the whole chain**, however many children it
+has. Inside the slot its children run strictly one after another in the §4 order:
+dispatch the first, wait for its four lines, then dispatch the next into the same
+worktree. Never hold two children of one epic in flight at once — §4 says why.
+
+**The first child of a unit opens the pull request; every child after it pushes to
+the same branch and must not open a second.** Say so in each brief, and give later
+children the pull request URL the earlier ones returned. One commit per child,
+with its ticket key in the message, so the epic's PR reads as the sequence of
+changes it is. "First" means the first to succeed: if the child that ran first
+failed without opening one, the next child that runs opens it instead. Tell each
+child in its brief whether a pull request already exists yet.
+
+### A failed child is contained, not fatal
+
+A child **fails** when it returns `blocked` or does not report back (see below).
+Its siblings are then split by the "Blocked by" links, not by position:
+
+- **Its dependents are skipped.** A dependent is any sibling in the unit that is
+  blocked by the failed child, directly or through other siblings — take the
+  transitive closure of `blockedBy` within the unit. Their work was specified
+  against a predecessor that did not land. Do not dispatch them; close each out
+  through §7's blocked path as **blocked by `<failed KEY>`**, and leave them in
+  `config.statuses.claimed`. A dependent of a *skipped* ticket is skipped too —
+  that is what the transitive closure means.
+- **Everything else carries on, in the same §4 order.** A sibling with no path
+  of links back to the failed child did not need its work, so there is no reason
+  to hold it hostage. The links are the maintainer's statement of what depends
+  on what; the array order alone is not.
+
+Before the next child runs, **reset the worktree to the last good commit**, so it
+starts from exactly what the successful children left and not from the failed
+child's half-finished edits:
+
+```
+git -C <worktree> reset --hard <last-good>
+git -C <worktree> clean -fd
+```
+
+`<last-good>` is the worktree's `HEAD` as it stood when the most recent `done`
+child returned — or, before any child has succeeded, the commit the unit started
+from (`origin/main` for a fresh unit, the pull request's head for a rework
+unit). Record it after every `done` result. This keeps every commit that landed
+and drops only what the failed child left behind. `clean -fd` without `-x`
+keeps ignored build output, so the next child does not rebuild from nothing.
+Do the same in the unit's paired toolkit worktree, if it has one, with its own
+last good commit. Never run either command anywhere but the unit's own
+worktrees. The unit's data directory is not reset: it is throwaway, and the
+next child's run re-reads whatever the vault holds.
+
+If the failed child pushed despite its brief, the remote branch is now ahead of
+`<last-good>` and the next child's push would be refused. Put the branch back
+with `git -C <worktree> push --force-with-lease origin <last-good>:<branch>` —
+the unit's own branch only, never `main` — and say so in the failed child's
+ticket comment.
+
+Tell every later child which siblings landed, which failed and which were
+skipped, so none of them goes looking for work that is not there. A partial epic
+still pushes what did land — the pull request is real work and the maintainer
+decides what to do with it.
+
+**Assign each unit a port** before you write its briefs: `config.basePort + i`,
+where `i` is the unit's zero-based position in the dispatch order — or
+`config.basePort + 20 + i` if §1 said you are running unlocked. Ports are
+assigned per unit rather than per slot, so a unit that outlives its neighbours
+can never collide with the one that replaced it. It is substituted for `{port}` in
+`config.runInstructions`.
+
+**Every unit gets its own data directory, and every child of a unit shares it.**
+When `config.dataDirRoot` is set, `{dataDir}` is `<config.dataDirRoot>/<unit
+key>` — the epic's key for an epic unit, the ticket's own key otherwise — and is
+substituted into `config.runInstructions` alongside `{port}`. `{key}` is still
+the ticket's own key. Two units never share a data directory, so two concurrent
+launches never share a vault, a settings file or a single-instance lock; one
+epic's children always share one, because a child that starts from an empty
+database cannot see the migration its predecessor just added, and would report a
+working change as broken.
+
+**How a unit launches the app is `config.runInstructions`' business, and it is
+enforced there, not here.** When they name a run script, that script is the only
+permitted way to launch, and it is what refuses a launch that is not isolated —
+this skill cannot check a subagent's shell, so the check lives in the one thing
+every launch has to go through. Paste the instructions verbatim; never soften
+a "refuses" or "only" into advice.
+
+Each subagent returns exactly four lines:
+
+```
+STATUS: done | blocked
+PR: <url or ->
+TOOLKIT_PR: <url or ->
+SUMMARY: <2–5 sentences>
+```
+
+If a subagent dies or returns something unparseable, treat it as `blocked` with the
+reason "the subagent did not report back".
+
+Whatever it returned, `touch` the lock if you own it (§1's heartbeat) before you
+do anything else with the result.
+
+## 7. Close the loop on each ticket
+
+As each result arrives, close that ticket out **completely, then and there** —
+comment, column, e-mail, all three. Do not wait for the whole batch, and do not
+save the e-mail for the end of the cycle. A ticket that has landed is news the
+moment it lands: the point of this automation is that the owner can wake up, read
+one message per finished ticket, and act on it. Batching turns three separate
+results into one digest that arrives only when the slowest ticket does.
+
+Other tickets are still running while you do this. Finish one ticket's three calls
+before starting the next one's, so a result can never be half-reported.
+
+**Every child of an epic closes out on its own**, as its own subagent returns —
+its own comment, its own column move, its own e-mail. Do not hold a child's result
+until its siblings finish, and do not collapse an epic into one report: the
+children are separate tickets and the maintainer tracks them separately. They will
+share a pull request URL, which is expected; say in each comment which epic it
+belongs to and which of its children the PR now contains.
+
+**`done`** →
+
+1. `add_comment(issue_id, agent_name: "Claude Code", body: …)` — a *short* summary
+   (the detail lives in the PR), the PR link, and the toolkit PR link when there is
+   one. Say plainly that nobody has reviewed it yet.
+2. `move_issue(issue_id, status: "<config.statuses.review>", agent_name: "Claude Code")`
+3. `send_email(…)` — see §9.
+
+```
+**Claude Code** (an AI coding agent) finished this via the `/ai-dev` automation and opened a pull request: <PR url>
+
+<2–3 sentences on what changed and any assumption a reviewer should check.>
+
+<When a toolkit PR exists:>Companion toolkit change: <toolkit PR url> — both need to merge together.
+
+🤖 Posted by [Claude Code](https://claude.com/claude-code) acting autonomously. Nobody has reviewed this yet.
+```
+
+A **rework** ticket closes out the same way, but say what it was: the pull request
+was updated rather than opened, name what the maintainer asked for and what was
+done about it, and link the PR comment the subagent posted. Then move it to
+`config.statuses.review` as usual — it is back in their hands.
+
+**`blocked`** → comment, e-mail (§9), and **leave the ticket in
+`config.statuses.claimed`**. Do not move it, do not open a PR. A blocked ticket is
+the *more* urgent e-mail of the two: it is the one waiting on a human.
+
+```
+**Claude Code** (an AI coding agent) worked on this via the `/ai-dev` automation but stopped without opening a pull request.
+
+**What I need from you:** <the concrete decision — quote the ambiguous phrase, name the contradiction, or list the options to pick between. "The requirements are unclear" is not enough.>
+
+<What was done so far, if anything, and where the worktree is.>
+
+🤖 Posted by [Claude Code](https://claude.com/claude-code) acting autonomously. The ticket stays in <claimed column> until this is resolved.
+```
+
+## 7.1 Then review it, if asked
+
+**Off by default.** Runs only when `--review` was passed, and even then always
+skipped for **rework** and for **blocked** tickets — a reworked ticket is
+answering a review that already happened, and a blocked one has no pull request.
+
+Without `--review` a `done` ticket is finished at §7: it sits in
+`config.statuses.review` with an unreviewed pull request, which is the normal
+outcome and needs no apology. Skip the rest of this section, send no second
+e-mail, and do not review it yourself.
+
+Once a `done` ticket is closed out, spawn a second subagent for it from
+`brief-review.md`:
+
+- `subagent_type`: `"general-purpose"`, `run_in_background`: `true`
+- `description`: `"<KEY> review"`
+
+Review subagents **share `maxConcurrent`** with implementers. Without that a full
+cycle is six agents rather than three, and the cap was sized for three.
+
+The reviewer runs the `review` skill — **not** `code-review`, which refuses model
+invocation and so cannot be run by an agent at all — and posts the result as a
+single review on the pull request itself, under the bot, with the line-specific
+findings anchored to their lines. That is where the maintainer will read them. It
+does not fix anything: a review that edits the branch stops being a record of what
+review found, and this automation's whole rework path depends on those findings
+still being there to point at.
+
+When it returns, post its `VERDICT` to the ticket as a short second comment, and
+send its own e-mail (§9):
+
+```
+**Claude Code** reviewed the pull request for this ticket: <PR url>
+
+<the VERDICT, verbatim.>
+
+<FINDINGS> finding(s) are posted on the pull request.<when BLOCKING is yes:> At least one looks like it should block a merge.
+
+To have them addressed, comment here saying so and move this ticket back to <ready column> — the next cycle will pick it up and work your comments rather than starting over.
+
+🤖 Posted by [Claude Code](https://claude.com/claude-code) acting autonomously.
+```
+
+That last paragraph is doing real work: it is the only place the round trip is
+explained, and the maintainer is the one who has to know it exists.
+
+**Leave the ticket where it is.** Review never moves a ticket. It is already in
+`config.statuses.review`, which is exactly right — a human decides what happens
+next.
+
+If the reviewer returns `STATUS: failed`, comment saying the review could not run
+and why, and say the same in the e-mail. Do not fall back to reviewing it
+yourself: an unreviewed pull request that is honestly labelled is fine, and a
+hand-written review wearing the automation's badge is not.
+
+## 8. The subagent briefs
+
+The briefs live beside this file, one per kind of work, because they are prompt
+text rather than procedure and they were burying it:
+
+| File | Used for |
+|---|---|
+| `brief-implement.md` | a fresh ticket — no prior pull request |
+| `brief-rework.md` | a ticket that came back, with a pull request already open |
+| `brief-review.md` | reviewing a pull request after §7 has closed its ticket out |
+
+All three paste in `github.md`, which is how everything this automation writes to
+GitHub goes out under the bot rather than under the maintainer — and how it stops
+being hard-wrapped into a narrow column. Substituting a brief means pasting that
+file too, wherever the brief says so.
+
+Read the one you need, substitute every `<…>`, and pass the result as the
+subagent's entire prompt. Where a brief says `<config.project>`, substitute the
+name of the board that ticket came from. Write the filled-in copy to
+`<config.worktreeParent>/.ai-dev/<KEY>.md` (or `<KEY>-review.md`) so there is a
+record of exactly what was asked for.
+
+## 9. E-mail, as each thing lands
+
+Send each e-mail immediately, as part of the step that produced it — **not**
+batched at the end of the cycle.
+
+`send_email` has no recipient parameter: it reaches the account whose token this
+MCP connection holds, which is the person who armed the automation.
+
+There are two, and a ticket that is implemented and reviewed produces both:
+
+| When | Subject |
+|---|---|
+| §7, ticket resolved | `<KEY> <done \| needs a decision> — <short title>` |
+| §7.1, review returned | `<KEY> reviewed — <n> finding(s)` |
+
+Body is **plain text**, not markdown — asterisks and backticks arrive as
+themselves, so lay it out with blank lines instead. Keep it to a few lines; the
+detail is in the PR and the ticket comment, and this is the message read on a
+phone before getting up.
+
+- `done` — what changed, in a sentence or two. The PR URL on its own line. The
+  toolkit PR URL too when there is one. Any assumption worth checking. For rework,
+  what the maintainer asked for and what was done about it.
+- `blocked` — the decision needed, stated concretely, and where the work got to.
+- `reviewed` — the verdict, the finding count, and whether anything looks like it
+  should block a merge. Say that the findings are inline on the pull request, and
+  that moving the ticket back to the ready column with a comment gets them
+  addressed.
+
+Send nothing on an idle cycle, and send nothing when the cycle merely starts —
+a claimed ticket is not news, a resolved one is.
+
+## 10. Release the lock, report, and do not clean up
+
+**If you own the lock, delete `<config.worktreeParent>/.ai-dev/cycle.lock`
+first**, before printing anything. It is the one piece of cleanup that is not
+optional: leave it behind and the next six hours of ticks all skip, and the
+automation looks like it simply stopped working.
+
+If §1 said you are running unlocked — `--force` over a live cycle — leave the file
+exactly where it is. It is not yours, and the cycle that owns it is still running.
+
+Print one line per ticket, in dispatch order:
+
+```
+Cycle — <n> ticket(s): <d> done, <b> blocked.
+  • <KEY> — done: <one line> → <PR url>
+  • <KEY> — blocked: <what's needed>
+  • <KEY> — waiting on <KEYS>          (dropped in §2, left in the ready column)
+```
+
+Leave every app worktree and branch in place; the owner wants to revisit the work.
+
+Remove a paired toolkit worktree only if it is **untouched** — clutter, not work.
+Untouched means both of these, and checking only the first is a trap:
+
+```
+git -C <path> status --porcelain          # empty: nothing uncommitted
+git -C <path> log --oneline origin/main..HEAD   # empty: nothing committed either
+```
+
+`status --porcelain` alone is empty *right after a commit*, so on its own it deletes
+the toolkit worktrees where real work happened and keeps the ones left in a mess —
+exactly backwards. The commits are pushed by then so nothing is lost, but the owner
+would come back to an app worktree whose paired toolkit worktree had vanished, for
+precisely the tickets where the toolkit side mattered most.
+
+## Guard rails
+
+- Never run without the lock unless `--force` said so, never exit still holding one
+  you took, and never delete one you did not take.
+- Never work a ticket that was not in the ready column at snapshot time.
+- Never claim a ticket whose blocker is unsatisfied (§2). Leave it untouched in
+  the ready column for a later cycle.
+- Never move a ticket to `config.statuses.review` without a PR URL.
+- Never move a blocked ticket out of `config.statuses.claimed`.
+- Never reimplement a ticket that already has a pull request, and never open a
+  second one for it.
+- Never act on a comment by anyone other than `config.maintainer`, and never
+  invent an instruction from commentary that is not one.
+- Never let a reviewer fix what it reviewed, and never write a review by hand when
+  the review skill could not run.
+- Never commit or push in `config.repoRoot` or `config.toolkit.repoRoot`.
+- Exactly one `send_email` per *resolved* ticket, sent as it resolves. None for a
+  ticket that is merely claimed, and none at all on an idle cycle.
+- A failing ticket must never stop the others. Record it and carry on — inside an
+  epic too, where only the failed child's dependents (by "Blocked by", transitively)
+  are skipped and the worktree is reset to the last good commit first (§6).
+- Never let a lock you own go more than one subagent run without a heartbeat
+  (§1), and judge every lock's age by its mtime.

@@ -1,0 +1,583 @@
+* # Hi, I'm Maya. This is my brain, as a tree. 🧠
+* A **live demo** of Lunarbor: click anything, type anywhere, drag things around. Nothing is saved, so go wild — reload and the universe resets. 🖖
+* 🚀 Start here: the 3-minute tour {#tour}
+  * ## 1 · Everything is a bullet, and bullets nest {open}
+    * Hover a bullet to see its **−/+** control, or put the caret on it and press `⌘↑` / `⌘↓` to fold and unfold.
+    * Like this one — it has secrets underneath
+      * Told you. Folds are remembered per node, so the tree stays the way you left it.
+      * `Tab` indents, `⇧Tab` outdents. Try it on this line, then `⌘Z`.
+  * ## 2 · Click a dot to zoom in {open}
+    * Click the **dot** to the left of this bullet. Go on.
+      * 🎉 You're zoomed in. The title flew up to the top and the breadcrumb above shows where you are.
+      * Click **Home** in the breadcrumb, or press `⌥⌘←` to go back. `⌃⌘↑` goes up one level.
+      * Zoom as deep as you like — try the dot on the next one
+        * Deeper…
+          * Even deeper. Every bullet with children is a **real folder on disk**, so your notes are never locked inside an app.
+  * ## 3 · Inline Markdown, tags and links {open}
+    * **Bold**, *italic*, ~~strikethrough~~, `inline code`, and [links to the web](https://en.wikipedia.org/wiki/Commodore_64). Bare URLs work too: https://en.wikipedia.org/wiki/Amiga_500
+    * Tags are colored pills — #retro, #trek, #someday — and the color always matches the name.
+    * Link to any node: [my Amiga corner](lb:amiga). **Shift-click** a link to open it in a *new window*.
+    * Wiki links resolve by title: say hi to [[Spot]].
+    * > Quotes look like this. Headings are just `# ` at the start of a bullet.
+  * ## 4 · Blocks hold free-form Markdown {open}
+    :::
+    A block sits among the bullets like any other item, but inside it you write **whatever you want**:
+
+    * lists that are just lists
+    * not outline items
+
+    ```
+    10 PRINT "HELLO FROM A BLOCK"
+    20 GOTO 10
+    ```
+    :::
+    * Leave a block with `⌘↩`. Big blocks fold down to a preview — there's a huge one in [the Captain's Log](lb:log-gradle).
+  * ## 5 · Search the tree you're looking at {open}
+    * Press `⌘F` (or the magnifier in the window header). It searches **this node and everything under it**.
+    * Try these at the root: `#amiga` · `pizza OR tribble` · `#todo -#done` · `"guru meditation"` · `in:/ spot`
+  * ## 6 · Search nodes: saved searches that stay live {open}
+    * Every idea I've had, anywhere, live: {{search: #idea in:/}}
+    * Click the magnifier on a search node's line to see its query. Edit a tagged bullet anywhere and the list updates by itself.
+  * ## 7 · Link previews {open}
+    * A bullet holding just one link to a node can be **unfolded** like a parent — try the + on the next one:
+    * [The current sprint](lb:sprint)
+    * It's a read-only preview of the real thing. Click a line in it to go there.
+  * ## 8 · Images, drawings and web pages {open}
+    * Images and Excalidraw drawings sit right inside bullets. Click a drawing to open it in a full **Excalidraw editor** — it saves back into the tree.
+    * See the architecture sketch in [Slice](lb:slice-arch), the chip diagram in [the Amiga corner](lb:amiga) and the blueprints in [Star Trek](lb:trek).
+    * `.html` files open as live pages: try [Ship status](lb:/Ship%20status.html) or the [C64 simulator](lb:c64/C64%20simulator.html) (type `RUN`).
+  * ## 9 · Files live next to your notes {open}
+    * Under the bullets of every node you'll find the **files in its folder**: Markdown notes, images, drawings, anything. Scroll to the bottom of [Slice](lb:slice) to see some.
+    * A `.md` file opens right here as an editable note. `⌘P` → "New Markdown file" makes one.
+  * ## 10 · Windows, palette, stars and themes {open}
+    * `⌘P` opens the **command palette** — insert blocks, search nodes, drawings, sort children, expand everything…
+    * `⌘O` jumps to any node or file by name. `⌘S` shows your ⭐ Starred places (star the current one from the palette).
+    * The **+** in the top bar opens another window. Put the Captain's Log next to the sprint and drag things between them.
+    * Bored of the colors? The theme button in the top bar has a whole fleet of themes.
+  * ## 11 · It's all just files {open}
+    :::
+    The demo runs in your browser's memory, but the real app keeps everything in an ordinary folder of Markdown files:
+
+    ```
+    vault/
+      _node.md               ← this page's bullets
+      Retro Lab/
+        _node.md
+        Amiga 500 "Denise"/
+          _node.md
+          boing-ball.svg
+          Amiga chipset.excalidraw
+    ```
+
+    Each `_node.md` is plain Markdown: open it on GitHub or in any Markdown app and the bullets are a list, the blocks are quotes, and a ↳ link opens the node underneath. Sync it, grep it, back it up, point a coding agent at it — the desktop app even has a built-in **MCP server** so Claude can read and edit your tree.
+    :::
+* 📌 Today: [Stardate 2026.10.02](lb:today)
+* 🖖 Captain's Log {#log}
+  * Personal log of Maya Kepler, Android/iOS developer, retro-computer hoarder, owner of one (1) cat. #journal
+  * Most recent first; today's entry is already open. Don't miss the legendary [Gradle rant](lb:log-gradle) from September.
+  * 2026 {#log-2026} {open}
+    * October {open}
+      * Stardate 2026.10.02 — Friday {#today} {open}
+        * Standup: told the team the iOS build is "basically green". It was the color of the CI badge, not the build. #work
+        * Finally got the Gotek working in Denise. She booted Workbench 1.3 and I may have cried a little. See [Amiga corner](lb:amiga) #amiga
+        * Spot knocked a 1541 floppy drive off the desk. It still works. **Commodore built those like starships.**
+        * Pick up thermal paste for the breadbin's VIC-II heat sink #todo #c64
+        * Buy cat food — the good one, not the one Spot "forgets" to eat #todo
+        * Dinner: pizza. From our own app. Dogfooding is a lifestyle. 🍕
+      * Stardate 2026.10.01 — Thursday
+        * First day of October: rebooted the Kobayashi Maru 5K training plan. Ran 3 km. Survived. [Training plan](lb:5k) #running
+        * Priya showed me SwiftUI previews running our shared Kotlin view models. Whole iOS team cheered. Then Xcode crashed. #kmp #ios
+        * Idea: an Android widget that shows pizza ETA as a warp factor #idea #android
+    * September
+      * Stardate 2026.09.30 — Wednesday
+        * Sprint 41 retro. Theme: "Why does Gradle take longer than the sprint?" [Retro notes](lb:retro41)
+        * Watched *The Inner Light* again. Played the flute melody on the C64 SID. Neighbours did not applaud. #trek #c64
+      * Stardate 2026.09.27 — Saturday
+        * Flea market haul: a boxed *Turrican II*, a Competition Pro joystick, and a mystery box of floppies labelled "DO NOT ERASE 1991". #retro #amiga
+        * Mystery floppies: back them up before reading them on real hardware #todo #amiga
+        * Spot sat in the empty joystick box for four hours. Best purchase of the day.
+      * Stardate 2026.09.24 — Wednesday: a long rant about build tools {#log-gradle}
+        :::
+        ### Dear diary, it's Gradle again
+
+        Today I touched one line in `build.gradle.kts`. One line.
+
+        1. Gradle sync started at 09:12.
+        2. Android Studio said "indexing". For a while.
+        3. Kotlin/Native began compiling the iOS framework for three architectures I didn't ask for.
+        4. I made coffee. Then I made more coffee. Then I learned to make cold brew.
+        5. The configuration cache said it had found "1 problem". It did not say which.
+        6. I added `org.gradle.caching=true`. Nothing changed. I removed it. Something changed.
+        7. 10:47: build successful. I no longer remember what the line was for.
+
+        Lars says on the backend they "just run the jar". Lars does not know true suffering.
+
+        Things I have learned:
+
+        * clean builds are a myth told to junior developers
+        * `./gradlew --stop` is a prayer, not a command
+        * the daemon remembers. the daemon always remembers.
+
+        Tomorrow I'll try upgrading AGP. Pray for me.
+        :::
+      * Stardate 2026.09.20 — Saturday
+        * Spent the whole day writing a raster-bar effect on the C64 in assembler. 14 lines of code, 6 hours of debugging. Peak happiness. #c64
+        * Mental note: the border is at `$D020`, NOT `$D021`. Every. Single. Time.
+  * Log archive: older stardates are in the folder below as plain Markdown, imported from my old notes app.
+  @ 2025 — the year of the Amiga.md <<<
+  # 2025 — the year of the Amiga
+
+  Imported from my old notes app. Lunarbor shows `.md` files next to the bullets and opens them as editable notes.
+
+  ## Highlights
+
+  - **March:** bought Denise (Amiga 500, rev 6A) from a guy who swore she "just needs a new capacitor". She needed eleven.
+  - **June:** first Kotlin Multiplatform app in production. Nobody noticed, which is the highest praise in mobile.
+  - **August:** Spot learned to open the cupboard with the treats. We now have a child lock on a cupboard. For a cat.
+  - **November:** watched every episode of *Deep Space Nine* in order. Still thinking about it.
+
+  ## Resolutions for 2026
+
+  - [x] Finish the Kobayashi Maru 5K (in progress — see the training plan)
+  - [ ] Write a demo for the C64 that someone other than me finds impressive
+  - [ ] Stop buying floppy disks I will never read
+  >>>
+* 🍕 Work: Warp Factor Pizza {#work}
+  * Pizza delivery at warp speed. 14 people, 1 office, 0 working coffee machines. #work
+  * Peek at the [architecture sketch](lb:slice-arch), the [open bugs](lb:slice) (live search!), or the office drawn as [a starship bridge](lb:bridge).
+  * Slice — the app {#slice}
+    * Our pizza app for **Android and iOS**, built from one **Kotlin Multiplatform** codebase. Codename *Slice*. ![The home screen|180](slice-app-mockup.svg)
+    * Open bugs, live: {{search: #bug -#done}}
+    * Architecture {#slice-arch}
+      * One shared Kotlin module, two native UIs. The sketch below is a real Excalidraw drawing — click it to edit.
+      * ![Slice architecture|560](KMP architecture.excalidraw)
+      * Shared code: domain, data, networking (Ktor), storage (SQLDelight), and view models. #kmp
+      * UI stays native: **Jetpack Compose** on Android, **SwiftUI** on iOS. #android #ios
+      * Decisions live as ADRs in this folder — scroll down to the files. Start with [ADR-001](lb:slice-arch/ADR-001%20Use%20Kotlin%20Multiplatform.md).
+      @ KMP architecture.excalidraw
+      @ ADR-001 Use Kotlin Multiplatform.md <<<
+      # ADR-001 Use Kotlin Multiplatform
+
+      **Status:** Accepted · **Date:** 2025-05-12 · **Deciders:** Maya, Priya, Lars
+
+      ## Context
+
+      We have one Android developer (Maya), one iOS developer (Priya) and a backlog that thinks we have twelve. Every feature was being written twice, and the pizza price rounding was different on each platform. Customers noticed. One customer wrote a *spreadsheet*.
+
+      ## Decision
+
+      Share everything that isn't UI in a Kotlin Multiplatform module:
+
+      - domain models and business rules (pricing, delivery zones, the topping compatibility matrix)
+      - networking with Ktor
+      - persistence with SQLDelight
+      - view models, exposed to SwiftUI via SKIE
+
+      UI stays fully native: Jetpack Compose and SwiftUI.
+
+      ## Consequences
+
+      - One implementation of the pricing rules. The spreadsheet customer is now our biggest fan.
+      - Priya has to read Kotlin. She says it's "Swift with a Scandinavian accent".
+      - Gradle is now everyone's problem. See ADR-004.
+      >>>
+      @ ADR-004 Accept that Gradle is our life now.md <<<
+      # ADR-004 Accept that Gradle is our life now
+
+      **Status:** Accepted (reluctantly) · **Date:** 2025-09-03
+
+      ## Context
+
+      Since ADR-001 the iOS developers also run Gradle. Morale has been observed to drop by 30% during a sync.
+
+      ## Decision
+
+      - Enable the configuration cache and the build cache.
+      - Use a version catalog (`libs.versions.toml`) so nobody edits version numbers in eleven places.
+      - Buy a faster CI runner. Name it *Enterprise*.
+      - Never say "it's just a small Gradle change" in standup again.
+
+      ## Consequences
+
+      Builds are 40% faster. Nobody believes it.
+      >>>
+    * Sprint 42 {#sprint}
+      * Goal: ship **Pizza Tracker 2.0** — live map of your pizza, with a warp-speed animation. #sprint
+      * Doing {open}
+        * Live Activities for the pizza ETA on iOS #ios #todo
+        * Share the map view model between Compose and SwiftUI #kmp #todo
+        * Crash when the pizza arrives *before* the order is placed (time travel?) #bug #todo
+      * Up next {open}
+        * Android widget: pizza ETA as a warp factor #android #idea #todo
+        * Dark mode for the receipt (Dana's request; she orders at 2 AM) #todo
+        * Accessibility pass on the topping picker #todo
+      * Done
+        * ~~Migrate to Kotlin 2.x~~ #done
+        * ~~Fix the "pineapple" filter accidentally hiding all Hawaiian pizzas~~ #bug #done
+        * ~~Replace the loading spinner with a rotating pizza~~ (best PR of the year) #done
+    * Bugs and oddities
+      * Price shows `NaN kr` when the coupon code is "TRIBBLE" #bug #todo
+      * iOS: the keyboard covers the "Place order" button on the iPhone SE #bug #ios #todo
+      * Android: rotating the phone during checkout orders the pizza twice. Customers aren't complaining. #bug #android
+      * ~~Delivery ETA said "-3 minutes"~~ — the driver really was that fast #bug #done
+    * Code snippets I keep looking up
+      * expect/actual for the pizza oven sensor
+        :::
+        Shared code declares *what*, each platform says *how*:
+
+        ```
+        // commonMain
+        expect class OvenThermometer() {
+            fun celsius(): Double
+        }
+
+        // androidMain
+        actual class OvenThermometer {
+            actual fun celsius(): Double = bluetoothProbe.read()
+        }
+
+        // iosMain
+        actual class OvenThermometer {
+            actual fun celsius(): Double = CoreBluetoothProbe.shared.read()
+        }
+        ```
+        :::
+      * Collecting a Kotlin Flow from SwiftUI
+        :::
+        With SKIE, a `StateFlow` becomes an `AsyncSequence`:
+
+        ```
+        struct TrackerView: View {
+            let viewModel: PizzaTrackerViewModel
+
+            var body: some View {
+                Text("ETA: \(viewModel.eta) min")
+                    .task {
+                        for await state in viewModel.state {
+                            withAnimation { self.state = state }
+                        }
+                    }
+            }
+        }
+        ```
+        :::
+      * Compose preview with fake data
+        :::
+        ```
+        @Preview
+        @Composable
+        fun PizzaCardPreview() = SliceTheme {
+            PizzaCard(pizza = Pizza(name = "Tribble Truffle", priceOre = 13900))
+        }
+        ```
+        :::
+      * Gradle: the one command that fixes everything (sometimes)
+        :::
+        ```
+        ./gradlew --stop && rm -rf ~/.gradle/caches/transforms-* && ./gradlew clean build
+        ```
+        :::
+    @ README.md <<<
+    # Slice
+
+    The Warp Factor Pizza app. Android + iOS, one Kotlin Multiplatform core.
+
+    ## Modules
+
+    - `shared/` — domain, data, Ktor client, SQLDelight, view models
+    - `androidApp/` — Jetpack Compose UI
+    - `iosApp/` — SwiftUI UI (Xcode project, consumes `Shared.xcframework`)
+
+    ## Getting started
+
+    1. Install Android Studio and Xcode.
+    2. Run `./gradlew :shared:assembleXCFramework`.
+    3. Make coffee.
+    4. Open `iosApp/iosApp.xcodeproj` and press ⌘R.
+
+    > If the build fails, see the "Code snippets" node for the One Command.
+    >>>
+    @ Release checklist.md <<<
+    # Release checklist
+
+    - [ ] Bump `versionCode` (Android) and `CFBundleVersion` (iOS)
+    - [ ] Run the full test suite on both platforms
+    - [ ] Order a test pizza in production. Eat test pizza.
+    - [ ] Check that the "pineapple" filter still shows Hawaiian pizzas
+    - [ ] Write release notes that aren't just "bug fixes and improvements"
+    - [ ] Upload to Play Console and App Store Connect
+    - [ ] Wait for App Review. Contemplate the void.
+    - [ ] Celebrate with pizza
+    >>>
+    @ slice-app-mockup.svg
+  * People {#people}
+    * The crew. Notes from our 1:1s. #1on1
+    * Dana — CEO, Captain
+      * Wants "AI" in the app. Explained that the pizza is not sentient. Yet.
+      * Prefers decisions in one sentence. Learning to write ADR summaries in one sentence.
+    * Priya — iOS lead, Ops
+      * Doesn't love Gradle, does love shared view models. Net positive.
+      * Wants to give a talk on SwiftUI + KMP at the meetup in November #idea
+      * Lend her the Amiga for her daughter's school project #todo
+    * Mo — QA, Tactical
+      * Finds bugs by "holding the phone wrong on purpose". Genius.
+      * Owes me the Competition Pro joystick from the LAN party #waiting
+    * Lars — backend, Science officer
+      * Runs the whole API on one server named `deep-space-9`. Says it's "stable". It is not a station.
+    * Jules — design, Conn
+      * Designed the rotating pizza spinner. Deserves a medal.
+  * Meetings
+    * Sprint 41 retro {#retro41}
+      * 😀 Went well: shared view models on both platforms; the new CI runner (*Enterprise*) is fast
+      * 😐 Meh: standups drift into Star Trek debates (my fault)
+      * 😩 Not great: Gradle sync on Monday took the whole morning
+      * Action: timebox Trek debates to the last 5 minutes of standup #todo
+      * Action: Maya writes ADR-005 "Upgrade AGP on Tuesdays, never Fridays" #todo
+    * The office, drawn as a starship bridge (by me, during a long meeting) {#bridge}
+      * ![Office bridge seating|520](Office bridge seating.excalidraw)
+      @ Office bridge seating.excalidraw
+  * Ideas pile
+    * A "Make it so" button that reorders your last pizza #idea
+    * Pizza ETA expressed in warp factors, with a nerd-mode toggle #idea
+    * Haptic feedback that feels like a transporter when the pizza arrives #idea #ios
+    * Wear OS complication: slices remaining #idea #android
+  * Things mobile developers say
+    * "It works on my emulator."
+    * "Have you tried clearing derived data?"
+    * "It's not a bug, it's an Android 7 vendor skin feature."
+    * "We'll share the business logic. Only the business logic. …and the view models. …and the navigation."
+    * "Just one more Gradle sync."
+* 🕹️ Retro Lab {#retro}
+  * Where old computers come to be loved. Everything here works, mostly. #retro
+  * Boot the [C64 simulator](lb:c64/C64%20simulator.html) and type `RUN`, read Denise's [Guru Meditation log](lb:guru), or see how her chips talk to each other in [a hand-drawn diagram](lb:amiga).
+  * Commodore 64 "Breadbin" {#c64}
+    * C64 (1982, breadbin case, rev. B board), 1541 floppy drive, 1530 datasette. Bought for 40 € and a pizza. #c64
+    * ![Ready.|380](c64-ready.svg)
+    * Try the [C64 simulator](lb:c64/C64%20simulator.html) in the files below: click it, type `RUN`, and witness the famous maze.
+    * Repair log
+      * Replaced the 7805 voltage regulator — the original "PSU of death" is retired with honors
+      * New heat sinks on the VIC-II and the SID
+      * Recap done (all electrolytic capacitors). Smelled like 1986.
+      * Re-paste the VIC-II heat sink (it's getting warm again) #todo
+    * Programs I keep typing in
+      * The one-liner everyone knows
+        :::
+        ```
+        10 PRINT CHR$(205.5+RND(1)); : GOTO 10
+        ```
+        One line of BASIC, an endless random maze. There's a whole book about it.
+        :::
+      * Border flash (assembler, at `$C000`)
+        :::
+        ```
+        *=$c000
+        loop  inc $d020   ; border colour
+              jmp loop
+        ```
+        Start it with `SYS 49152`. Stop it by turning the computer off. Or crying.
+        :::
+    * POKE cheat sheet
+      * `POKE 53280,0` — black border
+      * `POKE 53281,0` — black background
+      * `POKE 646,5` — green text, for that hacker look
+      * `SYS 64738` — reset (the polite way)
+    * SID music I listen to while coding
+      * The full playlist is in the CSV file below — click it to open it.
+      * *Monty on the Run*, *Commando*, *Last Ninja 2* — the holy trinity #music
+    * Tape loading, the way it was meant to be suffered: ![Loading…|380](loading-stripes.png)
+    @ c64-ready.svg
+    @ loading-stripes.png
+    @ C64 simulator.html
+    @ SID playlist.csv <<<
+    title,composer,year,mood
+    Monty on the Run,Rob Hubbard,1985,debugging at 2 AM
+    Commando,Rob Hubbard,1985,refactoring
+    Last Ninja 2,Matt Gray,1988,code review
+    Delta,Rob Hubbard,1987,deep focus
+    Cybernoid II,Jeroen Tel,1988,Friday deploy
+    Sanxion,Rob Hubbard,1986,writing ADRs
+    >>>
+  * Amiga 500 "Denise" {#amiga}
+    * Amiga 500, rev 6A board, Kickstart 1.3, 512K + 512K trapdoor expansion. Named after the video chip, and because she has opinions. #amiga
+    * ![Boing!|360](boing-ball.svg)
+    * How she works inside — a drawing I made while waiting for a disk to load:
+    * ![Amiga chipset|520](Amiga chipset.excalidraw)
+    * Guru Meditation log {#guru}
+      * Every crash, documented with love. Most recent first.
+      * ![Guru Meditation|420](guru-meditation.svg)
+      * 2026-09-29: Deluxe Paint, mid-masterpiece. #00000004 — illegal instruction. I blame the trapdoor RAM.
+      * 2026-09-12: Inserted the floppy upside down. Not even a Guru, she just looked at me.
+      * 2026-08-30: Workbench 1.3 + too many windows. Proud of her.
+      @ guru-meditation.svg
+    * To do
+      * Install the Gotek floppy emulator ~~(it's in the drawer)~~ — done! #done #amiga
+      * Back up the mystery floppies from the flea market with the Greaseweazle #todo #amiga
+      * Find a replacement for the sticky left mouse button #todo #amiga
+      * Retrobrite the case, it's the colour of a 1990s smoker's ceiling #someday
+    * Games and demos, ranked
+      * 1. *Turrican II* — the music alone
+      * 2. *Lemmings* — taught me project management
+      * 3. *Another World* — cinematic before cinema was a thing in games
+      * 4. *State of the Art* by Spaceballs — the demo that made me want to code
+      * 5. *Sensible Soccer* — ruined friendships, built character
+    @ boing-ball.svg
+    @ Amiga chipset.excalidraw
+  * Flea market hunting list
+    * Things I am **definitely not** going to buy #someday
+      * A second Amiga (for parts) (for Denise) (she deserves a sister)
+      * C64C in the slim case
+      * A 1084S monitor, the holy grail
+      * Literally any boxed Infocom game
+    * Things I need
+      * Floppy disks (I have 400) #todo
+      * Joystick microswitches
+* 🌌 Sci-fi & Fandom {#scifi}
+  * The essentials: my original [starship blueprints](lb:trek), the [captains, ranked](lb:captains), and the burning question [Is the transporter murder?](lb:trek/Is%20the%20transporter%20murder.md)
+  * Star Trek {#trek}
+    * The one true franchise. (Fight me in the comments of this outline.) #trek
+    * My starship design, drawn on graph paper at age 12 and digitized at 35:
+    * ![USS Breadbin|560](my-starship-blueprint.svg)
+    * Captains, ranked (final, non-negotiable, changes weekly) {#captains}
+      * 1. Picard — would hold a 1:1 with a Borg cube
+      * 2. Sisko — built a baseball team on a space station
+      * 3. Janeway — coffee is a valid fuel source
+      * 4. Kirk — the original "move fast and break things"
+      * 5. Archer — good with dogs
+      * 6. Pike — the hair
+    * Rewatch plan: *Deep Space Nine*, from the start
+      * Season 1 ~~(push through, it gets good)~~ #done
+      * Season 2 #done
+      * Season 3 — currently on *The Search* #todo
+      * Seasons 4–7 #someday
+    * My Rules of Engineering (with apologies to the Ferengi)
+      * Rule 1: Once you have their pull request, you never give it back.
+      * Rule 7: Keep your ears open, and your build logs scrolled up.
+      * Rule 34: A sprint is never too short for a refactor. It is always too short for the refactor.
+      * Rule 62: The riskier the deploy, the later on Friday it happens.
+      * Rule 208: Sometimes the only thing more dangerous than a question is a Gradle answer.
+    * Replicator recipes
+      * Tea, Earl Grey, hot — 3 min steep, 95 °C. Not boiling. The captain is very specific.
+      * Raktajino — double espresso, cardamom, a spoon of cocoa. Klingon-approved.
+      * Plomeek soup — see [Recipes](lb:recipes)
+    * Essays I wrote when I should have been sleeping
+      * The big one is in the folder below: *Is the transporter murder?* (spoiler: it depends on your persistence layer)
+    @ my-starship-blueprint.svg
+    @ Is the transporter murder.md <<<
+    # Is the transporter murder?
+
+    *An essay by Maya Kepler, written at 2 AM, with a mobile developer's perspective.*
+
+    ## The question
+
+    The transporter scans you, disassembles you, sends the pattern somewhere else and reassembles you there. Is the person who arrives *you*, or a very confident copy?
+
+    ## The mobile developer's answer
+
+    It depends on whether it's a **move** or a **copy-then-delete**.
+
+    - If the pattern is *moved* — the same object, new location — it's like `moveDirectory` on the same disk: an atomic rename. You're fine.
+    - If it's *copied* and then the original is deleted, that's two operations. And anything with two operations can crash in between.
+
+    And we know it can, because there was that episode with the two Rikers.
+
+    ## Conclusion
+
+    The transporter is not murder. It's a **non-atomic file move with no transaction log**. Which, frankly, is worse.
+
+    I will be taking the shuttle.
+    >>>
+  * Reading list {#reading}
+    * Books, mostly with spaceships #toread
+    * Currently reading: *The Murderbot Diaries* — a security robot that just wants to watch its shows. Relatable.
+    * Up next
+      * *The Expanse* (book 4) #toread
+      * *Hyperion* — everyone says it changes you #toread
+      * *Project Hail Mary* — on Priya's recommendation #toread
+    * Finished, and loved
+      * *The Hitchhiker's Guide to the Galaxy* — reread yearly. Always know where your towel is.
+      * *A Fire Upon the Deep*
+      * *Consider Phlebas* — the Culture ship names are better than our microservice names
+  * Hot takes
+    * Babylon 5 did the long story arc first and deserves more love.
+    * The best sci-fi computer interface is still a C64 `READY.` prompt.
+    * Holodeck safety protocols should be opt-out, not opt-in. Wait, other way round.
+  * TrekCon Göteborg 2026
+    * November 14–15. Tickets bought. #event
+    * Costume: Starfleet engineer, but with a Commodore 64 as the tricorder #todo
+    * Find out if they'll let me bring the C64 into the venue #todo
+* 🏠 Life Support Systems {#life}
+  * Everything that keeps the crew alive: food, cat, running, apartment. #life
+  * Meet [[Spot]], follow the [Kobayashi Maru 5K](lb:5k) training (route drawn by hand), or check the live [ship status](lb:/Ship%20status.html) of my apartment.
+  * Spot {#spot}
+    * Orange tabby, 6 years old, named after Data's cat. Chief Morale Officer of Deck 4.
+    * ![Spot|200](spot-the-cat.svg)
+    * Likes: keyboards (warm), empty boxes, the 1541 drive's spin-up sound
+    * Dislikes: the vacuum (aka "the Borg"), Mondays, closed doors (all of them)
+    * Vet: annual checkup in November #todo
+    * Food: the salmon one. *Not* the chicken one. She will know.
+    @ spot-the-cat.svg
+  * Kobayashi Maru 5K {#5k}
+    * The no-win race: 5 km, November 7. The goal is to finish without walking. #running
+    * ![The route|520](Kobayashi Maru 5K route.excalidraw)
+    * Training plan
+      * Week 1: run 3 × 2 km ~~walk~~ #done
+      * Week 2: run 3 × 3 km #todo
+      * Week 3: one 4 km run, one interval session #todo
+      * Week 4: rest, carb-load with pizza (for science)
+    * Playlist: SID tunes, obviously. The *Commando* theme for the last kilometre.
+    @ Kobayashi Maru 5K route.excalidraw
+  * Groceries
+    * Oat milk #todo
+    * Coffee beans (the replicator is offline) #todo
+    * Cat food (salmon) — see [[Spot]] #todo
+    * ~~Pizza dough~~ — I work at a pizza company #done
+  * Recipes {#recipes}
+    * Plomeek soup (my version)
+      :::
+      **Serves 2 Vulcans or 1 hungry developer**
+
+      * 2 carrots, 1 parsnip, 1 small orange squash
+      * 1 onion, 2 cloves garlic
+      * 1 l vegetable stock
+      * a pinch of chili (unauthentic, but logical)
+
+      Roast the vegetables at 200 °C for 30 minutes, blend with the stock, season. Serve in a bowl you will not throw at the wall.
+      :::
+    * Earl Grey cake
+      * Infuse the butter with Earl Grey for 10 minutes. The rest is a normal pound cake. Make it so.
+    * Saturday pizza (yes, I still make my own)
+      * 500 g flour, 325 g water, 10 g salt, 2 g yeast. 48 hours in the fridge. Patience is a superpower.
+  * Apartment ("Deck 4")
+    * Dishwasher (aka the warp core) makes a new noise #todo
+    * Hang the framed Amiga Boing poster #todo
+    * Build a shelf for the floppy disk collection (all 400 of them)
+    * Live ship status: [Ship status](lb:/Ship%20status.html) — open it, it's alive
+  * Gift ideas
+    * Priya: the *Swift* programming book, but bound like a Starfleet manual #idea
+    * Mo: a new Competition Pro, so maybe I'll get mine back #idea
+    * Mum: a C64 Mini, so she finally understands #idea
+* 🤫 DO NOT OPEN {#secret}
+  * Seriously. This node is classified. Section 31 eyes only.
+    * You clicked the dot anyway. Classic Kirk move.
+      * Fine. Clearance level 3 granted. There is nothing to see here. Keep clicking dots.
+        * Level 4. You are now deeper in the tree than most people ever go. The air is thin.
+          * Level 5. Look at the breadcrumb above — that's your way home. `⌥⌘←` works too.
+            * The secret: every one of these levels is a real folder on disk, each with its own `_node.md` file. Your notes are just files, all the way down. 🎉
+            * Reward: Spot has approved your security clearance. ![Approved|120](spot-the-cat.svg)
+            * Now go back up and try `⌘F` with `#todo` — I have *a lot* of unfinished business.
+            @ spot-the-cat.svg
+* 🔥 Things I should be doing instead of reorganizing my notes {{search: #todo -#done}}
+* Chief Morale Officer, on duty: ![Spot, asleep on the keyboard|150](spot-the-cat.svg)
+@ spot-the-cat.svg
+@ Ship status.html
+@ Inbox.md <<<
+# Inbox
+
+Quick capture. Things land here before I sort them into the tree (I never sort them into the tree).
+
+- Look up whether the SID chip can play the Picard theme from *The Inner Light*
+- Is "Tribble Truffle" trademarkable?
+- Podcast idea: "Kotlin, Kahless and Kickstart"
+- Ask Lars why the server is called `deep-space-9` and not `voyager`
+- Buy a label maker. Label the floppies. Label the label maker.
+>>>
