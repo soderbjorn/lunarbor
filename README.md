@@ -74,4 +74,4 @@ If you face any issues, please report them on [YouTrack](https://youtrack.jetbra
 
 Lunarbor is released under the [MIT License](LICENSE).
 
-Third-party dependencies are used under their respective licenses.
+Third-party dependencies are used under their respective licenses; see [NOTICE](NOTICE).
