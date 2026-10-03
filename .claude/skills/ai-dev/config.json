@@ -19,7 +19,7 @@
 
   "project": "Lunarbor",
   "maintainer": "soderbjorn",
-  "keyPrefix": "TRF",
+  "keyPrefix": "LBR",
   "issueUrl": "https://issues.lunicle.dev/?issue={id}",
 
   "statuses": {
