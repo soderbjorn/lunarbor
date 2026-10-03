@@ -37,7 +37,7 @@ import kotlin.random.Random
  *
  * @property id Stable id, kept across renames — what agent connections
  *   store as their privacy scope.
- * @property name What the dialog, the picker and the top-bar chip show;
+ * @property name What the privacy dialog shows;
  *   unique among the modes (case-insensitive), never empty.
  * @property tags The tags it hides, each without its `#`, as the user
  *   typed them (matching ignores case: [PrivacyConfig.tagKey]).

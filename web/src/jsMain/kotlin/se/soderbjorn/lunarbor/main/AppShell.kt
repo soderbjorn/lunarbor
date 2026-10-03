@@ -552,9 +552,6 @@ class AppShell(
                 ) + listOfNotNull(
                     // News & updates (desktop only; NewsUpdates.kt).
                     newsUpdates?.let { newsTopbarAction(it) },
-                    // The current privacy mode's name, while one is on
-                    // (PrivacyDialog.kt); opens the privacy dialog.
-                    privacyChipAction(scope, documentRegistry),
                 ),
                 // Brand logo (dot + "lunarbor" wordmark, termtastic-style)
                 // pinned to the top of the left sidebar. The factory returns

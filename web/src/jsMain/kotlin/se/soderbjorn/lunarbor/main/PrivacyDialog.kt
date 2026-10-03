@@ -1,8 +1,8 @@
 /* PrivacyDialog.kt (jsMain)
  *
- * The "Configure privacy" dialog (LBR-10), opened by the palette command
- * and by the top-bar chip that shows while a privacy mode is on
- * ([privacyChipAction]). Like the Agent access dialog, every change applies
+ * The "Configure privacy" dialog (LBR-10), opened by the palette command —
+ * the only place the current mode shows: nothing in the app's chrome tells
+ * an onlooker a mode is on. Like the Agent access dialog, every change applies
  * and is saved at once — no Save / Cancel — and confirmations are asked
  * inside the card.
  *
@@ -42,13 +42,12 @@ import se.soderbjorn.lunarbor.data.PrivacyMode
 import se.soderbjorn.lunarbor.data.TagCount
 import se.soderbjorn.lunarbor.data.TextScope
 import se.soderbjorn.lunarbor.main.DocumentRegistry
-import se.soderbjorn.lunula.web.shell.TopbarAction
 
 /**
  * Opens the privacy dialog (one at a time). Escape (outside a text field),
  * the ×, Done and a click outside close it.
  *
- * Called by the "Configure privacy" palette command and the top-bar chip.
+ * Called by the "Configure privacy" palette command.
  *
  * @param scope Scope the registry calls run in.
  * @param registry The app's registry: the modes and the current mode.
@@ -306,31 +305,6 @@ internal fun openPrivacyDialog(scope: CoroutineScope, registry: DocumentRegistry
 }
 
 /**
- * The top-bar chip showing the current privacy mode's name; hidden under
- * "No privacy". Clicking it opens the privacy dialog (locked then).
- *
- * Called once by `AppShell.render`; the chip follows
- * [DocumentRegistry.privacyFlow] on [scope] from then on.
- */
-internal fun privacyChipAction(scope: CoroutineScope, registry: DocumentRegistry): TopbarAction {
-    ensurePrivacyStyles()
-    val chip = document.createElement("button") as HTMLButtonElement
-    chip.type = "button"
-    chip.className = "lunarbor-privacy-chip-topbar"
-    chip.title = "Privacy mode — click to change"
-    chip.hidden = true
-    chip.addEventListener("click", { _: Event -> openPrivacyDialog(scope, registry) })
-    scope.launch {
-        registry.privacyFlow.collect { view ->
-            val mode = view.current
-            chip.hidden = mode == null
-            chip.textContent = mode?.name.orEmpty()
-        }
-    }
-    return TopbarAction.custom(chip)
-}
-
-/**
  * The tag suggestions under an "add tag" field — the pane search's
  * autocomplete look (`lunarbor-tag-menu`), on `<body>` while it shows.
  */
@@ -456,14 +430,4 @@ private const val PRIVACY_CSS = """
 .lunarbor-privacy-tag-menu { z-index: 2147483645; }
 .lunarbor-privacy-footer { margin-top: 4px; }
 .lunarbor-privacy-spacer { flex: 1; }
-.lunarbor-privacy-chip-topbar {
-    align-self: center; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    padding: 3px 10px; margin: 0 4px; border-radius: 999px; cursor: pointer;
-    font: inherit; font-size: 12px; font-weight: 600;
-    color: var(--t-warn, #d29922);
-    background: color-mix(in srgb, var(--t-warn, #d29922) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--t-warn, #d29922) 45%, transparent);
-}
-.lunarbor-privacy-chip-topbar[hidden] { display: none; }
-.lunarbor-privacy-chip-topbar:hover { background: color-mix(in srgb, var(--t-warn, #d29922) 22%, transparent); }
 """
