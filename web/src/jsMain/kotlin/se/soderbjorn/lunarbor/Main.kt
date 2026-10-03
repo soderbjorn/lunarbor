@@ -66,6 +66,7 @@ private suspend fun start() {
     val shell = AppShell(
         scope = graph.coroutineScope,
         documentRegistry = graph.documentRegistry,
+        fileSystem = graph.fileSystem,
         persister = graph.persister,
     )
     shell.render(app)

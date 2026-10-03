@@ -38,6 +38,15 @@ interface JsAppGraph {
     val coroutineScope: CoroutineScope
 
     /**
+     * The app's one [FileSystem]: the in-memory demo vault in the
+     * browser demo, the Electron bridge otherwise. Anything outside the
+     * registry that reads the vault (the Starred modal's private
+     * repository) must use this instance, never a fresh
+     * [PlatformFileSystem], or it misses the demo vault.
+     */
+    val fileSystem: FileSystem
+
+    /**
      * Singleton [DocumentRegistry] shared across every pane. The
      * registry hands out [se.soderbjorn.lunarbor.main.Document]
      * instances by `fileRel`, refcounted: two panes pointed at the

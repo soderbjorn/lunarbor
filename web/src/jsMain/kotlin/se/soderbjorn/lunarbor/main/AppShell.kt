@@ -82,6 +82,9 @@ import se.soderbjorn.lunarbor.data.NoteRepository
  *   [se.soderbjorn.lunarbor.main.Document] instances. Each pane
  *   acquires its current file from here; two panes pointed at the
  *   same file share one Document so concurrent edits stay live.
+ * @param fileSystem The app's [FileSystem] (from `JsAppGraph`), handed
+ *   to each [StarredModal] so its private repository reads the same
+ *   vault as the registry — the in-memory one in the browser demo.
  * @param persister Toolkit-canonical KV bridge for theme / layout /
  *   ui-settings (see [PersistKeys]). Backed by Electron IPC inside
  *   the desktop wrapper, namespaced `localStorage` in a plain browser.
@@ -93,6 +96,7 @@ import se.soderbjorn.lunarbor.data.NoteRepository
 class AppShell(
     private val scope: CoroutineScope,
     private val documentRegistry: se.soderbjorn.lunarbor.main.DocumentRegistry,
+    private val fileSystem: se.soderbjorn.lunarbor.platform.FileSystem,
     private val persister: Persister,
 ) {
 
@@ -186,6 +190,7 @@ class AppShell(
             parentScope = scope,
             activePaneVmProvider = { resolveOrCreateFocusedPaneVm() },
             vaultRoot = documentRegistry.rootDirectory,
+            fileSystem = fileSystem,
         )
     }
 
@@ -1784,6 +1789,7 @@ class AppShell(
                 parentScope = scope,
                 activePaneVmProvider = { paneViewModels[paneId] },
                 vaultRoot = documentRegistry.rootDirectory,
+            fileSystem = fileSystem,
             )
         }
         modal.open()

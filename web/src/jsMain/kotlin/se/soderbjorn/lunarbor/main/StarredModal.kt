@@ -50,7 +50,7 @@ import org.w3c.dom.events.MouseEvent
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.SubtreeCodec
 import se.soderbjorn.lunarbor.data.LunarborLink
-import se.soderbjorn.lunarbor.platform.PlatformFileSystem
+import se.soderbjorn.lunarbor.platform.FileSystem
 
 /**
  * Per-pane Starred bookmarks modal.
@@ -68,13 +68,15 @@ import se.soderbjorn.lunarbor.platform.PlatformFileSystem
  *   from `LUNARBOR_VAULT` / `LUNARBOR_LOCAL_DATA`. Both private
  *   repositories below are rooted here so the modal always reads the same
  *   vault as the panes.
+ * @param fileSystem The app's [FileSystem] (`JsAppGraph.fileSystem`) — the
+ *   in-memory vault in the browser demo, so `Starred.md` is found there too.
  */
 internal class StarredModal(
     private val parentScope: CoroutineScope,
     private val activePaneVmProvider: () -> MainViewModel?,
     private val vaultRoot: String,
+    private val fileSystem: FileSystem,
 ) {
-    private val fileSystem = PlatformFileSystem()
 
     /** Private repo whose `rootFileName` is `Starred.md`, so the modal's
      *  document VM boots straight into the bookmark file with no extra
