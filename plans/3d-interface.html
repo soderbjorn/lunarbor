@@ -1,0 +1,2012 @@
+<title>Lunarbor Orbit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one full-bleed "space" stage up top (the prototype), then a single reading column
+   with wider breakouts for the mapping table and the concept grids. Deliberately dark-only:
+   the subject is a night sky, so the page commits to one look. */
+:root {
+  --void: #070a12;      /* page + sky */
+  --hull: #0e1322;      /* panels */
+  --hull-2: #161d33;    /* raised panels */
+  --rule: #253052;      /* hairlines */
+  --moon: #e8ebf3;      /* text, the root node */
+  --dim: #8f99b6;       /* secondary text */
+  --lichen: #a9d3a0;    /* accent: branches, focus */
+  --amber: #f0c776;     /* links, agent probe */
+  --glass: rgba(14, 19, 34, .78);
+  --f-display: 'Unbounded', 'Avenir Next', system-ui, sans-serif;
+  --f-body: 'Instrument Sans', 'Helvetica Neue', system-ui, sans-serif;
+  --f-mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { background: var(--void); color: var(--moon); }
+body { font: 16px/1.62 var(--f-body); padding-inline: 16px; padding-block: 0 72px; }
+a { color: var(--lichen); }
+kbd { font: 500 .78em var(--f-mono); padding: 1px 5px; border: 1px solid var(--rule); border-bottom-width: 2px; border-radius: 4px; color: var(--moon); background: var(--hull); white-space: nowrap; }
+code { font: .86em var(--f-mono); color: var(--amber); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--lichen); outline-offset: 2px; }
+
+/* ---------- intro ---------- */
+.intro { max-width: 1240px; margin: 0 auto; padding-block: 56px 28px; display: grid; gap: 14px; }
+.eyebrow { font: 500 12px var(--f-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+h1 { font: 600 clamp(36px, 6vw, 68px)/1.02 var(--f-display); letter-spacing: -.02em; margin: 0; text-wrap: balance; }
+h1 em { font-style: normal; color: var(--lichen); }
+.lede { font-size: clamp(17px, 2vw, 20px); max-width: 62ch; color: #c9cfdf; margin: 0; }
+
+/* ---------- stage ---------- */
+.stage-wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 10px; }
+.stage { position: relative; height: clamp(540px, 80vh, 780px); border: 1px solid var(--rule); border-radius: 14px; overflow: hidden; background: var(--void); user-select: none; -webkit-user-select: none; touch-action: none; }
+.stage:fullscreen { border-radius: 0; height: 100%; }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; transition: filter .35s; }
+.stage canvas.grabbing { cursor: grabbing; }
+.stage canvas.pointing { cursor: pointer; }
+.labels, .windows, .tethers { position: absolute; inset: 0; pointer-events: none; transition: opacity .3s; }
+.tethers { width: 100%; height: 100%; }
+.lbl { position: absolute; left: 0; top: 0; font: 500 12px/1.2 var(--f-body); color: var(--moon); white-space: nowrap; padding: 2px 7px 3px; border-radius: 6px; background: rgba(7,10,18,.55); border-left: 2px solid var(--c, var(--dim)); will-change: transform; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.lbl.d1 { font: 600 13px/1.2 var(--f-display); letter-spacing: .01em; padding: 3px 9px 4px; }
+.lbl.sel { background: rgba(169,211,160,.18); color: #fff; }
+.lbl.hit { box-shadow: 0 0 0 1px var(--amber); }
+.lbl .fi { color: var(--dim); margin-right: 4px; font-family: var(--f-mono); }
+
+.win { position: absolute; left: 0; top: 0; width: 200px; pointer-events: auto; transform-origin: 0 0; cursor: pointer; background: var(--glass); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border: 1px solid var(--rule); border-radius: 9px; box-shadow: 0 10px 30px rgba(0,0,0,.45); will-change: transform; }
+.win.focused { border-color: var(--lichen); box-shadow: 0 0 0 1px var(--lichen), 0 10px 30px rgba(0,0,0,.5); }
+.win-h { display: flex; align-items: center; gap: 7px; padding: 6px 6px 6px 9px; border-bottom: 1px solid var(--rule); font: 600 12px var(--f-body); }
+.win-n { font: 500 10px var(--f-mono); color: var(--void); background: var(--c, var(--dim)); border-radius: 4px; padding: 0 5px; }
+.win-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.win-x { border: 0; background: none; color: var(--dim); cursor: pointer; padding: 0 5px; border-radius: 4px; font-size: 14px; line-height: 1; }
+.win-x:hover { color: var(--moon); background: var(--hull-2); }
+.win-b { list-style: none; margin: 0; padding: 7px 10px 9px; display: grid; gap: 3px; font-size: 11.5px; line-height: 1.35; color: #c3c9da; }
+.win-b li { display: flex; gap: 6px; min-width: 0; }
+.win-b li span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.win-b .dot { flex: none; width: 5px; height: 5px; border-radius: 50%; background: var(--dim); margin-top: 5px; }
+.win-b .nd .dot { background: none; box-shadow: 0 0 0 1.5px var(--dim); }
+.win-b .more { color: var(--dim); font-style: italic; }
+
+.hud-top { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; pointer-events: none; }
+.hud-top > * { pointer-events: auto; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: 12.5px; background: var(--glass); border: 1px solid var(--rule); border-radius: 8px; padding: 4px 6px; max-width: min(520px, 100%); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.crumbs button { background: none; border: 0; padding: 2px 5px; border-radius: 5px; cursor: pointer; color: var(--dim); }
+.crumbs button:hover { color: var(--moon); background: var(--hull-2); }
+.crumbs button:last-child { color: var(--moon); }
+.crumbs .sep { color: var(--rule); }
+.tools { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.glass { background: var(--glass); border: 1px solid var(--rule); border-radius: 8px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.search { display: flex; align-items: center; gap: 6px; padding: 3px 8px; }
+.search input { width: 150px; background: none; border: 0; color: var(--moon); font: 13px var(--f-body); padding: 3px 0; outline: none; }
+.search .cnt { font: 11px var(--f-mono); color: var(--amber); min-width: 2ch; }
+.chips { display: flex; gap: 4px; padding: 3px; }
+.chip { border: 0; background: none; font: 500 11.5px var(--f-mono); padding: 3px 7px; border-radius: 99px; cursor: pointer; color: hsl(var(--h) 70% 74%); background: hsl(var(--h) 45% 30% / .35); }
+.chip[aria-pressed="true"] { background: hsl(var(--h) 55% 45% / .7); color: #fff; }
+.seg { display: flex; padding: 3px; gap: 2px; }
+.seg button, .tbtn { border: 0; background: none; padding: 4px 9px; border-radius: 6px; font: 500 12px var(--f-body); cursor: pointer; color: var(--dim); }
+.seg button[aria-pressed="true"] { background: var(--hull-2); color: var(--moon); box-shadow: inset 0 0 0 1px var(--rule); }
+.tbtn { padding: 6px 10px; }
+.tbtn:hover, .seg button:hover { color: var(--moon); }
+.tbtn.agent { color: var(--amber); }
+
+.sel-hud { position: absolute; left: 10px; bottom: 78px; width: min(340px, calc(100% - 20px)); padding: 11px 13px 12px; display: grid; gap: 7px; }
+.sel-hud h3 { margin: 0; font: 600 15px/1.25 var(--f-display); display: flex; gap: 8px; align-items: baseline; }
+.sel-hud h3 i { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--c); align-self: center; }
+.sel-meta { font-size: 12px; color: var(--dim); }
+.sel-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+.tag { font: 500 11px var(--f-mono); padding: 1px 7px; border-radius: 99px; color: hsl(var(--h) 70% 76%); background: hsl(var(--h) 45% 30% / .4); }
+.sel-act { display: flex; gap: 6px; flex-wrap: wrap; }
+.act { border: 1px solid var(--rule); background: var(--hull-2); border-radius: 7px; padding: 4px 9px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.act:hover { border-color: var(--lichen); }
+.act kbd { font-size: 10px; padding: 0 4px; }
+
+.dock { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 6px; }
+.tabs { display: flex; gap: 3px; flex-wrap: wrap; }
+.tab { border: 0; background: none; border-radius: 7px; padding: 6px 11px; cursor: pointer; display: flex; gap: 7px; align-items: center; font: 500 13px var(--f-body); color: var(--dim); }
+.tab[aria-pressed="true"] { background: var(--hull-2); color: var(--moon); box-shadow: inset 0 0 0 1px var(--rule); }
+.tab .pips { display: flex; gap: 2px; }
+.tab .pips i { width: 5px; height: 5px; border-radius: 1.5px; background: currentColor; opacity: .55; }
+.tab kbd { font-size: 10px; padding: 0 4px; opacity: .7; }
+.wchips { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; align-items: center; }
+.wchip { border: 1px solid var(--rule); background: none; border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; color: var(--dim); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wchip.focused { color: var(--moon); border-color: var(--lichen); }
+.wchip.add { border-style: dashed; }
+
+.toast { position: absolute; left: 50%; top: 58px; transform: translateX(-50%); padding: 7px 13px; font-size: 13px; border-radius: 8px; background: var(--hull-2); border: 1px solid var(--rule); box-shadow: 0 8px 26px rgba(0,0,0,.5); max-width: calc(100% - 40px); transition: opacity .3s; pointer-events: none; }
+
+
+/* pages mode: real DOM pages hung in space by CSS3DRenderer */
+.views { position: absolute; inset: 0; pointer-events: none; }
+.stage:not(.pages) .views { display: none; }
+.view { position: absolute; pointer-events: auto; overflow: hidden; border: 1px solid var(--rule); border-radius: 12px; transition: border-color .2s, box-shadow .2s; }
+.view.focused { border-color: rgba(169,211,160,.65); box-shadow: 0 0 0 1px rgba(169,211,160,.2); }
+.views.single .view { border-color: transparent; box-shadow: none; }
+.css3d { position: absolute; inset: 0; pointer-events: none; }
+.vthreads { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.stage.pages { touch-action: auto; }
+.stage.pages .labels, .stage.pages .windows, .stage.pages .tethers, .stage.pages .sel-hud, .stage.pages .search, .stage.pages .chips { display: none; }
+.pg { pointer-events: auto; background: #10162b; border: 1px solid var(--rule); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 40px 90px rgba(0,0,0,.6); color: var(--moon); font: 15px/1.5 var(--f-body); text-align: left; }
+.pg.cur { background: #121a33; border-color: color-mix(in srgb, var(--c, var(--lichen)) 55%, var(--rule)); }
+.pg:not(.cur) { cursor: pointer; }
+.pg:not(.cur):hover { border-color: var(--c, var(--lichen)); }
+.pg:not(.cur) .pg-body { overflow: hidden; }
+.pg:not(.cur) .row .dot { cursor: pointer; }
+.pg.agent { animation: agentGlow 1.8s ease-out; }
+@keyframes agentGlow { 0%, 35% { box-shadow: 0 0 0 3px var(--amber), 0 0 70px rgba(240,199,118,.55); } 100% { box-shadow: 0 40px 90px rgba(0,0,0,.6); } }
+.pg-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-bottom: 1px solid var(--rule); font-size: 12px; color: var(--dim); min-width: 0; }
+.pg-head .pth { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pg-head .wb { flex: none; font: 500 10.5px var(--f-mono); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--rule); color: var(--moon); }
+.pg-head .wb.f { border-color: var(--lichen); color: var(--lichen); }
+.pg-head .hint { flex: none; font-size: 11px; color: var(--dim); opacity: .8; }
+.pg-body { flex: 1; overflow-y: auto; padding: 20px 30px 30px; overscroll-behavior: contain; touch-action: pan-y; }
+.crumbs .nav { font-size: 15px; line-height: 1; padding: 1px 6px; color: var(--moon); }
+.crumbs .nav:disabled { opacity: .3; cursor: default; background: none; }
+
+/* shared outline (current page, previews, docked window) */
+.ol-title { font: 600 24px/1.25 var(--f-display); margin: 0 0 14px; outline: none; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.ol-rows { display: grid; gap: 1px; }
+.row { display: flex; align-items: flex-start; padding-left: calc(var(--d) * 24px); border-radius: 6px; }
+.row .tog { flex: none; width: 16px; height: 26px; padding: 0; border: 0; background: none; color: var(--dim); font-size: 10px; cursor: pointer; opacity: 0; }
+.row:hover .tog { opacity: 1; }
+.row .dot { flex: none; width: 20px; height: 26px; padding: 0; border: 0; background: none; cursor: pointer; display: grid; place-items: center; }
+.row .dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); transition: box-shadow .15s; }
+.row .dot.kids::before { background: var(--c, var(--moon)); }
+.row .dot.folded::before { box-shadow: 0 0 0 3px rgba(232,235,243,.22); }
+.row .dot:hover::before { box-shadow: 0 0 0 5px rgba(169,211,160,.4); }
+.row .tx { flex: 1; min-width: 0; min-height: 26px; line-height: 26px; outline: none; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; -webkit-user-select: text; }
+.row.ph .tx:empty::before { content: "Type here"; color: var(--dim); }
+.ol-files { margin-top: 18px; border-top: 1px solid var(--rule); padding-top: 10px; display: grid; gap: 3px; }
+.ol-fh { font: 500 11px var(--f-mono); letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin-bottom: 2px; }
+.ol-file { font-size: 13.5px; color: #c3c9da; display: flex; gap: 8px; }
+.ol-file b { font: 400 12px var(--f-mono); color: var(--dim); width: 18px; }
+
+/* docked editor ("glass") */
+.stage.docked canvas { filter: blur(2.5px) brightness(.5) saturate(.8); }
+.stage.docked .labels, .stage.docked .windows, .stage.docked .tethers, .stage.docked .sel-hud { opacity: 0; pointer-events: none; }
+.stage.docked .windows .win { pointer-events: none; }
+.editor { position: absolute; left: 50%; top: 58px; width: min(620px, calc(100% - 28px)); max-height: calc(100% - 136px); margin-left: calc(min(620px, calc(100% - 28px)) / -2); transform-origin: 0 0; display: flex; flex-direction: column; background: rgba(13,18,32,.94); border: 1px solid var(--rule); border-radius: 12px; box-shadow: 0 30px 80px rgba(0,0,0,.6); overflow: hidden; }
+.ed-bar { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.ed-back { border: 0; background: var(--hull-2); border-radius: 6px; padding: 4px 9px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.ed-crumbs { display: flex; flex-wrap: wrap; gap: 1px; font-size: 12px; flex: 1; min-width: 0; }
+.ed-crumbs button { border: 0; background: none; color: var(--dim); padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.ed-crumbs button:hover { color: var(--moon); }
+.ed-crumbs span { color: var(--rule); }
+.ed-win { font: 11px var(--f-mono); color: var(--dim); }
+.ed-body { padding: 18px 26px 22px; overflow-y: auto; }
+.ed-title { font: 600 24px/1.25 var(--f-display); margin: 0 0 12px; outline: none; }
+.ed-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ed-list li { display: flex; gap: 10px; align-items: flex-start; padding: 2px 0; }
+.ed-list .bd { flex: none; width: 16px; height: 24px; display: grid; place-items: center; border: 0; background: none; padding: 0; cursor: default; }
+.ed-list .bd::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+.ed-list .nd .bd { cursor: pointer; }
+.ed-list .nd .bd::before { background: var(--moon); box-shadow: 0 0 0 3px rgba(232,235,243,.18); }
+.ed-list .nd .bd:hover::before { box-shadow: 0 0 0 4px rgba(169,211,160,.5); }
+.ed-list .tx { flex: 1; min-width: 0; outline: none; line-height: 24px; overflow-wrap: anywhere; }
+.ed-list .nd .tx { font-weight: 500; }
+.ed-list .new { animation: sprout .6s ease-out; }
+@keyframes sprout { from { background: rgba(240,199,118,.25); } to { background: transparent; } }
+.ed-files { margin-top: 18px; border-top: 1px solid var(--rule); padding-top: 10px; display: grid; gap: 2px; }
+.ed-files div { font-size: 13px; color: #c3c9da; display: flex; gap: 8px; }
+.ed-files div b { font: 400 12px var(--f-mono); color: var(--dim); width: 18px; }
+.ed-hint { font-size: 12px; color: var(--dim); margin: 16px 0 0; }
+
+.keys { font-size: 13px; color: var(--dim); display: grid; gap: 5px; padding-inline: 2px; }
+.keys p { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.keys b { color: var(--moon); font-weight: 600; min-width: 9.5em; }
+.nogl { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--dim); }
+
+/* ---------- document ---------- */
+.doc { max-width: 1240px; margin: 0 auto; padding-top: 64px; display: grid; gap: 72px; }
+.col { max-width: 720px; display: grid; gap: 14px; }
+.doc h2 { font: 600 clamp(24px, 3vw, 32px)/1.15 var(--f-display); margin: 0; letter-spacing: -.01em; text-wrap: balance; }
+.doc h3 { font: 600 17px/1.3 var(--f-display); margin: 0; }
+.doc p { margin: 0; color: #cdd3e2; }
+.doc ul { margin: 0; padding-left: 20px; color: #cdd3e2; display: grid; gap: 6px; }
+.kicker { font: 500 12px var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--lichen); }
+.rule-card { border: 1px solid var(--lichen); border-radius: 12px; padding: 22px 24px; display: grid; gap: 10px; background: linear-gradient(180deg, rgba(169,211,160,.07), transparent); max-width: 820px; }
+.rule-card p.big { font: 600 clamp(20px, 2.6vw, 26px)/1.3 var(--f-display); color: var(--moon); }
+
+.borrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.borrow > div { border-top: 1px solid var(--rule); padding-top: 12px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.borrow .from { font: 11px var(--f-mono); color: var(--dim); text-transform: uppercase; letter-spacing: .1em; }
+.borrow p { font-size: 15px; }
+
+.map-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 12px; }
+table.map { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14.5px; }
+.map th, .map td { text-align: left; vertical-align: top; padding: 11px 16px; border-bottom: 1px solid var(--rule); }
+.map tr:last-child td { border-bottom: 0; }
+.map th { font: 500 11px var(--f-mono); color: var(--dim); text-transform: uppercase; letter-spacing: .1em; background: var(--hull); }
+.map td:first-child { font-weight: 600; white-space: nowrap; color: var(--moon); }
+.map td:nth-child(2) { color: var(--lichen); }
+.map td:last-child { color: #b9c0d3; }
+
+.shapes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.shape { background: var(--hull); border: 1px solid var(--rule); border-radius: 12px; padding: 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.shape svg { width: 100%; height: 120px; display: block; }
+.shape p { font-size: 14.5px; }
+.shape .when { font-size: 13px; color: var(--dim); }
+
+.ideas { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 24px 28px; }
+.idea { display: grid; gap: 6px; align-content: start; min-width: 0; }
+.idea h3 { font-size: 15.5px; }
+.idea p { font-size: 14.5px; }
+.idea .t { font: 500 10.5px var(--f-mono); color: var(--amber); letter-spacing: .08em; text-transform: uppercase; }
+
+.arch { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+@media (max-width: 820px) { .arch { grid-template-columns: 1fr; } }
+.layers { display: grid; gap: 6px; font-size: 14px; }
+.layer { border: 1px solid var(--rule); border-radius: 8px; padding: 9px 12px; display: grid; gap: 2px; background: var(--hull); }
+.layer.new { border-color: var(--lichen); background: rgba(169,211,160,.06); }
+.layer b { font: 500 13px var(--f-mono); color: var(--moon); }
+.layer span { color: var(--dim); font-size: 13px; }
+.layer .badge { font: 500 10px var(--f-mono); color: var(--void); background: var(--lichen); border-radius: 4px; padding: 0 5px; margin-left: 6px; }
+
+.phases { list-style: none; padding: 0; margin: 0; display: grid; gap: 0; counter-reset: ph; max-width: 820px; }
+.phases li { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 14px; padding: 14px 0; border-top: 1px solid var(--rule); counter-increment: ph; }
+.phases li::before { content: counter(ph); font: 600 26px/1 var(--f-display); color: var(--lichen); }
+.phases h3 { margin-bottom: 4px; }
+.phases p { font-size: 15px; }
+
+.qs { max-width: 760px; }
+footer { max-width: 1240px; margin: 0 auto; padding-top: 48px; color: var(--dim); font-size: 13px; }
+
+@media (max-width: 640px) {
+  .chips { display: none; }
+  .search input { width: 100px; }
+  .crumbs { max-width: 100%; }
+  .sel-hud { bottom: 112px; }
+  .win { width: 168px; }
+  .keys { font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stage canvas, .labels, .windows, .tethers, .toast { transition: none; }
+  .ed-list .new { animation: none; }
+}
+</style>
+
+<header class="intro">
+  <div class="eyebrow">Lunarbor · design exploration · October 2026</div>
+  <h1>Lunarbor <em>Orbit</em></h1>
+  <p class="lede">A 3D way into the vault. Every node has its own place in space and its own page there. You write on the page in front of you exactly as you do today, and you fly only when you zoom. Step back and the same tree becomes a map, with links running as pipes between branches and your windows floating beside the nodes they show.</p>
+</header>
+
+<section class="stage-wrap" aria-label="Prototype">
+  <div id="stage" class="stage" tabindex="0" aria-label="Lunarbor Orbit prototype. Use arrow keys to walk the tree.">
+    <canvas id="gl"></canvas>
+    <div id="views" class="views"></div>
+    <svg id="tethers" class="tethers" aria-hidden="true"></svg>
+    <div id="labels" class="labels" aria-hidden="true"></div>
+    <div id="windows" class="windows"></div>
+
+    <div class="hud-top">
+      <nav id="crumbs" class="crumbs" aria-label="Selected node path"></nav>
+      <div class="tools">
+        <label class="glass search" for="q">
+          <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
+          <input id="q" type="search" placeholder="Search or #tag" autocomplete="off" spellcheck="false">
+          <span id="qcount" class="cnt"></span>
+        </label>
+        <div class="glass chips" id="chips"></div>
+        <div class="glass seg" id="seg" role="group" aria-label="Shape">
+          <button type="button" data-mode="pages" aria-pressed="false">Pages</button>
+          <button type="button" data-mode="crown" aria-pressed="true">Crown</button>
+          <button type="button" data-mode="cone" aria-pressed="false">Cone</button>
+          <button type="button" data-mode="galaxy" aria-pressed="false">Galaxy</button>
+        </div>
+        <button type="button" class="glass tbtn agent" id="agentBtn" title="Simulate an MCP agent editing a node">Agent edit</button>
+        <button type="button" class="glass tbtn" id="fsBtn" title="Full screen">⤢</button>
+      </div>
+    </div>
+
+    <div id="selHud" class="glass sel-hud" hidden></div>
+    <div class="glass dock" id="dock">
+      <div class="tabs" id="tabs" role="group" aria-label="Tabs"></div>
+      <div class="wchips" id="wchips"></div>
+    </div>
+    <div id="toast" class="toast" hidden></div>
+
+    <div id="editor" class="editor" role="dialog" aria-label="Window editor" hidden>
+      <div class="ed-bar">
+        <button type="button" class="ed-back" id="edBack">← Back to space <kbd>Esc</kbd></button>
+        <nav class="ed-crumbs" id="edCrumbs" aria-label="Window location"></nav>
+        <span class="ed-win" id="edWin"></span>
+      </div>
+      <div class="ed-body">
+        <div class="ol" id="edOl"></div>
+        <p class="ed-hint">This is the flat editor, the same one Lunarbor has today. Edit a title or press Enter for a new bullet: the dimmed space behind you updates as you type. Click a bright dot to move this window into that node.</p>
+      </div>
+    </div>
+  </div>
+  <div class="keys">
+    <p><b>Pages</b> <span>Type on the page in front of you: <kbd>⏎</kbd> new bullet · <kbd>Tab</kbd> <kbd>⇧Tab</kbd> indent and outdent in place · <kbd>⌘↑</kbd> <kbd>⌘↓</kbd> fold</span> <span>Click a dot or press <kbd>⌥⏎</kbd> to fly into that bullet · <kbd>Esc</kbd> flies out · <kbd>⌥⌘←</kbd> <kbd>⌥⌘→</kbd> back and forward · click a page behind to fly there</span> <span>Each window flies on its own · click a window to work in it · "+ Window" splits the focused one</span></p>
+    <p><b>Crown, Cone, Galaxy</b> <span>Drag to orbit · right-drag or <kbd>⇧</kbd>drag to pan · scroll to zoom · click a body to fly there · double-click to open it in the focused window</span> <span><kbd>←</kbd><kbd>→</kbd> siblings · <kbd>↑</kbd> parent · <kbd>↓</kbd> child · <kbd>⏎</kbd> open · <kbd>P</kbd> its page · <kbd>E</kbd> edit window · <kbd>F</kbd> fold · <kbd>/</kbd> search</span></p>
+    <p><b>Everywhere</b> <span><kbd>L</kbd> next shape · <kbd>1</kbd>–<kbd>4</kbd> tabs · "Agent edit" shows an MCP agent adding a bullet</span></p>
+  </div>
+</section>
+
+<main class="doc">
+
+  <section class="rule-card" aria-labelledby="h-rule">
+    <div class="kicker" id="h-rule">The one rule</div>
+    <p class="big">Find things in space. Write on flat glass.</p>
+    <p>Text in perspective is hard to read and even harder to edit. So the 3D view is for getting your bearings, finding things and arranging your workspace. When you start writing, the window docks flat in front of you at its true pixel size, and it is the normal Lunarbor editor with all its keys. The space stays behind it, dimmed, and changes as you type. Press Escape and you are back in space, exactly where you were.</p>
+  </section>
+
+
+  <section class="col" aria-labelledby="h-pages" style="max-width:none">
+    <div class="kicker">The prototype opens here</div>
+    <h2 id="h-pages">Pages: every node has a place</h2>
+    <div class="arch">
+      <div class="col">
+        <p>Each node with children has a fixed spot in space, and its page hangs there. The page in front of you is the zoomed node, shown at its true pixel size with its whole nested outline, and it is a normal Lunarbor editor. The pages of its child nodes hang behind it, to the left and right. A thread runs from each bullet's dot to its page, so you can see where a dot leads before you click it.</p>
+        <p><b>Editing never moves the camera.</b> Enter, Tab, Shift-Tab, Backspace and folding all happen on the page in front of you. When an indent gives a bullet its first child, that bullet gets a page of its own: a new page sprouts in the space behind you, and you go there only if you want to.</p>
+        <p><b>Only navigation flies.</b> Clicking a dot or pressing <kbd>⌥⏎</kbd> zooms in, which means a flight into that bullet's page. <kbd>Esc</kbd> flies back out, and Back / Forward, breadcrumbs, tab switches and clicks on a page behind you are flights too. Your keystrokes go to the new page from the moment the flight starts, so typing never waits for the animation.</p>
+      </div>
+      <div class="col">
+        <p>Why this works for Lunarbor:</p>
+        <ul>
+          <li><b>It is the vault's own shape.</b> On disk, each node is a folder with one <code>_node.md</code>. Here each node is a place with one page.</li>
+          <li><b>It changes the view, not the model.</b> The camera follows the pane's <code>zoomedLineId</code> and file. The page is the window's <code>MainScreen</code>, and <code>zoomInto</code>, <code>zoomOut</code> and <code>navigateToLink</code> are what start flights.</li>
+          <li><b>Zooming into a leaf works as it does today.</b> The leaf gets an empty placeholder child, which you can see as a new page. If you leave it empty, the placeholder is removed and the page goes with it.</li>
+          <li><b>Each window is its own view into the space.</b> A tab's windows sit side by side in its usual split layout, and each one flies on its own: zooming in one window leaves the others where they are. A page open in two windows is the same page, so typing in one shows up in the other as you type.</li>
+          <li><b>The workspace stays as it is.</b> Tabs still switch sets of windows. "+ Window" still splits the focused window, and closing one gives its space to a neighbour. Each page's header shows which windows are on it.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="col" aria-labelledby="h-borrow" style="max-width:none">
+    <div class="kicker">Inspiration</div>
+    <h2 id="h-borrow">What to take from Lunamux, and what to change</h2>
+    <p style="max-width:72ch">Lunamux has two 3D features. The <b>3D mode</b> puts real terminal panes on a sphere using CSS3D: a tab's panes fan out sideways and the tabs sit on a vertical wheel. The <b>3D tab overview</b> draws snapshots of the panes in WebGL, in one of seven switcher layouts. Lunamux places windows on fixed rings. Lunarbor has a second structure to show, the tree itself, so the windows have to sit somewhere in it.</p>
+    <div class="borrow">
+      <div><span class="from">Keep</span><h3>Real DOM panes, never textures</h3><p>Lunamux moves the live xterm elements onto CSS3D planes, so they keep working. Lunarbor's windows should be real <code>MainScreen</code> panes too, never pictures of them. Then a docked window is the editor, with no copy to keep in sync.</p></div>
+      <div><span class="from">Keep</span><h3>1:1 front window</h3><p>Lunamux places the camera so the front pane has exactly one screen pixel per CSS pixel, and caret placement and text selection stay exact. Docking a Lunarbor window does the same.</p></div>
+      <div><span class="from">Keep</span><h3>Navigate, then engage</h3><p>Lunamux has two modes. Arrow keys move around the world until Enter "engages" a pane, and then keys go to the pane. Here, arrow keys walk the tree and <kbd>E</kbd> or a click docks a window for writing.</p></div>
+      <div><span class="from">Keep</span><h3>State you can see</h3><p>Lunamux panes glow while an agent works and pulse amber while one waits for input. In Lunarbor the same signals mark unsaved edits, outside changes, MCP agent activity and broken links.</p></div>
+      <div><span class="from">Change</span><h3>Windows stay near their nodes</h3><p>A Lunarbor window is not placed on a ring. It floats next to the node it shows, joined to it by a line. When the window moves to another node, its line moves with it, so the workspace always tells you where things are.</p></div>
+      <div><span class="from">Change</span><h3>WebGL for the tree, DOM for the words</h3><p>A vault can have thousands of nodes, which is too many for CSS3D planes. The bodies, branches and pipes are drawn in WebGL. Labels and windows are DOM layers placed over the canvas, so text stays crisp.</p></div>
+    </div>
+  </section>
+
+  <section class="col" aria-labelledby="h-map" style="max-width:none">
+    <div class="kicker">The vault as a place</div>
+    <h2 id="h-map">Every Lunarbor concept gets a shape</h2>
+    <p style="max-width:72ch">The 3D view adds nothing to the data model. It only shows what the vault already contains. A rule of thumb: if something has no 3D shape, it doesn't appear in space, and you still reach it from a docked window.</p>
+    <div class="map-wrap">
+      <table class="map">
+        <thead><tr><th>Lunarbor</th><th>In space</th><th>Why it fits</th></tr></thead>
+        <tbody>
+          <tr><td>The root node</td><td>The moon</td><td>It is the light source everything grows from, and it gives the app its name.</td></tr>
+          <tr><td>Folder-backed bullet</td><td>A body, sized by its subtree</td><td>Exactly the items that have a folder on disk, so the space and the vault match one to one.</td></tr>
+          <tr><td>Leaf bullets</td><td>Dust orbiting the parent</td><td>Visible when you are close, invisible from far away. You can see there is content without reading it.</td></tr>
+          <tr><td>Folded item</td><td>A planetary ring</td><td>The ring a folded dot already wears in 2D, drawn in 3D. Its children are pulled inside it.</td></tr>
+          <tr><td>Folder contents</td><td>Satellites: flat cards</td><td>Notes, images, drawings and HTML pages circle the node whose folder holds them. Images show as thumbnails.</td></tr>
+          <tr><td><code>lunarbor:</code> and wiki links</td><td>Arcing pipes with traffic</td><td>Light flows from the linking node toward its target. A broken link shows as a frayed pipe ending in nothing.</td></tr>
+          <tr><td>Tags</td><td>Colour from <code>tagHue</code></td><td>The same hue as the tag pill. Search lights up the hits and dims the rest.</td></tr>
+          <tr><td>Search node</td><td>A beacon</td><td>Faint beams reach every live hit, so a saved search shows where its results are.</td></tr>
+          <tr><td>Zoom, breadcrumb, Back</td><td>Flight, flight path, camera history</td><td>Zooming in is flying in. <kbd>⌥⌘←</kbd> flies back the way you came.</td></tr>
+          <tr><td>Tab</td><td>A station: a saved camera plus its windows</td><td>Switching tabs flies the camera to a view of the tab's windows.</td></tr>
+          <tr><td>Window (pane)</td><td>A glass card joined to its node by a line</td><td>Your workspace stays readable as a map of where each window is looking.</td></tr>
+          <tr><td>MCP agent edit</td><td>A probe flying to the node</td><td>You see where an agent works while it works.</td></tr>
+          <tr><td>Starred</td><td>Fixed bright stars</td><td>Bookmarks that stay in place when you rearrange the space, so you can always find them.</td></tr>
+          <tr><td><code>.trash</code></td><td>A dark nebula at the edge</td><td>Deleted folders drift there. Undo pulls them back along the path they took.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="col" aria-labelledby="h-shapes" style="max-width:none">
+    <div class="kicker">Layouts</div>
+    <h2 id="h-shapes">Three shapes for one tree</h2>
+    <p style="max-width:72ch">Each shape answers a different question, so the user switches with <kbd>L</kbd> and the bodies move to their new places. All three are deterministic: positions come from folder paths and sibling order, not from randomness. You build a spatial memory of where Work is, and it has to stay true.</p>
+    <div class="shapes">
+      <div class="shape">
+        <svg viewBox="0 0 240 120" aria-hidden="true"><g stroke="#a9d3a0" stroke-opacity=".55" fill="none"><path d="M120 108 Q120 80 70 64"/><path d="M120 108 Q120 80 170 64"/><path d="M120 108 Q120 84 120 60"/><path d="M70 64 Q70 40 40 26"/><path d="M70 64 Q70 40 92 22"/><path d="M170 64 Q170 40 150 22"/><path d="M170 64 Q170 40 202 28"/><path d="M120 60 Q120 36 120 14"/></g><g fill="#e8ebf3"><circle cx="120" cy="108" r="7"/></g><g fill="#a9d3a0"><circle cx="70" cy="64" r="5"/><circle cx="170" cy="64" r="5"/><circle cx="120" cy="60" r="4"/></g><g fill="#8f99b6"><circle cx="40" cy="26" r="3"/><circle cx="92" cy="22" r="3"/><circle cx="150" cy="22" r="3"/><circle cx="202" cy="28" r="3"/><circle cx="120" cy="14" r="3"/></g></svg>
+        <h3>Crown</h3>
+        <p>The tree grows up and out from the moon. Depth is height, and every area gets its own slice of the circle.</p>
+        <p class="when">Best for: "where is everything?" The default.</p>
+      </div>
+      <div class="shape">
+        <svg viewBox="0 0 240 120" aria-hidden="true"><g stroke="#a9d3a0" stroke-opacity=".55" fill="none"><path d="M120 14 L60 58"/><path d="M120 14 L180 58"/><path d="M120 14 L120 62"/><path d="M60 58 L36 104"/><path d="M60 58 L84 104"/><path d="M180 58 L160 104"/><path d="M180 58 L206 104"/></g><g fill="none" stroke="#8f99b6" stroke-opacity=".5"><ellipse cx="120" cy="60" rx="62" ry="9"/><ellipse cx="60" cy="104" rx="25" ry="5"/><ellipse cx="183" cy="104" rx="24" ry="5"/></g><circle cx="120" cy="14" r="7" fill="#e8ebf3"/><g fill="#a9d3a0"><circle cx="60" cy="58" r="5"/><circle cx="180" cy="58" r="5"/><circle cx="120" cy="62" r="4"/></g><g fill="#8f99b6"><circle cx="36" cy="104" r="3"/><circle cx="84" cy="104" r="3"/><circle cx="160" cy="104" r="3"/><circle cx="206" cy="104" r="3"/></g></svg>
+        <h3>Cone</h3>
+        <p>Robertson's Cone Trees from Xerox PARC (1991): the children of each node hang in a ring below it. Rotating a ring brings a sibling to the front.</p>
+        <p class="when">Best for: comparing siblings, and very wide nodes.</p>
+      </div>
+      <div class="shape">
+        <svg viewBox="0 0 240 120" aria-hidden="true"><g stroke="#a9d3a0" stroke-opacity=".4" fill="none"><path d="M120 60 L76 40"/><path d="M120 60 L168 34"/><path d="M120 60 L150 92"/><path d="M120 60 L80 88"/><path d="M76 40 L44 30"/><path d="M76 40 L62 18"/><path d="M168 34 L204 22"/><path d="M150 92 L190 100"/><path d="M80 88 L48 100"/></g><g stroke="#f0c776" stroke-opacity=".75" stroke-dasharray="3 3" fill="none"><path d="M44 30 Q120 0 204 22"/><path d="M62 18 Q100 70 150 92"/><path d="M48 100 Q120 116 190 100"/></g><circle cx="120" cy="60" r="7" fill="#e8ebf3"/><g fill="#a9d3a0"><circle cx="76" cy="40" r="5"/><circle cx="168" cy="34" r="5"/><circle cx="150" cy="92" r="5"/><circle cx="80" cy="88" r="5"/></g><g fill="#8f99b6"><circle cx="44" cy="30" r="3"/><circle cx="62" cy="18" r="3"/><circle cx="204" cy="22" r="3"/><circle cx="190" cy="100" r="3"/><circle cx="48" cy="100" r="3"/></g></svg>
+        <h3>Galaxy</h3>
+        <p>A force layout in which links pull as well as branches. Nodes that link to each other drift together, even across areas, and that shows connections the tree hides.</p>
+        <p class="when">Best for: "what is related to this?"</p>
+      </div>
+    </div>
+    <p style="max-width:72ch">Two more are worth trying later. In <b>Helix</b>, dated nodes such as a journal's <i>2026 › October › Stardate 2026.10.02</i> wind up a spiral, one turn per month, so the Captain's Log becomes a timeline you can fly along. In <b>Terraces</b>, the tree is a flat 2.5D landscape tilted 30°: each level is a terrace and folders are plateaus. It suits trackpads and people who don't like free 3D.</p>
+  </section>
+
+  <section class="col" aria-labelledby="h-ws" style="max-width:none">
+    <div class="kicker">Workspace</div>
+    <h2 id="h-ws">Tabs and windows still matter in space</h2>
+    <div class="ideas">
+      <div class="idea"><span class="t">Tabs</span><h3>Each tab is a station</h3><p>A tab keeps its windows and a saved camera. The dock lists tabs as now, with one pip per window. <kbd>1</kbd>–<kbd>9</kbd> fly between them. Hovering a tab you are not on lights its windows' nodes faintly, so you can see where it is before you go.</p></div>
+      <div class="idea"><span class="t">Windows in Pages</span><h3>Each window looks into the space</h3><p>In Pages, the tab keeps its split layout and every window is its own view into the same space, with its own camera and its own Back / Forward. Zooming flies only the window you are in, and a page open in two windows stays in sync between them.</p></div>
+      <div class="idea"><span class="t">Windows on the map</span><h3>Joined to what they show</h3><p>In the map shapes, a window floats beside its node with a thin line between them. A window whose node is off screen is pinned to the edge, and its line points the way, so every window stays one click away.</p></div>
+      <div class="idea"><span class="t">Open here</span><h3>Send a window to a node</h3><p>Select a body and press <kbd>⏎</kbd>. The focused window moves there, and its line swings over. <kbd>⇧⏎</kbd> opens a new window there instead. These are <code>openLocation</code> and <code>openLocationInNewPane</code>, as they work today.</p></div>
+      <div class="idea"><span class="t">Flatten</span><h3>Back to 2D at any time</h3><p>Leaving 3D plays Lunamux's entry animation in reverse: the windows fly back into the tab's real split layout. 3D only adds a view. Your layout is never changed by entering it.</p></div>
+      <div class="idea"><span class="t">Gather</span><h3>Draw a tab with a lasso</h3><p>Drag a lasso around a group of bodies to make a new tab with one window per node. It is the quickest way to set up a workspace for "this week's work".</p></div>
+      <div class="idea"><span class="t">Parking orbit</span><h3>A shelf for spare windows</h3><p>This is Lunamux's stash. Windows you want close by but out of sight wait in a ring around the camera, and you can bring one back to dock it.</p></div>
+    </div>
+  </section>
+
+  <section class="col" aria-labelledby="h-ideas" style="max-width:none">
+    <div class="kicker">Further out</div>
+    <h2 id="h-ideas">Ideas to try</h2>
+    <div class="ideas">
+      <div class="idea"><span class="t">Arrange</span><h3>Drag a body to reparent it</h3><p>Grab a body and carry it to another branch. The new parent glows, and dropping runs the same <code>moveRows</code> and folder move as dragging a dot in 2D. One undo puts it back.</p></div>
+      <div class="idea"><span class="t">Time</span><h3>Recency glow</h3><p>Nodes edited today glow warm and cool off over a week. Today's edits leave a faint trail between the bodies you visited, like a comet's tail.</p></div>
+      <div class="idea"><span class="t">Agents</span><h3>MCP probes and scopes</h3><p>Each agent connection's folder scope shows as a soft dome. When an agent edits, a probe flies into the dome and lands on the node. You can see what Claude is touching while it happens.</p></div>
+      <div class="idea"><span class="t">Untidy</span><h3>The orphan belt</h3><p>Folders no bullet references, which the folder contents list shows today, drift as an asteroid belt around their parent. Dragging one into the tree is "Convert to node".</p></div>
+      <div class="idea"><span class="t">Links</span><h3>Fly through a pipe</h3><p>Click a link pipe to travel along it to the other end, with a short warp. It is the 3D version of following a link, and Back flies you back through it.</p></div>
+      <div class="idea"><span class="t">Search</span><h3>A sweeping beam</h3><p>While you type, a beam sweeps out from the selected node, and hits light up as it passes. The scope works as it does in 2D: only this subtree, or the whole vault with <code>in:/</code>.</p></div>
+      <div class="idea"><span class="t">Places</span><h3>Pinned positions</h3><p>Let the user drag a top-level area somewhere and keep it there. Pins are stored as UI settings per vault, never in the vault itself.</p></div>
+      <div class="idea"><span class="t">Headsets</span><h3>visionOS and Quest</h3><p>The same scene in WebXR. The windows become real floating windows, and you write on a keyboard with the docked window in front of you. Of all these ideas, this is where the one rule matters most.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-arch">
+    <div class="arch">
+      <div class="col">
+        <div class="kicker">Architecture</div>
+        <h2 id="h-arch">How it fits the layers</h2>
+        <p>The rules stay the same. The space is a view of the vault, and its logic lives in commonMain without any 3D imports. Windows are still <code>PaneBackingViewModel</code>s, unchanged. The docked editor is the window's own <code>MainScreen</code>, moved in front of the camera.</p>
+        <ul>
+          <li><b>Graph data</b> comes from what the registry already keeps: <code>vaultListingsFlow</code> for folders and files, <code>VaultIndex</code> for link edges, <code>TextIndex</code> for tags and search, <code>linkStatusFlow</code> for broken links, and <code>FoldMemory</code> for what starts open.</li>
+          <li><b>Layout</b> is pure and testable: a function from the graph, the fold state and the shape to positions, seeded by folder paths. It is unit-tested like <code>FolderContentsTest</code>.</li>
+          <li><b>Rendering</b> uses three.js, loaded by a dynamic <code>import()</code> into its own webpack chunk, as Excalidraw is, so the app costs nothing until the user opens 3D. Pages are real DOM placed with three's CSS3DRenderer, as Lunamux places its panes. Bodies and pipes use WebGL.</li>
+          <li><b>Persistence</b>: the camera per tab, the shape and pins live under one persister key, <code>lunarborSpace</code>. No vault format change, so no migration.</li>
+          <li><b>Demo mode</b> works as is: <code>DemoFileSystem</code> feeds the same listings, so the website demo gets 3D too.</li>
+        </ul>
+      </div>
+      <div class="layers" aria-label="Layer diagram">
+        <div class="layer new"><b>SpaceView.kt <span class="badge">new</span></b><span>jsMain · three.js scene, DOM labels, window cards, dock</span></div>
+        <div class="layer new"><b>SpaceViewModel <span class="badge">new</span></b><span>per platform · thin facade, as MainViewModel is</span></div>
+        <div class="layer new"><b>SpaceBackingViewModel <span class="badge">new</span></b><span>commonMain · camera target, selection, shape, fly history, docked window</span></div>
+        <div class="layer new"><b>VaultGraph + GraphLayout <span class="badge">new</span></b><span>commonMain · nodes and edges from listings and indexes, pure layouts</span></div>
+        <div class="layer"><b>PaneBackingViewModel × n</b><span>unchanged · each window, docked or floating</span></div>
+        <div class="layer"><b>DocumentRegistry</b><span>unchanged · listings, VaultIndex, TextIndex, FoldMemory</span></div>
+        <div class="layer"><b>NoteRepository → FileSystem</b><span>unchanged</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="col" aria-labelledby="h-scale">
+    <div class="kicker">Scale</div>
+    <h2 id="h-scale">A real vault has thousands of folders</h2>
+    <ul>
+      <li><b>Folding decides detail.</b> A folded body carries its whole subtree inside its ring. The camera unfolds as you approach and folds again as you leave, using the zoom rule of refolding what was left behind.</li>
+      <li><b>Load only what you approach.</b> Listings are already loaded per folder on demand. Outlines are only read for bodies near the camera.</li>
+      <li><b>One draw call per kind.</b> Bodies, satellites and dust are instanced meshes, and branches and pipes are one line buffer each.</li>
+      <li><b>A label budget.</b> About 40 labels at most, chosen by depth, distance and relevance: selection, windows and search hits first.</li>
+      <li><b>Render only when something changes.</b> The loop stops once the camera and layout settle, so the space uses no power while you write in a docked window.</li>
+    </ul>
+  </section>
+
+  <section class="col" aria-labelledby="h-phases" style="max-width:none">
+    <div class="kicker">Plan</div>
+    <h2 id="h-phases">Build it in this order</h2>
+    <ol class="phases">
+      <li><div><h3>Pages</h3><p>The zoom becomes a flight between pages that hang in space. The editor is unchanged, and only the camera is new. This is the cheapest step, and it tells us whether moving through space helps people find their way.</p></div></li>
+      <li><div><h3>Map</h3><p>Step back from the pages into the Crown view of the folder tree, with labels and fly-to. Clicking a body flies to its page.</p></div></li>
+      <li><div><h3>Workspace in space</h3><p>Windows joined to their nodes, tabs as stations, docking to edit at 1:1, and the entry and exit animations.</p></div></li>
+      <li><div><h3>Connections</h3><p>Link pipes, the Galaxy shape, tag colours, search lighting, and search nodes as beacons.</p></div></li>
+      <li><div><h3>Direct manipulation and atmosphere</h3><p>Drag to reparent, lasso to make a tab, pinned areas, agent probes, recency glow, the Helix timeline, WebXR.</p></div></li>
+    </ol>
+  </section>
+
+  <section class="col qs" aria-labelledby="h-q">
+    <div class="kicker">Open questions</div>
+    <h2 id="h-q">To decide</h2>
+    <ul>
+      <li>In Pages, should sibling pages hang next to the current page, so you can move sideways from one to the next? The prototype shows only pages further in.</li>
+      <li>In a narrow window, the child pages are pushed to its edges. Should a narrow window show fewer of them, or hide them until you hover the window's edge?</li>
+      <li>Should <kbd>Esc</kbd> fly up one level, as in the prototype, or clear the zoom altogether, as it does in Lunarbor today?</li>
+      <li>Should 3D be a mode for the whole app, as in Lunamux, or a kind of window? A "map window" next to normal windows would be cheaper to try and might be all most people need.</li>
+      <li>Should leaf bullets appear as dust at all, or is a node's size enough? Dust adds life up close but costs draw calls in large outlines.</li>
+      <li>Blocks with children are items too. Should a block be a different body, for example a flat slab, to show that it holds free text?</li>
+      <li>How much Lunamux code can be shared? The CSS3D window and engage code could become a toolkit module that both apps use.</li>
+      <li>Should the camera follow the docked window as it moves between nodes, as in the prototype, or stay still to keep the user oriented?</li>
+    </ul>
+  </section>
+</main>
+<footer>Sample content: Maya's vault from the Lunarbor browser demo. Prototype built with three.js r128 and its CSS3DRenderer. Nothing here is saved: reload to start over.</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/renderers/CSS3DRenderer.js"></script>
+<script>
+(() => {
+'use strict';
+const stage = document.getElementById('stage');
+const canvas = document.getElementById('gl');
+if (typeof THREE === 'undefined') {
+  const d = document.createElement('div'); d.className = 'nogl';
+  d.textContent = 'The prototype needs three.js and WebGL, and they did not load here. The ideas below still apply.';
+  stage.appendChild(d); return;
+}
+const HAS_CSS3D = typeof THREE.CSS3DRenderer === 'function';
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const V3 = THREE.Vector3;
+
+/* ---------------- sample vault (Maya's demo tree, trimmed) ----------------
+   One item per line, indent = depth. Items with children are nodes (folder-backed),
+   the rest are leaf bullets. "@ name.ext" = a file in the node's folder.
+   {#id} anchor, {fold} starts folded, "-> a, b" = lunarbor: links.           */
+const SRC = `
+Home {#root}
+  Hi, I'm Maya. This is my brain, as a tree.
+  Start here: the tour {#tour} -> amiga, slice-arch, sprint, trek
+    Everything is a bullet
+      Hover a bullet to see its fold control
+      Tab indents, Shift-Tab outdents. Try it on this line
+    Click a dot to zoom in
+      Here, zooming in is a flight to the node's own page
+      Zoom as deep as you like
+    Tags and links
+      Tags are coloured pills: #retro, #trek, #someday
+      Link to any node, or say hi to Spot
+    Blocks hold free Markdown
+      A block sits among the bullets like any other item
+    Search this tree
+      Cmd-F searches this node and everything under it
+    Windows and palette
+      Cmd-P opens the command palette
+      The + in the top bar opens another window
+  Captain's Log #journal {#log} -> log-gradle
+    Personal log of Maya Kepler, Android/iOS developer
+    2026
+      October
+        Stardate 2026.10.02 {#today} -> c64, spot
+          Standup: told the team the iOS build is "basically green"
+          Got the Gotek working in Denise. She booted Workbench 1.3
+          Pick up thermal paste for the VIC-II heat sink #todo
+          Dinner: pizza. From our own app.
+        Stardate 2026.10.01 -> 5k
+          Rebooted the 5K training plan. Ran 3 km. Survived.
+          Idea: an Android widget that shows pizza ETA as a warp factor #idea
+      September {fold}
+        Stardate 2026.09.30 -> retro41
+          Sprint 41 retro: "Why does Gradle take longer than the sprint?"
+        Stardate 2026.09.27
+          Flea market haul: a boxed Turrican II and a Competition Pro #amiga
+          Spot sat in the empty joystick box for four hours
+        Stardate 2026.09.24, the Gradle rant {#log-gradle}
+          It started, as these things do, with "just one more Gradle sync"
+    Log archive {fold}
+      @ 2025-12 stardates.md
+      @ 2025-11 stardates.md
+  Work: Warp Factor Pizza #work {#work}
+    Pizza delivery at warp speed. 14 people, 0 working coffee machines.
+    Slice, the app {#slice}
+      One Kotlin Multiplatform codebase for Android and iOS
+      Architecture #kmp {#slice-arch}
+        Shared: domain, data, Ktor, SQLDelight, view models
+        UI stays native: Jetpack Compose and SwiftUI
+        @ KMP architecture.excalidraw
+        @ ADR-001 Use Kotlin Multiplatform.md
+        @ ADR-004 Gradle is our life now.md
+      Sprint 42 #sprint {#sprint}
+        Goal: ship Pizza Tracker 2.0
+        Doing
+          Live Activities for the pizza ETA #ios #todo
+          Share the map view model #kmp #todo
+          Crash when the pizza arrives before the order is placed #bug #todo
+        Up next
+          Android widget: ETA as a warp factor #idea #todo
+          Dark mode for the receipt #todo
+        Done
+          Migrate to Kotlin 2.x #done
+          Replace the spinner with a rotating pizza #done
+      Bugs and oddities #bug
+        Price shows NaN kr with coupon TRIBBLE #todo
+        iOS: the keyboard covers "Place order" on the iPhone SE #todo
+      Code snippets
+        expect/actual for the pizza oven sensor
+    People #1on1 {#people} {fold}
+      Dana, CEO
+        Wants the receipt in dark mode
+      Priya, iOS lead
+        Says Kotlin is "Swift with a Scandinavian accent"
+      Mo, QA
+        Found the pineapple bug
+      Lars, backend
+      Jules, design
+    Meetings
+      Sprint 41 retro {#retro41}
+        Keep: pairing on the map screen
+        Drop: "small" Gradle changes on Fridays
+      The office as a starship bridge
+        Drawn during a long meeting
+    Ideas pile #idea
+      A "Make it so" button that reorders your last pizza
+      Pizza ETA in warp factors
+  Retro Lab #retro {#retro}
+    Where old computers come to be loved
+    Commodore 64 "Breadbin" {#c64} -> guru
+      C64, 1541 floppy drive, 1530 datasette. Bought for 40 €
+      Repair log
+        Replaced the 7805 regulator
+        Recapped the board
+      Programs I keep typing in
+        10 PRINT "HELLO" : 20 GOTO 10
+      POKE cheat sheet
+        POKE 53280,0 makes the border black
+      @ C64 simulator.html
+      @ c64-ready.svg
+    Amiga 500 "Denise" {#amiga}
+      Kickstart 1.3, 512K + 512K trapdoor expansion
+      Guru Meditation log {#guru}
+        Guru 00000004: illegal instruction. Probably my fault
+      To do #todo
+        Back up the mystery floppies
+        Clean the floppy drive heads
+      Games and demos, ranked
+        1. Turrican II
+        2. State of the Art
+      @ Amiga chipset.excalidraw
+      @ boing-ball.svg
+    Flea market list #someday
+      A second 1541, for redundancy
+  Sci-fi & Fandom {#scifi}
+    Star Trek #trek {#trek} -> captains
+      The one true franchise
+      Captains, ranked {#captains}
+        1. Picard
+        2. Sisko
+        3. Janeway
+      Rewatch: Deep Space Nine
+        Season 1, episode 1. Here we go
+      Rules of Engineering
+        Always quadruple your time estimates
+      Replicator recipes -> recipes
+        Tea, Earl Grey, hot
+      @ my-starship-blueprint.svg
+    Reading list #toread {fold}
+      Currently reading: The Murderbot Diaries
+      Up next
+        Project Hail Mary
+      Finished, and loved
+        The Long Way to a Small, Angry Planet
+    Hot takes
+      Babylon 5 did the long story arc first
+    TrekCon Göteborg 2026 #event -> trek
+      November 14–15. Tickets bought
+      Costume: Starfleet engineer with a C64 tricorder #todo
+  Life Support Systems #life {#life}
+    Spot #cat {#spot}
+      Orange tabby, 6 years old, named after Data's cat
+      Dislikes: the vacuum (aka "the Borg")
+      Vet: annual checkup in November #todo
+      @ spot-the-cat.svg
+    Kobayashi Maru 5K #running {#5k}
+      The no-win race: 5 km, November 7
+      Training plan
+        Week 1: 3 × 1 km
+        Week 2: 2 × 2 km
+      @ Kobayashi Maru 5K route.excalidraw
+    Groceries #todo {#groceries} -> spot
+      Oat milk
+      Coffee beans (the replicator is offline)
+    Recipes {#recipes}
+      Plomeek soup
+        Root vegetables and a lot of patience
+      Earl Grey cake
+      Saturday pizza -> work
+    Apartment "Deck 4"
+      Dishwasher (aka the warp core) makes a new noise #todo
+    Gift ideas #idea -> people
+      Mo: a new Competition Pro
+  DO NOT OPEN {#secret} {fold}
+    Section 31 eyes only
+      You clicked anyway. Classic Kirk move.
+`;
+
+function hash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0) / 4294967296; }
+
+/* ---------------- model: one outline, every line an item ---------------- */
+const items = [], byId = {};
+let root = null, autoId = 0;
+function newItem(title, extra) {
+  const n = Object.assign({ id: 'i' + autoId++, title, links: [], file: null, fold: false, children: [], parent: null,
+    placeholder: false, hidden: false, dim: false, pulse: 0, cur: new V3(), tgt: new V3(), s: 0, ts: 0, sub: 1, base: 1 }, extra || {});
+  items.push(n); byId[n.id] = n; return n;
+}
+(function parse() {
+  const stack = [];
+  for (const raw of SRC.split('\n')) {
+    if (!raw.trim()) continue;
+    const depth = raw.match(/^ */)[0].length / 2;
+    let t = raw.trim(), file = null, id = null, links = [], fold = false;
+    if (t.startsWith('@ ')) { t = t.slice(2); file = t.split('.').pop().toLowerCase(); }
+    t = t.replace(/\{#([\w-]+)\}/, (_, a) => { id = a; return ''; });
+    t = t.replace(/\{fold\}/, () => { fold = true; return ''; });
+    t = t.replace(/->\s*([\w, -]+)$/, (_, a) => { links = a.split(',').map(s => s.trim()).filter(Boolean); return ''; });
+    const extra = { links, file, fold }; if (id) extra.id = id;
+    const n = newItem(t.replace(/\s+/g, ' ').trim(), extra);
+    const parent = depth ? stack[depth - 1] : null;
+    n.parent = parent; if (parent) parent.children.push(n); else root = n;
+    stack[depth] = n; stack.length = depth + 1;
+  }
+})();
+
+const pathOf = n => { const p = []; for (let x = n; x; x = x.parent) p.unshift(x); return p; };
+const depthOf = n => pathOf(n).length - 1;
+const inTree = n => !!n && pathOf(n)[0] === root;
+const tagsOf = n => n.file ? [] : [...n.title.matchAll(/(?:^|\s)#([\w-]+)/g)].map(m => m[1]);
+const plainOf = n => n === root ? 'Home' : (n.title.replace(/(^|\s)#[\w-]+/g, ' ').replace(/\s+/g, ' ').trim() || n.title || 'Untitled');
+const kidsOf = n => n.children.filter(c => !c.file);
+const filesOf = n => n.children.filter(c => c.file);
+const hasKids = n => n.children.some(c => !c.file);
+const isBody = n => n === root || !!n.file || n.children.length > 0;     // folder-backed, or a file
+const isPage = n => !n.file && (n === root || n.children.length > 0);   // has its own page in Pages mode
+function detach(n) { const s = n.parent.children; s.splice(s.indexOf(n), 1); n.parent = null; }
+function insertKid(p, n, idx) {
+  n.parent = p;
+  if (idx == null) { const f = p.children.findIndex(c => c.file); idx = f < 0 ? p.children.length : f; }
+  p.children.splice(idx, 0, n);
+}
+function addPlaceholder(n) { const ph = newItem('', { placeholder: true }); insertKid(n, ph, 0); return ph; }
+function cleanupPlaceholders(p) {
+  if (!p) return false;
+  const gone = p.children.filter(c => c.placeholder && !c.title && !c.children.length);
+  if (!gone.length) return false;
+  p.children = p.children.filter(c => !gone.includes(c)); gone.forEach(c => c.parent = null); return true;
+}
+function anchor(n) { for (const x of pathOf(n)) if (x !== n && x.fold) return x; return isBody(n) ? n : anchor(n.parent); }
+
+const AREA_HUE = { tour: 205, log: 262, work: 16, retro: 44, scifi: 300, life: 140, secret: -1 };
+const FILE_ICON = { md: '¶', excalidraw: '✎', html: '◫' };
+function hueOf(n) { if (n === root) return null; const a = pathOf(n)[1]; const h = AREA_HUE[a.id]; return h === undefined ? Math.floor(hash(a.id) * 360) : h; }
+function colorOf(n) {
+  if (n.file) return new THREE.Color(({ md: 0xe9e4d6, excalidraw: 0xa9bdff, html: 0x86e3d3, svg: 0xf3b8c9, png: 0xf3b8c9 })[n.file] || 0xcccccc);
+  const h = hueOf(n);
+  if (h === null) return new THREE.Color(0xf4f1e6);
+  if (h < 0) return new THREE.Color(0x777b88);
+  return new THREE.Color().setHSL(h / 360, .62, .6);
+}
+function cssColor(n) { const h = n.file ? null : hueOf(n); if (h === null) return '#e8ebf3'; if (h < 0) return '#7b8091'; return `hsl(${h} 65% 70%)`; }
+function tagHue(t) { return Math.floor(hash(t.toLowerCase()) * 360); }
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+const linkPairs = [];
+items.forEach(n => n.links.forEach(id => { if (byId[id]) linkPairs.push([n, byId[id]]); }));
+
+/* ---------------- graph layouts (pure, deterministic) ---------------- */
+const visKids = n => n.fold ? [] : n.children.filter(isBody);
+function layoutCrown() {
+  const P = {};
+  (function w(n) { const k = visKids(n); n._w = k.length ? k.reduce((a, c) => a + w(c), 0) : 1; return n._w; })(root);
+  (function place(n, a0, a1, d) {
+    const a = (a0 + a1) / 2, R = d === 0 ? 0 : 6 + (d - 1) * 8.5;
+    const y = d * 7 - 16 + (d ? (hash(n.id + 'y') - .5) * 3.2 : 0);
+    P[n.id] = [Math.cos(a) * R, y, Math.sin(a) * R];
+    let acc = a0;
+    visKids(n).forEach(k => { const span = (a1 - a0) * k._w / n._w; place(k, acc, acc + span, d + 1); acc += span; });
+  })(root, 0, Math.PI * 2, 0);
+  return P;
+}
+function layoutCone() {
+  const P = {}, GAP = 1.1;
+  (function size(n) {
+    const k = visKids(n);
+    if (!k.length) { n._r = n.file ? .9 : 1.5; return n._r; }
+    let sum = 0; k.forEach(c => sum += size(c) * 2 + GAP);
+    n._R = Math.max(sum / (2 * Math.PI), 2.8);
+    n._r = n._R + Math.max(...k.map(c => c._r)) * .5; return n._r;
+  })(root);
+  (function place(n, x, y, z) {
+    P[n.id] = [x, y, z];
+    const k = visKids(n); if (!k.length) return;
+    let total = 0; k.forEach(c => total += c._r * 2 + GAP);
+    let acc = 0; const rot = hash(n.id) * Math.PI * 2;
+    k.forEach(c => { const w = c._r * 2 + GAP, a = rot + (acc + w / 2) / total * Math.PI * 2; acc += w;
+      place(c, x + Math.cos(a) * n._R, y - 9, z + Math.sin(a) * n._R); });
+  })(root, 0, 16, 0);
+  return P;
+}
+function layoutGalaxy() {
+  const C = layoutCrown();
+  const vs = items.filter(n => isBody(n) && !n.hidden), idx = new Map(vs.map((n, i) => [n, i]));
+  const p = vs.map(n => { const c = C[n.id]; return [c[0] * .9 + (hash(n.id + 'x') - .5) * 4, (c[1] + 16) * .12 + (hash(n.id + 'q') - .5) * 3, c[2] * .9 + (hash(n.id + 'z') - .5) * 4]; });
+  const v = vs.map(() => [0, 0, 0]);
+  const springs = [];
+  vs.forEach(n => { if (n.parent && idx.has(n.parent)) springs.push([idx.get(n), idx.get(n.parent), n.file ? 3 : 6, .07]); });
+  linkPairs.forEach(([a, b]) => { const A = anchor(a), B = anchor(b); if (A !== B && idx.has(A) && idx.has(B)) springs.push([idx.get(A), idx.get(B), 12, .035]); });
+  const N = vs.length, ri = idx.get(root);
+  for (let it = 0; it < 320; it++) {
+    const f = p.map(() => [0, 0, 0]);
+    for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+      const dx = p[i][0] - p[j][0], dy = p[i][1] - p[j][1], dz = p[i][2] - p[j][2];
+      const d2 = dx * dx + dy * dy + dz * dz + .05, s = Math.min(55 / d2, 4) / Math.sqrt(d2);
+      f[i][0] += dx * s; f[i][1] += dy * s; f[i][2] += dz * s; f[j][0] -= dx * s; f[j][1] -= dy * s; f[j][2] -= dz * s;
+    }
+    for (const [a, b, L, k] of springs) {
+      const dx = p[b][0] - p[a][0], dy = p[b][1] - p[a][1], dz = p[b][2] - p[a][2], d = Math.hypot(dx, dy, dz) + 1e-4, s = (d - L) * k / d;
+      f[a][0] += dx * s; f[a][1] += dy * s; f[a][2] += dz * s; f[b][0] -= dx * s; f[b][1] -= dy * s; f[b][2] -= dz * s;
+    }
+    const cool = 1 - it / 400;
+    for (let i = 0; i < N; i++) {
+      f[i][0] -= p[i][0] * .004; f[i][2] -= p[i][2] * .004; f[i][1] -= p[i][1] * .05;
+      for (let c = 0; c < 3; c++) { v[i][c] = (v[i][c] + f[i][c] * cool) * .8; p[i][c] += v[i][c]; }
+    }
+    p[ri] = [0, 0, 0];
+  }
+  const P = {}; vs.forEach((n, i) => P[n.id] = [p[i][0], p[i][1] - 2, p[i][2]]); return P;
+}
+const LAYOUTS = { crown: layoutCrown, cone: layoutCone, galaxy: layoutGalaxy };
+const MODES = ['pages', 'crown', 'cone', 'galaxy'];
+let mode = 'crown', gmode = 'crown', graphDirty = true;
+
+/* ---------------- graph scene ---------------- */
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+renderer.setClearColor(0x070a12, 1);
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x070a12, .0048);
+const camera = new THREE.PerspectiveCamera(50, 1, .1, 3000);
+scene.add(new THREE.AmbientLight(0x8a98c0, .62));
+const moonLight = new THREE.PointLight(0xfff2da, 1.25, 0, 2); scene.add(moonLight);
+const dirLight = new THREE.DirectionalLight(0x9fb4ff, .35); dirLight.position.set(-30, 60, 40); scene.add(dirLight);
+
+function radialTex(inner, outer) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, inner); gr.addColorStop(.35, outer); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c);
+}
+const glowTex = radialTex('rgba(255,255,255,.9)', 'rgba(255,255,255,.18)');
+const dotTex = radialTex('rgba(255,255,255,1)', 'rgba(255,255,255,.6)');
+function starfield(n, r0, r1, size, seed) {
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const u = hash(seed + 's' + i) * 2 - 1, th = hash(seed + 't' + i) * Math.PI * 2, r = r0 + hash(seed + 'r' + i) * (r1 - r0), q = Math.sqrt(1 - u * u);
+    pos.set([Math.cos(th) * q * r, u * r, Math.sin(th) * q * r], i * 3);
+    const w = .55 + hash(seed + 'w' + i) * .45, tint = hash(seed + 'c' + i);
+    col.set([w * (tint > .8 ? 1 : .85), w * .9, w * (tint < .2 ? .75 : 1)], i * 3);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return new THREE.Points(g, new THREE.PointsMaterial({ size, sizeAttenuation: false, vertexColors: true, fog: false, transparent: true, opacity: .85 }));
+}
+scene.add(starfield(2200, 380, 880, 1.6, 'g'));
+
+const sphereGeo = new THREE.SphereGeometry(1, 28, 18);
+const cardGeo = new THREE.BoxGeometry(1.2, 1.55, .1);
+const ringGeo = new THREE.TorusGeometry(1.75, .055, 8, 64);
+const labelsEl = document.getElementById('labels');
+function ensureMesh(n) {
+  if (n.mesh) return;
+  const col = colorOf(n);
+  const mat = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: n === root ? 1.1 : n.file ? .3 : .42, roughness: .55, metalness: .05, transparent: true });
+  const mesh = new THREE.Mesh(n.file ? cardGeo : sphereGeo, mat);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: col, transparent: true, opacity: n.file ? .22 : .5, blending: THREE.AdditiveBlending, depthWrite: false }));
+  glow.scale.setScalar(n === root ? 9 : n.file ? 2.6 : 3.6); mesh.add(glow);
+  if (!n.file) {
+    const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: .8 }));
+    ring.rotation.x = Math.PI / 2 - .38; ring.rotation.y = hash(n.id + 'r') * .6 - .3; ring.visible = false; mesh.add(ring); n.ring = ring;
+  }
+  mesh.scale.setScalar(.001);
+  scene.add(mesh); n.mesh = mesh; n.glow = glow; n.color = col; n.hueKey = cssColor(n);
+  if (n.parent && n.parent.mesh) n.cur.copy(n.parent.cur);
+  const d = el('div', 'lbl' + (depthOf(n) <= 1 ? ' d1' : ''));
+  d.style.setProperty('--c', cssColor(n));
+  if (n.file) d.appendChild(el('span', 'fi', FILE_ICON[n.file] || '▣'));
+  n.labelText = el('span', null, plainOf(n)); d.appendChild(n.labelText);
+  d.style.display = 'none'; labelsEl.appendChild(d); n.label = d;
+}
+function refreshColor(n) {
+  const key = cssColor(n); if (key === n.hueKey) return;
+  n.hueKey = key; const c = colorOf(n); n.color = c;
+  n.mesh.material.color.copy(c); n.mesh.material.emissive.copy(c); n.glow.material.color.copy(c); if (n.ring) n.ring.material.color.copy(c);
+  n.label.style.setProperty('--c', key);
+}
+function relayoutGraph() {
+  (function cnt(n) { n.sub = 1; n.children.forEach(c => n.sub += cnt(c)); return n.sub; })(root);
+  items.forEach(n => {
+    n.hidden = !inTree(n) || !isBody(n) || pathOf(n).slice(0, -1).some(a => a.fold);
+    if (inTree(n) && isBody(n)) { ensureMesh(n); refreshColor(n); }
+  });
+  const P = LAYOUTS[gmode]();
+  items.forEach(n => {
+    if (!n.mesh) return;
+    n.base = n === root ? 2.6 : n.file ? .62 : Math.min(1.9, .55 + Math.sqrt(n.sub) * .3);
+    if (!n.hidden) { n.tgt.fromArray(P[n.id]); n.ts = n.base; }
+    else { const a = inTree(n) ? anchor(n) : root; if (P[a.id]) n.tgt.fromArray(P[a.id]); n.ts = 0; }
+    if (n.ring) n.ring.visible = n.fold && n.children.length > 0;
+  });
+  if (reduce) items.forEach(n => { if (n.mesh) { n.cur.copy(n.tgt); n.s = n.ts; } });
+  graphDirty = false;
+}
+
+const halo = new THREE.Mesh(new THREE.TorusGeometry(1, .03, 6, 72), new THREE.MeshBasicMaterial({ color: 0xa9d3a0, transparent: true, opacity: .9, depthWrite: false }));
+halo.visible = false; scene.add(halo);
+
+// branches (parent -> child body), room to grow
+const TS = 12, MAXE = 900;
+const treePos = new Float32Array(MAXE * TS * 6), treeCol = new Float32Array(MAXE * TS * 6);
+const treeGeo = new THREE.BufferGeometry();
+treeGeo.setAttribute('position', new THREE.BufferAttribute(treePos, 3)); treeGeo.setAttribute('color', new THREE.BufferAttribute(treeCol, 3));
+const treeLines = new THREE.LineSegments(treeGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .75, blending: THREE.AdditiveBlending, depthWrite: false }));
+treeLines.frustumCulled = false; scene.add(treeLines);
+
+// link pipes + traffic
+const LS = 20;
+const linkPos = new Float32Array(linkPairs.length * LS * 6), linkCol = new Float32Array(linkPairs.length * LS * 6);
+const linkGeo = new THREE.BufferGeometry();
+linkGeo.setAttribute('position', new THREE.BufferAttribute(linkPos, 3)); linkGeo.setAttribute('color', new THREE.BufferAttribute(linkCol, 3));
+const linkLines = new THREE.LineSegments(linkGeo, new THREE.LineDashedMaterial({ vertexColors: true, dashSize: .7, gapSize: .45, transparent: true, opacity: .9, blending: THREE.AdditiveBlending, depthWrite: false }));
+linkLines.frustumCulled = false; scene.add(linkLines);
+const PPL = 3, partPos = new Float32Array(linkPairs.length * PPL * 3);
+const partGeo = new THREE.BufferGeometry(); partGeo.setAttribute('position', new THREE.BufferAttribute(partPos, 3));
+const partMat = new THREE.PointsMaterial({ size: .9, map: dotTex, color: 0xf0c776, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+const partPts = new THREE.Points(partGeo, partMat); partPts.frustumCulled = false; scene.add(partPts);
+
+// leaf bullets as dust around their parent
+let dustGeo = new THREE.BufferGeometry(), dustPts = null, dustGroups = [];
+const dustMat = new THREE.PointsMaterial({ size: .42, map: dotTex, color: 0xdfe5f5, transparent: true, opacity: .85, blending: THREE.AdditiveBlending, depthWrite: false });
+function rebuildDust() {
+  dustGroups = items.filter(p => inTree(p) && isPage(p)).map(p => [p, p.children.filter(c => !c.file && !c.children.length).length]).filter(g => g[1]);
+  const count = dustGroups.reduce((a, g) => a + g[1], 0);
+  if (dustPts) scene.remove(dustPts);
+  dustGeo.dispose(); dustGeo = new THREE.BufferGeometry();
+  dustGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(Math.max(count, 1) * 3), 3));
+  dustPts = new THREE.Points(dustGeo, dustMat); dustPts.frustumCulled = false; scene.add(dustPts);
+}
+
+const probe = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffe2a0, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+probe.scale.setScalar(3); probe.visible = false; scene.add(probe);
+let probeRun = null;
+
+/* ---------------- workspace state ---------------- */
+let sel = null, hover = null, query = '', hits = null, docked = -1;
+const tabs = [
+  { name: 'Home', wins: [['root', 0, 0, .58, 1], ['tour', .58, 0, .42, 1]] },
+  { name: 'Work', wins: [['sprint', 0, 0, .5, 1], ['slice-arch', .5, 0, .5, .6], ['today', .5, .6, .5, .4]] },
+  { name: 'Retro Lab', wins: [['c64', 0, 0, .55, 1], ['amiga', .55, 0, .45, 1]] },
+  { name: 'Life', wins: [['spot', 0, 0, .4, 1], ['5k', .4, 0, .6, 1]] },
+].map(t => ({ name: t.name, focus: 0,
+  // rect: the window's place in the tab's split layout, as fractions of the work area
+  wins: t.wins.map(([id, x, y, w, h]) => ({ node: byId[id], back: [], fwd: [], rect: { x, y, w, h } })) }));
+let tabIdx = 0;
+const curTab = () => tabs[tabIdx];
+const focusedWin = () => curTab().wins[curTab().focus];
+const pageTarget = n => n.file ? n.parent : n;
+
+/* ---------------- graph camera ---------------- */
+const cam = { target: new V3(0, 0, 0), radius: 120, theta: .7, phi: 1.12 };
+const goal = { target: new V3(0, 2, 0), radius: 96, theta: .55, phi: 1.08 };
+let follow = null, lastInteract = performance.now(), W = 1, H = 1;
+function extentOf(n) {
+  let m = 0; (function walk(x) { if (x !== n && !x.hidden) m = Math.max(m, x.tgt.distanceTo(n.tgt)); visKids(x).forEach(walk); })(n); return m;
+}
+function flyTo(n) { follow = n; goal.radius = Math.min(170, Math.max(16, extentOf(n) * 2.3 + 13)); }
+function frameNodes(list) {
+  if (!list.length) return;
+  const c = new V3(); list.forEach(n => c.add(n.tgt)); c.multiplyScalar(1 / list.length);
+  let m = 0; list.forEach(n => m = Math.max(m, n.tgt.distanceTo(c)));
+  follow = null; goal.target.copy(c); goal.radius = Math.min(230, Math.max(26, m * 2.4 + 22));
+}
+
+/* ---------------- shared outline editor ----------------
+   The same renderer draws the docked window (graph shapes), the current page
+   (editable) and the pages around it (read-only previews).                 */
+function makeEditable(e) {
+  try { e.contentEditable = 'plaintext-only'; } catch (_) { /* unsupported */ }
+  if (e.contentEditable !== 'plaintext-only') e.contentEditable = 'true';
+  e.spellcheck = false;
+}
+function renderOutline(host, page, o) {
+  host._ctx = { page, o };
+  host.textContent = '';
+  const title = el('h2', 'ol-title', page === root ? 'Home' : page.title);
+  if (o.editable && page !== root) makeEditable(title);
+  host.appendChild(title);
+  const rowsEl = el('div', 'ol-rows'); host.appendChild(rowsEl);
+  (function walk(p, d) {
+    for (const c of p.children) {
+      if (c.file) continue;
+      const r = el('div', 'row' + (c.placeholder ? ' ph' : '')); r.dataset.id = c.id; r.style.setProperty('--d', d);
+      const tog = el('button', 'tog', c.fold ? '▸' : '▾'); tog.type = 'button'; tog.tabIndex = -1;
+      tog.setAttribute('aria-label', c.fold ? 'Unfold' : 'Fold'); if (!hasKids(c)) tog.style.visibility = 'hidden';
+      const dot = el('button', 'dot' + (isPage(c) ? ' kids' : '') + (c.fold && hasKids(c) ? ' folded' : '')); dot.type = 'button'; dot.tabIndex = -1;
+      dot.title = isPage(c) ? `Zoom into ${plainOf(c)}` : 'Zoom in'; dot.setAttribute('aria-label', dot.title);
+      if (isPage(c)) r.style.setProperty('--c', cssColor(c));
+      const tx = el('span', 'tx', c.title); if (o.editable) makeEditable(tx);
+      r.append(tog, dot, tx); rowsEl.appendChild(r);
+      if (!c.fold) walk(c, d + 1);
+    }
+  })(page, 0);
+  const files = filesOf(page);
+  if (files.length) {
+    const f = el('div', 'ol-files'); f.appendChild(el('div', 'ol-fh', 'In this folder'));
+    files.forEach(x => { const d = el('div', 'ol-file'); d.append(el('b', null, FILE_ICON[x.file] || '▣'), el('span', null, x.title)); f.appendChild(d); });
+    host.appendChild(f);
+  }
+  if (!host._olBound) bindOutline(host);
+}
+function caretOff(t) {
+  const s = getSelection(); if (!s.rangeCount) return 0;
+  const r = s.getRangeAt(0); if (!t.contains(r.startContainer)) return 0;
+  const pre = r.cloneRange(); pre.selectNodeContents(t); pre.setEnd(r.startContainer, r.startOffset); return pre.toString().length;
+}
+function placeCaret(t, off) {
+  if (!t) return;
+  t.focus({ preventScroll: true });
+  const s = getSelection(), r = document.createRange(), tn = t.firstChild;
+  if (tn && tn.nodeType === 3) r.setStart(tn, Math.min(off, tn.length)); else r.setStart(t, 0);
+  r.collapse(true); s.removeAllRanges(); s.addRange(r); ensureVisible(t);
+}
+function ensureVisible(t) {
+  const sc = t.closest('.pg-body, .ed-body'); if (!sc) return;
+  const a = t.getBoundingClientRect(), b = sc.getBoundingClientRect(), k = b.height / (sc.clientHeight || b.height || 1);
+  if (a.top < b.top + 8) sc.scrollTop -= (b.top + 8 - a.top) / k;
+  else if (a.bottom > b.bottom - 8) sc.scrollTop += (a.bottom - b.bottom + 8) / k;
+}
+function captureFocus(host) {
+  const a = document.activeElement; if (!a || !host.contains(a)) return null;
+  if (a.classList.contains('ol-title')) return { title: true, off: caretOff(a) };
+  const r = a.closest('.row'); return r ? { id: r.dataset.id, off: caretOff(a) } : null;
+}
+function restoreFocus(host, f) {
+  if (!f) return;
+  const t = f.title ? host.querySelector('.ol-title') : host.querySelector(`.row[data-id="${f.id}"] .tx`);
+  if (t && t.isContentEditable) placeCaret(t, f.off);
+}
+function focusFirst(host, id) {
+  const t = (id && host.querySelector(`.row[data-id="${id}"] .tx`)) || host.querySelector('.row .tx') || host.querySelector('.ol-title');
+  if (t && t.isContentEditable) placeCaret(t, id ? 0 : t.textContent.length);
+}
+function bindOutline(host) {
+  host._olBound = true;
+  host.addEventListener('click', e => {
+    const ctx = host._ctx; if (!ctx || !ctx.o.editable) return;
+    const b = e.target.closest('button'); if (!b) return;
+    const row = b.closest('.row'); if (!row) return;
+    const n = byId[row.dataset.id];
+    if (b.classList.contains('dot')) ctx.o.onZoom(n);
+    else if (b.classList.contains('tog')) { n.fold = !n.fold; structureChanged({ host, focus: captureFocus(host) }); }
+  });
+  host.addEventListener('input', e => {
+    const ctx = host._ctx, t = e.target;
+    if (t.classList.contains('ol-title')) { ctx.page.title = t.textContent; textChanged(ctx.page); return; }
+    const r = t.closest('.row'); if (!r) return;
+    const n = byId[r.dataset.id]; n.title = t.textContent;
+    if (n.title) { n.placeholder = false; r.classList.remove('ph'); }
+    textChanged(n);
+  });
+  host.addEventListener('paste', e => {
+    if (!e.target.isContentEditable) return;
+    e.preventDefault();
+    document.execCommand('insertText', false, (e.clipboardData.getData('text/plain') || '').replace(/\s*\n\s*/g, ' '));
+  });
+  host.addEventListener('keydown', e => {
+    const ctx = host._ctx; if (!ctx || !ctx.o.editable) return;
+    const t = e.target; if (!t.isContentEditable) return;
+    const o = ctx.o, page = ctx.page, mod = e.metaKey || e.ctrlKey;
+    e.stopPropagation();
+    if (e.key === 'Escape' || (e.key === 'ArrowUp' && e.ctrlKey && e.metaKey)) { e.preventDefault(); o.onEscape(); return; }
+    if (e.altKey && mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); if (o.onHistory) o.onHistory(e.key === 'ArrowLeft' ? -1 : 1); return; }
+    const rows = [...host.querySelectorAll('.row .tx')];
+    const off = caretOff(t), len = t.textContent.length, s = getSelection(), collapsed = !s.rangeCount || s.getRangeAt(0).collapsed;
+    if (t.classList.contains('ol-title')) {
+      if (e.key === 'Enter') { e.preventDefault(); const n = newItem(''); insertKid(page, n, 0); structureChanged({ host, focus: { id: n.id, off: 0 } }); }
+      else if (e.key === 'ArrowDown' && rows[0]) { e.preventDefault(); placeCaret(rows[0], off); }
+      return;
+    }
+    const row = t.closest('.row'), n = byId[row.dataset.id], i = rows.indexOf(t);
+    if (e.key === 'Enter' && e.altKey) { e.preventDefault(); o.onZoom(n); return; }
+    if (e.key === 'Enter' && !e.shiftKey && !mod) {
+      e.preventDefault();
+      if (off === 0 && len > 0) { insertKid(n.parent, newItem(''), n.parent.children.indexOf(n)); structureChanged({ host, focus: { id: n.id, off: 0 } }); return; }
+      const text = n.title; n.title = text.slice(0, off);
+      const m = newItem(text.slice(off));
+      if (hasKids(n) && !n.fold) insertKid(n, m, 0); else insertKid(n.parent, m, n.parent.children.indexOf(n) + 1);
+      textChanged(n); structureChanged({ host, focus: { id: m.id, off: 0 } }); return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        const par = n.parent; if (par === page) return;
+        const gp = par.parent; detach(n); insertKid(gp, n, gp.children.indexOf(par) + 1);
+        structureChanged({ host, focus: { id: n.id, off } });
+      } else {
+        const sibs = n.parent.children; let j = sibs.indexOf(n) - 1; while (j >= 0 && sibs[j].file) j--;
+        if (j < 0) return;
+        const p = sibs[j], sprouted = !isPage(p);
+        detach(n); insertKid(p, n); p.fold = false;
+        structureChanged({ host, focus: { id: n.id, off } });
+        if (sprouted && mode === 'pages') toast(`${plainOf(p)} got its first child, so it now has a page of its own. It appeared behind this one.`);
+      }
+      return;
+    }
+    if (e.key === 'Backspace' && collapsed && off === 0) {
+      if (len === 0 && !n.children.length) {
+        e.preventDefault(); const prev = rows[i - 1]; detach(n);
+        structureChanged({ host, focus: prev ? { id: prev.closest('.row').dataset.id, off: prev.textContent.length } : { title: true, off: 1e9 } });
+      } else if (len > 0 && i > 0 && !n.children.length) {
+        e.preventDefault(); const p = byId[rows[i - 1].closest('.row').dataset.id], at = p.title.length;
+        p.title += n.title; detach(n); textChanged(p);
+        structureChanged({ host, focus: { id: p.id, off: at } });
+      }
+      return;
+    }
+    if (mod && !e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault(); if (hasKids(n)) { n.fold = e.key === 'ArrowUp'; structureChanged({ host, focus: { id: n.id, off } }); } return;
+    }
+    if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      if (i > 0) placeCaret(rows[i - 1], off); else { const ti = host.querySelector('.ol-title'); if (ti.isContentEditable) placeCaret(ti, off); }
+      return;
+    }
+    if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey) { e.preventDefault(); if (i < rows.length - 1) placeCaret(rows[i + 1], off); }
+  });
+}
+
+/* ---------------- changes fan out to every view ---------------- */
+function textChanged(n) {
+  if (n.labelText) n.labelText.textContent = plainOf(n);
+  refreshCardsSoon(); refreshPagesSoon();
+  if (pathOf(n).includes(mode === 'pages' ? curPage() : sel)) renderCrumbs();
+}
+function structureChanged(o = {}) {
+  if (mode === 'pages') graphDirty = true; else relayoutGraph();
+  rebuildDust();
+  views.forEach(v => { computePageLayout(v); if (!v.flight) syncPages(v, pageSet(v.cur), true); });
+  if (o.host && o.host._ctx) { renderOutline(o.host, o.host._ctx.page, o.host._ctx.o); restoreFocus(o.host, o.focus); }
+  views.forEach(v => { for (const P of v.pages.values()) if (P.body === o.host) P.dirty = false; });
+  renderCards();
+  refreshPagesSoon();
+  if (sel && mode !== 'pages') renderSel();
+}
+
+/* ---------------- window cards (graph shapes) ---------------- */
+const winsEl = document.getElementById('windows'), tethers = document.getElementById('tethers');
+let cards = [];
+let refreshT = 0; function refreshCardsSoon() { clearTimeout(refreshT); refreshT = setTimeout(renderCards, 120); }
+function renderCards() {
+  winsEl.textContent = ''; tethers.textContent = '';
+  const narrow = W < 560;
+  cards = curTab().wins.map((w, i) => {
+    const n = w.node, c = el('div', 'win' + (i === curTab().focus ? ' focused' : ''));
+    c.style.setProperty('--c', cssColor(n));
+    c.setAttribute('role', 'button'); c.tabIndex = 0; c.setAttribute('aria-label', `Window ${i + 1}: ${plainOf(n)}. Press Enter to edit.`);
+    const h = el('div', 'win-h'); h.append(el('span', 'win-n', String(i + 1)), el('span', 'win-t', plainOf(n)));
+    const x = el('button', 'win-x', '×'); x.type = 'button'; x.title = 'Close window'; x.setAttribute('aria-label', 'Close window'); h.appendChild(x);
+    const ul = el('ul', 'win-b');
+    const rows = kidsOf(n).map(k => [hasKids(k) ? 'nd' : '', k.title]);
+    const max = narrow ? 2 : 4;
+    rows.slice(0, max).forEach(([k, t]) => { const li = el('li', k); li.append(el('span', 'dot'), el('span', null, t)); ul.appendChild(li); });
+    if (rows.length > max) ul.appendChild(el('li', 'more', `${rows.length - max} more`));
+    if (!rows.length) ul.appendChild(el('li', 'more', n.file ? 'File' : 'Empty'));
+    c.append(h, ul);
+    c.addEventListener('click', e => { if (e.target === x) { closeWindow(i); return; } curTab().focus = i; openEditor(i); });
+    c.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); curTab().focus = i; openEditor(i); } });
+    winsEl.appendChild(c);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('stroke', cssColor(n)); line.setAttribute('stroke-opacity', '.7'); line.setAttribute('stroke-width', '1.2');
+    const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle'); dot.setAttribute('r', '3'); dot.setAttribute('fill', cssColor(n));
+    tethers.append(line, dot);
+    return { el: c, line, dot, w: c.offsetWidth, h: c.offsetHeight };
+  });
+  renderDock();
+}
+function closeWindow(i) {
+  const t = curTab(); if (t.wins.length <= 1) { toast('A tab keeps at least one window.'); return; }
+  const [gone] = t.wins.splice(i, 1); t.focus = Math.min(t.focus, t.wins.length - 1);
+  // Hand the closed window's space to a neighbour that shares a whole edge with it, else re-tile as columns.
+  const r = gone.rect, eq = (a, b) => Math.abs(a - b) < 1e-6;
+  const nb = t.wins.find(w => { const o = w.rect;
+    return (eq(o.y, r.y) && eq(o.h, r.h) && (eq(o.x + o.w, r.x) || eq(r.x + r.w, o.x))) || (eq(o.x, r.x) && eq(o.w, r.w) && (eq(o.y + o.h, r.y) || eq(r.y + r.h, o.y))); });
+  if (nb) {
+    const o = nb.rect, sideBySide = eq(o.y, r.y) && eq(o.h, r.h) && (eq(o.x + o.w, r.x) || eq(r.x + r.w, o.x));
+    if (sideBySide) { o.x = Math.min(o.x, r.x); o.w += r.w; } else { o.y = Math.min(o.y, r.y); o.h += r.h; }
+  }
+  else t.wins.forEach((w, j) => w.rect = { x: j / t.wins.length, y: 0, w: 1 / t.wins.length, h: 1 });
+  renderCards(); if (mode === 'pages') rebuildViews();
+}
+
+const tabsEl = document.getElementById('tabs'), wchipsEl = document.getElementById('wchips');
+function renderDock() {
+  tabsEl.textContent = '';
+  tabs.forEach((t, i) => {
+    const b = el('button', 'tab'); b.type = 'button'; b.setAttribute('aria-pressed', String(i === tabIdx));
+    const pips = el('span', 'pips'); t.wins.forEach(() => pips.appendChild(el('i')));
+    b.append(el('span', null, t.name), pips, el('kbd', null, String(i + 1)));
+    b.addEventListener('click', () => switchTab(i));
+    tabsEl.appendChild(b);
+  });
+  wchipsEl.textContent = '';
+  curTab().wins.forEach((w, i) => {
+    const b = el('button', 'wchip' + (i === curTab().focus ? ' focused' : ''), `${i + 1} · ${plainOf(w.node)}`); b.type = 'button';
+    b.title = mode === 'pages' ? 'Switch to this window' : 'Focus this window and fly to it';
+    b.addEventListener('click', () => {
+      curTab().focus = i;
+      if (mode === 'pages') { focusView(i); focusCurPage(); }
+      else { renderCards(); select(w.node); }
+    });
+    wchipsEl.appendChild(b);
+  });
+  const add = el('button', 'wchip add', '+ Window'); add.type = 'button';
+  add.title = mode === 'pages' ? 'New window on this page' : 'New window at the selected node (⇧⏎)';
+  add.addEventListener('click', () => newWindowAt(mode === 'pages' ? curPage() : (sel || root))); wchipsEl.appendChild(add);
+  if (mode === 'pages') { renderPageHeads(); layoutViews(); }
+}
+function switchTab(i) {
+  if (docked >= 0) closeEditor();
+  const same = i === tabIdx; tabIdx = i; renderCards();
+  if (mode === 'pages') rebuildViews();
+  else frameNodes(curTab().wins.map(w => anchor(w.node)));
+  if (!same) lastInteract = performance.now();
+}
+function openInWindow(n) {
+  const w = focusedWin(); if (w.node !== n) { w.back.push(w.node); w.fwd = []; }
+  w.node = n; renderCards(); toast(`Window ${curTab().focus + 1} now shows ${plainOf(n)}`);
+}
+function newWindowAt(n) {
+  const t = curTab(); if (t.wins.length >= 5) { toast('Five windows per tab is enough for a prototype.'); return; }
+  // Split the focused window along its longer side; the new window takes the second half.
+  const f = focusedWin().rect, wide = f.w * W >= f.h * H;
+  const rect = wide ? { x: f.x + f.w / 2, y: f.y, w: f.w / 2, h: f.h } : { x: f.x, y: f.y + f.h / 2, w: f.w, h: f.h / 2 };
+  if (wide) f.w /= 2; else f.h /= 2;
+  t.wins.splice(t.focus + 1, 0, { node: n, back: [], fwd: [], rect }); t.focus += 1;
+  renderCards(); if (mode === 'pages') rebuildViews(); toast(`New window at ${plainOf(n)}`);
+}
+
+/* ---------------- HUD: crumbs + selection ---------------- */
+const selHud = document.getElementById('selHud'), crumbsEl = document.getElementById('crumbs');
+function renderCrumbs() {
+  crumbsEl.textContent = '';
+  let path;
+  if (mode === 'pages' && curPage()) {
+    const w = focusedWin();
+    [['‹', -1, 'Back (⌥⌘←)', w.back.length], ['›', 1, 'Forward (⌥⌘→)', w.fwd.length]].forEach(([g, d, t, ok]) => {
+      const b = el('button', 'nav', g); b.type = 'button'; b.title = t; b.setAttribute('aria-label', t); b.disabled = !ok;
+      b.addEventListener('click', () => pagesHistory(d)); crumbsEl.appendChild(b);
+    });
+    path = pathOf(curPage());
+  } else path = sel ? pathOf(sel) : [root];
+  path.forEach((n, i) => {
+    if (i) crumbsEl.appendChild(el('span', 'sep', '›'));
+    const b = el('button', null, plainOf(n)); b.type = 'button';
+    b.addEventListener('click', () => mode === 'pages' ? zoomPagesTo(n, true) : select(n)); crumbsEl.appendChild(b);
+  });
+}
+function renderSel() {
+  renderCrumbs();
+  if (!sel || mode === 'pages') { selHud.hidden = true; return; }
+  selHud.hidden = false; selHud.textContent = '';
+  const h = el('h3'), i = el('i'); i.style.setProperty('--c', cssColor(sel)); h.append(i, el('span', null, plainOf(sel))); selHud.appendChild(h);
+  const nk = kidsOf(sel).filter(hasKids).length, nb = kidsOf(sel).filter(k => !hasKids(k)).length, nf = filesOf(sel).length;
+  const parts = [];
+  if (sel.file) parts.push(`${sel.file} file`);
+  if (nk) parts.push(`${nk} child node${nk > 1 ? 's' : ''}`);
+  if (nb) parts.push(`${nb} bullet${nb > 1 ? 's' : ''}`);
+  if (nf) parts.push(`${nf} file${nf > 1 ? 's' : ''}`);
+  const lk = linkPairs.filter(([a, b]) => a === sel || b === sel).length; if (lk) parts.push(`${lk} link${lk > 1 ? 's' : ''}`);
+  selHud.appendChild(el('div', 'sel-meta', parts.join(' · ') || 'Empty node'));
+  const tg = tagsOf(sel);
+  if (tg.length) { const d = el('div', 'sel-tags'); tg.forEach(t => { const s = el('span', 'tag', '#' + t); s.style.setProperty('--h', tagHue(t)); d.appendChild(s); }); selHud.appendChild(d); }
+  const act = el('div', 'sel-act');
+  const mk = (label, key, fn) => { const b = el('button', 'act'); b.type = 'button'; b.append(el('span', null, label), el('kbd', null, key)); b.addEventListener('click', fn); act.appendChild(b); };
+  mk(`Open in window ${curTab().focus + 1}`, '⏎', () => openInWindow(sel));
+  mk('New window', '⇧⏎', () => newWindowAt(sel));
+  if (hasKids(sel)) mk(sel.fold ? 'Unfold' : 'Fold', 'F', () => toggleFold(sel));
+  if (!sel.file) mk('Fly to its page', 'P', () => { const n = sel; setMode('pages'); zoomPagesTo(n, true); });
+  selHud.appendChild(act);
+}
+function select(n) {
+  sel = n;
+  if (n) { if (n.hidden && isBody(n)) { pathOf(n).forEach(a => { if (a !== n) a.fold = false; }); relayoutGraph(); } flyTo(anchor(n)); }
+  renderSel(); lastInteract = performance.now();
+}
+function toggleFold(n) { if (!hasKids(n)) return; n.fold = !n.fold; structureChanged(); if (sel) flyTo(anchor(sel)); }
+
+const toastEl = document.getElementById('toast'); let toastT = 0;
+function toast(msg) { toastEl.textContent = msg; toastEl.hidden = false; toastEl.style.opacity = '1'; clearTimeout(toastT); toastT = setTimeout(() => { toastEl.style.opacity = '0'; setTimeout(() => toastEl.hidden = true, 300); }, 3000); }
+
+/* ---------------- search (graph shapes) ---------------- */
+const qEl = document.getElementById('q'), qCount = document.getElementById('qcount'), chipsEl = document.getElementById('chips');
+['todo', 'idea', 'bug', 'trek', 'retro'].forEach(t => {
+  const b = el('button', 'chip', '#' + t); b.type = 'button'; b.style.setProperty('--h', tagHue(t)); b.setAttribute('aria-pressed', 'false');
+  b.addEventListener('click', () => { qEl.value = qEl.value === '#' + t ? '' : '#' + t; setQuery(qEl.value); });
+  chipsEl.appendChild(b);
+});
+function nodeMatches(n, q) {
+  if (q.startsWith('#')) { const t = q.slice(1); return !!t && tagsOf(n).some(x => x.toLowerCase().startsWith(t)); }
+  return n.title.toLowerCase().includes(q);
+}
+function setQuery(v) {
+  query = v.trim().toLowerCase();
+  chipsEl.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', String(c.textContent === query)));
+  if (!query) { hits = null; qCount.textContent = ''; items.forEach(n => n.dim = false); return; }
+  hits = new Set(items.filter(n => inTree(n) && nodeMatches(n, query)));
+  const lit = new Set(); hits.forEach(n => lit.add(anchor(n)));
+  items.forEach(n => n.dim = !lit.has(n));
+  qCount.textContent = String(hits.size);
+}
+qEl.addEventListener('input', () => setQuery(qEl.value));
+qEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { const l = [...new Set([...(hits || [])].map(anchor))]; if (l.length) frameNodes(l); }
+  if (e.key === 'Escape') { qEl.value = ''; setQuery(''); stage.focus(); }
+  e.stopPropagation();
+});
+
+/* ---------------- docked editor (graph shapes) ---------------- */
+const edEl = document.getElementById('editor'), edOl = document.getElementById('edOl'), edCrumbs = document.getElementById('edCrumbs'), edWin = document.getElementById('edWin');
+const edNode = () => curTab().wins[docked].node;
+function renderDocked(focus) {
+  const n = edNode();
+  edWin.textContent = `Window ${docked + 1} · ${curTab().name}`;
+  edCrumbs.textContent = '';
+  pathOf(n).forEach((x, i) => {
+    if (i) edCrumbs.appendChild(el('span', null, '›'));
+    const b = el('button', null, plainOf(x)); b.type = 'button';
+    b.addEventListener('click', () => moveDocked(x)); edCrumbs.appendChild(b);
+  });
+  renderOutline(edOl, n, { editable: true, onZoom: moveDocked, onEscape: closeEditor });
+  if (focus) restoreFocus(edOl, focus);
+}
+function moveDocked(n) {
+  if (n.file) { toast(`${n.title} opens in its own viewer.`); return; }
+  const w = curTab().wins[docked], prev = w.node;
+  let ph = null; if (!isPage(n)) ph = addPlaceholder(n);
+  if (prev !== n) { w.back.push(prev); w.fwd = []; cleanupPlaceholders(prev); }
+  w.node = n;
+  if (n.hidden || pathOf(n).slice(0, -1).some(a => a.fold)) pathOf(n).forEach(a => { if (a !== n) a.fold = false; });
+  structureChanged(); flyTo(anchor(n)); sel = n;
+  renderDocked(); focusFirst(edOl, ph && ph.id);
+}
+function openEditor(i) {
+  const from = cards[i] && cards[i].el.getBoundingClientRect();
+  docked = i; stage.classList.add('docked'); edEl.hidden = false; selHud.hidden = true;
+  renderCards(); renderDocked();
+  const n = edNode(); flyTo(anchor(n)); sel = n; renderCrumbs();
+  if (from && from.width && !reduce) {
+    const to = edEl.getBoundingClientRect();
+    edEl.style.transition = 'none';
+    edEl.style.transform = `translate(${from.left - to.left}px, ${from.top - to.top}px) scale(${from.width / to.width}, ${from.height / to.height})`;
+    edEl.style.opacity = '.35';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      edEl.style.transition = 'transform .45s cubic-bezier(.2,.8,.2,1), opacity .3s';
+      edEl.style.transform = ''; edEl.style.opacity = '1';
+    }));
+  }
+  setTimeout(() => focusFirst(edOl), reduce ? 0 : 460);
+}
+function closeEditor() {
+  if (docked < 0) return;
+  const n = edNode(); docked = -1; edEl.hidden = true; edEl.style.transform = ''; stage.classList.remove('docked');
+  if (cleanupPlaceholders(n)) structureChanged();
+  renderSel(); stage.focus({ preventScroll: true });
+}
+document.getElementById('edBack').addEventListener('click', closeEditor);
+edEl.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); closeEditor(); } e.stopPropagation(); });
+
+/* ================= PAGES MODE =================
+   Every node has a fixed place in space and its page hangs there (real DOM via
+   CSS3DRenderer). Each window of the tab is its own view into that space, laid
+   out in the tab's split layout: each view flies on its own, and the page it is
+   on sits at exactly 1:1 pixels as the normal editor. Editing never moves a
+   camera; only zooming does. A page open in two windows is the same item, drawn
+   in both views, so an edit in one shows up in the other.                    */
+const PDZ = 1600, TOP_PAD = 12, BOT_PAD = 12;
+const viewsEl = document.getElementById('views');
+const dockEl = document.getElementById('dock');
+let pShared = null;   // the starfield + space dust, drawn into every view by the one WebGL canvas
+let views = [];
+const fview = () => views[curTab().focus] || views[0];
+const curPage = () => { const v = fview(); return v ? v.cur : null; };
+const camDistV = v => (v.h / 2) / Math.tan(25 * Math.PI / 180);
+function initPagesShared() {
+  if (pShared || !HAS_CSS3D) return;
+  const scene = new THREE.Scene(), world = new THREE.Group(); scene.add(world);
+  world.add(starfield(2600, 90000, 180000, 1.6, 'p'));
+  const N = 1500, pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) pos.set([(hash('dx' + i) - .5) * 26000, (hash('dy' + i) - .5) * 17000, 5000 - hash('dz' + i) * 34000], i * 3);
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const dust = new THREE.Points(g, new THREE.PointsMaterial({ size: 16, map: dotTex, color: 0x8fa0cc, transparent: true, opacity: .4, blending: THREE.AdditiveBlending, depthWrite: false }));
+  dust.frustumCulled = false; world.add(dust);
+  pShared = { scene, world };
+}
+function makeView(win) {
+  const box = el('div', 'view');
+  const cssR = new THREE.CSS3DRenderer(); cssR.domElement.className = 'css3d';
+  const threads = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); threads.setAttribute('class', 'vthreads'); threads.setAttribute('aria-hidden', 'true');
+  box.append(cssR.domElement, threads);
+  const scene = new THREE.Scene(), world = new THREE.Group(); scene.add(world);
+  // The real camera never moves; `pos` is where it logically is and the world moves the
+  // other way. Chrome stops hit-testing CSS3D content once the renderer's camera layer
+  // lands behind the viewer, which a moving camera causes.
+  const cam = new THREE.PerspectiveCamera(50, 1, 1, 400000);
+  const v = { win, el: box, cssR, threads, scene, world, cam, pos: new V3(), flight: null, pages: new Map(), layout: new Map(), cur: null,
+    x: 0, y: 0, w: 1, h: 1, PW: 560, PH: 600, PDX: 1500 };
+  box.addEventListener('pointerdown', () => focusView(views.indexOf(v)), true);
+  box.addEventListener('focusin', () => focusView(views.indexOf(v)));
+  viewsEl.appendChild(box);
+  return v;
+}
+function focusView(i) {
+  if (i < 0 || i >= views.length || curTab().focus === i) return;
+  curTab().focus = i;
+  views.forEach((v, j) => v.el.classList.toggle('focused', j === i));
+  renderCrumbs(); renderDock();
+}
+function rebuildViews(opts = {}) {
+  views.forEach(v => v.el.remove()); views = [];
+  if (mode !== 'pages') return;
+  views = curTab().wins.map(makeView);
+  viewsEl.classList.toggle('single', views.length === 1);
+  let grew = false;
+  views.forEach(v => {
+    const n = pageTarget(v.win.node);
+    if (!isPage(n) && !n.file) { v.ph = addPlaceholder(n); grew = true; }
+    v.cur = n; v.win.node = n;
+  });
+  if (grew) { graphDirty = true; rebuildDust(); }
+  layoutViews();
+  views.forEach((v, i) => { v.el.classList.toggle('focused', i === curTab().focus); v.pos.copy(camPosFor(v, v.cur)); syncPages(v, pageSet(v.cur), false); });
+  if (!opts.noFocus) { const v = fview(); focusFirst(v.pages.get(v.cur).body, v.ph && v.ph.id); }
+  renderCrumbs();
+}
+function layoutViews() {
+  if (!views.length) return;
+  const top = 52, bottom = (dockEl.offsetHeight || 50) + 18, left = 8, right = 8, gap = 3;
+  const AW = W - left - right, AH = H - top - bottom;
+  views.forEach(v => {
+    const r = v.win.rect || { x: 0, y: 0, w: 1, h: 1 };
+    const x = Math.round(left + r.x * AW + gap), y = Math.round(top + r.y * AH + gap);
+    const w = Math.round(r.w * AW - gap * 2), h = Math.round(r.h * AH - gap * 2);
+    if (x === v.x && y === v.y && w === v.w && h === v.h) return;
+    Object.assign(v, { x, y, w, h });
+    Object.assign(v.el.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+    sizeView(v);
+  });
+}
+function sizeView(v) {
+  v.cssR.setSize(v.w, v.h); v.cam.aspect = v.w / v.h; v.cam.updateProjectionMatrix();
+  v.PW = Math.round(Math.min(580, v.w - 24)); v.PH = Math.round(Math.max(200, v.h - TOP_PAD - BOT_PAD));
+  for (const P of v.pages.values()) { P.el.style.width = v.PW + 'px'; P.el.style.height = v.PH + 'px'; }
+  computePageLayout(v);
+  // A resize is not navigation: pages and camera jump to their new places instead of gliding.
+  for (const P of v.pages.values()) { const t = v.layout.get(P.n); if (P.inScene && t) { P.cur.copy(t); P.obj.position.copy(t); } }
+  if (!v.flight && v.cur) v.pos.copy(camPosFor(v, v.cur));
+  if (v.cur && v.pages.size) { orderPageHits(v); applyView(v); v.cssR.render(v.scene, v.cam); }
+}
+function computePageLayout(v) {
+  const cd = camDistV(v), k = cd / (cd + PDZ);
+  const proj = Math.max(v.PW / 2 + v.PW * k / 2 + 40, v.w / 2 - v.PW * k / 2 - 14);
+  v.PDX = proj / k;
+  v.layout = new Map();
+  (function place(n, x, y, z) {
+    v.layout.set(n, new V3(x, y, z));
+    const kids = n.children.filter(isPage), half = Math.ceil(kids.length / 2);
+    [[kids.slice(0, half), -1], [kids.slice(half), 1]].forEach(([arr, side]) => {
+      const m = arr.length, spProj = m > 1 ? Math.min(v.PH * k + 18, (v.h - 40 - v.PH * k) / (m - 1)) : 0, sp = spProj / k;
+      arr.forEach((c, j) => place(c, x + side * v.PDX, y + ((m - 1) / 2 - j) * sp, z - PDZ - j * 260));
+    });
+  })(root, 0, 0, 0);
+}
+function pageSet(n) {
+  const s = new Set(); if (!n) return s; s.add(n);
+  n.children.filter(isPage).forEach(c => { s.add(c); c.children.filter(isPage).forEach(g => s.add(g)); });
+  return s;
+}
+function camPosFor(v, n, out = new V3()) {
+  const p = v.layout.get(n) || new V3();
+  return out.set(p.x, p.y - Math.round(v.h / 2 - TOP_PAD - v.PH / 2), p.z + camDistV(v));
+}
+function makePage(v, n) {
+  const pg = el('div', 'pg'); pg.style.width = v.PW + 'px'; pg.style.height = v.PH + 'px';
+  const head = el('div', 'pg-head'), body = el('div', 'pg-body ol');
+  pg.append(head, body);
+  pg.addEventListener('pointerdown', e => {
+    if (n === v.cur) return;
+    e.preventDefault();
+    const row = e.target.closest('.row'), dot = e.target.closest('.dot');
+    zoomPagesTo(dot && row ? byId[row.dataset.id] : n, true, { view: v });
+  });
+  return { n, el: pg, head, body, obj: new THREE.CSS3DObject(pg), cur: new V3(), s: 1, inScene: false, dirty: true };
+}
+function renderPageHead(v, P) {
+  const n = P.n; P.head.textContent = '';
+  P.head.appendChild(el('span', 'pth', pathOf(n).slice(0, -1).map(plainOf).join(' › ') || 'Vault root'));
+  curTab().wins.forEach((w, i) => { if (pageTarget(w.node) === n) P.head.appendChild(el('span', 'wb' + (i === curTab().focus ? ' f' : ''), 'Window ' + (i + 1))); });
+  if (n === v.cur && v === fview() && v.w > 520) P.head.appendChild(el('span', 'hint', '⌥⏎ or a dot: fly in · Esc: fly out'));
+}
+function renderPageHeads() { views.forEach(v => { for (const P of v.pages.values()) if (P.inScene) renderPageHead(v, P); }); }
+function renderPage(v, P) {
+  const f = captureFocus(P.body), cur = P.n === v.cur;
+  P.el.classList.toggle('cur', cur);
+  P.el.style.setProperty('--c', cssColor(P.n));
+  renderPageHead(v, P);
+  renderOutline(P.body, P.n, { editable: cur, onZoom: x => zoomPagesTo(x, true, { view: v }), onEscape: () => zoomPagesUp(v), onHistory: d => pagesHistory(d, v) });
+  if (cur) restoreFocus(P.body, f);
+  P.dirty = false; P.wasCur = cur;
+}
+function syncPages(v, set, sprout) {
+  for (const n of set) {
+    let P = v.pages.get(n);
+    const fresh = !P;
+    if (!P) { P = makePage(v, n); v.pages.set(n, P); }
+    if (!P.inScene) {
+      v.world.add(P.obj); P.inScene = true; P.dirty = true;
+      const at = v.layout.get(n);
+      if (sprout && fresh && n.parent && v.layout.get(n.parent)) { P.cur.copy(v.layout.get(n.parent)); P.s = 0; }
+      else { if (at) P.cur.copy(at); P.s = 1; }
+      P.obj.position.copy(P.cur); P.obj.scale.setScalar(Math.max(P.s, .001));
+    }
+  }
+  for (const [n, P] of v.pages) if (P.inScene && !set.has(n)) { v.world.remove(P.obj); P.inScene = false; }
+  for (const P of v.pages.values()) if (P.inScene && (P.dirty || P.wasCur !== (P.n === v.cur))) renderPage(v, P);
+  updatePageOpacity(v);
+  orderPageHits(v);
+  applyView(v);
+  v.cssR.render(v.scene, v.cam); // attach new page elements now, so they can take focus before the next frame
+}
+function updatePageOpacity(v) {
+  const d0 = depthOf(v.cur);
+  for (const P of v.pages.values()) if (P.inScene) {
+    const rel = depthOf(P.n) - d0;
+    P.el.style.opacity = rel === 0 || rel === 1 ? '1' : rel === 2 ? '.45' : '.7';
+  }
+}
+let pagesRefreshT = 0;
+function refreshPagesSoon() {
+  views.forEach(v => { for (const P of v.pages.values()) P.dirty = true; });
+  clearTimeout(pagesRefreshT);
+  pagesRefreshT = setTimeout(() => {
+    if (mode !== 'pages') return;
+    const a = document.activeElement;
+    // Re-draw every page shown anywhere, except the one being typed in.
+    views.forEach(v => { for (const P of v.pages.values()) if (P.inScene && P.dirty && !P.body.contains(a)) renderPage(v, P); });
+    renderPageHeads();
+  }, 150);
+}
+function zoomPagesTo(n, push, opts = {}) {
+  const v = opts.view || fview();
+  if (!n || !v) return;
+  if (n.file) { toast(`${n.title} opens in its own viewer, not as a page.`); return; }
+  if (!inTree(n)) return;
+  const prev = v.cur;
+  if (n === prev) { if (!opts.noFocus) focusFirst(v.pages.get(n).body); return; }
+  let ph = null; if (!isPage(n)) ph = addPlaceholder(n);
+  const w = v.win;
+  if (push && w.node !== n) { w.back.push(w.node); if (w.back.length > 50) w.back.shift(); w.fwd = []; }
+  w.node = n; v.cur = n;
+  if (ph) structureChanged(); else computePageLayout(v);
+  const to = camPosFor(v, n), from = v.pos.clone(), dist = from.distanceTo(to);
+  const ctrl = from.clone().lerp(to, .5); ctrl.z += dist * .3;
+  const union = new Set([...pageSet(n), ...(prev && inTree(prev) && isPage(prev) ? pageSet(prev) : [])]);
+  syncPages(v, union, false);
+  v.flight = reduce ? null : { from, to, ctrl, t: 0, dur: Math.min(1.5, .75 + dist / 9000), prev };
+  if (!v.flight) { v.pos.copy(to); afterFlight(v, prev); }
+  renderCrumbs(); renderDock();
+  if (!opts.noFocus) focusFirst(v.pages.get(n).body, ph && ph.id);
+}
+function afterFlight(v, prev) {
+  if (prev && prev !== v.cur && !views.some(o => o.cur === prev) && cleanupPlaceholders(prev)) structureChanged();
+  syncPages(v, pageSet(v.cur), false);
+}
+function zoomPagesUp(v = fview()) { if (v && v.cur && v.cur.parent) zoomPagesTo(v.cur.parent, true, { view: v }); }
+function pagesHistory(dir, v = fview()) {
+  if (!v) return;
+  const w = v.win, from = dir < 0 ? w.back : w.fwd, to = dir < 0 ? w.fwd : w.back;
+  while (from.length) { const n = pageTarget(from.pop()); if (inTree(n)) { to.push(w.node); zoomPagesTo(n, false, { view: v }); return; } }
+  toast(dir < 0 ? 'Nothing to go back to.' : 'Nothing to go forward to.');
+}
+function focusCurPage() { const v = fview(); const P = v && v.pages.get(v.cur); if (P) focusFirst(P.body); }
+function updateThreads(v) {
+  const P = v.pages.get(v.cur);
+  if (!P || !P.inScene) { v.threads.textContent = ''; return; }
+  const sr = v.el.getBoundingClientRect(), pr = P.el.getBoundingClientRect(), br = P.body.getBoundingClientRect();
+  let s = '';
+  for (const c of v.cur.children) {
+    if (!isPage(c)) continue;
+    const C = v.pages.get(c); if (!C || !C.inScene || C.s < .3) continue;
+    const kr = C.el.getBoundingClientRect(), side = C.cur.x < P.cur.x ? -1 : 1;
+    const dot = P.body.querySelector(`.row[data-id="${c.id}"] .dot`);
+    let y = pr.top + 30;
+    if (dot) { const r = dot.getBoundingClientRect(); y = Math.max(br.top + 6, Math.min(br.bottom - 6, r.top + r.height / 2)); }
+    const x1 = (side > 0 ? pr.right : pr.left) - sr.left, y1 = y - sr.top;
+    const x2 = (side > 0 ? kr.left : kr.right) - sr.left, y2 = kr.top + Math.min(24, kr.height / 2) - sr.top;
+    const col = cssColor(c), bend = Math.max(30, Math.abs(x2 - x1) * .45);
+    s += `<path d="M${x1.toFixed(1)} ${y1.toFixed(1)} C${(x1 + side * bend).toFixed(1)} ${y1.toFixed(1)} ${(x2 - side * bend).toFixed(1)} ${y2.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}" stroke="${col}" stroke-opacity=".6" stroke-width="1.3" fill="none"/>`
+      + `<circle cx="${x1.toFixed(1)}" cy="${y1.toFixed(1)}" r="3" fill="${col}"/><circle cx="${x2.toFixed(1)}" cy="${y2.toFixed(1)}" r="2.5" fill="${col}"/>`;
+  }
+  v.threads.innerHTML = s;
+}
+function applyView(v) {
+  const cd = camDistV(v);
+  v.cam.position.set(0, 0, cd);
+  v.world.position.set(-v.pos.x, -v.pos.y, cd - v.pos.z);
+  v.cam.updateMatrixWorld(); v.scene.updateMatrixWorld();
+}
+// Browsers hit-test CSS3D pages in DOM order, not by depth, so a faint page far
+// behind the current one could take the pointer (and every click and keystroke).
+// Stack them by distance from the camera, keep the current page on top, and let
+// pages behind the camera (mid-flight) ignore the pointer.
+function orderPageHits(v) {
+  const cz = v.pos.z;
+  for (const P of v.pages.values()) {
+    if (!P.inScene) continue;
+    const cur = P.n === v.cur, behind = P.cur.z > cz - 1;
+    const z = cur ? '100000' : String(Math.max(1, Math.round(50000 - (cz - P.cur.z))));
+    const pe = behind && !cur ? 'none' : 'auto';
+    if (P.el.style.zIndex !== z) P.el.style.zIndex = z;
+    if (P.el.style.pointerEvents !== pe) P.el.style.pointerEvents = pe;
+  }
+}
+function framePages(dt) {
+  const k = reduce ? 1 : 1 - Math.exp(-dt * 6), ks = reduce ? 1 : 1 - Math.exp(-dt * 3.5);
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H); renderer.clear();
+  renderer.setScissorTest(true);
+  for (const v of views) {
+    for (const P of v.pages.values()) {
+      if (!P.inScene) continue;
+      const t = v.layout.get(P.n); if (t) P.cur.lerp(t, k);
+      P.s += (1 - P.s) * ks;
+      P.obj.position.copy(P.cur); P.obj.scale.setScalar(Math.max(P.s, .001));
+    }
+    const f = v.flight;
+    if (f) {
+      f.t += dt / f.dur;
+      const t = Math.min(1, f.t), e = t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2, u = 1 - e;
+      v.pos.set(u * u * f.from.x + 2 * u * e * f.ctrl.x + e * e * f.to.x, u * u * f.from.y + 2 * u * e * f.ctrl.y + e * e * f.to.y, u * u * f.from.z + 2 * u * e * f.ctrl.z + e * e * f.to.z);
+      if (t >= 1) { v.flight = null; v.pos.copy(camPosFor(v, v.cur)); afterFlight(v, f.prev); }
+    } else {
+      const want = camPosFor(v, v.cur);
+      if (v.pos.distanceTo(want) < .4) v.pos.copy(want); else v.pos.lerp(want, k);
+    }
+    orderPageHits(v);
+    applyView(v);
+    pShared.world.position.copy(v.world.position);
+    const gy = H - (v.y + v.h);
+    renderer.setViewport(v.x, gy, v.w, v.h); renderer.setScissor(v.x, gy, v.w, v.h);
+    renderer.render(pShared.scene, v.cam);
+    v.cssR.render(v.scene, v.cam);
+    const de = v.cssR.domElement; if (de.scrollTop || de.scrollLeft) { de.scrollTop = 0; de.scrollLeft = 0; }
+    if (v.el.scrollTop || v.el.scrollLeft) { v.el.scrollTop = 0; v.el.scrollLeft = 0; }
+    updateThreads(v);
+  }
+  renderer.setScissorTest(false);
+  if (stage.scrollTop || stage.scrollLeft) { stage.scrollTop = 0; stage.scrollLeft = 0; }
+}
+
+/* ---------------- modes ---------------- */
+const segEl = document.getElementById('seg');
+function setMode(m, opts = {}) {
+  if (m === 'pages' && !HAS_CSS3D) { toast('Pages needs the CSS3D renderer, which did not load here.'); return; }
+  const was = mode; mode = m;
+  segEl.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === m)));
+  if (m === 'pages') {
+    if (docked >= 0) closeEditor();
+    initPagesShared(); stage.classList.add('pages');
+    if (was !== 'pages' || !views.length) rebuildViews({ noFocus: opts.noFocus });
+  } else {
+    gmode = m;
+    stage.classList.remove('pages');
+    let back = null;
+    if (was === 'pages') {
+      back = curPage();
+      views.forEach(v => { if (cleanupPlaceholders(v.cur)) graphDirty = true; });
+      rebuildViews();
+    }
+    relayoutGraph(); rebuildDust();
+    if (back && inTree(back)) { sel = back; flyTo(anchor(sel)); }
+    else if (sel) flyTo(anchor(sel)); else { follow = null; goal.target.set(0, m === 'cone' ? -6 : m === 'galaxy' ? 0 : 2, 0); goal.radius = m === 'galaxy' ? 88 : 96; }
+    stage.focus({ preventScroll: true });
+  }
+  renderCards(); renderSel();
+}
+segEl.addEventListener('click', e => { const b = e.target.closest('button'); if (b) setMode(b.dataset.mode); });
+const cycleMode = () => setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length]);
+
+/* ---------------- agent edits ---------------- */
+const AGENT = [
+  ['sprint', 'Claude: split "Share the map view model" into three tasks #todo'],
+  ['today', 'Claude: summarized the standup into two bullets'],
+  ['amiga', 'Claude: added the Kickstart 1.3 ROM checksums'],
+  ['groceries', 'Claude: added pizza dough (again)'],
+  ['trek', 'Claude: drafted a DS9 rewatch order, season by season'],
+];
+const AGENT_LINES = ['Claude: summarized this node in one line', 'Claude: added a follow-up #todo', 'Claude: linked this to Sprint 42', 'Claude: merged two duplicate bullets'];
+let agentI = 0;
+document.getElementById('agentBtn').addEventListener('click', () => {
+  if (mode === 'pages') {
+    const v = fview(), cands = [...v.cur.children.filter(isPage), v.cur], t = cands[agentI % cands.length];
+    const text = AGENT_LINES[agentI++ % AGENT_LINES.length];
+    insertKid(t, newItem(text)); structureChanged();
+    views.forEach(o => { const P = o.pages.get(t); if (P && P.inScene) { renderPage(o, P); P.el.classList.remove('agent'); void P.el.offsetWidth; P.el.classList.add('agent'); } });
+    toast(`An agent added a bullet to ${plainOf(t)}`);
+    return;
+  }
+  if (probeRun) return;
+  const [id, text] = AGENT[agentI++ % AGENT.length], n = byId[id];
+  const start = camera.position.clone().add(new V3(-40, 30, 10).applyQuaternion(camera.quaternion));
+  probeRun = { n, text, start, t: 0, dur: reduce ? .01 : 1.9 };
+  probe.visible = true; toast(`An agent is editing ${plainOf(n)}…`);
+});
+function probeArrive(r) {
+  probe.visible = false; probeRun = null;
+  insertKid(r.n, newItem(r.text)); r.n.pulse = 1;
+  structureChanged();
+  if (docked >= 0 && edNode() === r.n) renderDocked(captureFocus(edOl));
+  toast(`An agent added a bullet to ${plainOf(r.n)}`);
+}
+
+/* ---------------- graph input ---------------- */
+const ptrs = new Map(); let down = null, pinch0 = 0, lastClick = { t: 0, n: null };
+function local(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+const pv = new V3();
+function project(v) { pv.copy(v).project(camera); return { x: (pv.x * .5 + .5) * W, y: (-pv.y * .5 + .5) * H, behind: pv.z > 1 }; }
+function pick(mx, my) {
+  let best = null, bd = 1e9; const f = Math.tan(camera.fov * Math.PI / 360);
+  for (const n of items) {
+    if (!n.mesh || n.hidden || n.s < .05 || n.dim) continue;
+    const p = project(n.cur); if (p.behind) continue;
+    const dist = camera.position.distanceTo(n.cur), pr = n.s * H / (2 * dist * f);
+    const r = Math.max(pr + 4, 11), d = Math.hypot(p.x - mx, p.y - my);
+    if (d < r && dist < bd) { bd = dist; best = n; }
+  }
+  return best;
+}
+canvas.addEventListener('pointerdown', e => {
+  if (mode === 'pages') return;
+  canvas.setPointerCapture(e.pointerId); const p = local(e); ptrs.set(e.pointerId, p);
+  if (ptrs.size === 1) down = { ...p, sx: p.x, sy: p.y, moved: false, pan: e.button === 2 || e.shiftKey };
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); }
+  canvas.classList.add('grabbing'); lastInteract = performance.now(); stage.focus({ preventScroll: true });
+});
+canvas.addEventListener('pointermove', e => {
+  if (mode === 'pages') return;
+  const p = local(e);
+  if (!ptrs.has(e.pointerId)) { hover = pick(p.x, p.y); canvas.classList.toggle('pointing', !!hover); return; }
+  ptrs.set(e.pointerId, p); lastInteract = performance.now();
+  if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinch0) goal.radius = Math.min(400, Math.max(6, goal.radius * pinch0 / d)); pinch0 = d; if (down) down.moved = true; return;
+  }
+  if (!down) return;
+  const dx = p.x - down.x, dy = p.y - down.y; down.x = p.x; down.y = p.y;
+  if (Math.hypot(p.x - down.sx, p.y - down.sy) > 4) down.moved = true;
+  if (down.pan) {
+    follow = null;
+    const right = new V3().setFromMatrixColumn(camera.matrix, 0), up = new V3().setFromMatrixColumn(camera.matrix, 1), k = cam.radius * .0016;
+    goal.target.addScaledVector(right, -dx * k).addScaledVector(up, dy * k); cam.target.addScaledVector(right, -dx * k).addScaledVector(up, dy * k);
+  } else {
+    goal.theta -= dx * .006; cam.theta -= dx * .006;
+    goal.phi = Math.min(Math.PI - .12, Math.max(.12, goal.phi - dy * .005)); cam.phi = goal.phi;
+  }
+});
+function endPtr(e) {
+  if (!ptrs.delete(e.pointerId)) return;
+  if (ptrs.size === 0) {
+    canvas.classList.remove('grabbing');
+    if (down && !down.moved) {
+      const n = pick(down.sx, down.sy), now = performance.now();
+      if (n) { if (lastClick.n === n && now - lastClick.t < 380) openInWindow(n); else select(n); lastClick = { t: now, n }; }
+    }
+    down = null; pinch0 = 0;
+  }
+}
+canvas.addEventListener('pointerup', endPtr); canvas.addEventListener('pointercancel', endPtr);
+canvas.addEventListener('pointerleave', () => { if (!ptrs.size) { hover = null; canvas.classList.remove('pointing'); } });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('wheel', e => {
+  if (mode === 'pages') return;
+  e.preventDefault();
+  // Line-based wheels report ~3 per notch, pixel ones ~100; trackpad pinch arrives as ctrl+wheel with small deltas.
+  const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1);
+  const f = Math.exp(Math.max(-.6, Math.min(.6, dy * (e.ctrlKey ? .012 : .0032))));
+  goal.radius = Math.min(400, Math.max(4, goal.radius * f));
+  lastInteract = performance.now();
+}, { passive: false });
+
+stage.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t.isContentEditable || t.tagName === 'INPUT') return;
+  if (docked >= 0) { if (e.key === 'Escape') { e.preventDefault(); closeEditor(); } return; }
+  let handled = true;
+  if (mode === 'pages') {
+    if (e.key === 'Escape' || (e.key === 'ArrowUp' && e.ctrlKey && e.metaKey)) zoomPagesUp();
+    else if (e.altKey && (e.metaKey || e.ctrlKey) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) pagesHistory(e.key === 'ArrowLeft' ? -1 : 1);
+    else if (e.key === 'Enter' || e.key === 'ArrowDown') focusCurPage();
+    else if (e.key === 'l' || e.key === 'L') cycleMode();
+    else if (/^[1-4]$/.test(e.key)) switchTab(+e.key - 1);
+    else handled = false;
+    if (handled) e.preventDefault();
+    return;
+  }
+  const cur = sel || root, sibs = cur.parent ? cur.parent.children.filter(isBody) : [root], si = sibs.indexOf(cur);
+  switch (e.key) {
+    case 'ArrowUp': select(cur.parent || root); break;
+    case 'ArrowDown': { const b = cur.children.filter(isBody); if (b.length) { if (cur.fold) toggleFold(cur); select(b[0]); } break; }
+    case 'ArrowLeft': select(sibs[(si - 1 + sibs.length) % sibs.length]); break;
+    case 'ArrowRight': select(sibs[(si + 1) % sibs.length]); break;
+    case 'Enter': if (e.shiftKey) newWindowAt(cur); else openInWindow(cur); break;
+    case 'e': case 'E': openEditor(curTab().focus); break;
+    case 'f': case 'F': toggleFold(cur); break;
+    case 'p': case 'P': if (!cur.file) { setMode('pages'); zoomPagesTo(cur, true); } break;
+    case 'l': case 'L': cycleMode(); break;
+    case '/': qEl.focus(); break;
+    case 'Escape': if (query) { qEl.value = ''; setQuery(''); } else { sel = null; renderSel(); frameNodes(items.filter(n => n.mesh && !n.hidden)); } break;
+    default: if (/^[1-4]$/.test(e.key)) switchTab(+e.key - 1); else handled = false;
+  }
+  if (handled) e.preventDefault();
+});
+document.getElementById('fsBtn').addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (stage.requestFullscreen) stage.requestFullscreen().catch(() => toast('Full screen is not available here.'));
+});
+
+/* ---------------- frame loop ---------------- */
+function resize() {
+  W = stage.clientWidth; H = stage.clientHeight;
+  renderer.setSize(W, H, false); camera.aspect = W / H; camera.updateProjectionMatrix();
+  cards.forEach(c => { c.w = c.el.offsetWidth; c.h = c.el.offsetHeight; });
+  if (mode === 'pages') layoutViews();
+}
+new ResizeObserver(() => { const narrow = W < 560; resize(); if ((W < 560) !== narrow) renderCards(); }).observe(stage);
+
+const tmpA = new V3(), tmpB = new V3(), tmpC = new V3(), tmpQ = new V3(), lift = new V3();
+function bez(a, c, b, t, out) { const u = 1 - t; return out.set(u * u * a.x + 2 * u * t * c.x + t * t * b.x, u * u * a.y + 2 * u * t * c.y + t * t * b.y, u * u * a.z + 2 * u * t * c.z + t * t * b.z); }
+let time = 0, last = performance.now(), visible = true, running = false;
+function startLoop() { if (running || !visible) return; running = true; last = performance.now(); requestAnimationFrame(frame); }
+new IntersectionObserver(es => { visible = es[0].isIntersecting; startLoop(); }).observe(stage);
+
+function frame(now) {
+  if (!visible) { running = false; return; }
+  const dt = Math.min((now - last) / 1000, .05); last = now; time += dt;
+  if (mode === 'pages') framePages(dt); else frameGraph(dt, now);
+  requestAnimationFrame(frame);
+}
+function frameGraph(dt, now) {
+  renderer.setScissorTest(false); renderer.setViewport(0, 0, W, H);
+  if (graphDirty) { relayoutGraph(); rebuildDust(); }
+  const k = reduce ? 1 : 1 - Math.exp(-dt * 4.2);
+  for (const n of items) {
+    if (!n.mesh) continue;
+    n.cur.lerp(n.tgt, k); n.s += (n.ts - n.s) * k;
+    if (n.pulse > 0) n.pulse = Math.max(0, n.pulse - dt * .9);
+    const sc = Math.max(n.s * (1 + .45 * Math.sin(n.pulse * Math.PI)), .0001);
+    n.mesh.position.copy(n.cur); n.mesh.scale.setScalar(sc); n.mesh.visible = n.s > .02;
+    const o = n.dim ? .14 : 1; n.mesh.material.opacity += (o - n.mesh.material.opacity) * k;
+    n.glow.material.opacity = (n.file ? .22 : .5) * n.mesh.material.opacity * (1 + n.pulse * 1.5);
+    if (n.file) { n.mesh.rotation.y = time * .5 + hash(n.id) * 6; n.mesh.rotation.x = .2; }
+    if (n.ring && n.ring.visible) n.ring.rotation.z = time * .25;
+  }
+  moonLight.position.copy(root.cur);
+
+  if (follow) goal.target.copy(follow.cur);
+  if (!reduce && docked < 0 && !ptrs.size && now - lastInteract > 7000) goal.theta += dt * .035;
+  cam.target.lerp(goal.target, k); cam.radius += (goal.radius - cam.radius) * (reduce ? 1 : 1 - Math.exp(-dt * 11));
+  cam.theta += (goal.theta - cam.theta) * k; cam.phi += (goal.phi - cam.phi) * k;
+  camera.position.set(cam.target.x + cam.radius * Math.sin(cam.phi) * Math.sin(cam.theta), cam.target.y + cam.radius * Math.cos(cam.phi), cam.target.z + cam.radius * Math.sin(cam.phi) * Math.cos(cam.theta));
+  camera.lookAt(cam.target); camera.updateMatrixWorld();
+
+  // branches
+  const dimAll = !!hits; let e = 0;
+  for (const n of items) {
+    if (!n.parent || !n.mesh || !isBody(n) || !n.parent.mesh || e >= MAXE) continue;
+    const a = n.parent.cur, b = n.cur;
+    tmpC.set(b.x, a.y, b.z).lerp(tmpQ.copy(a).lerp(b, .5), .5);
+    const ca = n.parent.color, cb = n.color, f = (n.dim || n.parent.dim) && dimAll ? .12 : 1, hl = (sel && (n === sel || n.parent === sel)) ? 1.6 : 1;
+    for (let s = 0; s < TS; s++) {
+      bez(a, tmpC, b, s / TS, tmpA); bez(a, tmpC, b, (s + 1) / TS, tmpB);
+      const o = (e * TS + s) * 6;
+      treePos[o] = tmpA.x; treePos[o + 1] = tmpA.y; treePos[o + 2] = tmpA.z; treePos[o + 3] = tmpB.x; treePos[o + 4] = tmpB.y; treePos[o + 5] = tmpB.z;
+      for (let j = 0; j < 2; j++) {
+        const t = (s + j) / TS, m = (.18 + .32 * t) * f * hl;
+        treeCol[o + j * 3] = (ca.r * (1 - t) + cb.r * t) * m; treeCol[o + j * 3 + 1] = (ca.g * (1 - t) + cb.g * t) * m; treeCol[o + j * 3 + 2] = (ca.b * (1 - t) + cb.b * t) * m;
+      }
+    }
+    e++;
+  }
+  treeGeo.setDrawRange(0, e * TS * 2);
+  treeGeo.attributes.position.needsUpdate = true; treeGeo.attributes.color.needsUpdate = true;
+
+  // links
+  linkPairs.forEach(([A, B], i) => {
+    const a = anchor(A).cur, b = anchor(B).cur, len = a.distanceTo(b);
+    tmpQ.copy(a).lerp(b, .5); tmpC.copy(tmpQ).sub(root.cur); if (tmpC.lengthSq() < 1) tmpC.set(0, 1, 0);
+    tmpC.normalize().multiplyScalar(len * .32 + 2).add(tmpQ).add(lift.set(0, len * .15, 0));
+    const lit = (sel && (A === sel || B === sel)) || (hover && (A === hover || B === hover)), m = len < .5 ? 0 : (dimAll ? .15 : lit ? 1 : .42);
+    for (let s = 0; s < LS; s++) {
+      bez(a, tmpC, b, s / LS, tmpA); bez(a, tmpC, b, (s + 1) / LS, tmpB);
+      const o = (i * LS + s) * 6; linkPos.set([tmpA.x, tmpA.y, tmpA.z, tmpB.x, tmpB.y, tmpB.z], o);
+      linkCol.set([.94 * m, .78 * m, .46 * m, .94 * m, .78 * m, .46 * m], o);
+    }
+    for (let j = 0; j < PPL; j++) { const t = (time * .16 + j / PPL + hash(A.id + B.id)) % 1; bez(a, tmpC, b, t, tmpA); if (len < .5) tmpA.set(0, -9999, 0); partPos.set([tmpA.x, tmpA.y, tmpA.z], (i * PPL + j) * 3); }
+  });
+  linkGeo.attributes.position.needsUpdate = true; linkGeo.attributes.color.needsUpdate = true; linkLines.computeLineDistances();
+  partGeo.attributes.position.needsUpdate = true; partMat.opacity = dimAll ? .25 : .95;
+
+  // dust
+  const dp = dustGeo.attributes.position.array; let di = 0;
+  for (const [p, L] of dustGroups) {
+    const a = anchor(p), inside = a !== p || p.fold || p.s < .05;
+    const r = p.s * 1.9 + .8, tilt = hash(p.id + 't') * 1.2 - .6, sp = .22 + hash(p.id) * .2;
+    for (let i = 0; i < L; i++) {
+      const ang = time * sp + i * Math.PI * 2 / L;
+      if (inside) { dp[di++] = a.cur.x; dp[di++] = a.cur.y; dp[di++] = a.cur.z; continue; }
+      dp[di++] = p.cur.x + Math.cos(ang) * r; dp[di++] = p.cur.y + Math.sin(ang) * r * tilt; dp[di++] = p.cur.z + Math.sin(ang) * r;
+    }
+  }
+  dustGeo.attributes.position.needsUpdate = true; dustMat.opacity = dimAll ? .2 : .85;
+
+  if (sel && sel.mesh && !sel.hidden) { halo.visible = true; halo.position.copy(sel.cur); halo.scale.setScalar(sel.s * 1.55 + .6 + Math.sin(time * 2.4) * .08); halo.lookAt(camera.position); }
+  else halo.visible = false;
+
+  if (probeRun) {
+    probeRun.t += dt / probeRun.dur; const tgt = anchor(probeRun.n).cur, t = Math.min(probeRun.t, 1), e2 = t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    tmpC.copy(probeRun.start).lerp(tgt, .5).add(lift.set(0, 18, 0)); bez(probeRun.start, tmpC, tgt, e2, tmpA);
+    probe.position.copy(tmpA); probe.scale.setScalar(2.5 + Math.sin(time * 20) * .4);
+    if (probeRun.t >= 1) probeArrive(probeRun);
+  }
+
+  renderer.render(scene, camera);
+  updateLabels(); updateCards();
+}
+
+function updateLabels() {
+  const wn = new Set(curTab().wins.map(w => anchor(w.node)));
+  for (const n of items) {
+    const L = n.label; if (!L) continue;
+    if (n.hidden || n.s < .08 || docked >= 0) { if (L.style.display !== 'none') L.style.display = 'none'; continue; }
+    const dist = camera.position.distanceTo(n.cur);
+    const near = sel && (n.parent === sel || sel.parent === n || (n.parent && n.parent === sel.parent));
+    let show = depthOf(n) <= 1 || n === sel || n === hover || near || wn.has(n) || dist < 30;
+    if (hits) show = !n.dim;
+    if (!show) { if (L.style.display !== 'none') L.style.display = 'none'; continue; }
+    tmpA.copy(n.cur); tmpA.y += n.s * 1.15 + .5;
+    const p = project(tmpA);
+    if (p.behind || p.x < -100 || p.x > W + 100 || p.y < -40 || p.y > H + 40) { L.style.display = 'none'; continue; }
+    L.style.display = '';
+    L.style.opacity = n === sel || n === hover ? 1 : Math.max(.35, Math.min(1, 1.35 - dist / 150));
+    L.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+    L.style.zIndex = String(1000 - Math.round(dist));
+    L.classList.toggle('sel', n === sel); L.classList.toggle('hit', !!hits && hits.has(n));
+  }
+}
+function updateCards() {
+  if (docked >= 0) return;
+  const rects = [], narrow = W < 560;
+  cards.forEach((c, i) => {
+    const n = anchor(curTab().wins[i].node), p = project(n.cur), dist = camera.position.distanceTo(n.cur);
+    const s = Math.max(.62, Math.min(1, 1.15 - dist / 240)) * (narrow ? .85 : 1);
+    let x = p.x + 30, y = p.y - c.h * s - 18;
+    if (p.behind) { x = W - p.x; y = H - p.y; }
+    x = Math.max(10, Math.min(W - c.w * s - 10, x)); y = Math.max(54, Math.min(H - c.h * s - 70, y));
+    rects.push({ c, x, y, w: c.w * s, h: c.h * s, s, p, off: p.behind });
+  });
+  rects.sort((a, b) => a.y - b.y);
+  for (let i = 0; i < rects.length; i++) for (let j = 0; j < i; j++) {
+    const a = rects[j], b = rects[i];
+    if (b.x < a.x + a.w + 6 && b.x + b.w + 6 > a.x && b.y < a.y + a.h + 6 && b.y + b.h + 6 > a.y) {
+      b.y = a.y + a.h + 8;
+      if (b.y + b.h > H - 70) { b.y = a.y; b.x = a.x - b.w - 10 < 10 ? a.x + a.w + 10 : a.x - b.w - 10; }
+    }
+  }
+  rects.forEach(r => {
+    r.c.el.style.transform = `translate(${r.x}px, ${r.y}px) scale(${r.s})`;
+    if (r.off) { r.c.line.setAttribute('stroke-opacity', '0'); r.c.dot.setAttribute('r', '0'); return; }
+    const tx = Math.max(r.x, Math.min(r.x + r.w, r.p.x)), ty = Math.max(r.y, Math.min(r.y + r.h, r.p.y));
+    r.c.line.setAttribute('x1', r.p.x); r.c.line.setAttribute('y1', r.p.y); r.c.line.setAttribute('x2', tx); r.c.line.setAttribute('y2', ty);
+    r.c.line.setAttribute('stroke-opacity', '.7'); r.c.dot.setAttribute('cx', r.p.x); r.c.dot.setAttribute('cy', r.p.y); r.c.dot.setAttribute('r', '3');
+  });
+}
+
+/* ---------------- boot ---------------- */
+resize(); relayoutGraph(); rebuildDust();
+items.forEach(n => { if (n.mesh) { n.cur.set(0, -16, 0); n.s = 0; } });
+if (reduce) items.forEach(n => { if (n.mesh) { n.cur.copy(n.tgt); n.s = n.ts; } });
+renderCards();
+if (HAS_CSS3D) setMode('pages', { noFocus: true }); else { segEl.querySelector('[data-mode="pages"]').disabled = true; renderSel(); }
+startLoop();
+})();
+</script>
