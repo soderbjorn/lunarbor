@@ -264,7 +264,7 @@ private fun applyDevDockIcon() {
 
 /**
  * Declare the `lunarbor-asset` scheme as privileged. The renderer uses
- * URLs of the form `lunarbor-asset://<absPath>` to load image files
+ * URLs of the form `lunarbor-asset://local/<absPath>` to load image files
  * from outside the app bundle — without this declaration, Electron's
  * `webSecurity` would block the load.
  */
@@ -281,9 +281,9 @@ private fun registerLunarborAssetScheme() {
 }
 
 /**
- * Wire `lunarbor-asset://<absPath>` URLs to filesystem reads. The
+ * Wire `lunarbor-asset://local/<absPath>` URLs to filesystem reads. The
  * renderer encodes the absolute path of the vault asset into the URL's
- * pathname component (e.g. `lunarbor-asset:///Users/foo/lunarbor-db/Images/x.png`),
+ * pathname component (e.g. `lunarbor-asset://local/Users/foo/lunarbor-db/Images/x.png`),
  * so this handler URL-decodes the pathname and delegates to Electron's
  * built-in `net.fetch` against a `file://` URL.
  *
@@ -296,30 +296,19 @@ private fun installLunarborAssetProtocol() {
     protocol.handle("lunarbor-asset") { request ->
         GlobalScope.promise<dynamic> {
             val urlString = request.url as String
-            // Chromium's standard-scheme URL parser interprets the
-            // first segment after `//` as the host, so naïve
-            // `lunarbor-asset:///abs/path` URLs end up with host=`abs`,
-            // path=`/path` by the time they reach us. Defend against
-            // every parse outcome by reconstructing the absolute path
-            // from both host AND pathname components.
-            //
-            // Renderer constructs URLs as
-            // `lunarbor-asset://local/<encoded abs path>` (since the
-            // fix below); for backwards compatibility we also accept
-            // the older `lunarbor-asset:///<encoded abs path>` form
-            // by gluing host + path back together when host is empty.
+            // The renderer builds `lunarbor-asset://local/<encoded abs
+            // path>`: Chromium parses a standard scheme's first segment
+            // as the host, so `local` is a placeholder host and the
+            // pathname is the absolute path.
             val parsed: dynamic = try { js("new URL(urlString)") } catch (_: Throwable) { null }
-            val host = (parsed?.host as? String).orEmpty()
             val rawPath = (parsed?.pathname as? String).orEmpty()
-            // Strip a leading `/local` placeholder host (or any host)
-            // and treat the remaining pathname as the absolute path.
             val absPath = try {
                 js("decodeURI")(rawPath) as String
             } catch (_: Throwable) {
                 rawPath
             }
             val mime = mimeForExtension(absPath)
-            console.log("lunarbor-asset: url=$urlString host=$host path=$absPath")
+            console.log("lunarbor-asset: url=$urlString path=$absPath")
             try {
                 val bytes: dynamic = fsPromises.readFile(absPath).await()
                 val init: dynamic = js("({})")

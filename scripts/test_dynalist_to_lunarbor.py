@@ -154,13 +154,6 @@ class ImportTest(unittest.TestCase):
         root = (self.vault / "_node.md").read_text(encoding="utf-8")
         self.assertEqual("- Dynalist Import [↳](<Dynalist Import/_node.md>)\n", root)
 
-    def test_a_vault_in_the_old_format_is_refused(self):
-        self.vault.mkdir()
-        (self.vault / "node.lunarbor").write_text("* Mine\n", encoding="utf-8")
-        with self.assertRaises(SystemExit):
-            imp.run_import(FIXTURE_OPML, self.vault)
-        self.assertEqual({"node.lunarbor": b"* Mine\n"}, tree(self.vault))
-
     def test_missing_source_changes_nothing(self):
         with self.assertRaises(SystemExit):
             imp.run_import(Path(self._tmp.name) / "nope", self.vault)

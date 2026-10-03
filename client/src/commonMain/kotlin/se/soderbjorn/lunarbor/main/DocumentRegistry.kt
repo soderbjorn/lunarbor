@@ -79,14 +79,6 @@ class DocumentRegistry(
     /** Vault-relative path of the configured root file. */
     val rootFileName: String = repository.rootFileName
 
-    /**
-     * Converts a vault from before `_node.md` ([NoteRepository.migrateLegacyOutlines]).
-     * `Main.kt` awaits it once, before the app mounts and anything loads.
-     *
-     * @return How many outline files were converted.
-     */
-    suspend fun migrateLegacyOutlines(): Int = repository.migrateLegacyOutlines()
-
     /** Absolute path of the vault root. Platform glue uses this to
      *  resolve image asset URLs against the same root the repository
      *  uses for `.md` I/O. */

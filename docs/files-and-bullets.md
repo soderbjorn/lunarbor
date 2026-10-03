@@ -53,10 +53,6 @@ the folder tree). It is ordinary Markdown: a list, with quotes for blocks.
   block's text stays here; its children live in `folder`, exactly like a
   bullet's. The folder is named after the block's first line.
 
-Vaults from before `_node.md` (with `node.lunarbor` files) are converted
-the first time Lunarbor opens them; the old files are kept under
-`.trash/<timestamp> format migration/`.
-
 Folder names are the title's plain text with unsafe characters
 percent-encoded (`Q3/Q4 plan` is stored as `Q3%2FQ4 plan`), capped at 120
 bytes; sibling collisions get ` (2)`, ` (3)`, …; an empty title is

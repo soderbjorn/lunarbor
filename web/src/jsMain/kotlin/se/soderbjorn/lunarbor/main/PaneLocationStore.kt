@@ -23,7 +23,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunula.core.Persister
 import se.soderbjorn.lunarbor.main.PaneBackingViewModel.FileHistoryEntry
 
@@ -80,8 +79,7 @@ class PaneLocationStore(
         val keys = js("Object.keys(parsed)") as Array<String>
         for (paneId in keys) {
             val entry: dynamic = parsed[paneId]
-            // A location remembered before `_node.md` names the old outline file.
-            val file = NoteRepository.currentPathOf(entry?.file as? String ?: continue)
+            val file = entry?.file as? String ?: continue
             val zoomRaw: dynamic = entry.zoom
             val zoom = if (js("Array.isArray(zoomRaw)") as Boolean) {
                 (zoomRaw as Array<Any?>).filterIsInstance<String>()

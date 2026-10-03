@@ -53,16 +53,13 @@ fun main() {
 }
 
 /**
- * Builds the DI graph, converts a vault from before `_node.md`, and mounts
- * the app. Called by [main] once the page has loaded (and, in demo mode,
- * once the demo vault is in memory).
+ * Builds the DI graph and mounts the app. Called by [main] once the page
+ * has loaded (and, in demo mode, once the demo vault is in memory).
  */
 private suspend fun start() {
     val app = document.getElementById("app") as HTMLElement
     val graph = createJsAppGraph()
     setLunarborVaultRoot(graph.documentRegistry.rootDirectory)
-    // A vault from before `_node.md` is converted before anything reads it.
-    graph.documentRegistry.migrateLegacyOutlines()
     val shell = AppShell(
         scope = graph.coroutineScope,
         documentRegistry = graph.documentRegistry,

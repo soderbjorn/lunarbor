@@ -1516,60 +1516,6 @@ class NoteRepository(
         return out
     }
 
-    // ------------------------------------------------------------- migration
-
-    /**
-     * Converts a vault written before `_node.md`: every folder's legacy
-     * [LEGACY_OUTLINE_FILE_NAME] (`* `/`+ [title](folder)` bullets, `:::`
-     * blocks) is rewritten as [OUTLINE_FILE_NAME] in the current format,
-     * and the old file is moved — never deleted — to
-     * `.trash/<timestamp> format migration/<its own path>`.
-     *
-     * A file that already has the new name (a user's own `_node.md`, in
-     * practice never) steps aside to `_node (2).md` first. The trash and
-     * other dot-folders are left alone; a node restored from the trash by
-     * hand is converted on the next launch. Idempotent: a vault with no
-     * legacy file costs one walk.
-     *
-     * Called once at startup, before anything loads (`Main.kt`, through
-     * `DocumentRegistry.migrateLegacyOutlines`).
-     *
-     * @return How many outline files were converted.
-     */
-    suspend fun migrateLegacyOutlines(): Int {
-        val legacy = ArrayList<String>()
-        suspend fun walk(dirRel: String) {
-            for (e in fileSystem.listDirectoryEntries(abs(dirRel))) {
-                if (e.name.startsWith(".")) continue
-                val rel = join(dirRel, e.name)
-                if (e.isDirectory) walk(rel) else if (e.name == LEGACY_OUTLINE_FILE_NAME) legacy += rel
-            }
-        }
-        walk("")
-        if (legacy.isEmpty()) return 0
-        fileSystem.ensureDirectory(abs(TRASH_DIR))
-        val takenInTrash = fileSystem.listDirectory(abs(TRASH_DIR)).map { it.lowercase() }.toHashSet()
-        val backup = "$TRASH_DIR/" + FolderName.unique("${formatTimestamp(nowMillis())} format migration", takenInTrash)
-        for (oldRel in legacy) {
-            val text = fileSystem.readFileIfExists(abs(oldRel)) ?: continue
-            val folderRel = folderOfLegacyOutline(oldRel)
-            val newRel = outlineFileOf(folderRel)
-            if (fileSystem.readFileIfExists(abs(newRel)) != null) {
-                val taken = fileSystem.listDirectoryEntries(abs(folderRel)).map { it.name.lowercase() }.toHashSet()
-                val stem = OUTLINE_FILE_NAME.removeSuffix(NOTE_EXTENSION)
-                var n = 2
-                var free = "$stem ($n)$NOTE_EXTENSION"
-                while (free.lowercase() in taken) free = "$stem (${++n})$NOTE_EXTENSION"
-                fileSystem.moveFile(abs(newRel), abs(join(folderRel, free)))
-            }
-            fileSystem.writeFile(abs(newRel), SubtreeCodec.formatNodeFile(SubtreeCodec.parseLegacyNodeFile(text)))
-            val dest = join(backup, oldRel)
-            fileSystem.ensureDirectory(abs(dest.substringBeforeLast('/')))
-            fileSystem.moveFile(abs(oldRel), abs(dest))
-        }
-        return legacy.size
-    }
-
     /**
      * Moves the file [fileRel] to `.trash/<timestamp> <name>`, like a
      * deleted bullet's folder. The trash is never emptied automatically.
@@ -1794,12 +1740,6 @@ class NoteRepository(
          */
         const val OUTLINE_FILE_NAME: String = "_node.md"
 
-        /**
-         * The outline file's name before `_node.md`. Only read by
-         * [migrateLegacyOutlines] and [currentPathOf].
-         */
-        const val LEGACY_OUTLINE_FILE_NAME: String = "node.lunarbor"
-
         /** Extension of Markdown notes. */
         const val NOTE_EXTENSION: String = ".md"
 
@@ -1875,23 +1815,6 @@ class NoteRepository(
         /** Outline file of the node folder [folderRel] (`""` = vault root). */
         fun outlineFileOf(folderRel: String): String =
             if (folderRel.isEmpty()) OUTLINE_FILE_NAME else "$folderRel/$OUTLINE_FILE_NAME"
-
-        /** Node folder of a legacy [LEGACY_OUTLINE_FILE_NAME] file. */
-        private fun folderOfLegacyOutline(fileRel: String): String =
-            fileRel.removeSuffix(LEGACY_OUTLINE_FILE_NAME).removeSuffix("/")
-
-        /**
-         * [fileRel] as it is named since `_node.md`: a path to a legacy
-         * [LEGACY_OUTLINE_FILE_NAME] becomes its folder's [OUTLINE_FILE_NAME];
-         * anything else is returned as is. For file paths remembered from
-         * before the migration (window locations).
-         */
-        fun currentPathOf(fileRel: String): String =
-            if (fileRel == LEGACY_OUTLINE_FILE_NAME || fileRel.endsWith("/$LEGACY_OUTLINE_FILE_NAME")) {
-                outlineFileOf(folderOfLegacyOutline(fileRel))
-            } else {
-                fileRel
-            }
 
         /** Node folder of the outline file [fileRel]; the inverse of [outlineFileOf]. */
         fun folderOfOutline(fileRel: String): String =

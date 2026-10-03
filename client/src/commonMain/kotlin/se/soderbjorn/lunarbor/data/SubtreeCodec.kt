@@ -35,10 +35,6 @@
  *    Its title is the plain text of the content's first line.
  *  - Anything else is kept verbatim as a text line.
  *
- * The format before `_node.md` (`node.lunarbor`: `* ` leaves,
- * `+ [title](folder)` folder bullets, `:::` fenced blocks) is still read by
- * [parseLegacyNodeFile], for `NoteRepository.migrateLegacyOutlines` only.
- *
  * ### In memory
  *
  * `Document` holds one flat, indented list of lines (the composed
@@ -468,90 +464,6 @@ object SubtreeCodec {
             text.isEmpty() -> "- $link"
             else -> "- $text $link"
         }
-    }
-
-    /**
-     * Parses a legacy `node.lunarbor` file (the format before `_node.md`:
-     * `* ` leaves, `+ [title](folder)` folder bullets, `:::` blocks). Only
-     * `NoteRepository.migrateLegacyOutlines` calls it. Blank lines are dropped —
-     * they carry no meaning in the outline — except inside blocks, whose
-     * content is kept verbatim. An opening fence with no matching closing
-     * fence is kept as a text line so nothing is lost.
-     */
-    fun parseLegacyNodeFile(text: String): List<NodeLine> {
-        if (text.isEmpty()) return emptyList()
-        val raw = text.split("\n").map { it.removeSuffix("\r") }
-        val out = ArrayList<NodeLine>(raw.size)
-        var i = 0
-        while (i < raw.size) {
-            val line = raw[i]
-            val opening = parseLegacyOpeningFence(line)
-            if (opening != null) {
-                val (fence, ref) = opening
-                val close = (i + 1 until raw.size).firstOrNull { raw[it].trim() == fence }
-                if (close != null) {
-                    val content = raw.subList(i + 1, close).toList()
-                    out += NodeLine.Block(content, ref?.folder, ref?.title ?: "")
-                    i = close + 1
-                    continue
-                }
-            }
-            when {
-                line.isBlank() -> {}
-                line == "*" -> out += NodeLine.Leaf("")
-                line.startsWith("* ") -> out += NodeLine.Leaf(line.substring(2))
-                line.startsWith("+ ") -> out += parseLegacyFolderLine(line) ?: NodeLine.Text(line)
-                else -> out += NodeLine.Text(line)
-            }
-            i++
-        }
-        return out
-    }
-
-    /**
-     * Parses a block's opening fence: a plain fence (`:::`), or a
-     * folder-backed block's `::: [title](folder)`.
-     *
-     * @return The colon run that closes the block, and the folder
-     *   reference when there is one; `null` when [line] opens no block.
-     */
-    private fun parseLegacyOpeningFence(line: String): Pair<String, NodeLine.Folder?>? {
-        if (isFence(line)) return line.trim() to null
-        val t = line.trim()
-        val colons = t.takeWhile { it == ':' }
-        if (colons.length < MIN_FENCE.length || !t.startsWith("$colons [")) return null
-        val ref = parseLegacyFolderLine("+ " + t.substring(colons.length + 1)) ?: return null
-        return colons to ref
-    }
-
-    /**
-     * Parses `+ [title](folder)`. The title may contain backslash-escaped
-     * `[`, `]` and `\`; the folder is everything between `](` and the
-     * line's final `)`, so folder names containing parentheses work.
-     *
-     * @return `null` when [line] does not have that shape.
-     */
-    private fun parseLegacyFolderLine(line: String): NodeLine.Folder? {
-        val s = line.trimEnd()
-        if (!s.startsWith("+ [")) return null
-        val title = StringBuilder()
-        var i = 3
-        while (i < s.length) {
-            val ch = s[i]
-            if (ch == '\\' && i + 1 < s.length && s[i + 1] in "[]\\") {
-                title.append(s[i + 1])
-                i += 2
-                continue
-            }
-            if (ch == ']') break
-            title.append(ch)
-            i++
-        }
-        if (i + 1 >= s.length || s[i] != ']' || s[i + 1] != '(') return null
-        if (!s.endsWith(")")) return null
-        val folder = s.substring(i + 2, s.length - 1)
-        if (folder.isEmpty() || '/' in folder || folder == "." || folder == "..") return null
-        return NodeLine.Folder(title.toString(), folder)
     }
 
     /**

@@ -40,9 +40,6 @@ Storage rules mirrored from the app (NoteRepository.kt, SubtreeCodec.kt):
     bytes; empty names become `Untitled`; sibling collisions get ` (2)`,
     ` (3)`, ... case-insensitively.
 
-A vault still in the format before `_node.md` (with `node.lunarbor` files)
-is refused: open it in Lunarbor once, which converts it, then import.
-
 Re-running replaces the previous import: the old `Dynalist Import` folder
 is moved to `<vault>/.trash/<UTC timestamp> Dynalist Import/` (the same
 naming the app uses; the trash is never emptied automatically), the old
@@ -66,7 +63,6 @@ from pathlib import Path
 
 IMPORT_NAME = "Dynalist Import"
 OUTLINE_FILE_NAME = "_node.md"
-LEGACY_OUTLINE_FILE_NAME = "node.lunarbor"
 TRASH_DIR = ".trash"
 STAGING_DIR = ".dynalist-import-staging"
 
@@ -468,10 +464,6 @@ def run_import(source: Path, vault: Path, now: float | None = None) -> dict:
     if not docs:
         raise SystemExit(f"No .opml files in {source}")
     vault.mkdir(parents=True, exist_ok=True)
-    if (vault / LEGACY_OUTLINE_FILE_NAME).exists() and not (vault / OUTLINE_FILE_NAME).exists():
-        raise SystemExit(
-            f"{vault} is still in the format before _node.md. Open it in Lunarbor once "
-            "(it converts the vault), quit, then run the import again.")
     staging = vault / STAGING_DIR
     if staging.exists():
         shutil.rmtree(staging)

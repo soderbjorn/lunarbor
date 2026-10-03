@@ -1,8 +1,7 @@
 /*
  * SubtreeCodecTest.kt (commonTest)
- * Round-trip and parsing tests for the `_node.md` outline format (and the
- * legacy `node.lunarbor` reader the migration uses), and for the
- * composed-outline tree the save path splits into folders.
+ * Round-trip and parsing tests for the `_node.md` outline format, and for
+ * the composed-outline tree the save path splits into folders.
  */
 
 package se.soderbjorn.lunarbor.data
@@ -166,37 +165,6 @@ class SubtreeCodecTest {
         assertEquals(
             listOf(NodeLine.Text("hello"), NodeLine.Leaf("a"), NodeLine.Text(":::"), NodeLine.Text("+not a bullet")),
             items,
-        )
-    }
-
-    // ---------------------------------------------------------- legacy
-
-    @Test
-    fun the_legacy_format_still_parses_for_the_migration() {
-        val legacy = "* Buy oat milk\n+ [a \\[b\\] **c**](a %5Bb%5D)\n:::\nx\n\ny\n:::\n::: [Note](Note)\nNote\n:::\nhello\n"
-        assertEquals(
-            listOf(
-                NodeLine.Leaf("Buy oat milk"),
-                NodeLine.Folder("a [b] **c**", "a %5Bb%5D"),
-                NodeLine.Block(listOf("x", "", "y")),
-                NodeLine.Block(listOf("Note"), "Note", "Note"),
-                NodeLine.Text("hello"),
-            ),
-            SubtreeCodec.parseLegacyNodeFile(legacy),
-        )
-        // A block whose content holds a fence line used a longer fence.
-        assertEquals(
-            listOf(NodeLine.Block(listOf("before", ":::", "after"))),
-            SubtreeCodec.parseLegacyNodeFile("::::\nbefore\n:::\nafter\n::::\n"),
-        )
-    }
-
-    @Test
-    fun legacy_files_convert_to_the_new_format() {
-        val legacy = "* Buy oat milk\n+ [Recipes](Recipes)\n* 1. Picard\n:::\n**Packing**: x\n:::\n"
-        assertEquals(
-            "- Buy oat milk\n- Recipes [↳](<Recipes/_node.md>)\n- 1\\. Picard\n> **Packing**: x\n",
-            SubtreeCodec.formatNodeFile(SubtreeCodec.parseLegacyNodeFile(legacy)),
         )
     }
 
