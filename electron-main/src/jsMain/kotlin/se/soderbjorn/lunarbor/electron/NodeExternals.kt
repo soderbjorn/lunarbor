@@ -39,6 +39,9 @@ external interface FsSync {
     fun writeFileSync(path: String, data: String)
     fun mkdirSync(path: String, options: dynamic = definedExternally)
 
+    /** Atomic within one file system; used for write-tmp + rename. */
+    fun renameSync(oldPath: String, newPath: String)
+
     /** `fs.Stats` for [path]; throws when it does not exist. */
     fun statSync(path: String): dynamic
     fun watch(path: String, listener: (eventType: String, filename: String?) -> Unit): FsWatcher

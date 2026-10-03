@@ -92,12 +92,15 @@ import se.soderbjorn.lunarbor.data.NoteRepository
  *   `LAYOUT_STATE` / `THEME_SNAPSHOT` itself; lunarbor uses this
  *   handle for `LAYOUT` (its typed [LayoutState] shape, owned by
  *   the app when a `TabSource` is supplied).
+ * @param newsUpdates The app's News & updates checker ([startNewsUpdates]);
+ *   its bell joins the topbar. `null` in the browser demo: no bell.
  */
 class AppShell(
     private val scope: CoroutineScope,
     private val documentRegistry: se.soderbjorn.lunarbor.main.DocumentRegistry,
     private val fileSystem: se.soderbjorn.lunarbor.platform.FileSystem,
     private val persister: Persister,
+    private val newsUpdates: se.soderbjorn.lunarbor.newsupdates.NewsUpdatesBackingViewModel? = null,
 ) {
 
     /** Mounted root element. Captured at boot for the toolkit assembler. */
@@ -516,6 +519,9 @@ class AppShell(
                         label = "Command palette (⌘P)",
                         onActivate = { commandPalette.open() },
                     ),
+                ) + listOfNotNull(
+                    // News & updates (desktop only; NewsUpdates.kt).
+                    newsUpdates?.let { newsTopbarAction(it) },
                 ),
                 // Brand logo (dot + "lunarbor" wordmark, termtastic-style)
                 // pinned to the top of the left sidebar. The factory returns

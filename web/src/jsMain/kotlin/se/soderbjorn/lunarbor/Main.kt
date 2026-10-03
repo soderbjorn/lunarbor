@@ -15,6 +15,7 @@ import se.soderbjorn.lunarbor.main.installMcpBridge
 import se.soderbjorn.lunarbor.mcp.McpServer
 import se.soderbjorn.lunarbor.mcp.McpTools
 import se.soderbjorn.lunarbor.main.setLunarborVaultRoot
+import se.soderbjorn.lunarbor.main.startNewsUpdates
 
 /**
  * Web entry point. Builds the DI graph and mounts the [AppShell] into the
@@ -65,6 +66,9 @@ private suspend fun start() {
         documentRegistry = graph.documentRegistry,
         fileSystem = graph.fileSystem,
         persister = graph.persister,
+        // News & updates bell: checks lunarbor.dev from the desktop app
+        // only — null (no bell, no fetch) in the browser demo.
+        newsUpdates = startNewsUpdates(graph.coroutineScope),
     )
     shell.render(app)
     // Agent access (MCP): answered here, against the live registry and

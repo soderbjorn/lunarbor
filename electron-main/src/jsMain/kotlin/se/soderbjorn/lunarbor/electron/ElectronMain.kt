@@ -39,6 +39,8 @@
  *  - App settings → Backup: zipping the vault into a backup folder, on
  *    demand or on a schedule, with the file-op handlers held meanwhile
  *    (VaultBackup.kt, ZipWriter.kt).
+ *  - The topbar's News & updates bell: the running version for the
+ *    renderer, `lunarbor-news.json`, and opening its links (NewsHost.kt).
  *  - BrowserWindow setup with the boot-time `--darkness-settings=` /
  *    `--darkness-layout-state=` argument injection the renderer's
  *    preload script picks up.
@@ -210,6 +212,8 @@ fun main() {
     McpHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-mcp.json") }, { runPaths.vaultDir }) { mainWindow }
     // App settings → Backup: zips of the vault and their schedule.
     BackupHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-backup.json") }, { runPaths.vaultDir }) { mainWindow }
+    // The topbar's News & updates bell: its state file, the version, links.
+    NewsHost.install { sharedDarknessPath("$APP_NAME_KEBAB-news.json") }
 
     app.on("second-instance") { _, _ ->
         val w = mainWindow
@@ -635,6 +639,9 @@ private fun createWindow() {
     // Vault root for the renderer's `NoteRepository`, exposed by
     // preload.js as `noteApi.vaultRoot` and read in `JsAppGraph`.
     additionalArguments += "--lunarbor-vault=${js("encodeURIComponent")(runPaths.vaultDir)}"
+    // Version name + code for the news & update check (NewsHost.kt),
+    // exposed by preload.js as `noteApi.appVersionName` / `appVersionCode`.
+    additionalArguments += NewsHost.versionArguments()
 
     val options: dynamic = js("({})")
     options.width = 1024

@@ -9,9 +9,32 @@ const vaultRoot = vaultArg
   ? decodeURIComponent(vaultArg.substring("--lunarbor-vault=".length))
   : null;
 
+// Version of the running app (NewsHost.kt): `--lunarbor-version-name=`
+// (e.g. "0.1.0") and `--lunarbor-version-code=` (CFBundleVersion, e.g.
+// "1"; "" when unknown). The News & updates check compares the code.
+const argValue = (name) => {
+  const arg = (process.argv || []).find(a => a && a.startsWith(`--${name}=`));
+  return arg ? decodeURIComponent(arg.substring(name.length + 3)) : "";
+};
+const appVersionName = argValue("lunarbor-version-name");
+const appVersionCode = argValue("lunarbor-version-code");
+
 contextBridge.exposeInMainWorld("noteApi", {
   /** Absolute vault root for this run, or null if the main process sent none. */
   vaultRoot,
+  /** The running app's version name, e.g. "0.1.0". */
+  appVersionName,
+  /** The running app's build number (CFBundleVersion), or "" when unknown. */
+  appVersionCode,
+  /**
+   * The News & updates bell's state (`lunarbor-news.json`, app-scoped):
+   * `getNewsState` resolves to its JSON text or null; `setNewsState`
+   * replaces it with a JSON object's text.
+   */
+  getNewsState: () => ipcRenderer.invoke("lunarbor:getNewsState"),
+  setNewsState: (json) => ipcRenderer.invoke("lunarbor:setNewsState", json),
+  /** Opens an https: URL in the system browser (other schemes are refused). */
+  openExternalUrl: (url) => ipcRenderer.invoke("lunarbor:openExternalUrl", url),
   ensureDirectory: (path) => ipcRenderer.invoke("lunarbor:ensureDirectory", path),
   readFileIfExists: (path) => ipcRenderer.invoke("lunarbor:readFileIfExists", path),
   writeFile: (path, content) => ipcRenderer.invoke("lunarbor:writeFile", path, content),

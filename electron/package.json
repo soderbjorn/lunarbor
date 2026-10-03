@@ -33,6 +33,7 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.productivity",
+      "bundleVersion": "1",
       "icon": "icons/icon.icns",
       "identity": "Robert Söderbjörn (CCJP95ZXG4)",
       "hardenedRuntime": true,

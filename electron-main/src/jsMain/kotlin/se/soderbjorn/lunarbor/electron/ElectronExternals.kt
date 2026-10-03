@@ -82,6 +82,13 @@ external interface ElectronApp {
      * dev-only branding fallbacks are gated on this being `false`.
      */
     val isPackaged: Boolean
+
+    /**
+     * The app's version name (`CFBundleShortVersionString` when packaged,
+     * `package.json`'s `version` in dev). Sent to the renderer for the
+     * news & update check (NewsHost.kt).
+     */
+    fun getVersion(): String
 }
 
 external interface IpcMain {

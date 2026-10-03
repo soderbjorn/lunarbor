@@ -170,6 +170,16 @@ App settings → **Backup** (Electron only) zips the whole vault into a folder t
 - **"Last backup" is read from the folder**: the newest date among this vault's backup file names (`backupTimeOf`), not stored.
 - **Automatic backups**: checked every minute and at startup (when the renderer subscribes, `lunarbor:backupReady`); when the newest backup is at least the interval old (`isBackupDue`) the main process sends `lunarbor:backupDue`, and the renderer flushes and calls `backupNow` (no answering window: it backs up directly). A failure is shown in the section and retried after 15 minutes. Old backups are never deleted.
 
+## News & updates
+
+A bell in the top bar (Electron only) shows when lunarbor.dev publishes a newer build or an announcement; clicking it opens the "News & updates" dialog. Ported from Lunamux and kept behaving the same.
+
+- **Hosted files** (`lunarbor-www`): `https://lunarbor.dev/versions.json` (`platforms.mac`: `latestVersionCode`, `latestVersionName`, `url`) and `news.json` (`items`: `id`, `active`, `date`?, `title`, `body`, `url`?). The app hardcodes only these two URLs; the download and "Learn more" links come from the files. Parsing is lenient (`NewsManifestParser`: comments, trailing commas, unknown keys); a newer `schemaVersion` reads as nothing.
+- **Rules** (commonMain `newsupdates/NewsUpdatesBackingViewModel.kt`, tested in `NewsUpdatesBackingViewModelTest`): checks at startup when 24 h have passed since the last successful check (persisted), then every 24 h; Check now on demand (ignored while one runs). An update shows when `latestVersionCode` is above the running build's and is not the exact code dismissed; news shows `active` items not dismissed; both fetches failing changes nothing; Restore re-applies the last fetched files (offline). Store, fetcher and clock are constructor parameters (`NewsStateStore`, `NewsFetcher`, `now`); dev toggles `USE_SAMPLE_DATA` / `CHECK_ON_EVERY_STARTUP` (never commit `true`) and `CHECK_NOW_BUTTON_ENABLED` live in `NewsUpdatesPorts.kt`.
+- **Version** (`electron-main/.../NewsHost.kt`): the main process passes `--lunarbor-version-name=` (`app.getVersion()`) and `--lunarbor-version-code=` (`CFBundleVersion` from the packaged `Info.plist`; `build.mac.bundleVersion` from `electron/package.json` in dev), exposed as `noteApi.appVersionName` / `appVersionCode`. Raise `bundleVersion` for every release and bump `versions.json` only once the DMG is live (`scripts/build-release-electron.sh` header).
+- **State** lives in `lunarbor-news.json` beside `lunarbor-backup.json` (`dismissedNewsIds`, `dismissedUpdateVersionCode`, `lastCheckEpochMillis`), app-scoped, over `lunarbor:getNewsState` / `setNewsState`. Links open through `lunarbor:openExternalUrl` (`https:` only, `isOpenableUrl`).
+- **View** (`web/.../main/NewsUpdates.kt`): `startNewsUpdates` (called by `Main.kt`; `null` without the Electron bridge, so the browser demo has no bell and fetches nothing) — the renderer's `fetch`, 15 s timeout; the bell `TopbarAction` (`AppShell`, after the palette) is always clickable: muted with nothing new, `--t-warn` with an update or news, pulsing only for news (`body[data-lunarbor-news]` / `[data-lunarbor-news-pulse]`; no pulse under `prefers-reduced-motion`); `showNewsDialog`: the update box (Download, × dismisses that version), news cards (× dismisses), "You're all caught up", Check now and Restore dismissed.
+
 ## Agent access (MCP)
 
 App settings → **Agent access** turns on an MCP server so agents (Claude Code, Cursor, Claude Desktop via `mcp-remote`) can read, search, edit and arrange windows. Off by default. The sidebar section is only a summary and an "Agent access…" button; all settings are in a modal dialog.
@@ -272,6 +282,11 @@ client/src/commonMain/.../main/
   NoteConversion.kt                   ← "Convert to node": note → bullet + block rows
   VaultRelocation.kt                  ← rebase pane locations onto a new vault root
 
+client/src/commonMain/.../newsupdates/
+  NewsUpdatesBackingViewModel.kt      ← News & updates: 24 h check, dismissals, restore
+  NewsManifests.kt                    ← versions.json / news.json models + lenient parser
+  NewsUpdatesPorts.kt                 ← state store + fetcher interfaces, dev toggles
+
 client/src/commonMain/.../mcp/
   McpServer.kt                        ← MCP JSON-RPC + agent instructions
   McpTools.kt                         ← the agent tools (read/search/edit/windows)
@@ -321,6 +336,7 @@ web/src/jsMain/.../
   main/BackupSettings.kt              ← App settings → Backup section + automatic-backup answer
   main/AgentAccessSettings.kt         ← App settings → Agent access (MCP)
   main/McpBridge.kt                   ← MCP requests from the main process → McpServer
+  main/NewsUpdates.kt                 ← News & updates bell + dialog, Electron store/fetch
 
 electron-main/src/jsMain/.../electron/
   ElectronMain.kt                     ← main process: window, IPC file access
@@ -330,6 +346,7 @@ electron-main/src/jsMain/.../electron/
   VaultBackup.kt                      ← backups: settings, schedule, write gate
   ZipWriter.kt                        ← folder → .zip (deflate, ZIP64)
   McpHttpServer.kt                    ← MCP endpoint: localhost, key, relay to renderer
+  NewsHost.kt                         ← app version for the renderer, lunarbor-news.json, external links
 
 docs/files-and-bullets.md             ← the on-disk model, for humans
 demo/source/                          ← the browser demo's tour (generates demo/vault/)

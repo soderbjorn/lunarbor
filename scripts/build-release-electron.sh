@@ -15,6 +15,15 @@
 #   export APPLE_TEAM_ID_PERSONAL="CCJP95ZXG4"
 #
 # For a quick unsigned local build, use build-electron-no-notarize.sh instead.
+#
+# Release steps around it (News & updates bell, NewsHost.kt):
+#   1. Before building, raise electron/package.json → build.mac.bundleVersion
+#      (the build number, CFBundleVersion; it must only ever go up) and, for
+#      a new version, "version".
+#   2. Build with this script and put the DMG live on lunarbor.dev.
+#   3. Only then bump lunarbor-www's versions.json → platforms.mac
+#      (latestVersionCode = the new bundleVersion, latestVersionName, url),
+#      so running apps offer the update.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
