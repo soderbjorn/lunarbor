@@ -5,7 +5,7 @@
  * write ([AgentOutline]), the tools working on a vault through the
  * registry ([McpTools] — reads, edits that follow the folder save rules,
  * refusals that keep nodes from being deleted by accident, create and
- * delete), and the JSON-RPC layer ([McpServer]).
+ * delete, privacy scopes), and the JSON-RPC layer ([McpServer]).
  */
 
 package se.soderbjorn.lunarbor.mcp
@@ -19,6 +19,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import se.soderbjorn.lunarbor.data.NoteRepository
+import se.soderbjorn.lunarbor.data.PrivacyMode
 import se.soderbjorn.lunarbor.main.DocumentRegistry
 import se.soderbjorn.lunarbor.testing.InMemoryFileSystem
 import kotlin.test.Test
@@ -191,38 +192,72 @@ class McpToolsTest {
     }
 
     @Test
-    fun a_scoped_connection_reaches_its_folder_and_nothing_outside_it() = runTest {
-        seed("_node.md", "- Secret #work\n- Work [↳](<Work/_node.md>)\n- Home [↳](<Home/_node.md>)\n")
-        seed("Work/_node.md", "- Budget #work\n- Acme [↳](<Acme/_node.md>)\n")
-        seed("Work/Acme/_node.md", "- Call #work\n")
-        seed("Home/_node.md", "- Diary #work\n")
-        val t = tools()
-        suspend fun call(name: String, vararg args: Pair<String, String>) =
-            t.call(name, JsonObject(args.associate { (k, v) -> k to JsonPrimitive(v) }), allowEdits = true, folder = "/Work")!!
+    fun a_privacy_scoped_connection_never_sees_what_its_mode_hides() = runTest {
+        seed("_node.md", "- Secret #private\n- Work [↳](<Work/_node.md>)\n- Health #Private [↳](<Health #Private/_node.md>)\n- Milk\n")
+        seed("Work/_node.md", "- Budget #work\n- Diary #private\n")
+        seed("Health #Private/_node.md", "- Pills\n")
+        seed("Plan.md", "Ideas #private\n")
+        seed("Open.md", "Hello #privateer\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        registry.setPrivacyModes(listOf(PrivacyMode("m1", "Colleagues", listOf("private"))))
+        val t = McpTools(registry)
+        suspend fun call(name: String, vararg args: Pair<String, Any>) =
+            t.call(name, JsonObject(args.associate { (k, v) -> k to if (v is Boolean) JsonPrimitive(v) else JsonPrimitive(v.toString()) }), allowEdits = true, privacyModeId = "m1")!!
 
-        // Inside: reads, nested nodes, edits.
-        assertFalse(call("read", "path" to "/Work").isError)
-        assertFalse(call("read", "path" to "/Work/Acme").isError)
-        assertFalse(call("append", "path" to "/Work/Acme", "text" to "* More").isError)
-        // Outside: the root, a sibling, lunarbor: links and search scopes are refused.
-        for (outside in listOf("/", "/Home", "lunarbor:/Home", "/Workshop")) {
-            val r = call("read", "path" to outside)
-            assertTrue(r.isError && "outside the folder" in r.text, "$outside: ${r.text}")
+        // Reading: hidden items, nodes and notes do not exist.
+        val rootText = call("read", "path" to "/").text
+        assertTrue("* Work  <!-- /Work -->" in rootText && "* Milk" in rootText, rootText)
+        assertFalse("Secret" in rootText || "Health" in rootText || "Plan.md" in rootText, rootText)
+        assertTrue("/Open.md" in rootText, rootText)
+        for (hidden in listOf("/Health #Private", "lunarbor:/Health%20%23Private", "/Plan.md", "/_privacy.config")) {
+            val r = call("read", "path" to hidden)
+            assertTrue(r.isError && "Nothing at" in r.text, "$hidden: ${r.text}")
         }
-        assertTrue(call("search", "query" to "#work in:/").isError)
-        assertTrue(call("move", "path" to "/Work/Acme", "to" to "/Home").isError)
+        assertTrue(call("search", "query" to "Pills").text.startsWith("No lines"))
+        val work = call("search", "query" to "#work OR #private").text
+        assertTrue("Budget" in work && "Diary" !in work && "Secret" !in work, work)
+        val tags = call("list_tags").text.lines().map { it.substringBefore(" (").trimStart('#').lowercase() }
+        assertTrue("work" in tags && "privateer" in tags && "private" !in tags, tags.toString())
+        val listing = call("list_folder", "path" to "/").text
+        assertFalse("Health" in listing || "Plan.md" in listing || "_privacy" in listing, listing)
+
+        // Edits keep what the agent never saw, in place.
+        assertFalse(call("append", "path" to "/", "text" to "* Eggs").isError)
+        assertEquals(
+            "- Secret #private\n- Work [↳](<Work/_node.md>)\n- Health #Private [↳](<Health #Private/_node.md>)\n- Milk\n- Eggs\n",
+            fs.read(root, "_node.md"),
+        )
+        assertFalse(call("edit", "path" to "/Work", "old_text" to "* Budget #work", "new_text" to "* Budget 2027 #work").isError)
+        assertEquals("- Budget 2027 #work\n- Diary #private\n", fs.read(root, "Work/_node.md"))
+        // Read, then rewrite the whole node from what was read: the hidden
+        // items survive, where they were.
+        val shown = call("read", "path" to "/").text.substringAfter("Path: /\n\n").substringBefore("\n\nAlso in this folder")
+        // Dropping /Work would trash the hidden item inside it: refused.
+        val dropping = call("edit", "path" to "/", "old_text" to shown, "new_text" to "* Only this now", "delete_nodes" to true)
+        assertTrue(dropping.isError && "cannot delete" in dropping.text, dropping.text)
+        val rewritten = call("edit", "path" to "/", "old_text" to shown, "new_text" to "* Only this now\n* Work  <!-- /Work -->")
+        assertFalse(rewritten.isError, rewritten.text)
+        assertEquals(
+            "- Secret #private\n- Only this now\n- Health #Private [↳](<Health #Private/_node.md>)\n- Work [↳](<Work/_node.md>)\n",
+            fs.read(root, "_node.md"),
+        )
+        assertEquals("- Pills\n", fs.read(root, "Health #Private/_node.md"))
+        // Nothing hidden can be changed, nor taken along by a delete.
         assertTrue(call("delete", "path" to "/Work").isError)
-        assertTrue(call("create_file", "folder" to "/Home", "name" to "x", "text" to "y").isError)
-        // Defaults cover the folder, not the vault.
-        val hits = call("search", "query" to "#work").text
-        assertTrue("Budget" in hits && "Call" in hits, hits)
-        assertFalse("Secret" in hits || "Diary" in hits, hits)
-        val listing = call("list_folder").text
-        assertTrue(listing.startsWith("Folder /Work"), listing)
-        assertEquals("- Diary #work\n", fs.read(root, "Home/_node.md"))
-        // The agent is told where its folder is.
-        assertTrue("limited to the folder /Work" in McpServer.instructionsFor("Work"))
-        assertEquals(McpServer.INSTRUCTIONS, McpServer.instructionsFor("/"))
+        assertTrue(call("move", "path" to "/Health #Private", "to" to "/Work").isError)
+        assertTrue(call("create_file", "folder" to "/Health #Private", "name" to "x", "text" to "y").isError)
+        assertEquals("- Pills\n", fs.read(root, "Health #Private/_node.md"))
+
+        // The app's own mode plays no part; an unscoped connection sees everything.
+        registry.setPrivacyMode("m1")
+        val all = t.call("read", JsonObject(mapOf("path" to JsonPrimitive("/"))), allowEdits = true)!!.text
+        assertTrue("Secret" in all && "Health" in all, all)
+        // A connection whose mode was deleted is off.
+        registry.setPrivacyModes(emptyList())
+        val off = call("read", "path" to "/")
+        assertTrue(off.isError && "turned off" in off.text, off.text)
+        // The agent is never told about privacy.
+        assertFalse("privacy" in McpServer.INSTRUCTIONS.lowercase())
     }
 
     /** A workspace that only lists [windows], in one tab. */
@@ -238,22 +273,27 @@ class McpToolsTest {
     }
 
     @Test
-    fun list_windows_hides_titles_of_windows_outside_the_folder() = runTest {
+    fun list_windows_hides_windows_the_connections_mode_hides() = runTest {
+        seed("_node.md", "- Work [↳](<Work/_node.md>)\n- Health #private [↳](<Health #private/_node.md>)\n- Idea #private\n")
+        seed("Work/_node.md", "- Budget\n")
+        seed("Health #private/_node.md", "- Pills\n")
         val ws = FixedWorkspace(
             listOf(
-                AgentWorkspace.Window("w1", "Work/Acme", "Home / Work / Acme", isFocused = true),
-                AgentWorkspace.Window("w2", "Home/Diary", "Home / Home / Diary", isFocused = false),
-                AgentWorkspace.Window("w3", null, "Home / Secret", isFocused = false),
+                AgentWorkspace.Window("w1", "Work", "Home / Work", isFocused = true),
+                AgentWorkspace.Window("w2", "Health #private", "Home / Health #private", isFocused = false),
+                AgentWorkspace.Window("w3", "", "Home / Idea #private", isFocused = false),
+                AgentWorkspace.Window("w4", null, "Home / Secret", isFocused = false),
             ),
         )
-        val t = McpTools(DocumentRegistry(repo, backgroundScope), ws)
-        val scoped = t.call("list_windows", JsonObject(emptyMap()), allowEdits = true, folder = "/Work")!!.text
-        assertTrue("w1: Home / Work / Acme — /Work/Acme (focused)" in scoped, scoped)
-        assertTrue("w2: (outside your folder)" in scoped, scoped)
-        assertTrue("w3: (outside your folder)" in scoped, scoped)
-        assertFalse("Diary" in scoped || "Secret" in scoped, scoped)
+        val registry = DocumentRegistry(repo, backgroundScope)
+        registry.setPrivacyModes(listOf(PrivacyMode("m1", "Colleagues", listOf("private"))))
+        val t = McpTools(registry, ws)
+        val scoped = t.call("list_windows", JsonObject(emptyMap()), allowEdits = true, privacyModeId = "m1")!!.text
+        assertTrue("w1: Home / Work — /Work (focused)" in scoped, scoped)
+        for (w in listOf("w2", "w3", "w4")) assertTrue("$w: (not available)" in scoped, scoped)
+        assertFalse("Health" in scoped || "Idea" in scoped || "Secret" in scoped, scoped)
         val whole = t.call("list_windows", JsonObject(emptyMap()), allowEdits = true)!!.text
-        assertTrue("w2: Home / Home / Diary — /Home/Diary" in whole && "w3: Home / Secret" in whole, whole)
+        assertTrue("w2: Home / Health #private — /Health #private" in whole && "w4: Home / Secret" in whole, whole)
     }
 
     @Test

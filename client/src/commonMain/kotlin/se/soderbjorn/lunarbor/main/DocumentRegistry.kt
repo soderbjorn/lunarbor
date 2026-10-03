@@ -21,6 +21,13 @@
  * pointing at folders and files a save renamed or moved
  * ([applyPathMoves]).
  *
+ * And owns the privacy modes (LBR-10): the vault's `_privacy.config`
+ * ([privacyFlow], [setPrivacyModes]), the mode the whole app shows
+ * ([setPrivacyMode], one for every window and tab), and which paths it
+ * hides ([isPathHidden], [hasHiddenUnder], answered by the [textIndex]).
+ * Search, search nodes, link search, wiki links, Insert Image and the
+ * listings filter by it here; panes filter their own rows.
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -40,6 +47,9 @@ import kotlinx.coroutines.sync.withLock
 import se.soderbjorn.lunarbor.data.NodeLine
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.PathMove
+import se.soderbjorn.lunarbor.data.PrivacyConfig
+import se.soderbjorn.lunarbor.data.PrivacyFilter
+import se.soderbjorn.lunarbor.data.PrivacyMode
 import se.soderbjorn.lunarbor.data.TextIndex
 import se.soderbjorn.lunarbor.data.SearchQuery
 import se.soderbjorn.lunarbor.data.SubtreeCodec
@@ -131,17 +141,21 @@ class DocumentRegistry(
      * documents first, so unsaved edits are found, and builds the index on
      * the first call (one read of every note file).
      *
-     * Called by `PaneBackingViewModel.setSearchQuery`.
+     * Called by `PaneBackingViewModel.setSearchQuery` and the agent tools.
+     *
+     * @param filter The privacy mode to apply: by default the app's
+     *   ([privacyFilter]); an agent connection passes its own scope's.
      */
     suspend fun searchText(
         scope: TextScope,
         expr: SearchQuery.Expr?,
         reversed: Boolean = false,
         max: Int = 300,
+        filter: PrivacyFilter = privacyFilter,
     ): TextSearchResult {
         flushAll()
         textIndex.ensureBuilt()
-        return textIndex.search(scope, expr, max, reversed)
+        return textIndex.search(scope, expr, max, reversed, filter)
     }
 
     /**
@@ -186,7 +200,7 @@ class DocumentRegistry(
 
     private fun runSearchNode(key: SearchNodeKey) {
         val query = SearchQuery.parse(key.query)
-        val result = textIndex.search(key.scope, query.expr, SEARCH_NODE_MAX_HITS, query.reversed)
+        val result = textIndex.search(key.scope, query.expr, SEARCH_NODE_MAX_HITS, query.reversed, privacyFilter)
         _searchNodeResults.update { it + (key to result) }
     }
 
@@ -298,7 +312,12 @@ class DocumentRegistry(
             vaultIndex.noteText(file, text)
             textIndex.noteText(file, text)
         }
-        textIndex.onChanged = ::scheduleSearchNodeRefresh
+        textIndex.onChanged = {
+            scheduleSearchNodeRefresh()
+            schedulePrivacyRevision()
+        }
+        // Link search never offers what the app's privacy mode hides.
+        vaultIndex.isHidden = { path -> isPathHidden(path) }
         // Eagerly populate the vault root listing so the root's contents
         // list paints right after boot.
         scope.launch { ensureVaultListing("") }
@@ -628,7 +647,7 @@ class DocumentRegistry(
         if (!pendingWikiLinks.add(key)) return null
         scope.launch {
             try {
-                val path = WikiLink.resolve(name, vaultIndex.targets())
+                val path = WikiLink.resolve(name, vaultIndex.targets())?.takeUnless { isPathHidden(it) }
                 _wikiLinks.update { it + (key to path) }
             } finally {
                 pendingWikiLinks.remove(key)
@@ -642,7 +661,9 @@ class DocumentRegistry(
         val keys = _wikiLinks.value.keys.toList()
         if (keys.isEmpty()) return
         val targets = vaultIndex.targets()
-        _wikiLinks.update { current -> current + keys.associateWith { WikiLink.resolve(it, targets) } }
+        _wikiLinks.update { current ->
+            current + keys.associateWith { k -> WikiLink.resolve(k, targets)?.takeUnless { isPathHidden(it) } }
+        }
     }
 
     /**
@@ -827,8 +848,9 @@ class DocumentRegistry(
      * Lists vault images and drawings for the `Insert Image` palette. Delegates
      * straight to [NoteRepository.listImageFiles]; not cached because the
      * autosave loop can mutate the on-disk tree without notifying us.
+     * Leaves out what the app's privacy mode hides.
      */
-    suspend fun listImageFiles(): List<String> = repository.listImageFiles()
+    suspend fun listImageFiles(): List<String> = repository.listImageFiles().filterNot { isPathHidden(it) }
 
     /**
      * Persists a pasted image into the folder [dirRel] and returns its
@@ -1033,6 +1055,8 @@ class DocumentRegistry(
     suspend fun applyExternalChanges(pathsRel: List<String>) = externalChangeLock.withLock {
         val relevant = pathsRel.filter { p -> p.isNotEmpty() && p.split('/').none { it.startsWith(".") } }
         if (relevant.isEmpty()) return@withLock
+        // The privacy modes file edited outside the app (or synced in).
+        if (PrivacyConfig.FILE_NAME in relevant) loadPrivacyModes()
         for (doc in openDocuments()) {
             if (doc.isAffectedBy(relevant)) doc.reloadFromDisk()
         }
@@ -1089,7 +1113,150 @@ class DocumentRegistry(
         _vaultListings.update { it + updates }
     }
 
+    // ------------------------------------------------------------ privacy
+
+    /**
+     * The privacy modes and the app's current one.
+     *
+     * @property modes The vault's modes, in the dialog's order.
+     * @property currentId The mode the whole app shows (every window and
+     *   tab), or `null` for "No privacy".
+     * @property filter What [currentId] hides ([PrivacyFilter.NONE] for
+     *   none) — the tags as they are now, so editing the current mode's
+     *   tags applies at once.
+     * @property revision Bumped whenever what is hidden may have changed
+     *   without [filter] changing (the text index learned of new tags, a
+     *   save moved things), so panes re-check their location and repaint.
+     */
+    data class PrivacyView(
+        val modes: List<PrivacyMode> = emptyList(),
+        val currentId: String? = null,
+        val filter: PrivacyFilter = PrivacyFilter.NONE,
+        val revision: Int = 0,
+    ) {
+        /** The current mode, or `null` for "No privacy". */
+        val current: PrivacyMode? get() = modes.firstOrNull { it.id == currentId }
+    }
+
+    private val _privacy = MutableStateFlow(PrivacyView())
+
+    /** The privacy modes and the current one; observed by every pane and the web dialog. */
+    val privacyFlow: StateFlow<PrivacyView> = _privacy.asStateFlow()
+
+    /** What the app's current privacy mode hides ([PrivacyFilter.NONE] for "No privacy"). */
+    val privacyFilter: PrivacyFilter get() = _privacy.value.filter
+
+    private var privacyRevisionJob: Job? = null
+
+    /**
+     * After the text index changed while a mode is on: bumps
+     * [PrivacyView.revision] once, a moment later (a vault scan reports
+     * every file), so panes re-check what they show.
+     */
+    private fun schedulePrivacyRevision() {
+        if (!privacyFilter.isActive || privacyRevisionJob?.isActive == true) return
+        privacyRevisionJob = scope.launch {
+            delay(PRIVACY_REVISION_DELAY_MS)
+            _privacy.update { it.copy(revision = it.revision + 1) }
+        }
+    }
+
+    /**
+     * Reads the vault's modes from `_privacy.config`. The current mode is
+     * kept when it still exists, otherwise the app falls back to "No
+     * privacy". Called at boot by the platform shell (before panes render,
+     * via [setPrivacyMode]) and when the file changes outside the app.
+     */
+    suspend fun loadPrivacyModes() {
+        val modes = PrivacyConfig.parse(repository.readPrivacyConfig())
+        applyPrivacy(modes, _privacy.value.currentId)
+    }
+
+    /**
+     * Replaces the vault's modes with [modes] and writes `_privacy.config`.
+     * Changing the tags of the current mode applies at once; removing it
+     * falls back to "No privacy".
+     *
+     * Called by the web privacy dialog on every change (it saves as you go).
+     */
+    suspend fun setPrivacyModes(modes: List<PrivacyMode>) {
+        repository.writePrivacyConfig(PrivacyConfig.format(modes))
+        applyPrivacy(modes, _privacy.value.currentId)
+    }
+
+    /**
+     * Makes [id] the mode the whole app shows (`null`: "No privacy"; an
+     * unknown id counts as `null`). With a mode on, the text index is built
+     * first, so hidden folders and notes are known before anything is shown
+     * under the new mode. Panes on content now hidden move to the nearest
+     * visible place themselves.
+     *
+     * Called by the platform shell at boot (the persisted mode) and by the
+     * privacy dialog's mode picker.
+     */
+    suspend fun setPrivacyMode(id: String?) {
+        val mode = _privacy.value.modes.firstOrNull { it.id == id }
+        if (mode != null && mode.filter.isActive) {
+            flushAll()
+            textIndex.ensureBuilt()
+        }
+        applyPrivacy(_privacy.value.modes, mode?.id)
+    }
+
+    /**
+     * Sets the modes and current mode, and when what is hidden changed,
+     * brings the registry's own caches in line: search nodes re-run, wiki
+     * links re-resolve, the link-target list is dropped.
+     */
+    private suspend fun applyPrivacy(modes: List<PrivacyMode>, currentId: String?) {
+        val current = modes.firstOrNull { it.id == currentId }
+        if (current != null && current.filter.isActive) textIndex.ensureBuilt()
+        val before = _privacy.value
+        val filter = current?.filter ?: PrivacyFilter.NONE
+        _privacy.value = before.copy(
+            modes = modes,
+            currentId = current?.id,
+            filter = filter,
+            revision = before.revision + if (filter != before.filter) 1 else 0,
+        )
+        if (filter != before.filter) {
+            for (key in requestedSearchNodes.toList()) runSearchNode(key)
+            vaultIndex.invalidateTargets()
+            refreshWikiLinks()
+        }
+    }
+
+    /**
+     * The filter an agent connection scoped to the mode [modeId] works
+     * under: [PrivacyFilter.NONE] for `null` ("No privacy"), or `null` when
+     * no such mode exists any more — the connection is then off until the
+     * user picks a scope again. Independent of the app's current mode.
+     */
+    fun filterForMode(modeId: String?): PrivacyFilter? {
+        if (modeId.isNullOrEmpty()) return PrivacyFilter.NONE
+        return _privacy.value.modes.firstOrNull { it.id == modeId }?.filter
+    }
+
+    /**
+     * `true` when [filter] (by default the app's current mode) hides the
+     * vault path [pathRel] — a folder, outline, note or other file
+     * ([TextIndex.isPathHidden]). Always `false` with no mode on.
+     */
+    fun isPathHidden(pathRel: String, filter: PrivacyFilter = privacyFilter): Boolean =
+        filter.isActive && textIndex.isPathHidden(pathRel, filter)
+
+    /**
+     * `true` when [filter] (by default the app's) hides something inside
+     * the folder [folderRel] ([TextIndex.hasHiddenUnder]): deleting that
+     * folder's node would take hidden content along.
+     */
+    fun hasHiddenUnder(folderRel: String, filter: PrivacyFilter = privacyFilter): Boolean =
+        filter.isActive && textIndex.hasHiddenUnder(folderRel, filter)
+
     private companion object {
+        /** Pause after a text-index change before [PrivacyView.revision] is bumped. */
+        const val PRIVACY_REVISION_DELAY_MS: Long = 300
+
         /** Pause after an index change before search nodes re-run. */
         const val SEARCH_NODE_REFRESH_MS: Long = 3_000
 

@@ -23,6 +23,13 @@
  * intents — [insertBlock], [deleteBlockAt], [convertBlockToNodesAt],
  * [exitBlock] — live here too.
  *
+ * Privacy modes (LBR-10): rows the app's mode hides ([hiddenRowsIn]) are
+ * never touched. Deleting a selection across them deletes only the visible
+ * rows around them, and keeps a visible item that has hidden content under
+ * it ([isProtectedRow]); Tab and Shift-Tab next to a hidden sibling move the
+ * item past it rather than re-parent it; copy leaves hidden rows out. What
+ * slips through is caught by the pane's check after every edit.
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports. The class holds
  * no state of its own; cursor and selection live in the aggregate's
  * single `MutableStateFlow`.
@@ -49,6 +56,9 @@ import se.soderbjorn.lunarbor.main.PaneBackingViewModel.Companion.TAB_SIZE
  * @param mutate Applies a transform to the current state and reconciles.
  * @param patch Applies a transform that touches document content; refreshes
  *   the mirrored `documentState` and reconciles.
+ * @param isProtectedRow `true` for a visible item that must not be deleted
+ *   because content the privacy mode hides lives under it
+ *   (`PaneBackingViewModel.isProtectedRow`); always `false` with no mode on.
  */
 internal class TextEditingViewModel(
     private val documentProvider: () -> Document,
@@ -56,6 +66,7 @@ internal class TextEditingViewModel(
     @Suppress("unused") private val applyState: (PaneBackingViewModel.State) -> Unit,
     private val mutate: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
     private val patch: ((PaneBackingViewModel.State) -> PaneBackingViewModel.State) -> Unit,
+    private val isProtectedRow: (PaneBackingViewModel.State, Int) -> Boolean = { _, _ -> false },
 ) {
     private val state: PaneBackingViewModel.State
         get() = stateProvider()
@@ -497,7 +508,14 @@ internal class TextEditingViewModel(
             multiLine && blockCol >= 0 ->
                 blockLinesForPaste(text, blockCol, code = BlockLayout.isCodeLine(state.lines[startRow]))
             multiLine && document.bulletsOnly -> {
-                val baseIndent = DocumentLayout.bulletAsteriskColumn(state.lines[startRow]).coerceAtLeast(0)
+                val s = state
+                val bulletCol = DocumentLayout.bulletAsteriskColumn(s.lines[startRow]).coerceAtLeast(0)
+                // A bullet whose children the privacy mode hides: the pasted
+                // lines become its first children, so the hidden ones keep
+                // their parent (as Enter does on any parent).
+                val baseIndent = if (PrivacyLayout.hasHiddenDescendants(s.lines, hiddenRowsIn(s), startRow)) {
+                    DocumentLayout.indentOf(s.lines[startRow + 1])
+                } else bulletCol
                 bulletLinesForPaste(text, baseIndent)
             }
             else -> text
@@ -901,6 +919,7 @@ internal class TextEditingViewModel(
         val block = BlockLayout.rangeAt(s.lines, row)
         val first = block?.first ?: row
         val currentIndent = line.takeWhile { it == ' ' }.length
+        if (indentPastHiddenIfAny(s, first, block, currentIndent, amount)) return
         val ancestorIndent = precedingBulletIndent(s.lines, first) ?: return
         if (currentIndent >= ancestorIndent + amount) return
 
@@ -960,6 +979,7 @@ internal class TextEditingViewModel(
         val minAllowed = if (zoom != null) zoom.zoomIndent + TAB_SIZE else 0
         val remove = minOf(amount, leading - minAllowed).coerceAtLeast(0)
         if (remove == 0) return
+        if (outdentPastHiddenIfAny(s, row, remove)) return
 
         // Outdent the whole subtree as a unit so the relative hierarchy
         // is preserved. Children all have indent strictly greater than
@@ -1076,6 +1096,88 @@ internal class TextEditingViewModel(
         val start = BlockLayout.rangeAt(lines, sel.startRow)?.first ?: sel.startRow
         val end = BlockLayout.rangeAt(lines, effEnd)?.last ?: effEnd
         return start to end
+    }
+
+    /**
+     * Tab on the item at [first] while the privacy mode hides rows above
+     * it. The item's new parent is the nearest *visible* item above it
+     * (never a hidden one, under which it would vanish), and the ceiling is
+     * one level under the nearest visible item. When hidden rows sit
+     * between that parent's subtree and the item, the item (with its
+     * subtree) moves up to become the parent's last child, before them —
+     * they keep their own parent. Returns `true` when it handled the Tab
+     * (done, or refused); `false` when the mode hides nothing above and the
+     * usual Tab applies.
+     */
+    private fun indentPastHiddenIfAny(
+        s: PaneBackingViewModel.State,
+        first: Int,
+        block: IntRange?,
+        currentIndent: Int,
+        amount: Int,
+    ): Boolean {
+        val hidden = hiddenRowsIn(s) ?: return false
+        if ((0 until first).none { hidden[it] }) return false
+        val lines = s.lines
+        val visibleItemAbove = (first - 1 downTo 0).firstOrNull { !hidden[it] && DocumentLayout.itemColumn(lines, it) >= 0 }
+            ?: return true
+        if (currentIndent >= DocumentLayout.itemColumn(lines, visibleItemAbove) + amount) return true
+        val newIndent = currentIndent + amount
+        val parent = (first - 1 downTo 0).firstOrNull { !hidden[it] && DocumentLayout.itemColumn(lines, it) in 0 until newIndent }
+            ?: return true
+        val parentCol = DocumentLayout.itemColumn(lines, parent)
+        val parentEnd = DocumentLayout.subtreeEnd(lines, parent, parentCol)
+        if (parentEnd + 1 >= first || ((parentEnd + 1) until first).none { hidden[it] }) return false
+        // A folded folder-backed parent has its children on disk only.
+        val parentId = s.documentState?.lineIds?.getOrNull(parent)
+        if (parentId != null && parentId in s.collapsedIds && document.isPromotedRef(parentId)) return true
+        val bulletCol = DocumentLayout.bulletAsteriskColumn(lines[first])
+        val end = when {
+            block != null -> DocumentLayout.subtreeEnd(lines, first, BlockLayout.markerColumn(lines[first]))
+            bulletCol >= 0 -> DocumentLayout.subtreeEnd(lines, first, bulletCol)
+            else -> first
+        }
+        val pad = " ".repeat(amount)
+        val landed = document.moveRows(first, end, parentEnd + 1, (first..end).map { pad + lines[it] })
+        val reveal = ancestorIdsAt(s.copy(documentState = document.stateFlow.value), landed, newIndent)
+        patch {
+            it.copy(
+                cursorRow = landed + (s.cursorRow - first), cursorCol = s.cursorCol + amount,
+                anchorRow = null, anchorCol = null,
+                collapsedIds = it.collapsedIds - reveal,
+            )
+        }
+        return true
+    }
+
+    /**
+     * Shift-Tab on the item at [row] while the privacy mode hides rows
+     * after it under the same parent: outdenting in place would make those
+     * hidden rows its children. Instead the item (with its subtree) moves
+     * below its parent's whole subtree, [remove] spaces shallower — the
+     * hidden rows keep their parent. Returns `true` when it handled the
+     * Shift-Tab; `false` when the usual outdent applies.
+     */
+    private fun outdentPastHiddenIfAny(s: PaneBackingViewModel.State, row: Int, remove: Int): Boolean {
+        val hidden = hiddenRowsIn(s) ?: return false
+        val lines = s.lines
+        val first = BlockLayout.rangeAt(lines, row)?.first ?: row
+        val col = DocumentLayout.itemColumn(lines, first)
+        if (col < 0) return false
+        val end = DocumentLayout.subtreeEnd(lines, first, col)
+        val parent = (first - 1 downTo 0).firstOrNull { DocumentLayout.itemColumn(lines, it) in 0 until col } ?: return false
+        val parentEnd = DocumentLayout.subtreeEnd(lines, parent, DocumentLayout.itemColumn(lines, parent))
+        if (parentEnd <= end || ((end + 1)..parentEnd).none { hidden[it] }) return false
+        val texts = (first..end).map { r -> lines[r].substring(minOf(remove, lines[r].takeWhile { c -> c == ' ' }.length)) }
+        val landed = document.moveRows(first, end, parentEnd + 1, texts)
+        patch {
+            it.copy(
+                cursorRow = landed + (s.cursorRow - first),
+                cursorCol = (s.cursorCol - remove).coerceAtLeast(0),
+                anchorRow = null, anchorCol = null,
+            )
+        }
+        return true
     }
 
     fun isBulletLine(): Boolean {
@@ -1533,9 +1635,15 @@ internal class TextEditingViewModel(
 
     fun selectAll() = mutate { st ->
         val zoom = zoomInfoOf(st)
-        val startRow = zoom?.startRow ?: st.firstEditableRow
-        val endRow = zoom?.endRowInclusive ?: st.lines.lastIndex
+        var startRow = zoom?.startRow ?: st.firstEditableRow
+        var endRow = zoom?.endRowInclusive ?: st.lines.lastIndex
         if (endRow < startRow) return@mutate st
+        // Rows the privacy mode hides at either end are not selected.
+        hiddenRowsIn(st)?.let { hidden ->
+            while (startRow <= endRow && hidden[startRow]) startRow++
+            while (endRow >= startRow && hidden[endRow]) endRow--
+            if (endRow < startRow) return@mutate st
+        }
         st.copy(
             anchorRow = startRow, anchorCol = 0,
             cursorRow = endRow, cursorCol = st.lines[endRow].length
@@ -1611,6 +1719,9 @@ internal class TextEditingViewModel(
         val endLine = s.lines[sel.endRow]
         val startRowGone = document.bulletsOnly && sel.startRow != sel.endRow &&
             startCol <= DocumentLayout.textStartCol(startLine)
+        if (document.bulletsOnly && sel.startRow != sel.endRow &&
+            deleteAroundHiddenIfAny(s, sel, startCol, endCol, startRowGone)
+        ) return true
         when {
             !startRowGone -> document.delete(sel.startRow, startCol, sel.endRow, endCol)
             endCol < endLine.length -> {
@@ -1635,6 +1746,78 @@ internal class TextEditingViewModel(
     }
 
     /**
+     * Deletes a multi-row selection that spans rows the privacy mode hides,
+     * or visible items with hidden content under them ([isProtectedRow]):
+     * those rows are kept whole, and only the visible rows around them are
+     * deleted — the first row from [startCol] (all of it, as an item, when
+     * [startRowGone]), the last up to [endCol] (as an item when the
+     * selection takes its whole text), every row in between as an item.
+     * Rows are not merged across the kept ones. The caret lands at the
+     * selection start, or where the first row was.
+     *
+     * Returns `false` — nothing done — when the selection holds no such
+     * row; [deleteSelectionIfAny] then deletes as usual.
+     */
+    private fun deleteAroundHiddenIfAny(
+        s: PaneBackingViewModel.State,
+        sel: PaneBackingViewModel.Selection,
+        startCol: Int,
+        endCol: Int,
+        startRowGone: Boolean,
+    ): Boolean {
+        if (!s.privacy.isActive) return false
+        val hidden = hiddenRowsIn(s)
+        val lines = s.lines
+        val keep = (sel.startRow..sel.endRow).filter { r ->
+            PrivacyLayout.isHidden(hidden, r) || (DocumentLayout.itemColumn(lines, r) >= 0 && isProtectedRow(s, r))
+        }.toHashSet()
+        if (keep.isEmpty()) return false
+        val removed = HashSet<Int>()
+        // Bottom-up: text edits and removals below never shift rows above.
+        val last = sel.endRow
+        val lastText = DocumentLayout.textStartCol(lines[last])
+        when {
+            // A kept item keeps its title whole; only part of it can go.
+            last in keep -> if (endCol in (lastText + 1) until lines[last].length) document.delete(last, lastText, last, endCol)
+            endCol >= lines[last].length -> removed += last
+            endCol > lastText -> document.delete(last, lastText, last, endCol)
+        }
+        for (r in sel.startRow + 1 until last) if (r !in keep) removed += r
+        val first = sel.startRow
+        val firstKept = first in keep || !startRowGone
+        if (firstKept) {
+            val partOfTitle = startCol > DocumentLayout.textStartCol(lines[first])
+            if (startCol < lines[first].length && (first !in keep || partOfTitle)) {
+                document.delete(first, startCol, first, lines[first].length)
+            }
+        } else {
+            removed += first
+        }
+        // Remove whole rows, bottom-up, a contiguous run at a time.
+        val runs = removed.sortedDescending()
+        var i = 0
+        while (i < runs.size) {
+            var lo = runs[i]
+            val hi = lo
+            while (i + 1 < runs.size && runs[i + 1] == lo - 1) {
+                i++
+                lo = runs[i]
+            }
+            document.deleteRows(lo, hi)
+            i++
+        }
+        val now = document.stateFlow.value.lines
+        val (r, c) = if (firstKept) {
+            first to startCol.coerceAtMost(now[first].length)
+        } else {
+            val r0 = first.coerceAtMost(now.lastIndex)
+            r0 to DocumentLayout.caretStartCol(now[r0])
+        }
+        patch { it.copy(cursorRow = r, cursorCol = c, anchorRow = null, anchorCol = null) }
+        return true
+    }
+
+    /**
      * Text of the active selection for the clipboard, or `null` when
      * nothing is selected.
      *
@@ -1651,6 +1834,7 @@ internal class TextEditingViewModel(
         if (!s.isLoaded) return null
         val sel = selectionOf(s) ?: return null
         val lines = s.lines
+        val hidden = hiddenRowsIn(s)
         val raw = if (sel.startRow == sel.endRow) {
             lines[sel.startRow].substring(sel.startCol, sel.endCol)
         } else {
@@ -1660,6 +1844,8 @@ internal class TextEditingViewModel(
                 append(firstLine.substring(firstFrom))
                 append('\n')
                 for (i in sel.startRow + 1 until sel.endRow) {
+                    // What the privacy mode hides never reaches the clipboard.
+                    if (PrivacyLayout.isHidden(hidden, i)) continue
                     append(lines[i])
                     append('\n')
                 }
@@ -1679,8 +1865,13 @@ internal class TextEditingViewModel(
      */
     fun onCutRequested(): String? {
         val text = getSelectedText() ?: return null
-        val sel = selectionOf(state)
-        if (sel != null) document.rememberCut(sel.startRow, sel.startCol, sel.endRow, sel.endCol, text)
+        val s = state
+        val sel = selectionOf(s)
+        if (sel != null) {
+            val hidden = hiddenRowsIn(s)
+            val rows = (sel.startRow..sel.endRow).filterNot { PrivacyLayout.isHidden(hidden, it) }
+            document.rememberCut(sel.startRow, sel.startCol, sel.endRow, sel.endCol, text, rows)
+        }
         deleteSelectionIfAny()
         return text
     }

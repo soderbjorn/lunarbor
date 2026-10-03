@@ -543,6 +543,13 @@ class MainViewModel(
     fun wikiLinkHref(state: PaneBackingViewModel.State, name: String): String? =
         paneBackingViewModel.wikiLinkHref(state, name)
 
+    /** See [PaneBackingViewModel.hasChildrenOnScreen]. */
+    fun hasChildrenOnScreen(state: PaneBackingViewModel.State, row: Int): Boolean =
+        paneBackingViewModel.hasChildrenOnScreen(state, row)
+
+    /** See [PaneBackingViewModel.isPathHidden]. */
+    fun isPathHidden(pathRel: String): Boolean = paneBackingViewModel.isPathHidden(pathRel)
+
     /** See `PaneBackingViewModel.isLinkBroken`. */
     fun isLinkBroken(state: PaneBackingViewModel.State, url: String): Boolean =
         paneBackingViewModel.isLinkBroken(state, url)

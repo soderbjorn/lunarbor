@@ -249,7 +249,7 @@ internal fun isTitleHeading(line: String, title: String): Boolean {
 
 /**
  * Rows [startRow]..[endRowInclusive] of [state] that are on screen:
- * folded subtrees hidden, and large blocks the pane has not expanded
+ * folded subtrees and the rows a privacy mode hides left out, and large blocks the pane has not expanded
  * cut to their preview ([DocumentLayout.visibleRowsOf] with
  * [PaneBackingViewModel.State.expandedBlockIds]). A block the pane is
  * zoomed into always shows whole — it is the page.
@@ -263,7 +263,20 @@ internal fun visibleRowsIn(state: PaneBackingViewModel.State, startRow: Int, end
     val expanded = state.zoomedLineId?.let { state.expandedBlockIds + it } ?: state.expandedBlockIds
     return DocumentLayout.visibleRowsOf(
         docState.lines, docState.lineIds, state.collapsedIds, startRow, endRowInclusive, expanded,
+        hiddenRowsIn(state),
     )
+}
+
+/**
+ * Rows of [state]'s document its privacy mode hides
+ * ([PaneBackingViewModel.State.privacy], [PrivacyLayout.hiddenRows]), or
+ * `null` when none. Only outlines hide rows: a `.md` note is hidden as a
+ * whole file. Cached, so cheap to ask on every emission.
+ */
+internal fun hiddenRowsIn(state: PaneBackingViewModel.State): BooleanArray? {
+    val docState = state.documentState ?: return null
+    if (state.isMarkdownMode || !state.privacy.isActive) return null
+    return PrivacyLayout.hiddenRows(docState.lines, state.privacy)
 }
 
 /**

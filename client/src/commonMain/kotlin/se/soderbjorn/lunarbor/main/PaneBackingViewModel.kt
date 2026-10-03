@@ -42,6 +42,17 @@
  * strike through. Starred entries are the same `lunarbor:` paths
  * ([currentLocationPath], [toggleStarred]).
  *
+ * ### Privacy modes (LBR-10)
+ * The app's privacy mode ([State.privacy], mirrored from
+ * [DocumentRegistry.privacyFlow]) hides tagged items with their subtrees.
+ * Their rows stay in the document but are never on screen
+ * ([visibleRowsIn]); every recorded edit is checked afterwards
+ * ([recordEdit], [PrivacyLayout.keepsHiddenRows]) and undone when it would
+ * have changed, deleted or re-parented a hidden row, or moved a visible
+ * one under a hidden item. A zoom into a hidden item falls back to its
+ * nearest visible ancestor ([reconcile]); a pane on a hidden file or
+ * folder moves up to the nearest visible node ([leaveHiddenLocation]).
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -68,6 +79,7 @@ import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.LinkTarget
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.PathMove
+import se.soderbjorn.lunarbor.data.PrivacyFilter
 import se.soderbjorn.lunarbor.data.SubtreeCodec
 import se.soderbjorn.lunarbor.data.TagCount
 import se.soderbjorn.lunarbor.data.TextHit
@@ -231,6 +243,12 @@ class PaneBackingViewModel(
      *   ([isDrawingView]): the registry's change counter for it
      *   ([DocumentRegistry.drawingRevisionsFlow]). The drawing editor
      *   re-reads the drawing ([loadDrawing]) when it changes. `0` otherwise.
+     * @property privacy What the app's privacy mode hides (mirror of
+     *   [DocumentRegistry.PrivacyView.filter]); [PrivacyFilter.NONE] for
+     *   "No privacy". Rows it hides are never on screen ([visibleRowsIn]).
+     * @property privacyRevision Mirror of [DocumentRegistry.PrivacyView.revision]:
+     *   changes whenever what is hidden may have changed, so the view repaints
+     *   (folder contents, links) even when [privacy] did not.
      */
     data class State(
         val activeFileRel: String = "",
@@ -264,6 +282,8 @@ class PaneBackingViewModel(
         val searchReversed: Boolean = false,
         val scrollRestore: ScrollRestore? = null,
         val drawingRevision: Int = 0,
+        val privacy: PrivacyFilter = PrivacyFilter.NONE,
+        val privacyRevision: Int = 0,
     ) {
         /**
          * `true` while the search field holds at least one word: the view
@@ -526,7 +546,27 @@ class PaneBackingViewModel(
         applyState = { _stateFlow.value = it },
         mutate = { transform -> mutate(transform) },
         patch = { transform -> patch(transform) },
+        isProtectedRow = { state, row -> isProtectedRow(state, row) },
     )
+
+    /**
+     * `true` when the visible item at [row] must not be deleted while the
+     * app's privacy mode is on, because content it hides lives under it:
+     * hidden rows in its subtree, or — for a folder-backed item — hidden
+     * content in its folder ([DocumentRegistry.hasHiddenUnder]), which the
+     * delete would send to the trash. `false` with no mode on.
+     *
+     * Called by [TextEditingViewModel.deleteSelectionIfAny] (such rows are
+     * kept) and by [recordEdit]'s check.
+     */
+    private fun isProtectedRow(state: State, row: Int): Boolean {
+        if (!state.privacy.isActive) return false
+        val docState = state.documentState ?: return false
+        if (PrivacyLayout.hasHiddenDescendants(docState.lines, hiddenRowsIn(state), row)) return true
+        val id = docState.lineIds.getOrNull(row) ?: return false
+        val folder = document?.folderOf(id) ?: return false
+        return !NoteRepository.isInTrash(folder) && registry.hasHiddenUnder(folder)
+    }
 
     private val zoomNavigation = ZoomNavigation(
         documentProvider = { currentDocument() },
@@ -598,12 +638,141 @@ class PaneBackingViewModel(
                 _stateFlow.value = _stateFlow.value.copy(drawingRevision = rev)
             }
         }
+        // The app's privacy mode: hidden rows leave the screen at once, and
+        // a pane on something now hidden moves to the nearest visible node.
+        scope.launch {
+            registry.privacyFlow.collect { view ->
+                val before = _stateFlow.value
+                if (before.privacy == view.filter && before.privacyRevision == view.revision) return@collect
+                if (before.privacy != view.filter && before.documentState != null) {
+                    // Snapshots from under another mode could bring back or
+                    // drop rows this mode hides.
+                    undoStack.clear()
+                    redoStack.clear()
+                }
+                _stateFlow.value = reconcile(before.copy(privacy = view.filter, privacyRevision = view.revision))
+                if (before.privacy != view.filter) before.searchQuery?.let(::setSearchQuery)
+                ensureVisibleRow()
+                leaveHiddenLocation()
+            }
+        }
         // Acquire the initial document and start mirroring it.
         scope.launch {
             val doc = registry.acquire(initialFileRel)
             document = doc
             startDocumentCollector(doc)
         }
+    }
+
+    /**
+     * `true` when the app's privacy mode hides the vault path [pathRel]
+     * ([DocumentRegistry.isPathHidden]). Called by the web view for the
+     * folder contents list, Starred and links, and by this pane for its
+     * own location and history.
+     */
+    fun isPathHidden(pathRel: String): Boolean = registry.isPathHidden(pathRel)
+
+    /**
+     * `true` when the item at [row] has children the pane can show: rows
+     * in its subtree that are on screen once unfolded, or — a folded
+     * folder-backed item, its children on disk only — items in its folder.
+     * The app's privacy mode counts: an item whose children are all hidden
+     * has none, so it gets no fold control.
+     *
+     * Called by the web paint loop for every bullet and block item.
+     */
+    fun hasChildrenOnScreen(state: State, row: Int): Boolean {
+        val docState = state.documentState ?: return false
+        val lines = docState.lines
+        val col = DocumentLayout.itemColumn(lines, row)
+        if (col < 0) return false
+        val id = docState.lineIds.getOrNull(row)
+        val foldedRef = id != null && isPromotedRef(id) && id !in state.expandedRefIdsLocal
+        val hidden = hiddenRowsIn(state)
+        if (hidden == null) return foldedRef || DocumentLayout.hasChildren(lines, row, col)
+        val end = DocumentLayout.subtreeEnd(lines, row, col)
+        if ((DocumentLayout.itemLastRow(lines, row) + 1..end).any { !hidden[it] }) return true
+        if (!foldedRef) return false
+        val folder = document?.folderOf(id!!) ?: return true
+        return registry.textIndex.hasVisibleItems(folder, state.privacy)
+    }
+
+    /**
+     * Gives the page a row to type in when the app's privacy mode hides
+     * every row it has — an outline, or a zoom, whose items all carry a
+     * hidden tag: an empty bullet after them (at the page's top level, so
+     * it is no hidden item's child), with the caret on it. Like a leaf
+     * zoom's placeholder ([State.pendingLeafZoomChild]) it goes again when
+     * left empty. Not an undoable edit. A no-op when anything is visible.
+     *
+     * Called after every document emission, mode change and zoom change.
+     */
+    private fun ensureVisibleRow() {
+        val s = _stateFlow.value
+        if (!s.isLoaded || !s.privacy.isActive || s.isMarkdownMode || s.isReadOnlyPage) return
+        val hidden = hiddenRowsIn(s) ?: return
+        val doc = document ?: return
+        val zoom = zoomInfoOf(s)
+        val start = zoom?.startRow ?: s.firstEditableRow
+        val end = zoom?.endRowInclusive ?: s.lines.lastIndex
+        if (start > end || (start..end).any { !hidden[it] }) return
+        val indent = zoom?.let { it.zoomIndent + TAB_SIZE } ?: 0
+        val at = end + 1
+        doc.insertLine(at, " ".repeat(indent) + "* ")
+        val id = doc.stateFlow.value.lineIds.getOrNull(at) ?: return
+        patch {
+            it.copy(cursorRow = at, cursorCol = indent + 2, anchorRow = null, anchorCol = null, pendingLeafZoomChild = id)
+        }
+    }
+
+    /**
+     * Moves this pane off a file or folder the app's privacy mode hides:
+     * to the nearest node above it that is visible (the root at worst),
+     * without recording history. A zoom into a hidden item is handled by
+     * [reconcile] instead. A no-op when nothing the pane shows is hidden.
+     *
+     * Called whenever the mode, or what it hides, changes.
+     */
+    private fun leaveHiddenLocation() {
+        val s = _stateFlow.value
+        if (!s.privacy.isActive) return
+        val file = s.activeFileRel
+        if (file.isEmpty() || !registry.isPathHidden(file)) return
+        val dest = visibleFileFor(file)
+        scope.launch {
+            if (_stateFlow.value.activeFileRel != file) return@launch
+            switchActiveFile(dest)
+            recallAfterLoad(dest)
+        }
+    }
+
+    /**
+     * [fileRel], or — when the app's privacy mode hides it — the outline of
+     * the nearest node above it that is visible (the root at worst). Every
+     * file switch ([switchActiveFile]) goes through it, so no navigation —
+     * a link, Back, a restored location — ever lands on hidden content.
+     */
+    private fun visibleFileFor(fileRel: String): String {
+        if (fileRel.isEmpty() || !registry.isPathHidden(fileRel)) return fileRel
+        var target = parentFileOf(fileRel)
+        while (target != null && registry.isPathHidden(target)) target = parentFileOf(target)
+        return target ?: rootFileName
+    }
+
+    /**
+     * `true` when the history entry [entry] points at a file or folder the
+     * app's privacy mode hides: Back / Forward skip it.
+     */
+    private fun isEntryHidden(entry: FileHistoryEntry): Boolean = registry.isPathHidden(entry.fileRel)
+
+    /**
+     * `true` when the item [id] of the open document is hidden by the
+     * app's privacy mode (its row, or a row above it, carries a hidden tag).
+     */
+    private fun isRowIdHidden(state: State, id: LineId): Boolean {
+        val hidden = hiddenRowsIn(state) ?: return false
+        val row = state.documentState?.lineIds?.indexOf(id) ?: return false
+        return PrivacyLayout.isHidden(hidden, row)
     }
 
     /**
@@ -623,6 +792,7 @@ class PaneBackingViewModel(
                 val withDefaults = applyDefaultCollapseIfNeeded(merged)
                 _stateFlow.value = reconcile(withDefaults)
                 recordFolds(_stateFlow.value)
+                ensureVisibleRow()
                 // Folder-backed items remembered open load their children
                 // (each splice is seen here again, so deeper levels follow).
                 // Inline, so switchActiveFile's cancelAndJoin settles every
@@ -667,8 +837,12 @@ class PaneBackingViewModel(
      * cursor, anchor, zoom target + history, fold state. File history
      * bookkeeping is not touched here — callers ([navigateToVaultFile],
      * [fileBack], [fileForward]) push / pop those stacks themselves.
+     *
+     * A [requested] file the app's privacy mode hides opens the nearest
+     * visible node above it instead ([visibleFileFor]).
      */
-    private suspend fun switchActiveFile(fileRel: String) {
+    private suspend fun switchActiveFile(requested: String) {
+        val fileRel = visibleFileFor(requested)
         val current = _stateFlow.value
         if (current.activeFileRel == fileRel &&
             (document != null || NoteRepository.isFileViewPath(fileRel))
@@ -849,12 +1023,23 @@ class PaneBackingViewModel(
         val docState = state.documentState ?: return null
         val line = docState.lines.getOrNull(row) ?: return null
         val path = linkPreviewPathOf(line) ?: return null
+        if (state.privacy.isActive && registry.isPathHidden(path)) return null
         val id = docState.lineIds.getOrNull(row) ?: return null
         if (isPromotedRef(id)) return null
         if (DocumentLayout.hasChildren(docState.lines, row, DocumentLayout.bulletAsteriskColumn(line))) return null
-        val items = state.linkPreviews[path] ?: registry.requestLinkPreview(path) ?: return null
+        val all = state.linkPreviews[path] ?: registry.requestLinkPreview(path) ?: return null
+        // Bullets the privacy mode hides are left out of the preview.
+        val items = if (state.privacy.isActive) all.filterNot { previewItemHidden(path, it, state.privacy) } else all
         return if (items.isEmpty()) null else LinkPreview(path, items)
     }
+
+    /**
+     * `true` when the privacy [filter] hides the preview item [item] of the
+     * linked node [nodeFolder]: it carries a hidden tag, or its folder is
+     * hidden.
+     */
+    private fun previewItemHidden(nodeFolder: String, item: LinkPreviewItem, filter: PrivacyFilter): Boolean =
+        filter.hides(item.tagKeys) || item.pathRel?.let { registry.isPathHidden(it, filter) } == true
 
     /**
      * The preview heading the page when the pane is zoomed into a link
@@ -1147,7 +1332,10 @@ class PaneBackingViewModel(
         val start = zoom?.let { it.zoomRow + 1 } ?: 0
         val end = zoom?.endRowInclusive ?: lines.lastIndex
         val out = HashSet<LineId>()
+        val hidden = hiddenRowsIn(s.copy(documentState = docState))
         for (row in start..end) {
+            // Hidden items are neither folded nor unfolded (nor loaded).
+            if (PrivacyLayout.isHidden(hidden, row)) continue
             val col = DocumentLayout.itemColumn(lines, row)
             if (col < 0) continue
             val id = docState.lineIds.getOrNull(row) ?: continue
@@ -1163,15 +1351,20 @@ class PaneBackingViewModel(
      * Markdown collapsed). `null` at the root, on a `.md` note or image,
      * and in Markdown mode.
      *
+     * Also `null` while the app's privacy mode hides something inside the
+     * node: deleting it would take that along to the trash.
+     *
      * Called by the web command palette to offer "Delete this node" and
      * to name it in the confirmation.
      */
     fun pageNodeTitle(state: State = _stateFlow.value): String? {
         if (!state.isLoaded || state.isMarkdownMode) return null
         zoomInfoOf(state)?.let { zoom ->
+            if (isProtectedRow(state, zoom.zoomRow)) return null
             return InlineMarkdownTokenizer.tokenize(SearchNode.stripQuery(zoom.titleText)).displayText.trim()
         }
         if (!NoteRepository.isOutlineFile(state.activeFileRel) || parentFileOf(state.activeFileRel) == null) return null
+        if (registry.hasHiddenUnder(NoteRepository.folderOfOutline(state.activeFileRel))) return null
         return NoteRepository.displayNameOf(state.activeFileRel)
     }
 
@@ -1322,7 +1515,11 @@ class PaneBackingViewModel(
         val keyOf = { range: IntRange ->
             FolderName.plainTextOf(SubtreeCodec.itemTitleOf(lines, range.first)).trim()
         }
-        val sorted = children.sortedWith { a, b ->
+        // Children the privacy mode hides stay where they are; the visible
+        // ones are sorted into the remaining places.
+        val hidden = hiddenRowsIn(s.copy(documentState = docState))
+        val isHiddenChild = { range: IntRange -> PrivacyLayout.isHidden(hidden, range.first) }
+        val sortedVisible = children.filterNot(isHiddenChild).sortedWith { a, b ->
             val ka = keyOf(a)
             val kb = keyOf(b)
             when {
@@ -1330,7 +1527,8 @@ class PaneBackingViewModel(
                 reverse -> FolderContents.naturalCompare(kb, ka)
                 else -> FolderContents.naturalCompare(ka, kb)
             }
-        }
+        }.iterator()
+        val sorted = children.map { if (isHiddenChild(it)) it else sortedVisible.next() }
         if (sorted == children) return@recordEdit
 
         val order = (0 until start) + sorted.flatMap { it.toList() } + ((end + 1)..lines.lastIndex)
@@ -1868,7 +2066,8 @@ class PaneBackingViewModel(
      * - The drop never splits a block (it snaps to the block's edge) and
      *   never lands inside a folded item's hidden subtree (it goes after
      *   it). Zoomed in, it stays inside the zoom region, below a zoomed
-     *   block's own rows.
+     *   block's own rows. Rows a privacy mode hides after the item above
+     *   are passed over: the drop goes before them.
      * - The level is any from that of the row below the drop point — so
      *   the rows below never become the moved item's children — down to
      *   one level under the visible item above it (that item's own level
@@ -1914,6 +2113,13 @@ class PaneBackingViewModel(
         var maxCol = floor
         if (aboveItem != null) {
             val col = DocumentLayout.itemColumn(lines, aboveItem)
+            // Rows the privacy mode hides between the item above and the
+            // drop point are not its own: drop before them, so the moved
+            // rows never land under (or above) an item they cannot see.
+            hiddenRowsIn(s)?.let { hidden ->
+                val aboveEnd = DocumentLayout.subtreeEnd(lines, aboveItem, col)
+                if (drop > aboveEnd + 1 && ((aboveEnd + 1) until drop).any { hidden[it] }) drop = aboveEnd + 1
+            }
             val id = ids.getOrNull(aboveItem)
             val folded = id != null && (id in s.collapsedIds ||
                 (doc.isPromotedRef(id) && id !in s.expandedRefIdsLocal))
@@ -2095,6 +2301,7 @@ class PaneBackingViewModel(
      * to the previous document.
      */
     fun zoomBack() {
+        dropHiddenHistory()
         val s = _stateFlow.value
         if (s.zoomHistory.isNotEmpty()) {
             zoomNavigation.zoomBack()
@@ -2107,6 +2314,7 @@ class PaneBackingViewModel(
 
     /** Mirror of [zoomBack] for the forward direction. */
     fun zoomForward() {
+        dropHiddenHistory()
         val s = _stateFlow.value
         if (s.zoomForward.isNotEmpty()) {
             zoomNavigation.zoomForward()
@@ -2114,6 +2322,26 @@ class PaneBackingViewModel(
         }
         if (s.fileForward.isNotEmpty()) {
             scope.launch { fileForward() }
+        }
+    }
+
+    /**
+     * Drops the Back / Forward entries that point into what the app's
+     * privacy mode hides — zooms into hidden items, hidden files — so a
+     * step skips them. Called before every history step.
+     */
+    private fun dropHiddenHistory() {
+        val s = _stateFlow.value
+        if (!s.privacy.isActive) return
+        fun zooms(stack: List<LineId?>) = stack.filter { it == null || !isRowIdHidden(s, it) }
+        val zoomBack = zooms(s.zoomHistory)
+        val zoomFwd = zooms(s.zoomForward)
+        val fileBack = s.fileHistory.filterNot(::isEntryHidden)
+        val fileFwd = s.fileForward.filterNot(::isEntryHidden)
+        if (zoomBack.size != s.zoomHistory.size || zoomFwd.size != s.zoomForward.size ||
+            fileBack.size != s.fileHistory.size || fileFwd.size != s.fileForward.size
+        ) {
+            _stateFlow.value = s.copy(zoomHistory = zoomBack, zoomForward = zoomFwd, fileHistory = fileBack, fileForward = fileFwd)
         }
     }
 
@@ -2596,7 +2824,7 @@ class PaneBackingViewModel(
     fun tagSuggestions(prefix: String, max: Int = 8): List<TagCount> {
         val query = SearchQuery.parse(_stateFlow.value.searchQuery)
         val where = query.scopePath?.let { TextScope.Tree(it) } ?: searchScope() ?: return emptyList()
-        return if (registry.textIndex.isBuilt) registry.textIndex.tags(where, prefix, max) else emptyList()
+        return if (registry.textIndex.isBuilt) registry.textIndex.tags(where, prefix, max, registry.privacyFilter) else emptyList()
     }
 
     /**
@@ -2773,7 +3001,10 @@ class PaneBackingViewModel(
             ensureVaultListing(dirRel)
             return null
         }
-        return FolderContents.visible(raw)
+        val shown = FolderContents.visible(raw)
+        // What the privacy mode hides: notes carrying a hidden tag, and
+        // folders under hidden items (never "unreferenced" folders).
+        return if (state.privacy.isActive) shown.filterNot { registry.isPathHidden(it.pathRel) } else shown
     }
 
     /**
@@ -3095,6 +3326,8 @@ class PaneBackingViewModel(
      */
     fun isLinkBroken(state: State, url: String): Boolean {
         val path = LunarborLink.parse(url) ?: return LunarborLink.isLunarborLink(url)
+        // A target the privacy mode hides reads as missing.
+        if (state.privacy.isActive && registry.isPathHidden(path)) return true
         state.linkStatus[path]?.let { return !it }
         return registry.requestLinkStatus(path) == false
     }
@@ -3404,6 +3637,8 @@ class PaneBackingViewModel(
         }
         scope.launch {
             try {
+                // A target the privacy mode hides is not followed.
+                if (registry.isPathHidden(path)) return@launch
                 when (registry.kindOf(path)) {
                     null -> {
                         println("[lunarbor] link target not found: $url")
@@ -3672,6 +3907,7 @@ class PaneBackingViewModel(
             _stateFlow.value = reconcile(patched)
             recordFolds(_stateFlow.value)
             recallPage()
+            ensureVisibleRow()
             return
         }
         _stateFlow.value = reconcile(patched)
@@ -3717,6 +3953,18 @@ class PaneBackingViewModel(
             cursorRow = baseRow, cursorCol = baseCol,
             anchorRow = baseAr, anchorCol = baseAc
         )
+        // A zoom into an item the privacy mode hides falls back to its
+        // nearest visible ancestor (or no zoom).
+        clamped.zoomedLineId?.let { zoomed ->
+            if (isRowIdHidden(clamped, zoomed)) {
+                val hidden = hiddenRowsIn(clamped)
+                val ids = docState.lineIds
+                val visibleAncestor = bulletAncestorsOf(clamped).lastOrNull { a ->
+                    !PrivacyLayout.isHidden(hidden, ids.indexOf(a.lineId))
+                }?.lineId
+                clamped = clamped.copy(zoomedLineId = visibleAncestor)
+            }
+        }
         if (clamped.zoomedLineId != null) {
             val zoom = zoomInfoOf(clamped)
             if (zoom == null || (!zoom.hasVisibleRows && !zoom.isReadOnly)) {
@@ -3837,8 +4085,35 @@ class PaneBackingViewModel(
         }
         val after = snapshotNow()
         if (before == after) return
+        if (!keepsHiddenContent(before, after)) {
+            // The edit would have touched what the privacy mode hides:
+            // put everything back, as if it never ran.
+            restoreSnapshot(before)
+            return
+        }
         pushUndoFrame(UndoFrame(before, after, kind, nowMs()))
         redoStack.clear()
+    }
+
+    /**
+     * `true` when going from [before] to [after] leaves alone everything the
+     * app's privacy mode hides: every hidden row is still there, with its
+     * text, under its parent; no visible row moved under a hidden item
+     * ([PrivacyLayout.keepsHiddenRows]); and no folder-backed item whose
+     * folder holds hidden content was deleted. Always `true` with no mode on.
+     */
+    private fun keepsHiddenContent(before: Snapshot, after: Snapshot): Boolean {
+        val s = _stateFlow.value
+        if (!s.privacy.isActive || s.isMarkdownMode) return true
+        if (!PrivacyLayout.keepsHiddenRows(before.lines, before.lineIds, after.lines, after.lineIds, s.privacy)) return false
+        val doc = document ?: return true
+        val kept = after.lineIds.toHashSet()
+        for (id in before.lineIds) {
+            if (id in kept) continue
+            val folder = doc.folderOf(id) ?: continue
+            if (!NoteRepository.isInTrash(folder) && registry.hasHiddenUnder(folder)) return false
+        }
+        return true
     }
 
     private fun pushUndoFrame(frame: UndoFrame) {

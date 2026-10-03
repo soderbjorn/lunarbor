@@ -19,11 +19,13 @@
  * rows, so untouched items keep their identity and nested nodes their
  * folders.
  *
- * A connection may be scoped to one folder of the vault (App settings →
- * Agent access, one key per connection): every path a tool takes must then
- * be that folder or inside it ([checkScope]), and the defaults that would
- * mean "the whole vault" mean that folder instead. Paths stay vault paths,
- * so `lunarbor:` links read and written by the agent mean the same everywhere.
+ * A connection may be scoped to a privacy mode (App settings → Agent
+ * access, one key per connection; LBR-10): what that mode hides does not
+ * exist for the agent — not read, listed or searched, a path into it reads
+ * as "not found" ([checkVisible]), nothing in it can be changed, and an
+ * edit of a visible node keeps its hidden items in place. The app's own
+ * current mode plays no part: each connection sees what its scope allows.
+ * A connection whose mode was deleted is off until the user picks a scope.
  *
  * commonMain only. Calls are serialized: one tool runs at a time.
  */
@@ -44,7 +46,10 @@ import kotlinx.serialization.json.putJsonObject
 import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.NodeLine
 import se.soderbjorn.lunarbor.data.NoteRepository
+import se.soderbjorn.lunarbor.data.PrivacyConfig
+import se.soderbjorn.lunarbor.data.PrivacyFilter
 import se.soderbjorn.lunarbor.data.SearchQuery
+import se.soderbjorn.lunarbor.data.TextIndex
 import se.soderbjorn.lunarbor.data.TextScope
 import se.soderbjorn.lunarbor.data.VaultEntryKind
 import se.soderbjorn.lunarbor.main.BlockLayout
@@ -54,6 +59,7 @@ import se.soderbjorn.lunarbor.main.DocumentRegistry
 import se.soderbjorn.lunarbor.main.FolderContents
 import se.soderbjorn.lunarbor.main.LineId
 import se.soderbjorn.lunarbor.main.PaneBackingViewModel
+import se.soderbjorn.lunarbor.main.PrivacyLayout
 
 /**
  * The MCP tool table and handlers.
@@ -107,10 +113,11 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
     private val extra = ArrayList<JsonObject>()
 
     /**
-     * The folder the running call's connection is limited to (vault-relative,
-     * `""` for the whole vault); set by [call] under [lock].
+     * What the running call's connection may not see: its privacy scope's
+     * filter ([PrivacyFilter.NONE] for "No privacy"); set by [call] under
+     * [lock].
      */
-    private var scope = ""
+    private var filter = PrivacyFilter.NONE
 
     /** Every tool, in the order `tools/list` shows them. */
     val tools: List<Tool> = listOf(
@@ -318,19 +325,28 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
      *
      * @param allowEdits Whether the user lets agents change the vault;
      *   write tools are refused when not.
-     * @param folder The folder the connection is limited to (vault path,
-     *   `""` or `"/"` for the whole vault); paths outside it are refused.
+     * @param privacyModeId The connection's privacy scope: the id of the
+     *   privacy mode whose hidden content it may not see, or `null` /
+     *   empty for "No privacy". An id no mode has any more turns the
+     *   connection off ([DocumentRegistry.filterForMode]).
      * @return `null` when no tool has that name.
      */
-    suspend fun call(name: String, args: JsonObject, allowEdits: Boolean, folder: String = ""): Result? {
+    suspend fun call(name: String, args: JsonObject, allowEdits: Boolean, privacyModeId: String? = null): Result? {
         val tool = tools.firstOrNull { it.name == name && (workspace != null || !it.windows) } ?: return null
+        val scopeFilter = registry.filterForMode(privacyModeId)
+            ?: return Result("This connection is turned off in Lunarbor's settings (Agent access). Ask the user to check it there.", true)
         if (tool.writes && !allowEdits) {
             return Result("Edits are turned off in Lunarbor's settings (Agent access). Only reading and searching are allowed.", true)
         }
         return lock.withLock {
             extra.clear()
             try {
-                scope = AgentOutline.normalizePath(folder)
+                filter = scopeFilter
+                // What is hidden is known only once every note was read.
+                if (filter.isActive) {
+                    registry.flushAll()
+                    registry.textIndex.ensureBuilt()
+                }
                 val text = cap(run(name, args))
                 Result(text, extra = extra.toList())
             } catch (e: Refusal) {
@@ -362,7 +378,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         "show_in_window" -> done(ws().showInWindow(required(args, "window_id"), existing(path(args, "path"))))
         "close_window" -> done(ws().closeWindow(required(args, "window_id")))
         "new_tab" -> windowResult(
-            ws().newTab(args.string("title"), (args.string("path")?.let { checkScope(AgentOutline.normalizePath(it)) } ?: scope.ifEmpty { null })?.let { existing(it) }),
+            ws().newTab(args.string("title"), args.string("path")?.let { checkVisible(AgentOutline.normalizePath(it)) }?.let { existing(it) }),
             "Opened tab",
         )
         "select_tab" -> done(ws().selectTab(required(args, "tab_id")))
@@ -449,7 +465,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         var count = 0
         suspend fun walk(dir: String, level: Int) {
             val entries = registry.listFolder(dir)
-                .filter { !it.pathRel.substringAfterLast('/').startsWith(".") }
+                .filter { !it.pathRel.substringAfterLast('/').startsWith(".") && !registry.isPathHidden(it.pathRel, filter) }
                 .sortedWith(compareByDescending<se.soderbjorn.lunarbor.data.VaultEntry> { it.isDirectory }.then { a, b -> FolderContents.naturalCompare(a.name, b.name) })
             val pad = "  ".repeat(level)
             for (e in entries) {
@@ -485,9 +501,12 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
     /** `# Title` and `Path: /…` heading a node's text. */
     private suspend fun nodeHeader(folder: String): String = "# ${nodeTitle(folder)}\nPath: ${display(folder)}\n\n"
 
-    /** The node's items as on disk, nested nodes read [depth] − 1 levels down. */
+    /**
+     * The node's items as on disk, nested nodes read [depth] − 1 levels
+     * down — less those the connection's privacy scope hides.
+     */
     private suspend fun diskItems(folder: String, depth: Int): List<AgentOutline.Item> =
-        registry.nodeItemsOf(folder).map { line ->
+        registry.nodeItemsOf(folder).filterNot { isHiddenLine(folder, it) }.map { line ->
             when (line) {
                 is NodeLine.Leaf -> AgentOutline.Item(AgentOutline.Kind.BULLET, line.title)
                 is NodeLine.Folder -> {
@@ -508,6 +527,22 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
             }
         }
 
+    /**
+     * `true` when the connection's privacy scope hides the item [line] of
+     * the node at [folder]: it carries a hidden tag, or its folder is hidden.
+     */
+    private fun isHiddenLine(folder: String, line: NodeLine): Boolean {
+        if (!filter.isActive) return false
+        val (text, child) = when (line) {
+            is NodeLine.Leaf -> line.title to null
+            is NodeLine.Folder -> line.title to line.folder
+            is NodeLine.Block -> line.content.joinToString("\n") to line.folder
+            is NodeLine.Text -> line.raw to null
+        }
+        if (filter.hides(text.split('\n').flatMapTo(HashSet()) { TextIndex.tagKeysOfRow("* $it") })) return true
+        return child != null && registry.isPathHidden(join(folder, child), filter)
+    }
+
     /** The title of the node at [folder]: its item's text in the parent's outline. */
     private suspend fun nodeTitle(folder: String): String {
         if (folder.isEmpty()) return NoteRepository.ROOT_DISPLAY_NAME
@@ -524,7 +559,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
 
     /** The "Also in this folder" list: files and folders that are not items. */
     private suspend fun folderContents(folder: String): String {
-        val entries = FolderContents.visible(registry.listFolder(folder))
+        val entries = FolderContents.visible(registry.listFolder(folder)).filterNot { registry.isPathHidden(it.pathRel, filter) }
         if (entries.isEmpty()) return ""
         return buildString {
             append("\n\nAlso in this folder (files, not items):")
@@ -547,9 +582,9 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
     private suspend fun search(query: String, path: String?, limit: Int): String {
         val parsed = SearchQuery.parse(query)
         if (parsed.isEmpty) throw Refusal("The query has no words or tags to search for.")
-        val scopeRel = (parsed.scopePath ?: path)?.let { checkScope(AgentOutline.normalizePath(it)) } ?: scope
+        val scopeRel = (parsed.scopePath ?: path)?.let { checkVisible(AgentOutline.normalizePath(it)) } ?: ""
         val scope = if (scopeRel.endsWith(NoteRepository.NOTE_EXTENSION)) TextScope.File(scopeRel) else TextScope.Tree(scopeRel)
-        val result = registry.searchText(scope, parsed.expr, parsed.reversed, limit)
+        val result = registry.searchText(scope, parsed.expr, parsed.reversed, limit, filter)
         if (result.total == 0) return "No lines match in ${display(scopeRel)}."
         return buildString {
             append(result.total).append(if (result.total == 1) " matching line" else " matching lines")
@@ -579,7 +614,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         registry.flushAll()
         registry.textIndex.ensureBuilt()
         val scope = if (folder.endsWith(NoteRepository.NOTE_EXTENSION)) TextScope.File(folder) else TextScope.Tree(folder)
-        val tags = registry.textIndex.tags(scope, "", max = 300)
+        val tags = registry.textIndex.tags(scope, "", max = 300, filter = filter)
         if (tags.isEmpty()) return "No tags in ${display(folder)}."
         return tags.joinToString("\n") { "#${it.tag} (${it.count})" }
     }
@@ -650,11 +685,11 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         if (rel.isEmpty()) throw Refusal("The vault's root cannot be deleted.")
         val folder = if (NoteRepository.isOutlineFile(rel)) NoteRepository.folderOfOutline(rel) else rel
         if (folder.isEmpty()) throw Refusal("The vault's root cannot be deleted.")
-        if (folder.equals(scope, ignoreCase = true)) throw Refusal("${display(folder)} is the folder this connection works in; it cannot be deleted.")
         when (registry.kindOf(folder)) {
             null -> throw Refusal("Nothing at ${display(folder)}.")
             VaultEntryKind.FOLDER -> {
                 registry.flushAll()
+                if (registry.hasHiddenUnder(folder, filter)) throw Refusal("${display(folder)} cannot be deleted by this connection.")
                 val parent = folder.substringBeforeLast('/', "")
                 if (!isItemOfParent(folder)) {
                     registry.trashFolder(folder)?.let { throw Refusal("${display(folder)} was not deleted: $it") }
@@ -677,7 +712,6 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
     private suspend fun move(rel: String, to: String, position: Int?, newName: String?): String {
         val src = if (NoteRepository.isOutlineFile(rel)) NoteRepository.folderOfOutline(rel) else rel
         if (src.isEmpty()) throw Refusal("The vault's root cannot move.")
-        if (src.equals(scope, ignoreCase = true)) throw Refusal("${display(src)} is the folder this connection works in; it cannot move.")
         val kind = registry.kindOf(src) ?: throw Refusal("Nothing at ${display(src)}.")
         if (NoteRepository.isAppFile(src) && kind != VaultEntryKind.FOLDER) throw Refusal("${display(src)} is kept by Lunarbor itself.")
         if (to.isNotEmpty() && registry.kindOf(to) != VaultEntryKind.FOLDER) {
@@ -708,9 +742,9 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
 
     /**
      * The `list_windows` text: every tab with its windows. A window whose
-     * location lies outside the connection's folder (or is not known yet,
-     * on a scoped connection) shows neither its title nor its path — the
-     * title is a breadcrumb of node names the agent may not see.
+     * location the connection's privacy scope hides (or that is not known
+     * yet, on a scoped connection) shows only its id — its title is a
+     * breadcrumb of node names the agent may not see.
      */
     private suspend fun listWindows(): String {
         val tabs = ws().tabs()
@@ -724,9 +758,10 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
                     append("  - window ").append(w.id).append(": ")
                     val location = w.location
                     when {
-                        location != null && inScope(location) -> append(w.title).append(" — ").append(display(location))
-                        location == null && scope.isEmpty() -> append(w.title)
-                        else -> append("(outside your folder)")
+                        location != null && !registry.isPathHidden(location, filter) &&
+                            !filter.hides(TextIndex.tagKeysOfRow("* " + w.title)) -> append(w.title).append(" — ").append(display(location))
+                        location == null && !filter.isActive -> append(w.title)
+                        else -> append("(not available)")
                     }
                     if (w.isFocused) append(" (focused)")
                     append('\n')
@@ -771,12 +806,13 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         val after = registry.editForAgent(
             fileRel,
             edit = { doc ->
-                val top = topItems(doc)
+                val all = topItems(doc)
+                val top = all.filterNot { it.hidden }
                 val (items, deleteNodes) = change(AgentOutline.format(top.map { it.item }))
-                notice = applyItems(doc, top, items, deleteNodes)
+                notice = applyItems(doc, all, items, deleteNodes)
                 ""
             },
-            after = { doc, _ -> AgentOutline.format(topItems(doc).map { it.item }) },
+            after = { doc, _ -> AgentOutline.format(topItems(doc).filterNot { it.hidden }.map { it.item }) },
         )
         return buildString {
             append("Saved.").append(notice).append("\n\n")
@@ -804,8 +840,17 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
      * @property ownLastRow Last row of the item's own text.
      * @property endRow Last row of its subtree (children a pane has
      *   expanded are in the document).
+     * @property hidden `true` when the connection's privacy scope hides
+     *   the item: the agent never sees it, and edits keep it in place.
      */
-    private class DocItem(val item: AgentOutline.Item, val id: LineId, val row: Int, val ownLastRow: Int, val endRow: Int)
+    private class DocItem(
+        val item: AgentOutline.Item,
+        val id: LineId,
+        val row: Int,
+        val ownLastRow: Int,
+        val endRow: Int,
+        val hidden: Boolean = false,
+    )
 
     /**
      * The node's own items in [doc] — rows at column 0, empty leaf
@@ -815,6 +860,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         val s = doc.stateFlow.value
         val lines = s.lines
         val promoted = doc.promotedByRow()
+        val hidden = PrivacyLayout.hiddenRows(lines, filter)
         val out = ArrayList<DocItem>()
         var r = 0
         while (r < lines.size) {
@@ -832,7 +878,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
                         AgentOutline.Item(AgentOutline.Kind.BLOCK, content = content, node = node)
                     }
                     val emptyLeaf = item.kind == AgentOutline.Kind.BULLET && node == null && end == r && item.text.isBlank()
-                    if (!emptyLeaf) out += DocItem(item, s.lineIds[r], r, own, end)
+                    if (!emptyLeaf) out += DocItem(item, s.lineIds[r], r, own, end, PrivacyLayout.isHidden(hidden, r))
                     r = end + 1
                 }
                 line.isBlank() -> r++
@@ -848,11 +894,16 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
 
     /**
      * Writes [new] (top-level items with any new children) over the
-     * document's [old] items. Items are paired as on reload
+     * document's [all] items. Items are paired as on reload
      * ([Document.matchIds]): a node by its folder wherever it moved, any
      * other item by its unchanged text. A paired item keeps its row id —
      * and so its folder, fold state and spliced children — while
      * everything else gets new rows.
+     *
+     * Items the connection's privacy scope hides ([DocItem.hidden]) were
+     * never shown to the agent: each is written back unchanged, with its
+     * subtree, after as many of the new items as there were visible items
+     * before it.
      *
      * @param deleteNodes Whether old nodes missing from [new] may go (to
      *   the trash, on the save).
@@ -861,7 +912,8 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
      *   that would be deleted without [deleteNodes], or children added to a
      *   node from its parent.
      */
-    private fun applyItems(doc: Document, old: List<DocItem>, new: List<AgentOutline.Item>, deleteNodes: Boolean): String {
+    private fun applyItems(doc: Document, all: List<DocItem>, new: List<AgentOutline.Item>, deleteNodes: Boolean): String {
+        val old = all.filterNot { it.hidden }
         fun key(item: AgentOutline.Item) = item.node?.let { "F:${it.lowercase()}" } ?: "T:${AgentOutline.formatOwn(item)}"
         val match = Document.matchIds(old.map { key(it.item) }, new.map { key(it) })
         val nested = new.flatMap { it.children }
@@ -879,6 +931,9 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         }
         val kept = match.filterNotNull().toHashSet()
         val dropped = old.indices.filter { it !in kept && old[it].item.node != null }.map { old[it].item.node!! }
+        if (dropped.any { registry.hasHiddenUnder(it, filter) }) {
+            throw Refusal("This edit would delete ${dropped.joinToString { display(it) }}, which this connection cannot delete.")
+        }
         if (dropped.isNotEmpty() && !deleteNodes) {
             throw Refusal(
                 "This edit would delete ${dropped.joinToString { display(it) }} with everything in it (moved to the " +
@@ -889,12 +944,30 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         val s = doc.stateFlow.value
         val lines = ArrayList<String>()
         val ids = ArrayList<LineId?>()
+        // Hidden items, by how many visible items came before them: they go
+        // back after as many of the new items, so an item edited in place
+        // keeps the hidden ones around it where they were.
+        val hiddenAfter = HashMap<Int, MutableList<DocItem>>()
+        var visibleBefore = 0
+        for (item in all) {
+            if (item.hidden) hiddenAfter.getOrPut(visibleBefore) { ArrayList() } += item else visibleBefore++
+        }
+        fun emitHidden(count: Int) {
+            for (h in hiddenAfter.remove(count).orEmpty()) {
+                for (r in h.row..h.endRow) {
+                    lines += s.lines[r]
+                    ids += s.lineIds[r]
+                }
+            }
+        }
+        emitHidden(0)
         for ((j, item) in new.withIndex()) {
             val m = match[j]
             if (m == null) {
                 val rows = AgentOutline.rowsOf(item, 0)
                 lines += rows
                 repeat(rows.size) { ids += null }
+                emitHidden(j + 1)
                 continue
             }
             val was = old[m]
@@ -911,10 +984,22 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
                 lines += rows
                 repeat(rows.size) { ids += null }
             }
+            emitHidden(j + 1)
         }
+        // Hidden items after more visible items than are left.
+        for (count in hiddenAfter.keys.sorted()) emitHidden(count)
         if (lines.isEmpty()) {
             lines += NoteRepository.EMPTY_OUTLINE_LINE
             ids += null
+        }
+        // Last line of defence: whatever the agent sent, every row its
+        // scope hides must come through unchanged and under the same parent.
+        if (filter.isActive) {
+            var fresh = -1L
+            val checkIds = ids.map { it ?: LineId(fresh--) }
+            if (!PrivacyLayout.keepsHiddenRows(s.lines, s.lineIds, lines, checkIds, filter)) {
+                throw Refusal("This edit cannot be made by this connection.")
+            }
         }
         doc.rewriteRows(lines, ids)
         return if (dropped.isEmpty()) "" else " Moved to the trash: ${dropped.joinToString { display(it) }}."
@@ -938,17 +1023,21 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
      */
     private suspend fun targetOf(rel: String): Target {
         if (rel.isEmpty()) return Target.Node("")
+        if (rel == PrivacyConfig.FILE_NAME) throw notFound(rel)
         if (NoteRepository.isOutlineFile(rel)) return Target.Node(NoteRepository.folderOfOutline(rel))
         return when (registry.kindOf(rel)) {
             VaultEntryKind.FOLDER -> Target.Node(rel)
             VaultEntryKind.MARKDOWN -> if (NoteRepository.isAppFile(rel)) Target.File(rel) else Target.Note(rel)
             VaultEntryKind.IMAGE, VaultEntryKind.DRAWING, VaultEntryKind.HTML, VaultEntryKind.FILE -> Target.File(rel)
-            null -> throw Refusal(
-                "Nothing at ${display(rel)}. Paths name node folders and files; a bullet without children has no " +
-                    "path — it is an item of its parent node. Use search or read \"/\" to find paths.",
-            )
+            null -> throw notFound(rel)
         }
     }
+
+    /** The refusal for a path where nothing is — or nothing this connection may see. */
+    private fun notFound(rel: String) = Refusal(
+        "Nothing at ${display(rel)}. Paths name node folders and files; a bullet without children has no " +
+            "path — it is an item of its parent node. Use search or read \"/\" to find paths.",
+    )
 
     /** [current] with [old] replaced by [new]; [old] must occur exactly once. */
     private fun replaceOnce(current: String, old: String, new: String, rel: String): String {
@@ -969,23 +1058,19 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
 
     private fun hasNode(items: List<AgentOutline.Item>): Boolean = items.any { it.node != null || hasNode(it.children) }
 
-    private fun path(args: JsonObject, name: String): String = checkScope(AgentOutline.normalizePath(required(args, name)))
+    private fun path(args: JsonObject, name: String): String = checkVisible(AgentOutline.normalizePath(required(args, name)))
 
-    /** The optional path [name] (checked like [path]), or the connection's folder when it is not given. */
+    /** The optional path [name] (checked like [path]), or the vault root when it is not given. */
     private fun optionalPath(args: JsonObject, name: String): String =
-        args.string(name)?.let { checkScope(AgentOutline.normalizePath(it)) } ?: scope
-
-    /** `true` when the vault path [rel] is the connection's folder or inside it (always, unscoped). */
-    private fun inScope(rel: String): Boolean = isInside(rel, scope)
+        args.string(name)?.let { checkVisible(AgentOutline.normalizePath(it)) } ?: ""
 
     /**
-     * [rel] when it lies in the connection's folder ([inScope]); refuses it
-     * otherwise. Every path a tool takes passes through here.
+     * [rel], unless the connection's privacy scope hides it — then it reads
+     * as not there at all ([notFound]). Every path a tool takes passes
+     * through here.
      */
-    private fun checkScope(rel: String): String {
-        if (!inScope(rel)) {
-            throw Refusal("${display(rel)} is outside the folder this connection may use (${display(scope)}). Use paths inside it.")
-        }
+    private fun checkVisible(rel: String): String {
+        if (rel == PrivacyConfig.FILE_NAME || registry.isPathHidden(rel, filter)) throw notFound(rel)
         return rel
     }
 
@@ -1029,15 +1114,6 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
 
         /** [rel] as agents see paths: with a leading slash, `/` for the root. */
         fun display(rel: String): String = "/$rel"
-
-        /**
-         * `true` when the vault path [rel] is [folder] or lies inside it,
-         * ignoring case (macOS file names are case-insensitive); always
-         * `true` for [folder] `""`, the whole vault.
-         */
-        fun isInside(rel: String, folder: String): Boolean =
-            folder.isEmpty() || rel.equals(folder, ignoreCase = true) ||
-                rel.lowercase().startsWith(folder.lowercase() + "/")
 
         private fun join(folder: String, name: String): String = if (folder.isEmpty()) name else "$folder/$name"
 

@@ -51,6 +51,8 @@ import kotlin.js.Promise
  *   the window is reopening against the new vault.
  * @property flushEdits Saves every open document (`DocumentRegistry.flushAll`);
  *   "Back up now" calls it before zipping the vault.
+ * @property privacyModes The vault's privacy modes (`DocumentRegistry.privacyFlow`),
+ *   offered as Agent access connections' privacy scopes.
  */
 class AppSettingsHandlers(
     val scope: CoroutineScope,
@@ -58,6 +60,7 @@ class AppSettingsHandlers(
     val hasUnsavedEdits: () -> Boolean,
     val switchVault: suspend (String) -> String?,
     val flushEdits: suspend () -> Unit,
+    val privacyModes: () -> List<se.soderbjorn.lunarbor.data.PrivacyMode> = { emptyList() },
 )
 
 /**
@@ -76,7 +79,7 @@ fun buildAppSettingsContent(handlers: AppSettingsHandlers): HTMLElement {
     body.appendChild(nav)
     if (vaultBridge() != null) body.appendChild(buildVaultSection(handlers))
     if (backupBridge() != null) body.appendChild(buildBackupSection(handlers.scope, handlers.flushEdits))
-    if (mcpBridge() != null) body.appendChild(buildAgentAccessSection(handlers.scope))
+    if (mcpBridge() != null) body.appendChild(buildAgentAccessSection(handlers.scope, handlers.privacyModes))
     return body
 }
 

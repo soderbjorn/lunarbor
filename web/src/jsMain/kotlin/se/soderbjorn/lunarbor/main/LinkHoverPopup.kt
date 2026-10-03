@@ -129,7 +129,10 @@ internal class LinkHoverPopup(
 
         val target = document.createElement("div") as HTMLElement
         target.className = "lunarbor-link-popup-target"
-        target.textContent = LunarborLink.parse(href)?.let { LunarborLink.displayPath(it) } ?: href
+        // A target the privacy mode hides is not named: it reads as missing.
+        target.textContent = LunarborLink.parse(href)?.let { path ->
+            if (viewModel.isPathHidden(path)) "Not found" else LunarborLink.displayPath(path)
+        } ?: href
         popup.appendChild(target)
 
         val actions = document.createElement("div") as HTMLElement

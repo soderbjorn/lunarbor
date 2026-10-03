@@ -7,19 +7,21 @@
  *
  *  - "Let agents connect" turns the MCP server on and off; the endpoint or
  *    the reason it is not running shows under it.
- *  - One card per **connection**: its name, the folder it is limited to
- *    ("Whole vault" or a folder picked with the system chooser, confined to
- *    the vault), whether it may edit, its key (masked until Show; Copy and
- *    New key), and copy-ready setup for Claude Code (a `claude mcp add`
- *    command), JSON-configured clients (Cursor, VS Code, a project's
- *    `.mcp.json`) and Claude Desktop (through `mcp-remote`), each under its
- *    own server name so several can be added side by side.
- *  - "Add connection…" picks a folder and makes a connection for it.
+ *  - One card per **connection**: its name, its privacy scope ("No
+ *    privacy" or one of the vault's privacy modes, LBR-10 — what that mode
+ *    hides the agent never sees; a connection whose mode was deleted is off
+ *    until a scope is picked again), whether it may edit, its key (masked
+ *    until Show; Copy and New key), and copy-ready setup for Claude Code (a
+ *    `claude mcp add` command), JSON-configured clients (Cursor, VS Code, a
+ *    project's `.mcp.json`) and Claude Desktop (through `mcp-remote`), each
+ *    under its own server name so several can be added side by side.
+ *  - "Add connection" makes a connection with no privacy scope.
  *
  * Everything is read from and written to the Electron main process
  * (`noteApi.getMcp` / `setMcp` / `addMcpConnection` / `updateMcpConnection`
- * / `removeMcpConnection` / `newMcpKey` / `chooseMcpFolder`,
- * McpHttpServer.kt), which owns the server, the connections and their keys.
+ * / `removeMcpConnection` / `newMcpKey`, McpHttpServer.kt), which owns the
+ * server, the connections and their keys; the privacy modes come from the
+ * vault ([DocumentRegistry.privacyFlow]).
  * Copy always copies the real key. Confirmations (New key, Remove) are
  * asked inside the card, so nothing opens under the dialog.
  *
@@ -32,6 +34,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.await
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLButtonElement
+import org.w3c.dom.HTMLOptionElement
+import org.w3c.dom.HTMLSelectElement
+import se.soderbjorn.lunarbor.data.PrivacyMode
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.HTMLTextAreaElement
@@ -52,14 +57,14 @@ internal fun mcpBridge(): dynamic {
  * @property id Its stable id.
  * @property name The user's label.
  * @property key Its secret.
- * @property folder Vault-relative folder it is limited to; `""` for the whole vault.
+ * @property privacy Its privacy scope: a privacy mode's id, `""` for "No privacy".
  * @property allowEdits It may change the vault.
  */
-private data class McpConnectionView(
+internal data class McpConnectionView(
     val id: String,
     val name: String,
     val key: String,
-    val folder: String,
+    val privacy: String,
     val allowEdits: Boolean,
 )
 
@@ -72,7 +77,7 @@ private data class McpConnectionView(
  * @property error Why it is not, e.g. a port in use.
  * @property connections Every connection, in the order they were added.
  */
-private data class McpStatus(
+internal data class McpStatus(
     val enabled: Boolean,
     val url: String,
     val running: Boolean,
@@ -90,7 +95,7 @@ private data class McpStatus(
                         id = c.id as String,
                         name = (c.name as String?).orEmpty(),
                         key = (c.key as String?).orEmpty(),
-                        folder = (c.folder as String?).orEmpty(),
+                        privacy = (c.privacy as String?).orEmpty(),
                         allowEdits = c.allowEdits != false,
                     )
                 }
@@ -106,8 +111,8 @@ private data class McpStatus(
     }
 }
 
-/** Reads the status from the main process. */
-private suspend fun fetchStatus(): McpStatus = McpStatus.of((mcpBridge().getMcp() as Promise<dynamic>).await())
+/** Reads the status from the main process. Also used by the privacy dialog ("Used by agent connections"). */
+internal suspend fun fetchStatus(): McpStatus = McpStatus.of((mcpBridge().getMcp() as Promise<dynamic>).await())
 
 /** One line saying whether agents can connect, and how. */
 private fun summaryOf(s: McpStatus): String = when {
@@ -124,16 +129,17 @@ private fun summaryOf(s: McpStatus): String = when {
  * `buildAppSettingsContent` when [mcpBridge] is present.
  *
  * @param scope Scope the bridge calls run in.
+ * @param privacyModes The vault's privacy modes, for each connection's scope.
  */
-internal fun buildAgentAccessSection(scope: CoroutineScope): HTMLElement {
+internal fun buildAgentAccessSection(scope: CoroutineScope, privacyModes: () -> List<PrivacyMode>): HTMLElement {
     ensureAgentAccessStyles()
     val section = el("section", "lunarbor-app-settings-section lunarbor-mcp")
     section.appendChild(el("h3", "lunarbor-app-settings-section-title", "Agent access (MCP)"))
     section.appendChild(
         el(
             "p", "lunarbor-mcp-intro",
-            "Let AI agents such as Claude Code read, search and edit your notes — the whole vault or just one folder " +
-                "per connection.",
+            "Let AI agents such as Claude Code read, search and edit your notes — everything, or what a privacy mode " +
+                "leaves visible, per connection.",
         ),
     )
     val statusLine = el("div", "lunarbor-mcp-status")
@@ -145,7 +151,7 @@ internal fun buildAgentAccessSection(scope: CoroutineScope): HTMLElement {
             statusLine.textContent = summaryOf(s)
         }
     }
-    section.appendChild(button("Agent access…") { openAgentAccessDialog(scope, onClose = ::refresh) })
+    section.appendChild(button("Agent access…") { openAgentAccessDialog(scope, privacyModes, onClose = ::refresh) })
     refresh()
     return section
 }
@@ -155,10 +161,11 @@ internal fun buildAgentAccessSection(scope: CoroutineScope): HTMLElement {
  * the × and a click outside close it.
  *
  * @param scope Scope the bridge calls run in.
+ * @param privacyModes The vault's privacy modes, for each connection's scope.
  * @param onClose Called once the dialog is gone, e.g. to refresh the
  *   sidebar's summary.
  */
-internal fun openAgentAccessDialog(scope: CoroutineScope, onClose: () -> Unit = {}) {
+internal fun openAgentAccessDialog(scope: CoroutineScope, privacyModes: () -> List<PrivacyMode>, onClose: () -> Unit = {}) {
     ensureAgentAccessStyles()
     if (document.querySelector(".lunarbor-mcp-backdrop") != null) return
     val backdrop = el("div", "lunarbor-mcp-backdrop")
@@ -199,8 +206,8 @@ internal fun openAgentAccessDialog(scope: CoroutineScope, onClose: () -> Unit = 
             "p", "lunarbor-mcp-intro",
             "Agents connect over MCP and work on the running app: they read, search and edit nodes, and open windows " +
                 "to show you their work. Only programs on this computer that have a connection's key can connect; " +
-                "other computers cannot reach it at all. Each connection has its own key and can be limited to one " +
-                "folder — an agent using it cannot see or change anything outside that folder.",
+                "other computers cannot reach it at all. Each connection has its own key and a privacy scope: with a " +
+                "privacy mode, whatever that mode hides does not exist for the agent — it cannot read, find or change it.",
         ),
     )
     val enabledBox = checkbox()
@@ -214,7 +221,6 @@ internal fun openAgentAccessDialog(scope: CoroutineScope, onClose: () -> Unit = 
 
     var status: McpStatus? = null
     val shownKeys = HashSet<String>()
-    var folderError: String? = null
 
     fun apply(next: dynamic) {
         status = McpStatus.of(next)
@@ -244,31 +250,24 @@ internal fun openAgentAccessDialog(scope: CoroutineScope, onClose: () -> Unit = 
         footer.hidden = !s.enabled
         if (!s.enabled) return@render
         val names = serverNames(s.connections)
+        val modes = privacyModes()
         for (c in s.connections) {
-            list.appendChild(connectionCard(c, names.getValue(c.id), s.url, scope, shownKeys, ::call) { render() })
+            list.appendChild(connectionCard(c, names.getValue(c.id), s.url, modes, shownKeys, ::call) { render() })
         }
         if (s.connections.isEmpty()) {
             list.appendChild(el("p", "lunarbor-mcp-note", "No connections: add one to let an agent in."))
         }
-        footer.appendChild(button("Add connection…") {
-            scope.launch {
-                val picked = (mcpBridge().chooseMcpFolder("") as Promise<dynamic>).await()
-                val error = picked.error as String?
-                val folder = picked.folder as String?
-                folderError = error
-                if (folder != null) {
-                    val spec: dynamic = js("({})")
-                    spec.folder = folder
-                    spec.allowEdits = true
-                    apply((mcpBridge().addMcpConnection(spec) as Promise<dynamic>).await())
-                }
-                render()
+        footer.appendChild(button("Add connection") {
+            call {
+                val spec: dynamic = js("({})")
+                spec.privacy = ""
+                spec.allowEdits = true
+                (mcpBridge().addMcpConnection(spec) as Promise<dynamic>).await()
             }
         })
         footer.appendChild(
-            el("span", "lunarbor-mcp-hint", "Pick a folder for the new connection; choose the vault itself for all of it."),
+            el("span", "lunarbor-mcp-hint", "A new connection sees everything; give it a privacy mode to keep things out."),
         )
-        folderError?.let { footer.appendChild(el("div", "lunarbor-mcp-status is-error", it)) }
     }
 
     enabledBox.addEventListener("change", { _: Event ->
@@ -292,7 +291,7 @@ internal fun openAgentAccessDialog(scope: CoroutineScope, onClose: () -> Unit = 
 
 /**
  * The MCP server name each connection's setup snippets use, unique among
- * [connections]: `lunarbor` for a whole-vault connection named
+ * [connections]: `lunarbor` for a connection named
  * "Lunarbor", else `lunarbor-<name>` in lower-case letters, digits and
  * dashes, numbered when two would clash.
  */
@@ -310,10 +309,11 @@ private fun serverNames(connections: List<McpConnectionView>): Map<String, Strin
 }
 
 /**
- * One connection's card: name, folder, edits, key and setup.
+ * One connection's card: name, privacy scope, edits, key and setup.
  *
  * @param serverName The MCP server name for its snippets ([serverNames]).
  * @param url The endpoint.
+ * @param modes The vault's privacy modes, offered as its scope.
  * @param shownKeys Ids of the connections whose key is shown unmasked.
  * @param call Runs a bridge call and repaints with the status it returns.
  * @param rerender Repaints without a call (Show / Hide, confirmations).
@@ -322,7 +322,7 @@ private fun connectionCard(
     c: McpConnectionView,
     serverName: String,
     url: String,
-    scope: CoroutineScope,
+    modes: List<PrivacyMode>,
     shownKeys: MutableSet<String>,
     call: (suspend () -> dynamic) -> Unit,
     rerender: () -> Unit,
@@ -358,24 +358,35 @@ private fun connectionCard(
     card.appendChild(nameRow)
     card.appendChild(confirm)
 
-    val folderRow = el("div", "lunarbor-mcp-row")
-    folderRow.appendChild(el("span", "lunarbor-mcp-label", "Folder"))
-    folderRow.appendChild(el("code", "lunarbor-mcp-folder", if (c.folder.isEmpty()) "Whole vault" else "/${c.folder}"))
-    val folderError = el("div", "lunarbor-mcp-status is-error")
-    folderError.hidden = true
-    folderRow.appendChild(button("Choose…") {
-        scope.launch {
-            val picked = (mcpBridge().chooseMcpFolder(c.folder) as Promise<dynamic>).await()
-            val error = picked.error as String?
-            val folder = picked.folder as String?
-            folderError.hidden = error == null
-            folderError.textContent = error.orEmpty()
-            if (folder != null && folder != c.folder) patch { it.folder = folder }
-        }
+    // Privacy scope: "No privacy" or one of the vault's modes, by id.
+    val privacyRow = el("div", "lunarbor-mcp-row")
+    privacyRow.appendChild(el("span", "lunarbor-mcp-label", "Privacy"))
+    val picker = document.createElement("select") as HTMLSelectElement
+    picker.className = "lunarbor-mcp-select"
+    picker.title = "What this connection may not see"
+    fun option(value: String, label: String, disabled: Boolean = false) {
+        val o = document.createElement("option") as HTMLOptionElement
+        o.value = value
+        o.textContent = label
+        o.disabled = disabled
+        picker.appendChild(o)
+    }
+    val orphaned = c.privacy.isNotEmpty() && modes.none { it.id == c.privacy }
+    if (orphaned) option(c.privacy, "Choose a scope…", disabled = true)
+    option("", "No privacy")
+    for (m in modes) option(m.id, m.name)
+    picker.value = c.privacy
+    picker.addEventListener("change", { _: Event ->
+        val v = picker.value
+        if (v != c.privacy) patch { it.privacy = v }
     })
-    if (c.folder.isNotEmpty()) folderRow.appendChild(button("Whole vault") { patch { it.folder = "" } })
-    card.appendChild(folderRow)
-    card.appendChild(folderError)
+    privacyRow.appendChild(picker)
+    card.appendChild(privacyRow)
+    if (orphaned) {
+        card.appendChild(
+            el("div", "lunarbor-mcp-status is-error", "Off: its privacy mode was deleted. Choose a scope to turn it back on."),
+        )
+    }
 
     val editsBox = checkbox()
     editsBox.checked = c.allowEdits
@@ -533,7 +544,7 @@ private fun el(tag: String, className: String, text: String? = null): HTMLElemen
         if (text != null) it.textContent = text
     }
 
-private fun ensureAgentAccessStyles() {
+internal fun ensureAgentAccessStyles() {
     if (document.getElementById("lunarbor-mcp-style") != null) return
     val style = document.createElement("style") as HTMLElement
     style.id = "lunarbor-mcp-style"
@@ -582,8 +593,12 @@ private const val AGENT_ACCESS_CSS = """
 .lunarbor-mcp-name:hover { border-color: var(--t-border, rgba(255,255,255,0.12)); }
 .lunarbor-mcp-name:focus { outline: none; border-color: var(--t-accent); }
 .lunarbor-mcp-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.lunarbor-mcp-row > .lunarbor-mcp-label { width: 48px; flex: 0 0 auto; }
-.lunarbor-mcp-folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-family: var(--t-font-mono, ui-monospace, Menlo, monospace); }
+.lunarbor-mcp-row > .lunarbor-mcp-label { width: 56px; flex: 0 0 auto; }
+.lunarbor-mcp-select {
+    flex: 1; min-width: 0; max-width: 280px; font: inherit; font-size: 12px; color: inherit;
+    background: transparent; border: 1px solid var(--t-border, rgba(255,255,255,0.12)); border-radius: 6px; padding: 3px 6px;
+}
+.lunarbor-mcp-select:focus { outline: none; border-color: var(--t-accent); }
 .lunarbor-mcp-confirm {
     display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 10px; border-radius: 6px;
     background: color-mix(in srgb, var(--t-danger, #e5534b) 10%, transparent);

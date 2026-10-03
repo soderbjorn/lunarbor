@@ -6,7 +6,8 @@
  * `noteApi.serveMcp`, is answered against the live app, and goes back as
  * the HTTP response. The endpoint does the authentication; by the time a
  * body arrives here it carried one connection's key, and comes with that
- * connection's edits switch and folder, which the tools enforce.
+ * connection's edits switch and privacy scope (a privacy mode's id, or
+ * none), which the tools enforce.
  *
  * Platform glue only — no protocol or tool logic. A plain browser (no
  * `noteApi.serveMcp`) has no endpoint, so nothing is installed. */
@@ -23,7 +24,7 @@ import se.soderbjorn.lunarbor.mcp.McpServer
 fun installMcpBridge(server: McpServer, scope: CoroutineScope) {
     val api = js("globalThis.noteApi")
     if (api == null || js("typeof api.serveMcp !== 'function'") as Boolean) return
-    api.serveMcp { body: String, allowEdits: Boolean, folder: String? ->
-        scope.promise { server.handle(body, allowEdits, folder.orEmpty()) }
+    api.serveMcp { body: String, allowEdits: Boolean, privacyModeId: String? ->
+        scope.promise { server.handle(body, allowEdits, privacyModeId?.ifEmpty { null }) }
     }
 }

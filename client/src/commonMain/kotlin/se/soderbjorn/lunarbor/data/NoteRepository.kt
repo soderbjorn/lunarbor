@@ -1389,6 +1389,21 @@ class NoteRepository(
     }
 
     /**
+     * The text of the vault's privacy modes file ([PrivacyConfig.FILE_NAME]),
+     * or `null` when there is none. Called by `DocumentRegistry.loadPrivacyModes`.
+     */
+    suspend fun readPrivacyConfig(): String? = fileSystem.readFileIfExists(abs(PrivacyConfig.FILE_NAME))
+
+    /**
+     * Writes the vault's privacy modes file ([PrivacyConfig.FILE_NAME]).
+     * Called by `DocumentRegistry.setPrivacyModes`.
+     */
+    suspend fun writePrivacyConfig(text: String) {
+        fileSystem.ensureDirectory(rootDirectory)
+        fileSystem.writeFile(abs(PrivacyConfig.FILE_NAME), text)
+    }
+
+    /**
      * Removes every bookmark in [STARRED_FILE_NAME] whose `lunarbor:` target is
      * [targetPathRel]; other lines are kept verbatim. Called by the
      * Starred modal's un-star toggle.
@@ -1861,16 +1876,18 @@ class NoteRepository(
 
         /**
          * `true` when the file [fileRel] is one Lunarbor keeps for itself
-         * (the root's [STARRED_FILE_NAME] and every node's outline file,
+         * (the root's [STARRED_FILE_NAME], the root's privacy modes
+         * [PrivacyConfig.FILE_NAME] and every node's outline file,
          * [OUTLINE_FILE_NAME]) rather than user content: it is left out of
          * the folder contents list ([listVaultLevel]) and of link /
-         * Navigate to search ([listLinkTargets]). Both stay in the link
-         * index so their `lunarbor:` links are still rewritten on moves.
+         * Navigate to search ([listLinkTargets]). Starred and the outlines
+         * stay in the link index so their `lunarbor:` links are still
+         * rewritten on moves.
          *
          * @param fileRel Vault-relative file path.
          */
         fun isAppFile(fileRel: String): Boolean =
-            fileRel == STARRED_FILE_NAME || isOutlineFile(fileRel)
+            fileRel == STARRED_FILE_NAME || fileRel == PrivacyConfig.FILE_NAME || isOutlineFile(fileRel)
 
         /** `true` when [folderRel] is inside the trash. */
         fun isInTrash(folderRel: String): Boolean =

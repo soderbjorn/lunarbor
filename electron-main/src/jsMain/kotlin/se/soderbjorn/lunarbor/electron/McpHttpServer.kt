@@ -9,11 +9,14 @@
  * server-sent events (GET is 405, which clients accept).
  *
  * Connections: the settings hold any number of them, each with its own
- * name, key, folder and edits switch. The key a request carries picks its
- * connection ([connectionFor]); the request goes to the renderer with that
- * connection's folder and edits switch, and the tools refuse paths outside
- * the folder (`McpTools.checkScope`). So one agent can get the whole vault
- * and another only `/Work`, on the same server and port.
+ * name, key, privacy scope and edits switch. The key a request carries
+ * picks its connection ([connectionFor]); the request goes to the renderer
+ * with that connection's privacy scope — a privacy mode's id, or "" for
+ * "No privacy" (LBR-10) — and edits switch, and the tools leave out what
+ * that mode hides (`McpTools`). So one agent can see everything and
+ * another nothing tagged #private, on the same server and port. The
+ * renderer owns the modes (they live in the vault); this process only
+ * stores the id.
  *
  * Security — nothing gets in without a key:
  *  - Bound to 127.0.0.1, so other computers cannot connect at all.
@@ -29,9 +32,10 @@
  *    by this user only) and owned by this process: the renderer reads them
  *    through `lunarbor:getMcp` and changes them through `lunarbor:setMcp`
  *    and the connection handlers (`add` / `update` / `remove` /
- *    `newMcpKey` / `chooseMcpFolder`). Off by default; a new key
- *    invalidates every agent configured with the old one. A file from
- *    before connections (one `key`) is read as one whole-vault connection.
+ *    `newMcpKey`). Off by default; a new key invalidates every agent
+ *    configured with the old one. Connections from before privacy scopes
+ *    (folder-scoped ones, or a single `key`) are dropped when the file is
+ *    read: they are set up again in the dialog.
  *
  * Main-process glue only; the protocol and the tools live in commonMain. */
 package se.soderbjorn.lunarbor.electron
@@ -57,14 +61,16 @@ private const val MCP_MAX_BODY_BYTES: Int = 4 * 1024 * 1024
 private const val MCP_REPLY_TIMEOUT_MS: Int = 120_000
 
 /**
- * One way in: an agent set up with [key] gets [folder] of the vault.
+ * One way in: an agent set up with [key] sees the vault through [privacy].
  *
  * @property id Stable id the settings dialog addresses it by.
  * @property name The user's label, e.g. "Claude Code — work"; also the
  *   suggested MCP server name in the setup snippets.
  * @property key The secret its requests carry.
- * @property folder Vault-relative folder it is limited to; `""` for the
- *   whole vault.
+ * @property privacy Its privacy scope: the id of the privacy mode whose
+ *   hidden content it may not see, or `""` for "No privacy". An id the
+ *   vault no longer has turns the connection off (the renderer refuses
+ *   its calls) until the user picks a scope again.
  * @property allowEdits Whether it may change the vault (otherwise it can
  *   only read and search; window tools work either way).
  */
@@ -72,7 +78,7 @@ internal data class McpConnection(
     val id: String,
     val name: String,
     val key: String,
-    val folder: String = "",
+    val privacy: String = "",
     val allowEdits: Boolean = true,
 )
 
@@ -98,17 +104,6 @@ internal fun connectionFor(authorization: String?, connections: List<McpConnecti
     var found: McpConnection? = null
     for (c in connections) if (isAuthorized(authorization, c.key) && found == null) found = c
     return found
-}
-
-/**
- * [raw] as a vault-relative folder for a connection — slashes trimmed,
- * `""` for the whole vault — or `null` when it names something no
- * connection may be limited to: a `..` or dot segment (the trash).
- */
-internal fun normalizeMcpFolder(raw: String): String? {
-    val segments = raw.replace('\\', '/').split('/').filter { it.isNotEmpty() && it != "." }
-    if (segments.any { it == ".." || it.startsWith(".") }) return null
-    return segments.joinToString("/")
 }
 
 /**
@@ -145,13 +140,15 @@ internal fun isLocalRequest(origin: String?, host: String?): Boolean {
     return loopbackHost(rest.substringBefore('/'))
 }
 
+/** Version of `lunarbor-mcp.json`'s connections; older connections are dropped on read. */
+internal const val MCP_SETTINGS_FORMAT: Int = 2
+
 /** The MCP endpoint URL for [port]. */
 internal fun mcpUrl(port: Int): String = "http://127.0.0.1:$port$MCP_PATH"
 
 /** Owner of the server, its settings and the request ↔ renderer relay. */
 internal object McpHost {
     private var settingsPath: () -> String = { "" }
-    private var vaultDir: () -> String = { "" }
     private var window: () -> BrowserWindow? = { null }
 
     private var settings = McpSettings()
@@ -171,13 +168,11 @@ internal object McpHost {
      * paths are resolved), before the first window.
      *
      * @param settingsFile Path of `lunarbor-mcp.json`.
-     * @param vault The vault folder, for the folder chooser.
      * @param currentWindow The app's window, if any (it is recreated on a
      *   vault switch).
      */
-    fun install(settingsFile: () -> String, vault: () -> String, currentWindow: () -> BrowserWindow?) {
+    fun install(settingsFile: () -> String, currentWindow: () -> BrowserWindow?) {
         settingsPath = settingsFile
-        vaultDir = vault
         window = currentWindow
         settings = readSettings()
         registerIpc()
@@ -208,10 +203,9 @@ internal object McpHost {
         }
         ipcMain.handle("lunarbor:addMcpConnection") { _, spec ->
             GlobalScope.promise {
-                val folder = normalizeMcpFolder((spec?.folder as? String).orEmpty()) ?: ""
-                val name = (spec?.name as? String)?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: folder.substringAfterLast('/').ifEmpty { "Lunarbor" }
-                val c = McpConnection(newId(), name, newKey(), folder, spec?.allowEdits != false)
+                val privacy = (spec?.privacy as? String).orEmpty()
+                val name = (spec?.name as? String)?.trim()?.takeIf { it.isNotEmpty() } ?: "Lunarbor"
+                val c = McpConnection(newId(), name, newKey(), privacy, spec?.allowEdits != false)
                 apply(settings.copy(connections = settings.connections + c))
                 status()
             }
@@ -223,7 +217,7 @@ internal object McpHost {
                     if (c.id != id) return@map c
                     var n = c
                     (patch.name as? String)?.trim()?.takeIf { it.isNotEmpty() }?.let { n = n.copy(name = it) }
-                    (patch.folder as? String)?.let { f -> normalizeMcpFolder(f)?.let { n = n.copy(folder = it) } }
+                    (patch.privacy as? String)?.let { n = n.copy(privacy = it) }
                     (patch.allowEdits as? Boolean)?.let { n = n.copy(allowEdits = it) }
                     n
                 }))
@@ -241,9 +235,6 @@ internal object McpHost {
                 apply(settings.copy(connections = settings.connections.map { if (it.id == id) it.copy(key = newKey()) else it }))
                 status()
             }
-        }
-        ipcMain.handle("lunarbor:chooseMcpFolder") { _, current ->
-            GlobalScope.promise { chooseFolder(current as? String) }
         }
         ipcMain.handle("lunarbor:mcpReady") { event, _ ->
             readyContentsId = event.sender.id as Int
@@ -280,43 +271,11 @@ internal object McpHost {
             o.id = c.id
             o.name = c.name
             o.key = c.key
-            o.folder = c.folder
+            o.privacy = c.privacy
             o.allowEdits = c.allowEdits
             o
         }.toTypedArray()
         return s
-    }
-
-    /**
-     * Opens a folder chooser in the vault and returns the picked folder as
-     * `{ folder }` (vault-relative, `""` for the vault itself), `{ error }`
-     * when it lies outside the vault or in a hidden folder, or `{}` when
-     * cancelled.
-     *
-     * @param current The connection's folder now, where the chooser opens.
-     */
-    private suspend fun chooseFolder(current: String?): dynamic {
-        val out: dynamic = js("({})")
-        val w = window() ?: return out
-        val vault = vaultDir()
-        val options: dynamic = js("({})")
-        options.title = "Choose the folder agents may use"
-        options.buttonLabel = "Choose"
-        options.defaultPath = pathModule.join(vault, current.orEmpty())
-        options.properties = arrayOf("openDirectory")
-        val result = dialog.showOpenDialog(w, options).await()
-        val picked = (result.filePaths as Array<String>).firstOrNull()
-        if (result.canceled == true || picked == null) return out
-        fun real(p: String) = try { fsSync.asDynamic().realpathSync(p) as String } catch (_: Throwable) { p }
-        val root = real(vault)
-        val abs = real(pathModule.resolve(picked))
-        val caseInsensitive = process.platform == "darwin" || process.platform == "win32"
-        val rel = if (isSameOrInside(abs, root, caseInsensitive)) {
-            normalizeMcpFolder(pathModule.asDynamic().relative(root, abs) as String)
-        } else null
-        if (rel == null) out.error = "Choose a folder inside the vault (not a hidden one such as .trash)."
-        else out.folder = rel
-        return out
     }
 
     private fun start() {
@@ -384,7 +343,7 @@ internal object McpHost {
 
     /**
      * Sends [body] to the renderer, with [connection]'s edits switch and
-     * folder, and calls [done] with its answer: the JSON response, `""`
+     * privacy scope, and calls [done] with its answer: the JSON response, `""`
      * when nothing is to be sent back, or `null` when no renderer can
      * answer (or it took too long).
      */
@@ -409,7 +368,7 @@ internal object McpHost {
                 done(answer ?: "")
             }
         }
-        w.webContents.send("lunarbor:mcpRequest", id, body, connection.allowEdits, connection.folder)
+        w.webContents.send("lunarbor:mcpRequest", id, body, connection.allowEdits, connection.privacy)
     }
 
     private fun reply(res: dynamic, status: Int, type: String, body: String) {
@@ -429,7 +388,9 @@ internal object McpHost {
         val obj: dynamic = try { js("JSON.parse")(text) } catch (_: Throwable) { return McpSettings() }
         val connections = ArrayList<McpConnection>()
         val list: dynamic = obj.connections
-        if (js("Array").isArray(list) as Boolean) {
+        // Connections from before privacy scopes (folder-scoped, or one
+        // `key`) are dropped: they are set up again in the dialog.
+        if ((obj.formatVersion as? Number)?.toInt() == MCP_SETTINGS_FORMAT && js("Array").isArray(list) as Boolean) {
             for (i in 0 until (list.length as Int)) {
                 val c: dynamic = list[i]
                 val key = (c.key as? String).orEmpty()
@@ -438,14 +399,10 @@ internal object McpHost {
                     id = (c.id as? String)?.takeIf { it.isNotEmpty() } ?: newId(),
                     name = (c.name as? String)?.takeIf { it.isNotBlank() } ?: "Lunarbor",
                     key = key,
-                    folder = normalizeMcpFolder((c.folder as? String).orEmpty()) ?: continue,
+                    privacy = (c.privacy as? String).orEmpty(),
                     allowEdits = c.allowEdits != false,
                 )
             }
-        } else {
-            // Settings from before connections: one key for the whole vault.
-            val key = (obj.key as? String).orEmpty()
-            if (key.isNotEmpty()) connections += McpConnection("default", "Lunarbor", key, "", obj.allowEdits != false)
         }
         return McpSettings(
             enabled = obj.enabled == true,
@@ -456,6 +413,7 @@ internal object McpHost {
 
     private fun writeSettings(s: McpSettings) {
         val obj: dynamic = js("({})")
+        obj.formatVersion = MCP_SETTINGS_FORMAT
         obj.enabled = s.enabled
         obj.port = s.port
         obj.connections = s.connections.map { c ->
@@ -463,7 +421,7 @@ internal object McpHost {
             o.id = c.id
             o.name = c.name
             o.key = c.key
-            o.folder = c.folder
+            o.privacy = c.privacy
             o.allowEdits = c.allowEdits
             o
         }.toTypedArray()

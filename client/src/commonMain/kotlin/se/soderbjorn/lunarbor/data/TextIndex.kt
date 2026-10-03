@@ -25,6 +25,11 @@
  * counts for its children). A search node's `{{search: …}}` is not indexed
  * ([SearchNode.stripQuery]).
  *
+ * The same tags decide what a privacy mode hides (LBR-10, [PrivacyFilter]):
+ * [search] and [tags] leave out every line under an item carrying a hidden
+ * tag (and whole notes carrying one), and [isPathHidden] /
+ * [hasHiddenUnder] answer it for folders and files across the vault.
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -120,14 +125,27 @@ class TextIndex(
         val lineTags: Set<String>,
         /** The folder (name, relative to the file's) of the line's folder-backed item, or `null`. */
         val ownedFolder: String?,
+        /**
+         * Normalized tags of the line's whole item — every row of a block —
+         * which a privacy mode tests ([PrivacyFilter]). In a note, the line's own.
+         */
+        val itemTags: Set<String>,
     )
 
     /**
      * One indexed file: its lines, and the normalized tags of each of its
      * folder-backed items by folder name — what the files in that folder
-     * inherit.
+     * inherit. [noteTags] are every tag of a `.md` note (empty for an
+     * outline): a note carrying a hidden tag anywhere is hidden whole.
      */
-    private class Entry(val lines: List<Line>, val owned: Map<String, Set<String>>)
+    private class Entry(
+        val lines: List<Line>,
+        val owned: Map<String, Set<String>>,
+        val noteTags: Set<String> = emptySet(),
+    )
+
+    /** [inheritedTags] by folder, for [isPathHidden]; dropped on every change. */
+    private val inheritCache = HashMap<String, Set<String>>()
 
     private val linesByFile: MutableMap<String, Entry> = HashMap()
     private val buildMutex = Mutex()
@@ -150,10 +168,14 @@ class TextIndex(
      */
     fun noteText(fileRel: String, text: String?) {
         if (text == null || (NoteRepository.isAppFile(fileRel) && !NoteRepository.isOutlineFile(fileRel))) {
-            if (linesByFile.remove(fileRel) != null) onChanged?.invoke()
+            if (linesByFile.remove(fileRel) != null) {
+                inheritCache.clear()
+                onChanged?.invoke()
+            }
             return
         }
         linesByFile[fileRel] = if (NoteRepository.isOutlineFile(fileRel)) outlineEntry(text) else noteEntry(text)
+        inheritCache.clear()
         onChanged?.invoke()
     }
 
@@ -187,7 +209,10 @@ class TextIndex(
         }
         for (file in from) linesByFile.remove(file)
         for ((file, lines) in moved) if (file !in linesByFile) linesByFile[file] = lines
-        if (from.isNotEmpty()) onChanged?.invoke()
+        if (from.isNotEmpty()) {
+            inheritCache.clear()
+            onChanged?.invoke()
+        }
     }
 
     /**
@@ -202,12 +227,24 @@ class TextIndex(
      * order), then the folder's `.md` notes, then any subfolder no item
      * names, by name. Files in dot folders (the trash) are skipped.
      *
+     * Under a privacy [filter] the lines it hides do not exist: a line
+     * whose item (or an item above it) carries a hidden tag is skipped and
+     * its item's folder not walked, and a note carrying one is skipped
+     * whole.
+     *
      * @param reversed List the hits in reverse order: the last ones first
      *   (of all hits, so with more than [max] the list is the tail, not the
      *   head turned round).
      * @param max Most hits returned; [TextSearchResult.total] counts all.
+     * @param filter The privacy mode applied ([PrivacyFilter.NONE]: none).
      */
-    fun search(scope: TextScope, expr: SearchQuery.Expr?, max: Int = 300, reversed: Boolean = false): TextSearchResult {
+    fun search(
+        scope: TextScope,
+        expr: SearchQuery.Expr?,
+        max: Int = 300,
+        reversed: Boolean = false,
+        filter: PrivacyFilter = PrivacyFilter.NONE,
+    ): TextSearchResult {
         if (expr == null) return TextSearchResult(emptyList(), 0)
         val hits = ArrayList<TextHit>()
         var total = 0
@@ -215,20 +252,28 @@ class TextIndex(
 
         fun scan(file: String, folder: String, onOwned: (folder: String, hit: Boolean) -> Unit) {
             val above = inheritedTags(folder, inherited)
-            for (line in linesByFile[file]?.lines.orEmpty()) {
+            val entry = linesByFile[file] ?: return
+            if (filter.hides(above) || filter.hides(entry.noteTags)) return
+            for (line in entry.lines) {
+                val ownedPath = line.ownedFolder?.let { if (folder.isEmpty()) it else "$folder/$it" }
+                if (filter.hides(line.itemTags)) {
+                    // A hidden item: neither it nor anything in its folder.
+                    ownedPath?.let { onOwned(it, true) }
+                    continue
+                }
                 val tags = if (above.isEmpty()) line.lineTags else line.lineTags + above
                 val hit = expr.matches(line.key, tags)
                 if (hit) {
                     total++
                     if (reversed || hits.size < max) hits += TextHit(file, line.itemIndex, line.rowOffset, line.text)
                 }
-                line.ownedFolder?.let { onOwned(if (folder.isEmpty()) it else "$folder/$it", hit) }
+                ownedPath?.let { onOwned(it, hit) }
             }
         }
 
         if (scope is TextScope.File) {
             if (scope.fileRel in linesByFile) scan(scope.fileRel, folderOfFile(scope.fileRel)) { _, _ -> }
-        } else {
+        } else if (!filter.hides(inheritedTags((scope as TextScope.Tree).folderRel, inherited))) {
             val tree = treeIn((scope as TextScope.Tree).folderRel)
             // Folders walked, or left out under an item that is a hit.
             val done = HashSet<String>()
@@ -305,16 +350,23 @@ class TextIndex(
      * one met first, shallowest files first. Dot folders are skipped.
      *
      * Called through `PaneBackingViewModel.tagSuggestions` for the search
-     * field's autocomplete.
+     * field's autocomplete, by the privacy dialog's tag field and by the
+     * agents' `list_tags`.
+     *
+     * Under a privacy [filter] the lines it hides are left out — so its own
+     * tags, which only hidden lines carry, are never listed.
      *
      * @param max Most tags returned.
+     * @param filter The privacy mode applied ([PrivacyFilter.NONE]: none).
      */
-    fun tags(scope: TextScope, prefix: String, max: Int = 50): List<TagCount> {
+    fun tags(scope: TextScope, prefix: String, max: Int = 50, filter: PrivacyFilter = PrivacyFilter.NONE): List<TagCount> {
         val want = prefix.removePrefix("#").toNfc().lowercase()
         val counts = LinkedHashMap<String, Int>()
         val spelling = HashMap<String, String>()
         for (file in filesIn(scope)) {
+            if (filter.isActive && isPathHidden(file, filter)) continue
             for (line in linesByFile[file]?.lines.orEmpty()) {
+                if (filter.hides(line.itemTags)) continue
                 for (tag in line.tags) {
                     val key = tag.substring(1).toNfc().lowercase()
                     if (!key.startsWith(want)) continue
@@ -327,6 +379,56 @@ class TextIndex(
             .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
             .take(max)
             .map { TagCount(spelling.getValue(it.key), it.value) }
+    }
+
+    /**
+     * `true` when [filter] hides the vault path [pathRel] — a folder, a
+     * node's outline, a note or any other file: the item backing it or any
+     * folder above it carries a hidden tag ([Entry.owned], across files),
+     * or it is a `.md` note carrying one anywhere. `false` for every path
+     * when the filter hides nothing. Needs the index built ([ensureBuilt]):
+     * a folder whose parent outline was never read counts as visible.
+     *
+     * Called by `DocumentRegistry.isPathHidden` for the folder contents
+     * list, link search, link status, Starred, pane locations and agents.
+     */
+    fun isPathHidden(pathRel: String, filter: PrivacyFilter): Boolean {
+        if (!filter.isActive) return false
+        val path = if (NoteRepository.isOutlineFile(pathRel)) NoteRepository.folderOfOutline(pathRel) else pathRel.trimEnd('/')
+        if (filter.hides(inheritedTags(path, inheritCache))) return true
+        val note = linesByFile[path]
+        return note != null && !NoteRepository.isOutlineFile(path) && filter.hides(note.noteTags)
+    }
+
+    /**
+     * `true` when something under the folder [folderRel] — an item of its
+     * outline or of any outline below it, or a note — is hidden by
+     * [filter]. Such a node must not be deleted while the mode is on: its
+     * folder would take the hidden content to the trash with it.
+     *
+     * Called by `DocumentRegistry.hasHiddenUnder` ("Delete this node",
+     * deleting a folder-backed item in a pane, agents' `delete` / `edit`).
+     */
+    fun hasHiddenUnder(folderRel: String, filter: PrivacyFilter): Boolean {
+        if (!filter.isActive) return false
+        val prefix = if (folderRel.isEmpty()) "" else "$folderRel/"
+        for ((file, entry) in linesByFile) {
+            if (!file.startsWith(prefix)) continue
+            if (filter.hides(entry.noteTags)) return true
+            if (entry.lines.any { filter.hides(it.itemTags) }) return true
+        }
+        return false
+    }
+
+    /**
+     * `false` when the node folder [folderRel]'s outline is known and every
+     * item in it is hidden by [filter] (or it has none); `true` otherwise —
+     * also when the outline was never read. Lets a pane leave the fold
+     * control off a folded item whose children are all hidden.
+     */
+    fun hasVisibleItems(folderRel: String, filter: PrivacyFilter): Boolean {
+        val entry = linesByFile[NoteRepository.outlineFileOf(folderRel)] ?: return true
+        return entry.lines.any { !filter.hides(it.itemTags) }
     }
 
     /**
@@ -388,7 +490,7 @@ class TextIndex(
                         if (shown.first.isBlank()) continue
                         out += Line(
                             SearchQuery.normalize(shown.first), item, r - row, shown.first, shown.second,
-                            shown.second.map(::tagKey).toSet(), folder,
+                            shown.second.map(::tagKey).toSet(), folder, itemTags,
                         )
                     }
                 }
@@ -411,13 +513,32 @@ class TextIndex(
         }
 
         /** A note's lines, numbered by line; each line's tags are its own. */
-        private fun noteEntry(text: String): Entry = Entry(
-            text.replace("\r\n", "\n").split('\n').mapIndexedNotNull { i, raw ->
+        private fun noteEntry(text: String): Entry {
+            val lines = text.replace("\r\n", "\n").split('\n').mapIndexedNotNull { i, raw ->
                 val (shown, tags) = visibleText(raw)
                 if (shown.isBlank()) null
-                else Line(SearchQuery.normalize(shown), i, 0, shown, tags, tags.map(::tagKey).toSet(), null)
-            },
-            emptyMap(),
-        )
+                else tags.map(::tagKey).toSet().let { keys -> Line(SearchQuery.normalize(shown), i, 0, shown, tags, keys, null, keys) }
+            }
+            return Entry(lines, emptyMap(), lines.flatMapTo(HashSet()) { it.lineTags })
+        }
+
+        /**
+         * Normalized tags (no `#`) on one row of an open document, as the
+         * index reads them: a bullet's title, a block row's content (none on
+         * a code row). Cheap for a row without a `#`.
+         *
+         * Called by `PrivacyLayout` to find the rows a privacy mode hides.
+         */
+        fun tagKeysOfRow(raw: String): Set<String> {
+            if ('#' !in raw) return emptySet()
+            return shownOf(raw).second.mapTo(HashSet(), ::tagKey)
+        }
+
+        /**
+         * Normalized tags of every line of a note's [text]. Called by the
+         * agent tools to hide a whole note the way [isPathHidden] does.
+         */
+        fun tagKeysOfText(text: String): Set<String> =
+            text.split('\n').flatMapTo(HashSet()) { if ('#' in it) visibleText(it).second.map(::tagKey) else emptyList() }
     }
 }
