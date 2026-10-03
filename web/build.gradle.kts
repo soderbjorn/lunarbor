@@ -82,7 +82,7 @@ abstract class GenerateDemoVault : DefaultTask() {
     @TaskAction
     fun generate() {
         val root = vaultDir.get().asFile
-        val textExtensions = setOf("lunarbor", "md", "excalidraw", "html", "htm", "css", "js", "json", "svg", "txt", "csv")
+        val textExtensions = setOf("lunarbor", "config", "md", "excalidraw", "html", "htm", "css", "js", "json", "svg", "txt", "csv")
         val dirs = mutableListOf<String>()
         val files = mutableListOf<Map<String, Any>>()
         root.walkTopDown()

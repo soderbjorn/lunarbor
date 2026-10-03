@@ -75,6 +75,14 @@ class VaultIndex(
     private val listLinkBearingFiles: suspend () -> List<String>,
     private val readText: suspend (String) -> String?,
 ) {
+    /**
+     * Paths [search] leaves out: what the app's privacy mode hides (set by
+     * `DocumentRegistry`). [targets] still lists everything — wiki-link
+     * resolution needs the whole list to tell a unique name from an
+     * ambiguous one, and hides its answer itself.
+     */
+    var isHidden: ((String) -> Boolean)? = null
+
     private val targetsMutex = Mutex()
     private var targetsCache: List<LinkTarget>? = null
 
@@ -92,7 +100,7 @@ class VaultIndex(
      * Targets whose title contains [query] (case-insensitive), best first,
      * at most [max]. Ranking: earlier match position; then folders before
      * notes before other files; then shorter titles. A blank query matches
-     * nothing.
+     * nothing. Paths [isHidden] names are never listed.
      *
      * Called by the Insert Link, "Link to node…" and Navigate-to modal.
      */
@@ -100,7 +108,9 @@ class VaultIndex(
         val needle = query.trim().lowercase()
         if (needle.isEmpty()) return emptyList()
         val scored = ArrayList<Pair<Long, LinkTarget>>()
+        val hidden = isHidden
         for (t in targets()) {
+            if (hidden != null && hidden(t.pathRel)) continue
             val pos = t.title.lowercase().indexOf(needle)
             if (pos < 0) continue
             val tier = when (t.kind) {

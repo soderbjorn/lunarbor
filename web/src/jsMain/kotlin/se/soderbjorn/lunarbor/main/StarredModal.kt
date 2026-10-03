@@ -305,6 +305,8 @@ internal class StarredModal(
         for (line in state.lines) {
             val link = SubtreeCodec.parseAnyLinkBullet(line) ?: continue
             val path = LunarborLink.parse(link.url) ?: continue
+            // Starred places the privacy mode hides are not listed.
+            if (parentVm?.isPathHidden(path) == true) continue
             val label = link.bulletText.substring(link.indent + 2)
             val broken = parentVm != null && parentState != null && parentVm.isLinkBroken(parentState, link.url)
             out.add(

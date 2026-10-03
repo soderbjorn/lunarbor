@@ -209,7 +209,7 @@ fun main() {
 
     registerIpcHandlers()
     // App settings → Agent access: the MCP endpoint (off unless turned on).
-    McpHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-mcp.json") }, { runPaths.vaultDir }) { mainWindow }
+    McpHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-mcp.json") }) { mainWindow }
     // App settings → Backup: zips of the vault and their schedule.
     BackupHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-backup.json") }, { runPaths.vaultDir }) { mainWindow }
     // The topbar's News & updates bell: its state file, the version, links.

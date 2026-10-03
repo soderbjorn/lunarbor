@@ -218,6 +218,9 @@ object DocumentLayout {
      * With [expandedBlockIds] given, a large block ([BlockLayout.isLarge])
      * whose first row's id is not in it shows only its first
      * [BlockLayout.PREVIEW_ROWS] rows. `null` shows every block whole.
+     *
+     * Rows marked in [hidden] (a privacy mode's, [PrivacyLayout.hiddenRows])
+     * are never emitted; they always cover whole subtrees.
      */
     fun visibleRowsOf(
         lines: List<String>,
@@ -226,11 +229,16 @@ object DocumentLayout {
         startRow: Int,
         endRowInclusive: Int,
         expandedBlockIds: Set<LineId>? = null,
+        hidden: BooleanArray? = null,
     ): List<Int> {
         if (endRowInclusive < startRow) return emptyList()
         val out = ArrayList<Int>(endRowInclusive - startRow + 1)
         var row = startRow
         while (row <= endRowInclusive) {
+            if (hidden != null && row in hidden.indices && hidden[row]) {
+                row++
+                continue
+            }
             val id = if (row in lineIds.indices) lineIds[row] else null
             val clipped = expandedBlockIds != null && id !in expandedBlockIds &&
                 BlockLayout.startsBlock(lines, row) &&

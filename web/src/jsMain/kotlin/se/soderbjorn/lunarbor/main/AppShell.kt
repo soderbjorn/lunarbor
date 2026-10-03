@@ -388,6 +388,36 @@ class AppShell(
     }
 
     /**
+     * Reads the vault's privacy modes and puts the app back in the mode it
+     * was left in for this vault (persister key [PRIVACY_MODE_KEY]; a mode
+     * that no longer exists falls back to "No privacy"), then writes the
+     * current mode back whenever it changes. Called once at boot, before
+     * the first pane renders, so nothing hidden is ever shown.
+     */
+    private suspend fun loadPrivacyMode() {
+        val vault = documentRegistry.rootDirectory
+        documentRegistry.loadPrivacyModes()
+        val stored: dynamic = try {
+            persister.read(PRIVACY_MODE_KEY)?.let { JSON.parse<dynamic>(it) }
+        } catch (_: Throwable) {
+            null
+        }
+        val id = if (stored == null) null else stored[vault] as? String
+        if (id != null) documentRegistry.setPrivacyMode(id)
+        scope.launch {
+            documentRegistry.privacyFlow.map { it.currentId }.distinctUntilChanged().drop(1).collect { current ->
+                val all: dynamic = try {
+                    persister.read(PRIVACY_MODE_KEY)?.let { JSON.parse<dynamic>(it) }
+                } catch (_: Throwable) {
+                    null
+                } ?: js("({})")
+                if (current == null) js("delete all[vault]") else all[vault] = current
+                persister.write(PRIVACY_MODE_KEY, JSON.stringify(all))
+            }
+        }
+    }
+
+    /**
      * Panes still moving to their restored location ([ensurePaneViewModel]).
      * Their intermediate root location is not recorded, so a quit mid-restore
      * never overwrites the stored place with the root.
@@ -578,6 +608,7 @@ class AppShell(
                             hasUnsavedEdits = { documentRegistry.unsavedFilesFlow.value.isNotEmpty() },
                             switchVault = { dir -> switchVault(dir) },
                             flushEdits = { documentRegistry.flushAll() },
+                            privacyModes = { documentRegistry.privacyFlow.value.modes },
                         ),
                     )
                 },
@@ -609,6 +640,8 @@ class AppShell(
             // [ensurePaneViewModel] opens each at its stored location.
             paneLocations.load { documentRegistry.fileExists(it) }
             loadFoldMemory()
+            // Before any pane shows: the privacy mode decides what can.
+            loadPrivacyMode()
             tabSource.notify(layoutState)
             // Back into 3D mode if it was on — once the panes have rendered.
             window.requestAnimationFrame { spaceMode.restore() }
@@ -1118,6 +1151,12 @@ class AppShell(
                 vm.revealInFinder(path.ifEmpty { documentRegistry.rootFileName })
             }
         }
+        // Privacy modes (LBR-10): pick the current one, edit the modes.
+        out += CommandPalette.Command(
+            id = "configure-privacy",
+            title = "Configure privacy",
+            run = { openPrivacyDialog(scope, documentRegistry) },
+        )
         // The pane's search field (also the header's magnifier and Cmd-F).
         out += CommandPalette.Command(
             id = "search-in-pane",
@@ -1251,8 +1290,19 @@ class AppShell(
         val fileLabel: String
         val path: String?
         if (!booted && stored != null) {
-            fileLabel = filePathLabel(stored.fileRel)
-            path = stored.zoomTitlePath
+            // What the privacy mode hides is not named, even for a pane
+            // that has not moved off it yet: the file shows as its nearest
+            // visible node, the zoom path stops before a hidden title.
+            val filter = documentRegistry.privacyFilter
+            var file = stored.fileRel
+            while (file.isNotEmpty() && file != documentRegistry.rootFileName && documentRegistry.isPathHidden(file)) {
+                val folder = if (NoteRepository.isOutlineFile(file)) NoteRepository.folderOfOutline(file) else file
+                val parent = folder.substringBeforeLast('/', "")
+                file = if (parent.isEmpty()) documentRegistry.rootFileName else NoteRepository.outlineFileOf(parent)
+            }
+            fileLabel = filePathLabel(file)
+            path = if (file != stored.fileRel) null else stored.zoomTitlePath
+                .takeWhile { !filter.hides(se.soderbjorn.lunarbor.data.TextIndex.tagKeysOfRow("* $it")) }
                 .map { InlineMarkdownTokenizer.tokenize(it).displayText.ifBlank { "(untitled)" } }
                 .takeIf { it.isNotEmpty() }
                 ?.joinToString(" / ")
@@ -3010,6 +3060,12 @@ class AppShell(
     companion object {
         /** Persister key of the fold memory ([loadFoldMemory]). */
         private const val FOLD_MEMORY_KEY: String = "lunarborOpenFolders"
+
+        /**
+         * Persister key of the app's current privacy mode, per vault:
+         * `{ "<vault root dir>": "<mode id>" }` ([loadPrivacyMode]).
+         */
+        private const val PRIVACY_MODE_KEY: String = "lunarborPrivacyMode"
 
         /** Debounce between a fold change and its write. */
         private const val FOLD_MEMORY_SAVE_DEBOUNCE_MS: Long = 500

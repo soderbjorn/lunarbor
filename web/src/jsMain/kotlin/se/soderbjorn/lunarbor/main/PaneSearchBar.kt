@@ -511,7 +511,7 @@ internal fun appendHighlighted(parent: HTMLElement, text: String, terms: List<St
 }
 
 /** Injects the search's CSS once per document. */
-private fun ensureSearchBarStyles() {
+internal fun ensureSearchBarStyles() {
     if (document.getElementById("lunarbor-search-styles") != null) return
     val el = document.createElement("style")
     el.id = "lunarbor-search-styles"

@@ -3,7 +3,7 @@
  * Pins the MCP endpoint's gate: only requests carrying the key
  * ([isAuthorized]) from this machine and not from a web page
  * ([isLocalRequest]) get through, and the key picks the connection — with
- * its folder — the request runs as ([connectionFor], [normalizeMcpFolder]). */
+ * its privacy scope — the request runs as ([connectionFor]). */
 package se.soderbjorn.lunarbor.electron
 
 import kotlin.test.Test
@@ -38,23 +38,14 @@ class McpHttpServerTest {
     }
 
     @Test
-    fun the_key_picks_the_connection_and_its_folder() {
+    fun the_key_picks_the_connection_and_its_privacy_scope() {
         val all = McpConnection("a", "All", "tf_aaaa")
-        val work = McpConnection("w", "Work", "tf_wwww", folder = "Work", allowEdits = false)
+        val work = McpConnection("w", "Work", "tf_wwww", privacy = "colleagues", allowEdits = false)
         val both = listOf(all, work)
         assertEquals(work, connectionFor("Bearer tf_wwww", both))
         assertEquals(all, connectionFor("Bearer tf_aaaa", both))
         assertNull(connectionFor("Bearer tf_xxxx", both))
         assertNull(connectionFor(null, both))
         assertNull(connectionFor("Bearer tf_aaaa", emptyList()))
-    }
-
-    @Test
-    fun connection_folders_stay_in_the_vault_and_out_of_hidden_folders() {
-        assertEquals("", normalizeMcpFolder("/"))
-        assertEquals("Work/Acme", normalizeMcpFolder("/Work/Acme/"))
-        assertEquals("Work", normalizeMcpFolder("Work\\"))
-        assertNull(normalizeMcpFolder("/Work/../.."))
-        assertNull(normalizeMcpFolder(".trash/x"))
     }
 }

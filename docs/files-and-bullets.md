@@ -121,6 +121,11 @@ preview, not a copy. Click one to open it.
 so they stay current the same way. It is app data rather than a note:
 the folder contents list and link search leave it out.
 
+`_privacy.config` in the vault root holds the privacy modes (JSON: each
+mode's id, name and the tags it hides). It is app data too: Lunarbor never
+shows it. A mode only hides things on screen and from agents — the files
+of hidden nodes stay exactly where and as they are.
+
 ## Editing the vault outside Lunarbor
 
 Lunarbor watches the vault. When another program (a coding agent, an

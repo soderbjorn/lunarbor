@@ -23,6 +23,7 @@ import se.soderbjorn.lunarbor.data.LineMarkdownPrefix
 import se.soderbjorn.lunarbor.data.NodeLine
 import se.soderbjorn.lunarbor.data.SubtreeCodec
 import se.soderbjorn.lunarbor.data.LunarborLink
+import se.soderbjorn.lunarbor.data.TextIndex
 
 /**
  * One bullet of a linked node, as its preview shows it.
@@ -31,8 +32,10 @@ import se.soderbjorn.lunarbor.data.LunarborLink
  *   or quote prefix removed); a block item shows its title.
  * @property pathRel The bullet's own folder (vault-relative) when it is
  *   folder-backed — opening it goes there — or `null` for a leaf.
+ * @property tagKeys The item's normalized `#tags`, so a pane can leave out
+ *   the items its privacy mode hides.
  */
-data class LinkPreviewItem(val title: String, val pathRel: String?)
+data class LinkPreviewItem(val title: String, val pathRel: String?, val tagKeys: Set<String> = emptySet())
 
 /**
  * A bullet's open-able preview: the linked node and its bullets.
@@ -66,11 +69,14 @@ internal fun linkPreviewItemsOf(folderRel: String, nodeLines: List<NodeLine>): L
         val prefix = LineMarkdownPrefix.detect(title, 0)
         return InlineMarkdownTokenizer.tokenize(title.substring(prefix.markerEnd)).displayText.trim()
     }
+    fun tags(text: String) = text.split('\n').flatMapTo(HashSet()) { TextIndex.tagKeysOfRow("* $it") }
     return nodeLines.mapNotNull { line ->
         when (line) {
-            is NodeLine.Leaf -> LinkPreviewItem(plain(line.title), null)
-            is NodeLine.Folder -> LinkPreviewItem(plain(line.title), join(line.folder))
-            is NodeLine.Block -> LinkPreviewItem(plain(SubtreeCodec.blockTitleOf(line.content)), line.folder?.let(::join))
+            is NodeLine.Leaf -> LinkPreviewItem(plain(line.title), null, tags(line.title))
+            is NodeLine.Folder -> LinkPreviewItem(plain(line.title), join(line.folder), tags(line.title))
+            is NodeLine.Block -> LinkPreviewItem(
+                plain(SubtreeCodec.blockTitleOf(line.content)), line.folder?.let(::join), tags(line.content.joinToString("\n")),
+            )
             is NodeLine.Text -> null
         }
     }.filter { it.title.isNotEmpty() || it.pathRel != null }

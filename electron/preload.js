@@ -85,13 +85,12 @@ contextBridge.exposeInMainWorld("noteApi", {
   /**
    * App settings → Agent access (McpHttpServer.kt). `getMcp` resolves to
    * `{ enabled, port, url, running, error, connections }`, each connection
-   * `{ id, name, key, folder, allowEdits }`; `setMcp` takes a patch of
-   * `{ enabled, port }`. `addMcpConnection({ name, folder, allowEdits })`,
-   * `updateMcpConnection({ id, name?, folder?, allowEdits? })`,
+   * `{ id, name, key, privacy, allowEdits }` (`privacy`: a privacy mode's
+   * id, "" for "No privacy"); `setMcp` takes a patch of
+   * `{ enabled, port }`. `addMcpConnection({ name, privacy, allowEdits })`,
+   * `updateMcpConnection({ id, name?, privacy?, allowEdits? })`,
    * `removeMcpConnection(id)` and `newMcpKey(id)` (agents set up with the
    * old key stop working) all resolve to the new status.
-   * `chooseMcpFolder(current)` opens a folder chooser in the vault and
-   * resolves to `{ folder }` (vault-relative), `{ error }` or `{}`.
    */
   getMcp: () => ipcRenderer.invoke("lunarbor:getMcp"),
   setMcp: (patch) => ipcRenderer.invoke("lunarbor:setMcp", patch),
@@ -99,7 +98,6 @@ contextBridge.exposeInMainWorld("noteApi", {
   updateMcpConnection: (patch) => ipcRenderer.invoke("lunarbor:updateMcpConnection", patch),
   removeMcpConnection: (id) => ipcRenderer.invoke("lunarbor:removeMcpConnection", id),
   newMcpKey: (id) => ipcRenderer.invoke("lunarbor:newMcpKey", id),
-  chooseMcpFolder: (current) => ipcRenderer.invoke("lunarbor:chooseMcpFolder", current),
   /**
    * App settings → Backup (VaultBackup.kt). Each resolves to the status
    * `{ folder, intervalHours, running, error, lastBackupName, lastBackupMs }`.
@@ -127,16 +125,16 @@ contextBridge.exposeInMainWorld("noteApi", {
     return () => ipcRenderer.removeListener("lunarbor:backupStatus", handler);
   },
   /**
-   * Answer MCP requests: `cb(body, allowEdits, folder)` resolves to the
+   * Answer MCP requests: `cb(body, allowEdits, privacy)` resolves to the
    * JSON response, or null when nothing is to be sent back. `allowEdits`
-   * and `folder` (vault-relative, "" for the whole vault) are those of the
-   * connection whose key the request carried. Subscribing tells the main
-   * process this window answers; there is one subscriber.
+   * and `privacy` (a privacy mode's id, "" for "No privacy") are those of
+   * the connection whose key the request carried. Subscribing tells the
+   * main process this window answers; there is one subscriber.
    */
   serveMcp: (cb) => {
-    ipcRenderer.on("lunarbor:mcpRequest", async (_event, id, body, allowEdits, folder) => {
+    ipcRenderer.on("lunarbor:mcpRequest", async (_event, id, body, allowEdits, privacy) => {
       let answer = null;
-      try { answer = await cb(body, allowEdits, folder || ""); } catch (e) { console.error("[lunarbor] MCP request failed", e); }
+      try { answer = await cb(body, allowEdits, privacy || ""); } catch (e) { console.error("[lunarbor] MCP request failed", e); }
       ipcRenderer.invoke("lunarbor:mcpResponse", { id, body: answer });
     });
     ipcRenderer.invoke("lunarbor:mcpReady");

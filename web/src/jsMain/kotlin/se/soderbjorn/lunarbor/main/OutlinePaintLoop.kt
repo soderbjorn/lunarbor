@@ -333,9 +333,8 @@ private fun buildRowElement(
         if (rowId != null && outline) {
             val isFoldedPromotedRef = viewModel.isPromotedRef(rowId) &&
                 rowId !in state.expandedRefIdsLocal
-            val isCollapsibleParent =
-                DocumentLayout.hasChildren(docState.lines, absoluteRow, absoluteIndentInRaw) ||
-                    isFoldedPromotedRef || searchView != null
+            // Children the privacy mode hides do not count.
+            val isCollapsibleParent = viewModel.hasChildrenOnScreen(state, absoluteRow) || searchView != null
             val isCollapsedNow = rowId in state.collapsedIds
             if (isCollapsibleParent) {
                 if (isCollapsedNow || isFoldedPromotedRef) rowDiv.classList.add("lunarbor-row-folded")
@@ -562,8 +561,7 @@ private fun decorateBlockRow(
         val rowId = docState.lineIds.getOrNull(absoluteRow)
         if (rowId != null) {
             val isFoldedPromotedRef = viewModel.isPromotedRef(rowId) && rowId !in state.expandedRefIdsLocal
-            val absoluteCol = BlockLayout.markerColumn(docState.lines[absoluteRow])
-            if (DocumentLayout.hasChildren(docState.lines, absoluteRow, absoluteCol) || isFoldedPromotedRef) {
+            if (viewModel.hasChildrenOnScreen(state, absoluteRow)) {
                 val folded = rowId in state.collapsedIds || isFoldedPromotedRef
                 if (folded) rowDiv.classList.add("lunarbor-row-folded")
                 val chevron = buildChevron(folded) { viewModel.toggleCollapse(rowId) }

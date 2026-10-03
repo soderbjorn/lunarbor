@@ -668,22 +668,31 @@ class Document(
      * @param endRow Last row of the selection.
      * @param endCol Selection end column on [endRow].
      * @param text The text the cut puts on the clipboard.
+     * @param rows The rows [text] holds, one line each, in order: every row
+     *   of the selection, or — when a privacy mode hides some — the rest.
      */
-    fun rememberCut(startRow: Int, startCol: Int, endRow: Int, endCol: Int, text: String) {
+    fun rememberCut(
+        startRow: Int,
+        startCol: Int,
+        endRow: Int,
+        endCol: Int,
+        text: String,
+        rows: List<Int> = (startRow..endRow).toList(),
+    ) {
         val state = _stateFlow.value
         val refs = HashMap<Int, Pair<LineId, String>>()
-        for (row in startRow..endRow) {
+        for ((offset, row) in rows.withIndex()) {
             val id = state.lineIds.getOrNull(row) ?: continue
             if (id !in promotedSubtrees) continue
             val line = state.lines[row]
             if (row == startRow && startCol > DocumentLayout.textStartCol(line)) continue
             if (row == endRow && endCol < line.length) continue
-            refs[row - startRow] = id to SubtreeCodec.titleOf(line)
+            refs[offset] = id to SubtreeCodec.titleOf(line)
         }
         val homes = HashMap<Int, ImageHome>()
-        for (row in startRow..endRow) {
+        for ((offset, row) in rows.withIndex()) {
             val id = state.lineIds.getOrNull(row) ?: continue
-            imageHomes[id]?.let { homes[row - startRow] = it }
+            imageHomes[id]?.let { homes[offset] = it }
         }
         lastCutImageHomes = homes
         lastCut = if (refs.isEmpty() && homes.isEmpty()) null else CutRecord(text, refs)

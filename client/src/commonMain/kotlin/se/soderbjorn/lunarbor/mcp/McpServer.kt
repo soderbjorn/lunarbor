@@ -46,14 +46,14 @@ class McpServer(private val tools: McpTools) {
      *
      * @param allowEdits Whether the user lets agents change the vault
      *   (App settings); without it the write tools are neither listed nor run.
-     * @param folder The vault folder the request's connection is limited to
-     *   (`""` for the whole vault): tools refuse paths outside it and the
-     *   agent is told so on `initialize`.
+     * @param privacyModeId The request's connection's privacy scope: the id
+     *   of the privacy mode whose hidden content the tools leave out, or
+     *   `null` for "No privacy" ([McpTools.call]). The agent is not told.
      * @return The response JSON, or `null` when nothing is to be sent back
      *   (only notifications or client responses) — the transport answers
      *   `202 Accepted` then.
      */
-    suspend fun handle(body: String, allowEdits: Boolean, folder: String = ""): String? {
+    suspend fun handle(body: String, allowEdits: Boolean, privacyModeId: String? = null): String? {
         val parsed = try {
             Json.parseToJsonElement(body)
         } catch (e: Exception) {
@@ -61,21 +61,21 @@ class McpServer(private val tools: McpTools) {
         }
         if (parsed is JsonArray) {
             if (parsed.isEmpty()) return error(JsonNull, INVALID_REQUEST, "Empty batch").toString()
-            val answers = parsed.mapNotNull { handleOne(it, allowEdits, folder) }
+            val answers = parsed.mapNotNull { handleOne(it, allowEdits, privacyModeId) }
             return if (answers.isEmpty()) null else JsonArray(answers).toString()
         }
-        return handleOne(parsed, allowEdits, folder)?.toString()
+        return handleOne(parsed, allowEdits, privacyModeId)?.toString()
     }
 
     /** One message → its response, or `null` for a notification or a client response. */
-    private suspend fun handleOne(message: JsonElement, allowEdits: Boolean, folder: String): JsonElement? {
+    private suspend fun handleOne(message: JsonElement, allowEdits: Boolean, privacyModeId: String?): JsonElement? {
         val obj = message as? JsonObject ?: return error(JsonNull, INVALID_REQUEST, "Invalid request")
         val method = (obj["method"] as? JsonPrimitive)?.contentOrNull ?: return null
         val id = obj["id"]
         if (id == null || id is JsonNull) return null
         val params = obj["params"] as? JsonObject ?: JsonObject(emptyMap())
         return when (method) {
-            "initialize" -> result(id, initializeResult(params, folder))
+            "initialize" -> result(id, initializeResult(params))
             "ping" -> result(id, JsonObject(emptyMap()))
             "tools/list" -> result(id, buildJsonObject {
                 putJsonArray("tools") {
@@ -86,12 +86,12 @@ class McpServer(private val tools: McpTools) {
                     })
                 }
             })
-            "tools/call" -> callTool(id, params, allowEdits, folder)
+            "tools/call" -> callTool(id, params, allowEdits, privacyModeId)
             else -> error(id, METHOD_NOT_FOUND, "Method not found: $method")
         }
     }
 
-    private fun initializeResult(params: JsonObject, folder: String): JsonObject {
+    private fun initializeResult(params: JsonObject): JsonObject {
         val asked = (params["protocolVersion"] as? JsonPrimitive)?.contentOrNull
         return buildJsonObject {
             put("protocolVersion", if (asked in PROTOCOL_VERSIONS) asked else PROTOCOL_VERSIONS.first())
@@ -100,15 +100,15 @@ class McpServer(private val tools: McpTools) {
                 put("name", "lunarbor")
                 put("version", SERVER_VERSION)
             }
-            put("instructions", instructionsFor(folder))
+            put("instructions", INSTRUCTIONS)
         }
     }
 
-    private suspend fun callTool(id: JsonElement, params: JsonObject, allowEdits: Boolean, folder: String): JsonElement {
+    private suspend fun callTool(id: JsonElement, params: JsonObject, allowEdits: Boolean, privacyModeId: String?): JsonElement {
         val name = (params["name"] as? JsonPrimitive)?.contentOrNull
             ?: return error(id, INVALID_PARAMS, "tools/call needs a tool name")
         val args = params["arguments"] as? JsonObject ?: JsonObject(emptyMap())
-        val outcome = tools.call(name, args, allowEdits, folder) ?: return error(id, INVALID_PARAMS, "Unknown tool: $name")
+        val outcome = tools.call(name, args, allowEdits, privacyModeId) ?: return error(id, INVALID_PARAMS, "Unknown tool: $name")
         return result(id, buildJsonObject {
             putJsonArray("content") {
                 add(buildJsonObject {
@@ -137,22 +137,6 @@ class McpServer(private val tools: McpTools) {
     }
 
     companion object {
-        /**
-         * [INSTRUCTIONS], plus — for a connection limited to [folder] — where
-         * the agent's part of the vault starts and that nothing outside it
-         * can be used.
-         */
-        fun instructionsFor(folder: String): String {
-            val f = folder.trim('/')
-            if (f.isEmpty()) return INSTRUCTIONS
-            val path = "/$f"
-            return INSTRUCTIONS + "\n\n" + """
-                This connection is limited to the folder $path: every path you use must be $path or lie inside it, and
-                anything outside it is refused (and does not show in search). Start with read "$path" instead of "/";
-                searches and listings cover $path by default.
-            """.trimIndent()
-        }
-
         /** Protocol versions this server speaks, newest first. */
         val PROTOCOL_VERSIONS: List<String> = listOf("2025-06-18", "2025-03-26", "2024-11-05")
 
