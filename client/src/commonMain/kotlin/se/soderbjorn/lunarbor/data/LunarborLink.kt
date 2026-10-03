@@ -91,6 +91,21 @@ object LunarborLink {
     }
 
     /**
+     * The vault-relative [pathRel] as a person reads it: `/`, then each
+     * on-disk name turned back into its title text ([FolderName.decode]:
+     * `Work%3A Pizza` reads `Work: Pizza`), `/`-separated. No link encoding
+     * — `%20` and friends are for the file, never for the screen.
+     *
+     * Called by the link search's result rows (`LinkSearchModal`) and the
+     * link hover card (`LinkHoverPopup`) to say where a link goes.
+     *
+     * @param pathRel On-disk names, `/`-separated; `""` for the vault root.
+     * @return `/` for the root, else e.g. `/Recipes/Soups` or `/Work: Pizza/plan.md`.
+     */
+    fun displayPath(pathRel: String): String =
+        "/" + if (pathRel.isEmpty()) "" else pathRel.split('/').joinToString("/") { FolderName.decode(it) }
+
+    /**
      * Formats the vault-relative [pathRel] (on-disk names, `/`-separated;
      * `""` for the vault root) as a `lunarbor:` link.
      */

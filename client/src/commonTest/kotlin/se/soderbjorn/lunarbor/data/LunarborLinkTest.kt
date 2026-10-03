@@ -27,6 +27,16 @@ class LunarborLinkTest {
     }
 
     @Test
+    fun display_paths_read_as_titles_not_links() {
+        assertEquals("/", LunarborLink.displayPath(""))
+        assertEquals("/🌱 Garden project", LunarborLink.displayPath("🌱 Garden project"))
+        assertEquals(
+            "/Work: Warp Factor Pizza/Budget 2027.md",
+            LunarborLink.displayPath("Work%3A Warp Factor Pizza/Budget 2027.md"),
+        )
+    }
+
+    @Test
     fun encodes_characters_that_break_a_link_destination() {
         assertEquals("lunarbor:/a%28b%29%5Bc%5D%3Cd%3E%5Ce%23f%3Fg", LunarborLink.format("a(b)[c]<d>\\e#f?g"))
         assertEquals("lunarbor:/tab%09x", LunarborLink.format("tab\tx"))

@@ -254,7 +254,7 @@ internal class LinkSearchModal private constructor(
             }
             val pathEl = document.createElement("div") as HTMLElement
             pathEl.className = "lunarbor-link-item-path"
-            pathEl.textContent = kindLabel(hit) + " · " + LunarborLink.format(hit.pathRel)
+            pathEl.textContent = kindLabel(hit) + " · " + LunarborLink.displayPath(hit.pathRel)
             row.appendChild(pathEl)
 
             row.addEventListener("mousemove", { _ ->
