@@ -11,12 +11,16 @@
  * miss subtleties (which chord is "user-facing" vs "plumbing", which
  * Tab/Shift-Tab pair to bundle as one row, etc.).
  *
+ * Rows in [lunarborConfigurableHotkeys] (3D mode's two actions) show the
+ * chords currently bound and can be rebound from the sidebar.
+ *
  * Mirrors the chord set wired in [MainScreen.handleKey],
  * [AppShell.installPaletteShortcut], and the toolkit's `StandardHotkeys`.
  * When you add a new chord in those files, update this content too.
  */
 package se.soderbjorn.lunarbor.main
 
+import se.soderbjorn.lunula.web.hotkey.HotkeyBindings
 import se.soderbjorn.lunula.web.hotkey.HotkeyEntry
 import se.soderbjorn.lunula.web.hotkey.HotkeyGroup
 import se.soderbjorn.lunula.web.hotkey.HotkeysModalSpec
@@ -76,7 +80,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                         iconSvg = ICON_ARROW_UP,
                     ),
                     HotkeyEntry(
-                        label = "Clear zoom (back to root)",
+                        label = "Clear zoom (back to root; in 3D mode: leave 3D)",
                         chord = listOf("Esc"),
                         iconSvg = ICON_ESC,
                     ),
@@ -152,6 +156,26 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                 ),
             ),
             HotkeyGroup(
+                title = "3D mode",
+                entries = listOf(
+                    HotkeyEntry(
+                        label = SPACE_TOGGLE_LABEL,
+                        chord = effectiveChordLabel(AppShell.SPACE_TOGGLE_ACTION),
+                        iconSvg = ICON_CUBE,
+                    ),
+                    HotkeyEntry(
+                        label = SPACE_SPLIT_LABEL,
+                        chord = effectiveChordLabel(AppShell.SPACE_SPLIT_ACTION),
+                        iconSvg = ICON_PANE,
+                    ),
+                    HotkeyEntry(
+                        label = "Leave 3D mode",
+                        chord = listOf("Esc"),
+                        iconSvg = ICON_ESC,
+                    ),
+                ),
+            ),
+            HotkeyGroup(
                 title = "App",
                 entries = listOf(
                     HotkeyEntry(
@@ -180,12 +204,38 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
     )
 }
 
+/** Row label of the ⌃⌘3 action ([AppShell.SPACE_TOGGLE_ACTION]). */
+private const val SPACE_TOGGLE_LABEL: String = "Toggle 3D mode"
+
+/** Row label of the ⌃⌘1 action ([AppShell.SPACE_SPLIT_ACTION]). */
+private const val SPACE_SPLIT_LABEL: String = "3D mode: the focused window, or all windows"
+
+/**
+ * Rows of [lunarborHotkeysSpec] that are configurable toolkit actions
+ * (`HotkeyBindings.registerAction`), by row label → action id. The
+ * keyboard-shortcuts sidebar ([buildHotkeysSidebarContent]) makes these
+ * rows open the toolkit's binding editor.
+ */
+internal val lunarborConfigurableHotkeys: Map<String, String> = mapOf(
+    SPACE_TOGGLE_LABEL to AppShell.SPACE_TOGGLE_ACTION,
+    SPACE_SPLIT_LABEL to AppShell.SPACE_SPLIT_ACTION,
+)
+
+/** The first chord bound to [actionId] right now, as key caps; `—` when none is. */
+internal fun effectiveChordLabel(actionId: String): List<String> =
+    HotkeyBindings.effectiveChords(actionId).firstOrNull()?.toChordLabel() ?: listOf("—")
+
 // ── Inline icon SVGs (16x16, currentColor) ──────────────────────────
 //
 // Reused from the previous lunarbor-local HotkeysModal. Kept as pure
 // constants so this file stays platform-free and importable from any
 // jsMain code that wants the same icon vocabulary.
 
+private const val ICON_CUBE: String =
+    "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+        "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
+        "stroke-linejoin=\"round\"><path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/>" +
+        "<polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg>"
 private const val ICON_ZOOM_IN: String =
     "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
         "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +

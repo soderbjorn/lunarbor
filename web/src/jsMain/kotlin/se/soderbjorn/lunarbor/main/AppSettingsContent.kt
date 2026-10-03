@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
+import se.soderbjorn.lunula.web.hotkey.openHotkeyConfigDialog
 import kotlin.js.Promise
 
 /**
@@ -209,13 +210,26 @@ fun buildHotkeysSidebarContent(): HTMLElement {
             label.textContent = entry.label
             row.appendChild(label)
             val chord = div("lunarbor-hotkeys-chord")
-            for (cap in entry.chord) {
-                val kbd = document.createElement("kbd") as HTMLElement
-                kbd.className = "lunarbor-hotkeys-cap"
-                kbd.textContent = cap
-                chord.appendChild(kbd)
+            fun fillCaps(caps: List<String>) {
+                chord.innerHTML = ""
+                for (cap in caps) {
+                    val kbd = document.createElement("kbd") as HTMLElement
+                    kbd.className = "lunarbor-hotkeys-cap"
+                    kbd.textContent = cap
+                    chord.appendChild(kbd)
+                }
             }
+            fillCaps(entry.chord)
             row.appendChild(chord)
+            // A configurable action: clicking the row opens the toolkit's
+            // binding editor, and the caps follow a saved change.
+            lunarborConfigurableHotkeys[entry.label]?.let { actionId ->
+                row.classList.add("is-configurable")
+                row.title = "Click to change this shortcut"
+                row.addEventListener("click", { _ ->
+                    openHotkeyConfigDialog(actionId, entry.label) { fillCaps(effectiveChordLabel(actionId)) }
+                })
+            }
             section.appendChild(row)
         }
         body.appendChild(section)
@@ -339,6 +353,8 @@ body.appearance-light .lunarbor-vault-change { border-color: rgba(0,0,0,0.10); }
     border-bottom: 1px solid color-mix(in srgb, var(--t-border, rgba(255,255,255,0.12)) 55%, transparent);
 }
 .lunarbor-hotkeys-row:last-child { border-bottom: none; }
+.lunarbor-hotkeys-row.is-configurable { cursor: pointer; border-radius: 6px; }
+.lunarbor-hotkeys-row.is-configurable:hover { background: color-mix(in srgb, var(--t-text, #e6e6e6) 6%, transparent); }
 .lunarbor-hotkeys-label { flex: 1; min-width: 0; padding-top: 3px; }
 .lunarbor-hotkeys-chord { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; justify-content: flex-end; flex: 0 0 auto; }
 .lunarbor-hotkeys-cap {

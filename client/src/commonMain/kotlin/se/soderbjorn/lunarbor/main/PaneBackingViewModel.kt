@@ -2425,6 +2425,68 @@ class PaneBackingViewModel(
         return if (NoteRepository.isInTrash(folder)) null else folder
     }
 
+    /**
+     * The page this pane is on in 3D mode's page space, with the pages
+     * around it ([SpacePage]): its child nodes and their children, read
+     * from the open outline's rows ([PageSpaceModel.childrenOf]) — so an
+     * indent that gives a bullet its first child shows a new page at once —
+     * and from cached node listings ([DocumentRegistry.requestLinkPreview])
+     * for folders that are not loaded, which this asks for (their pages
+     * fill in once [DocumentRegistry.linkPreviewsFlow] has them).
+     *
+     * The page's key is its node folder ([currentNodeFolder]), so a node is
+     * the same page whether the pane zoomed into it or opened its outline;
+     * a zoomed leaf is keyed by its row, a note, image, drawing or web page
+     * by its file, and those have no child pages.
+     *
+     * Called by the web `PageSpaceView` on every state emission while 3D
+     * mode is on; read-only.
+     *
+     * @return `null` while the pane is loading.
+     */
+    fun spacePageOf(state: State = _stateFlow.value): SpacePage? {
+        val file = state.activeFileRel
+        if (state.isFileView || (state.isLoaded && state.isMarkdownMode)) {
+            return SpacePage(
+                key = PageSpaceKeys.ofFile(file),
+                title = NoteRepository.displayNameOf(file),
+                parentKey = PageSpaceKeys.ofFolder(file.substringBeforeLast('/', "")),
+                children = emptyList(),
+            )
+        }
+        val docState = state.documentState?.takeIf { it.isLoaded } ?: return null
+        val doc = document?.takeIf { it.fileRel == file } ?: return null
+        val zoom = zoomInfoOf(state)
+        val zoomedId = state.zoomedLineId
+        val folder = currentNodeFolder(state)
+        val key = folder?.let(PageSpaceKeys::ofFolder)
+            ?: if (zoom != null && zoomedId != null) PageSpaceKeys.ofLine(file, zoomedId) else PageSpaceKeys.ofFile(file)
+        val parentKey = when {
+            folder != null -> if (folder.isEmpty()) null else PageSpaceKeys.ofFolder(folder.substringBeforeLast('/', ""))
+            zoom != null -> PageSpaceKeys.ofFolder(doc.storageFolderOf(zoom.zoomRow))
+            else -> null
+        }
+        val lines = docState.lines
+        val start = zoom?.let { DocumentLayout.itemLastRow(lines, it.zoomRow) + 1 } ?: 0
+        val end = zoom?.endRowInclusive ?: lines.lastIndex
+        val children = PageSpaceModel.childrenOf(
+            lines = lines,
+            lineIds = docState.lineIds,
+            startRow = start,
+            endRow = end,
+            fileRel = file,
+            folderOf = { doc.folderOf(it) },
+            unloaded = docState.unloadedRefIds,
+            previewOf = { registry.requestLinkPreview(it) },
+        )
+        val title = when {
+            zoom != null -> PageSpaceModel.plainTitle(zoom.titleText)
+            else -> NoteRepository.displayNameOf(file)
+        }
+        val items = PageSpaceModel.itemsOf(lines, docState.lineIds, start, end) { doc.folderOf(it) }
+        return SpacePage(key, title, parentKey, children, items)
+    }
+
     // ------------------------------------------------------- page memory
 
     /** Per-page view memory ([PageView]), by [locationKeyOf]; the oldest go past [PAGE_MEMORY_CAP]. */

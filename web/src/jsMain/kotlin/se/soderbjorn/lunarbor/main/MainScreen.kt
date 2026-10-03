@@ -256,6 +256,30 @@ class MainScreen(
     private var pendingOutgoing: OutgoingView? = null
 
     /**
+     * `true` while 3D mode has this screen's elements on a page in space
+     * ([mountInSpace]). The flight there replaces the navigation and fold
+     * animations, Escape leaves 3D mode instead of clearing the zoom, and a
+     * [render] from the pane chrome only records [homeRoot].
+     */
+    var inSpace: Boolean = false
+        private set
+
+    /**
+     * The pane's own container — where [leaveSpace] puts the elements back.
+     * Set by every [render] made outside 3D mode and by renders the toolkit
+     * makes while the elements are in space.
+     */
+    private var homeRoot: HTMLElement? = null
+
+    /**
+     * The page's last scroll offset, from the scroll wrapper's own scroll
+     * events. Moving the elements between the pane and a page in space
+     * resets the browser's offset; [mountInSpace] / [leaveSpace] put this
+     * back.
+     */
+    private var lastScrollTop: Double = 0.0
+
+    /**
      * Mounts the editor UI into [root]. Clears any prior content, builds
      * the contenteditable host, wires input listeners, and starts the
      * state collector. Safe to call once per pane lifetime.
@@ -264,6 +288,13 @@ class MainScreen(
         viewModel.openSearchHitInNewWindow = onOpenSearchHit
         ensureStyles()
         installRootStyles(root)
+        if (inSpace && titleElement != null) {
+            // The toolkit rebuilt the pane while 3D mode holds the
+            // elements: remember the new container for [leaveSpace].
+            homeRoot = root
+            return
+        }
+        homeRoot = root
         rootElement = root
 
         val existingTitle = titleElement
@@ -312,6 +343,7 @@ class MainScreen(
         // page memory); the host persists the settled one.
         scrollWrapper.addEventListener("scroll", { _ ->
             val top = scrollWrapper.scrollTop
+            lastScrollTop = top
             viewModel.noteScroll(top)
             scrollSettleHandle?.let { window.clearTimeout(it) }
             scrollSettleHandle = window.setTimeout({ onScrollSettled?.invoke(top) }, SCROLL_SETTLE_MS)
@@ -386,7 +418,7 @@ class MainScreen(
                 // arrives — only then is there real new content beneath
                 // the overlay to dissolve into.
                 val navigated = isNavigationTransition(backing)
-                if (pendingOutgoing == null && navigated && backing != null) {
+                if (pendingOutgoing == null && navigated && backing != null && !inSpace) {
                     pendingOutgoing = captureOutgoing(backing)
                 }
                 // Pull DOM focus back into the editor whenever the pane
@@ -421,7 +453,7 @@ class MainScreen(
                 // A fold or unfold in the same view (armed by the fold
                 // control): animate the repaint.
                 val prev = lastPaintedState
-                val foldBefore = if (!navigated && !skipPaint && prev != null && backing != null &&
+                val foldBefore = if (!inSpace && !navigated && !skipPaint && prev != null && backing != null &&
                     backing.isLoaded && !backing.isImageView && kotlin.js.Date.now() < foldArmedUntil
                 ) {
                     prev.documentState?.lineIds?.let { foldTransition.capture(editor, it) }
@@ -541,6 +573,98 @@ class MainScreen(
         searchBar.update(viewModel.currentBackingState)
         searchBar.focus()
     }
+
+    /**
+     * Moves the screen's elements onto a page in 3D mode's space: into
+     * [host], at the page's 1:1 size, with the page's scroll offset kept.
+     * Until [leaveSpace] the pane chrome cannot take them back, and the
+     * navigation and fold animations are off (the flight replaces them).
+     *
+     * Called by the web `PageSpaceView` when a view mounts its pane's live
+     * page. Mounts the screen for the first time when it never was.
+     *
+     * @param host The live page's body; filled by the screen like a pane.
+     */
+    fun mountInSpace(host: HTMLElement) {
+        val keepFocus = editorElement?.let { ed -> document.activeElement?.let { ed.contains(it) } } == true
+        val top = lastScrollTop
+        val home = homeRoot
+        inSpace = false
+        render(host)
+        // Never mounted in the pane yet: the chrome's first render will
+        // set the home (and, with the screen back out of space, take it).
+        homeRoot = home
+        inSpace = true
+        // A navigation snapshot caught on the way in would hang over the
+        // page; the flight stands in for it.
+        pendingOutgoing?.let { it.overlay.remove(); it.titleFlyer?.remove() }
+        pendingOutgoing = null
+        restoreScrollAndCaret(top, keepFocus)
+    }
+
+    /**
+     * Puts the screen's elements back in the pane's own container (the
+     * last one the chrome rendered it into) with the page's scroll offset,
+     * and turns the animations and Escape's zoom-out back on. A no-op when
+     * the screen is not in space.
+     *
+     * Called by the web `SpaceMode` when 3D mode closes, or a view stops
+     * showing this pane.
+     *
+     * @param focus Whether to put the keyboard back in the editor, with
+     *   the caret where the pane has it (the focused pane only — there is
+     *   one document selection).
+     */
+    fun leaveSpace(focus: Boolean) {
+        if (!inSpace) return
+        val top = lastScrollTop
+        inSpace = false
+        val home = homeRoot ?: return
+        render(home)
+        restoreScrollAndCaret(top, focus)
+    }
+
+    /**
+     * Sets the scroll wrapper back to [top] and, with [focus], focuses the
+     * editor with the pane's caret and selection re-applied — moving the
+     * elements dropped both.
+     */
+    private fun restoreScrollAndCaret(top: Double, focus: Boolean) {
+        val scroller = scrollWrapperElement ?: return
+        scroller.scrollTop = top
+        lastScrollTop = top
+        if (!focus) return
+        val editor = editorElement ?: return
+        if (editor.style.display == "none") return
+        editor.asDynamic().focus(js("({preventScroll: true})"))
+        val state = viewModel.currentBackingState
+        if (!state.isLoaded) return
+        applyDomSelection(
+            editor,
+            state.anchorRow ?: state.cursorRow,
+            state.anchorCol ?: state.cursorCol,
+            state.cursorRow,
+            state.cursorCol,
+            scrollCursorIntoView = false,
+        )
+        scroller.scrollTop = top
+    }
+
+    /**
+     * The bullet dot of the item at [row] in the painted outline, else the
+     * row itself; `null` when the row is not painted (folded away,
+     * scrolled-off rows are still painted). Read by the web `PageSpaceView`
+     * to start a thread at a child page's bullet.
+     */
+    fun bulletElementOfRow(row: Int): HTMLElement? {
+        val editor = editorElement ?: return null
+        if (editor.style.display == "none") return null
+        val rowDiv = editor.querySelector("[data-row='$row']") as? HTMLElement ?: return null
+        return rowDiv.querySelector(".lunarbor-bullet") as? HTMLElement ?: rowDiv
+    }
+
+    /** The element that scrolls the page; the web `PageSpaceView` redraws its threads on its scroll. */
+    val scrollElement: HTMLElement? get() = scrollWrapperElement
 
     /** `true` while the pane's search field is open. Read by [AppShell]'s Escape handling. */
     val isSearchOpen: Boolean get() = viewModel.currentBackingState.searchQuery != null
@@ -955,6 +1079,9 @@ class MainScreen(
                 viewModel.exitBlock()
                 return
             }
+            // In 3D mode Escape leaves the mode (the space's own key
+            // handler); flying out is Ctrl-Cmd-Up, Back or the breadcrumb.
+            if (inSpace) return
             val backing = viewModel.stateFlow.value.backingState
             if (backing != null && viewModel.zoomInfo(backing) != null) {
                 event.preventDefault()
@@ -2056,7 +2183,7 @@ class MainScreen(
      * navigation — capturing then would snapshot the *new* view.
      */
     fun prepareNavigationCrossfade() {
-        if (pendingOutgoing != null) return
+        if (pendingOutgoing != null || inSpace) return
         val backing = viewModel.stateFlow.value.backingState ?: return
         val last = lastNavSignature ?: return
         if (isSameLocation(last, navSignatureOf(backing))) return

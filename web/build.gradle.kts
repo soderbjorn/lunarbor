@@ -35,6 +35,9 @@ kotlin {
             implementation(npm("@excalidraw/excalidraw", "0.18.1"))
             implementation(npm("react", "19.1.1"))
             implementation(npm("react-dom", "19.1.1"))
+            // 3D mode (main/space/), loaded lazily in its own chunk. The
+            // version Lunamux pins (see its web/build.gradle.kts).
+            implementation(npm("three", "0.170.0"))
         }
     }
 }

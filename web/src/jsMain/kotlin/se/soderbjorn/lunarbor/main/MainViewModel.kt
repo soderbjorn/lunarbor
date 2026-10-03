@@ -420,6 +420,10 @@ class MainViewModel(
     fun currentNodeFolder(state: PaneBackingViewModel.State): String? =
         paneBackingViewModel.currentNodeFolder(state)
 
+    /** See `PaneBackingViewModel.spacePageOf`. */
+    fun spacePageOf(state: PaneBackingViewModel.State): SpacePage? =
+        paneBackingViewModel.spacePageOf(state)
+
     /** See `PaneBackingViewModel.folderContentsOf`. */
     fun folderContentsOf(state: PaneBackingViewModel.State, dirRel: String): List<VaultEntry>? =
         paneBackingViewModel.folderContentsOf(state, dirRel)

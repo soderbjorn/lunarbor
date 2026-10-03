@@ -13,8 +13,12 @@
  *  - A typed `LayoutState` source ([LunarborTabSource]) for tab +
  *    pane identity (lunarbor has its own document-model-derived shape;
  *    the toolkit's local-mode tab list isn't expressive enough).
- *  - Two top-bar actions before the toolkit's own: Starred and the
- *    command palette (Cmd-P), via `extraTopbarBeforeStandard`.
+ *  - Top-bar actions before the toolkit's own: Starred, the command
+ *    palette (Cmd-P) and the 3D mode cube (⌃⌘3), via
+ *    `extraTopbarBeforeStandard`.
+ *  - 3D mode ([SpaceMode]): this shell is its [SpaceHost] — it hands
+ *    over the active tab's windows, their editors and breadcrumbs, and
+ *    tells the mode whenever tabs, windows or focus change.
  *  - Lunarbor-specific keyboard shortcuts (Cmd-P / Cmd-/ / Cmd-O /
  *    Cmd-S) and the Electron-menu `lunarbor:show-hotkeys` bridge.
  *  - Per-pane navigation: Back / Forward before a breadcrumb of the
@@ -70,6 +74,10 @@ import se.soderbjorn.lunula.web.shell.TopbarAction
 import se.soderbjorn.lunula.web.shell.mountAppShell
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.NoteRepository
+import se.soderbjorn.lunarbor.main.space.SpaceHost
+import se.soderbjorn.lunarbor.main.space.SpaceMode
+import se.soderbjorn.lunarbor.main.space.SpacePane
+import se.soderbjorn.lunarbor.main.space.SpaceTab
 
 /**
  * Top-level shell that wires the lunula windowing system
@@ -227,6 +235,18 @@ class AppShell(
      * Captured by [render] when it constructs the [LunarborTabSource].
      */
     private var notifyToolkitTabs: (() -> Unit)? = null
+
+    /**
+     * 3D mode ("Pages", [SpaceMode]): on / off and single / split, its
+     * views and render loop. Told about every layout change through
+     * [notifyToolkitTabs]; see [spaceHost].
+     */
+    private val spaceMode: SpaceMode by lazy {
+        SpaceMode(spaceHost, scope, persister, documentRegistry.linkPreviewsFlow)
+    }
+
+    /** Pending `requestAnimationFrame` of a coalesced [SpaceMode.onLayoutChanged]. */
+    private var spaceLayoutFrame: Int? = null
 
     /** Per-tab pane layout (floats only). Keyed by tab id. */
     private val tabLayouts: MutableMap<String, PaneLayout> = mutableMapOf()
@@ -402,6 +422,7 @@ class AppShell(
         installPaletteShortcut()
         installChromeSelectionTracker()
         installHotkeysShortcut()
+        installSpaceShortcuts()
         installNavigateToShortcut()
         installSearchShortcuts()
         installStarredShortcut()
@@ -461,6 +482,7 @@ class AppShell(
         )
         notifyToolkitTabs = {
             tabSource.notify(layoutState, activePaneByTab = lastFocusedPaneIdByTab)
+            scheduleSpaceLayout()
         }
 
         shellHandle = mountAppShell(
@@ -518,6 +540,13 @@ class AppShell(
                         iconHtml = ICON_COMMAND,
                         label = "Command palette (⌘P)",
                         onActivate = { commandPalette.open() },
+                    ),
+                    // 3D mode (space/SpaceMode.kt), also ⌃⌘3.
+                    TopbarAction(
+                        id = "lunarbor-topbar-space",
+                        iconHtml = ICON_CUBE,
+                        label = "3D mode (⌃⌘3)",
+                        onActivate = { spaceMode.toggle() },
                     ),
                 ) + listOfNotNull(
                     // News & updates (desktop only; NewsUpdates.kt).
@@ -581,6 +610,8 @@ class AppShell(
             paneLocations.load { documentRegistry.fileExists(it) }
             loadFoldMemory()
             tabSource.notify(layoutState)
+            // Back into 3D mode if it was on — once the panes have rendered.
+            window.requestAnimationFrame { spaceMode.restore() }
         }
 
         // Drive the sidebar logo's save-state dot: pulse while any open
@@ -633,6 +664,111 @@ class AppShell(
         val isMac = se.soderbjorn.lunula.web.hotkey.isMacPlatform()
         val chord = se.soderbjorn.lunula.web.hotkey.Hotkey(key = "/", meta = isMac, ctrl = !isMac)
         se.soderbjorn.lunula.web.hotkey.HotkeyRegistry.register(chord) { openHotkeysSidebar() }
+    }
+
+    /**
+     * Registers 3D mode's two configurable actions with the toolkit's
+     * [se.soderbjorn.lunula.web.hotkey.HotkeyBindings] (so the Keyboard
+     * Shortcuts sidebar lists them and they can be rebound): toggle 3D
+     * mode (⌃⌘3; Ctrl-Alt-3 off the Mac) and switch between the focused
+     * window alone and all of the tab's windows (⌃⌘1; Ctrl-Alt-1).
+     */
+    private fun installSpaceShortcuts() {
+        val isMac = se.soderbjorn.lunula.web.hotkey.isMacPlatform()
+        fun chord(key: String) = se.soderbjorn.lunula.web.hotkey.Hotkey(key = key, ctrl = true, meta = isMac, alt = !isMac)
+        se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
+            se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(SPACE_TOGGLE_ACTION, "Toggle 3D mode", listOf(chord("3"))),
+        ) { spaceMode.toggle() }
+        se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
+            se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(SPACE_SPLIT_ACTION, "3D mode: focused window or all windows", listOf(chord("1"))),
+        ) { spaceMode.toggleSplit() }
+    }
+
+    /**
+     * Tells 3D mode the layout changed, on the next frame — after the
+     * toolkit has rebuilt its panes — and once per frame however many
+     * notifications arrive.
+     */
+    private fun scheduleSpaceLayout() {
+        if (!spaceMode.isActive || spaceLayoutFrame != null) return
+        spaceLayoutFrame = window.requestAnimationFrame {
+            spaceLayoutFrame = null
+            spaceMode.onLayoutChanged()
+        }
+    }
+
+    /**
+     * What 3D mode reads from the shell ([SpaceHost]): the active tab's
+     * windows at their floating-pane geometry, focus, each window's view
+     * model, editor and breadcrumb.
+     */
+    private val spaceHost: SpaceHost = object : SpaceHost {
+        override fun spacePanes(): List<SpacePane> {
+            val tabId = layoutState.activeTabId ?: return emptyList()
+            val floats = tabLayouts[tabId]?.floatingPanes.orEmpty()
+            // Where the toolkit actually drew each window (its layout preset
+            // can place panes away from their stored specs), as fractions of
+            // the pane area; the stored spec until the pane is drawn.
+            val area = (rootEl ?: document.body)?.querySelector(".dt-pane-area") as? HTMLElement
+            val ar = area?.getBoundingClientRect()
+            return floats.mapIndexedNotNull { i, f ->
+                if (f.isMinimized) return@mapIndexedNotNull null
+                val label = "Window ${i + 1}"
+                val el = area?.querySelector(".dt-pane-floating[data-pane-id='${f.id}']") as? HTMLElement
+                val r = el?.getBoundingClientRect()
+                when {
+                    ar != null && r != null && ar.width > 0 && ar.height > 0 && r.width > 0 -> SpacePane(
+                        f.id, label,
+                        (r.left - ar.left) / ar.width, (r.top - ar.top) / ar.height,
+                        r.width / ar.width, r.height / ar.height,
+                        if (f.isMaximized) Int.MAX_VALUE / 2 else f.zIndex,
+                    )
+                    f.isMaximized -> SpacePane(f.id, label, 0.0, 0.0, 1.0, 1.0, Int.MAX_VALUE / 2)
+                    else -> SpacePane(f.id, label, f.xPct, f.yPct, f.widthPct, f.heightPct, f.zIndex)
+                }
+            }
+        }
+
+        override fun focusedPaneId(): String? = this@AppShell.focusedPaneId()
+
+        override fun focusPane(paneId: String) {
+            val tabId = layoutState.activeTabId ?: return
+            // Raised as a click raises it in 2D, so overlapping views stack alike.
+            bringFloatingPaneToFront(tabId, paneId)
+            if (lastFocusedPaneIdByTab[tabId] == paneId) return
+            lastFocusedPaneIdByTab[tabId] = paneId
+            notifyToolkitTabs?.invoke()
+        }
+
+        override fun viewModelOf(paneId: String): MainViewModel? {
+            ensurePaneViewModel(paneId)
+            return paneViewModels[paneId]
+        }
+
+        override fun screenOf(paneId: String): MainScreen? {
+            ensurePaneViewModel(paneId)
+            return paneScreen(paneId)
+        }
+
+        override fun breadcrumbOf(paneId: String): List<PaneTitleSegment> = paneBreadcrumbSegments(paneId)
+
+        override fun spaceTabs(): List<SpaceTab> =
+            layoutState.tabs.filter { !it.isHidden }.map { t ->
+                SpaceTab(t.id, t.title, tabLayouts[t.id]?.floatingPanes?.size ?: 0, t.id == layoutState.activeTabId)
+            }
+
+        override fun selectTab(tabId: String) {
+            if (layoutState.tabs.none { it.id == tabId }) return
+            layoutState = layoutState.copy(activeTabId = tabId)
+            persistLayoutState()
+        }
+
+        override fun newWindow() {
+            layoutState.activeTabId?.let { openWindowAtCurrentLocation(it) }
+        }
+
+        override fun openPalette() = commandPalette.open()
+
     }
 
     /**
@@ -1867,6 +2003,7 @@ class AppShell(
         val style = document.createElement("style") as HTMLElement
         style.id = "lunarbor-chrome-style"
         style.textContent = """
+            body[data-lunarbor-space] .lunarbor-space-cube { color: var(--t-accent, #7aa2ff); }
             .dt-pane-action.$DISABLED_CLASS {
                 opacity: 0.32;
                 pointer-events: none;
@@ -2333,7 +2470,17 @@ class AppShell(
         // focus and selection survive tab switches and re-renders. Build
         // a fresh per-pane VM stack on first render.
         ensurePaneViewModel(id)
-        val screen = paneEditors.getOrPut(id) {
+        paneScreen(id).render(container)
+    }
+
+    /**
+     * The pane's editor view, built on first use and cached in
+     * [paneEditors]. The pane's view model must exist
+     * ([ensurePaneViewModel]). Called by [renderPaneContent] and by 3D mode
+     * ([spaceHost]), which can show a window before the toolkit renders it.
+     */
+    private fun paneScreen(id: String): MainScreen =
+        paneEditors.getOrPut(id) {
             MainScreen(
                 paneViewModels.getValue(id),
                 scope,
@@ -2354,8 +2501,6 @@ class AppShell(
                 },
             )
         }
-        screen.render(container)
-    }
 
     /**
      * Adds a new pane to [tabId] at a randomised position with the highest
@@ -2874,6 +3019,19 @@ class AppShell(
             "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
                 "<path d=\"M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3\"/></svg>"
+
+        /** Cube glyph: the top-bar button that toggles 3D mode (Lunamux's `ICON_CUBE`). */
+        private const val ICON_CUBE: String =
+            "<svg class=\"lunarbor-space-cube\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
+                "<path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/>" +
+                "<polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg>"
+
+        /** Hotkey action id: toggle 3D mode ([installSpaceShortcuts]). */
+        internal const val SPACE_TOGGLE_ACTION: String = "lunarbor.space.toggle"
+
+        /** Hotkey action id: 3D mode's focused-window / all-windows switch ([installSpaceShortcuts]). */
+        internal const val SPACE_SPLIT_ACTION: String = "lunarbor.space.split"
 
         /** Page-with-fold icon used for sidebar rows representing notes/tabs. */
         private const val ICON_NOTE: String =

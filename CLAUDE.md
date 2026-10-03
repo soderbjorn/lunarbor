@@ -257,6 +257,18 @@ User-facing affordances on the web: the pane header starts with Back / Forward c
 
 **Navigation animation** (`web/.../main/NavigationTransition.kt`): zooming in, the clicked bullet's text flies up and grows into the page title while the old page falls away and the children rise in; zooming out, the title shrinks back into its row. Back / Forward and breadcrumb jumps without a visible row to morph drift sideways (right = deeper), another file is a plain fade-through, and `prefers-reduced-motion` gets a short fade. The old view is an overlay clone on `document.body` captured before the repaint (`MainScreen.captureOutgoing`), so the toolkit's chrome rebuild never flashes; it takes the pane's bottom corner radii, so it never pokes past the rounded pane into the Depth look's halo. Clicking the bullet dot of a folder-backed bullet zooms into it via `zoomInto` — the load on a folded bullet + history push gives a "click to open this node" UX without any link-specific click handling.
 
+## 3D mode
+
+"Pages" (`web/.../main/space/`, LBR-11): every node's page hangs at a fixed place in space, and each window looks into it through its own camera. Toggled by the topbar cube, ⌃⌘3 (Ctrl-Alt-3 off the Mac) and Esc; remembered under the persister key `lunarborSpace` (`{ on, split }`) — app state, never the vault.
+
+- **Full window:** the space is a layer over the whole window (`.lunarbor-space`, z-index 900): sidebar, top bar and panes are under it; menus, popups, modals and the palette still open above. A slim draggable strip on top holds Palette, the single / split switch and Leave 3D; a dock along the bottom lists the tabs (click to switch) and the active tab's windows (`1 · Recipes`, click to focus) and "+ Window".
+- **Single or split** (⌃⌘1, the strip button): the focused window alone, filling the space, or every window of the tab at exactly its 2D place and size — read from the toolkit's drawn panes (`AppShell.spaceHost.spacePanes`), stacked by z-order; focusing a view raises its window as a click does in 2D. Each view has its own camera and flies on its own.
+- **The live page is the pane's real `MainScreen`** (`MainScreen.mountInSpace` / `leaveSpace`), reparented into a CSS3D object at 1:1 — there is no second editor: typing, Tab, Enter, folding, search, palette commands, drawings and images all run the 2D code. In space the navigation and fold animations are off (the flight replaces them) and Escape leaves 3D instead of clearing the zoom; flying out is ⌃⌘↑, Back or the page header's breadcrumb. Leaving 3D puts every editor back with its caret and scroll.
+- **Pages** fit their content (a transparent page-sized slot holds a card at most that tall; a drawing or web page fills it). Child pages hang behind the live page in a left and a right column, grandchildren in one column on their parent's outer side, faint; threads (SVG) run from each child bullet's dot to its page. Previews are read-only outlines (`PageSpaceModel`: from the open outline's rows, so an indent sprouts a page at once; else from `DocumentRegistry.requestLinkPreview` listings); clicking one, or a dot in it, zooms the window there. A page's header shows which windows are on it (`Window 1`, …).
+- **Layout and model are pure commonMain** (`main/PageSpaceLayout.kt`, tested in `PageSpaceLayoutTest`): `PageSpaceLayout` places pages relative to the page a window is on (deterministic, so Back returns exactly where it was); `PaneBackingViewModel.spacePageOf` gives the page around a pane, keyed by node folder (`PageSpaceKeys`) so a node is one page whether zoomed into or opened. The camera follows pane state: a change of `(activeFileRel, zoomedLineId)` to another page flies (0.75–1.5 s; a cut under `prefers-reduced-motion`); editing never moves it.
+- **Rendering rules** (`PageSpaceView`): the three.js camera never moves (the world does — Chrome stops hit-testing a CSS3D layer whose camera has moved); pages get z-indexes by distance and pages behind the camera ignore the pointer; stray `scrollTop` is reset every frame; one WebGL canvas draws every view's starfield via viewport + scissor; frames run only while something moves. Colours and fonts are the theme's `--t-*` / `--dt-font-prop` variables; the WebGL specks re-read them on theme change (glow on dark, ink on light).
+- **three.js** (`npm three 0.170.0`) loads lazily on first entry through a dynamic `import()` into its own chunk (`space/three/ThreeLib.kt`: minimal externals, kept free of Lunarbor types for a later move to Lunula).
+
 ## Browser demo
 
 The web bundle doubles as a website demo (`demo/README.md`). **Demo mode** (`web/.../demo/DemoMode.kt`) is on exactly when the page has no Electron `noteApi` bridge, so the desktop app never enters it and the website build never looks for real files.
@@ -283,6 +295,7 @@ client/src/commonMain/.../main/
   FolderContents.kt                   ← folder contents list: filter, order, badge
   FoldMemory.kt                       ← which folder-backed items were left open
   LinkPreview.kt                      ← read-only previews of linked nodes
+  PageSpaceLayout.kt                  ← 3D mode: page positions + the pages around a page
   NoteConversion.kt                   ← "Convert to node": note → bullet + block rows
   VaultRelocation.kt                  ← rebase pane locations onto a new vault root
 
@@ -343,6 +356,9 @@ web/src/jsMain/.../
   main/AgentAccessSettings.kt         ← App settings → Agent access (MCP)
   main/McpBridge.kt                   ← MCP requests from the main process → McpServer
   main/NewsUpdates.kt                 ← News & updates bell + dialog, Electron store/fetch
+  main/space/SpaceMode.kt             ← 3D mode: enter / leave, views, strip + dock, backdrop, render loop
+  main/space/PageSpaceView.kt         ← one window's view: live page, previews, flights, threads
+  main/space/three/ThreeLib.kt        ← three.js + CSS3DRenderer externals, loaded lazily
 
 electron-main/src/jsMain/.../electron/
   ElectronMain.kt                     ← main process: window, IPC file access
