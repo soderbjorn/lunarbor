@@ -1570,8 +1570,14 @@ fun ensureStyles() {
         .lunarbor-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--t-text-dim, #5e5e5e);
         }
+        /* The theme's opaque selection colour (lunula's `selection` token),
+           with selected text in the bright text colour: links, tags, code
+           and headings carry colours of their own (a tag's comes from its
+           name), and only `text` / `textBright` are guaranteed readable on
+           the selection (lunula's ThemeSelectionTest). */
         .lunarbor-editor ::selection {
-            background: var(--t-accent-soft, rgba(90, 176, 255, 0.30));
+            background: var(--t-selection, rgba(90, 176, 255, 0.45));
+            color: var(--t-text-bright, #ffffff);
         }
         /* Onboarding affordance for an empty document (fresh vault). The
            blank root line is otherwise invisible, so the pane reads as
