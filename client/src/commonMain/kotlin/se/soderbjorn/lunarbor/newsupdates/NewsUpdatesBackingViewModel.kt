@@ -4,16 +4,17 @@
  * All the logic behind the desktop's "News & updates" bell, ported from
  * Lunamux so both apps behave the same:
  *
- *  - Checks `versions.json` and `news.json` on lunarbor.dev at startup when
- *    24 h have passed since the last successful check (persisted across
- *    launches), then every 24 h while the app runs; "Check now" on demand.
+ *  - Checks `news.json` on lunarbor.dev ([NewsFeed]: the latest builds and
+ *    the announcements, in one file) at startup when 24 h have passed since
+ *    the last successful check (persisted across launches), then every 24 h
+ *    while the app runs; "Check now" on demand.
  *  - An update shows when the published `latestVersionCode` is above the
  *    running build's and is not the exact code the user dismissed.
  *  - News shows the items that are `active` and not dismissed.
- *  - A check where both fetches fail changes nothing (the timestamp is not
- *    advanced either).
- *  - Restore brings every dismissed item back from the last fetched
- *    manifests (works offline).
+ *  - A check whose fetch or parse fails changes nothing (the timestamp is
+ *    not advanced either).
+ *  - Restore brings every dismissed item back from the last fetched feed
+ *    (works offline).
  *
  * One app-scoped instance, built in the web `Main.kt` only when there is an
  * Electron bridge (the browser demo has no bell). The view
@@ -36,10 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-/** Where the version manifest is published. */
-const val DEFAULT_VERSIONS_URL: String = "https://lunarbor.dev/versions.json"
-
-/** Where the news manifest is published. */
+/** Where the news feed ([NewsFeed]) is published. */
 const val DEFAULT_NEWS_URL: String = "https://lunarbor.dev/news.json"
 
 /** How often to check while the app runs, and the startup gate: 24 h. */
@@ -55,14 +53,13 @@ const val CHECK_INTERVAL_MILLIS: Long = 24L * 60L * 60L * 1000L
  *
  * @param store persistence of [NewsPersistedState].
  * @param fetcher HTTP GET of a manifest's text.
- * @param platformId the [VersionManifest.platforms] key to read
+ * @param platformId the [NewsFeed.platforms] key to read
  *   ([UpdatePlatform.MAC]).
  * @param currentVersionCode the running build's version code
  *   (`CFBundleVersion`); `0` when unknown, so any published build is newer.
  * @param currentVersionName the running build's version name, for logs.
  * @param scope where the check loop and saves run (app-scoped).
  * @param now wall-clock time in epoch millis.
- * @param versionsUrl the `versions.json` URL.
  * @param newsUrl the `news.json` URL.
  * @param checkIntervalMillis re-check interval and startup gate.
  */
@@ -74,7 +71,6 @@ class NewsUpdatesBackingViewModel(
     private val currentVersionName: String,
     private val scope: CoroutineScope,
     private val now: () -> Long,
-    private val versionsUrl: String = DEFAULT_VERSIONS_URL,
     private val newsUrl: String = DEFAULT_NEWS_URL,
     private val checkIntervalMillis: Long = CHECK_INTERVAL_MILLIS,
 ) {
@@ -119,9 +115,8 @@ class NewsUpdatesBackingViewModel(
     /** The advertised update's code, kept so [dismissUpdate] can record it. */
     private var latestUpdateVersionCode: Long? = null
 
-    /** The last fetched manifests, re-applied by [restoreAll] without a fetch. */
-    private var lastVersions: VersionManifest? = null
-    private var lastNews: NewsManifest? = null
+    /** The last fetched feed, re-applied by [restoreAll] without a fetch. */
+    private var lastFeed: NewsFeed? = null
 
     /**
      * Loads the persisted state and starts the check loop: the first check
@@ -149,8 +144,8 @@ class NewsUpdatesBackingViewModel(
     }
 
     /**
-     * Fetches both manifests and applies them. Ignored while another check
-     * runs; when both fetches fail nothing changes. Never throws (except
+     * Fetches the feed and applies it. Ignored while another check runs;
+     * when the fetch or parse fails nothing changes. Never throws (except
      * cancellation).
      *
      * Called by the loop in [start], by [requestCheckNow], and by the
@@ -160,24 +155,17 @@ class NewsUpdatesBackingViewModel(
         if (_stateFlow.value.checkInProgress) return
         _stateFlow.update { it.copy(checkInProgress = true) }
         try {
-            val versions = fetchVersions()
-            val news = fetchNews()
-            if (versions == null && news == null) {
-                println("NewsUpdates: both checks failed — state unchanged")
+            val feed = fetchFeed()
+            if (feed == null) {
+                println("NewsUpdates: check failed — state unchanged")
                 return
             }
             val time = now()
             persisted = persisted.copy(lastCheckEpochMillis = time)
             _stateFlow.update { it.copy(lastCheckEpochMillis = time) }
             persist()
-            if (versions != null) {
-                lastVersions = versions
-                applyVersions(versions)
-            }
-            if (news != null) {
-                lastNews = news
-                applyNews(news)
-            }
+            lastFeed = feed
+            applyFeed(feed)
         } finally {
             _stateFlow.update { it.copy(checkInProgress = false) }
         }
@@ -214,57 +202,46 @@ class NewsUpdatesBackingViewModel(
     }
 
     /**
-     * Brings back everything dismissed. Re-applies the last fetched
-     * manifests at once (offline); with none fetched yet, starts a check.
+     * Brings back everything dismissed. Re-applies the last fetched feed at
+     * once (offline); with none fetched yet, starts a check.
      */
     fun restoreAll() {
         persisted = persisted.copy(dismissedNewsIds = emptySet(), dismissedUpdateVersionCode = null)
         scope.launch { persist() }
-        val versions = lastVersions
-        val news = lastNews
-        if (versions == null && news == null) {
-            requestCheckNow()
-            return
-        }
-        versions?.let { applyVersions(it) }
-        news?.let { applyNews(it) }
+        val feed = lastFeed
+        if (feed == null) requestCheckNow() else applyFeed(feed)
     }
 
-    private fun applyVersions(manifest: VersionManifest) {
-        val info = manifest.platforms[platformId]
-            ?.takeIf { manifest.schemaVersion <= VersionManifest.SUPPORTED_SCHEMA_VERSION }
+    /**
+     * Applies [feed] to [State]: the update for [platformId] and the active,
+     * undismissed items. A newer `schemaVersion` reads as neither.
+     */
+    private fun applyFeed(feed: NewsFeed) {
+        val supported = feed.schemaVersion <= NewsFeed.SUPPORTED_SCHEMA_VERSION
+        val info = feed.platforms[platformId]?.takeIf { supported }
         latestUpdateVersionCode = info?.latestVersionCode
         val available = info != null &&
             info.latestVersionCode > currentVersionCode &&
             info.latestVersionCode != persisted.dismissedUpdateVersionCode
+        val items = if (supported) {
+            feed.items.filter { it.active && it.id !in persisted.dismissedNewsIds }
+        } else {
+            emptyList()
+        }
         _stateFlow.update {
             it.copy(
                 updateAvailable = available,
                 latestVersionName = if (available) info?.latestVersionName else null,
                 infoUrl = if (available) info?.url else null,
+                newsItems = items,
             )
         }
     }
 
-    private fun applyNews(manifest: NewsManifest) {
-        val items = if (manifest.schemaVersion > NewsManifest.SUPPORTED_SCHEMA_VERSION) {
-            emptyList()
-        } else {
-            manifest.items.filter { it.active && it.id !in persisted.dismissedNewsIds }
-        }
-        _stateFlow.update { it.copy(newsItems = items) }
-    }
-
-    private suspend fun fetchVersions(): VersionManifest? {
-        if (USE_SAMPLE_DATA) return SAMPLE_VERSION_MANIFEST
-        val text = runCatching { fetcher.fetchText(versionsUrl) }.getOrNull() ?: return null
-        return NewsManifestParser.parseVersions(text)
-    }
-
-    private suspend fun fetchNews(): NewsManifest? {
-        if (USE_SAMPLE_DATA) return SAMPLE_NEWS_MANIFEST
-        val text = runCatching { fetcher.fetchText(newsUrl) }.getOrNull() ?: return null
-        return NewsManifestParser.parseNews(text)
+    private suspend fun fetchFeed(): NewsFeed? {
+        if (USE_SAMPLE_DATA) return SAMPLE_NEWS_FEED
+        val text = fetcher.fetchText(newsUrl) ?: return null
+        return NewsFeedParser.parse(text)
     }
 
     /** Saves the current [persisted] snapshot; serialized so the last write wins. */

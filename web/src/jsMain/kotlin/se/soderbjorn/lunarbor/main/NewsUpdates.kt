@@ -19,8 +19,8 @@
  *
  * Platform glue lives here too: [ElectronNewsStateStore]
  * (`noteApi.getNewsState` / `setNewsState` → `lunarbor-news.json`, owned by
- * the main process's NewsHost.kt) and [FetchNewsFetcher] (the renderer's
- * `fetch`, 15 s timeout). [startNewsUpdates] returns `null` without an
+ * the main process's NewsHost.kt); `news.json` is fetched by the common
+ * Ktor fetcher (`createNewsFetcher`). [startNewsUpdates] returns `null` without an
  * Electron bridge, so the browser demo has no bell and fetches nothing.
  *
  * View only: no rules here beyond drawing [NewsUpdatesBackingViewModel.State].
@@ -37,7 +37,7 @@ import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
-import se.soderbjorn.lunarbor.newsupdates.NewsFetcher
+import se.soderbjorn.lunarbor.newsupdates.createNewsFetcher
 import se.soderbjorn.lunarbor.newsupdates.NewsItem
 import se.soderbjorn.lunarbor.newsupdates.NewsPersistedState
 import se.soderbjorn.lunarbor.newsupdates.NewsStateStore
@@ -65,7 +65,7 @@ fun startNewsUpdates(scope: CoroutineScope): NewsUpdatesBackingViewModel? {
     val versionCode = (noteApi.appVersionCode as? String)?.toLongOrNull() ?: 0L
     val viewModel = NewsUpdatesBackingViewModel(
         store = ElectronNewsStateStore(),
-        fetcher = FetchNewsFetcher(),
+        fetcher = createNewsFetcher(),
         platformId = UpdatePlatform.MAC,
         currentVersionCode = versionCode,
         currentVersionName = versionName,
@@ -304,35 +304,6 @@ private class ElectronNewsStateStore : NewsStateStore {
         state.dismissedUpdateVersionCode?.let { obj.dismissedUpdateVersionCode = it.toDouble() }
         state.lastCheckEpochMillis?.let { obj.lastCheckEpochMillis = it.toDouble() }
         runCatching { (window.asDynamic().noteApi.setNewsState(JSON.stringify(obj)) as Promise<Any?>).await() }
-    }
-}
-
-/**
- * [NewsFetcher] over the renderer's `fetch`, aborted after 15 s (8 s is
- * not separable from the whole request in `fetch`). `cache: no-cache` so a
- * freshly published manifest is seen at once.
- */
-private class FetchNewsFetcher : NewsFetcher {
-    override suspend fun fetchText(url: String): String? {
-        val controller: dynamic = js("new AbortController()")
-        val timer = window.setTimeout({ controller.abort() }, 15_000)
-        return try {
-            val init: dynamic = js("({})")
-            init.signal = controller.signal
-            init.cache = "no-cache"
-            val response: dynamic = (window.asDynamic().fetch(url, init) as Promise<dynamic>).await()
-            if (response.ok != true) {
-                println("NewsUpdates: $url → HTTP ${response.status}")
-                null
-            } else {
-                (response.text() as Promise<String>).await()
-            }
-        } catch (t: Throwable) {
-            println("NewsUpdates: $url failed: ${t.message}")
-            null
-        } finally {
-            window.clearTimeout(timer)
-        }
     }
 }
 

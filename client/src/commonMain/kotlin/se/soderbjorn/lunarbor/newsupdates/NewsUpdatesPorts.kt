@@ -8,7 +8,8 @@
  *    ([NewsPersistedState]). On the desktop that is `lunarbor-news.json`
  *    beside `lunarbor-backup.json`, owned by the Electron main process —
  *    app-scoped, not in the vault, so a vault switch keeps it.
- *  - [NewsFetcher]: one HTTP GET of a manifest's text.
+ *  - [NewsFetcher]: one HTTP GET of `news.json`'s text; the app's is
+ *    Ktor-based ([createNewsFetcher], NewsHttp.kt).
  *
  * Also the dev toggles ([USE_SAMPLE_DATA], [CHECK_ON_EVERY_STARTUP]; never
  * commit them as `true`) and the shipping flag [CHECK_NOW_BUTTON_ENABLED].
@@ -48,10 +49,10 @@ interface NewsStateStore {
 }
 
 /**
- * Fetches a manifest.
+ * Fetches the news feed.
  *
- * Implemented on the web by `FetchNewsFetcher` (the renderer's `fetch`
- * with a timeout); tests return canned text.
+ * The app's comes from [createNewsFetcher] (Ktor); tests return canned
+ * text.
  */
 fun interface NewsFetcher {
     /**
@@ -69,8 +70,8 @@ fun interface NewsFetcher {
 const val CHECK_NOW_BUTTON_ENABLED: Boolean = true
 
 /**
- * Dev toggle: skip the network and use [SAMPLE_VERSION_MANIFEST] /
- * [SAMPLE_NEWS_MANIFEST]. Never commit as `true`.
+ * Dev toggle: skip the network and use [SAMPLE_NEWS_FEED]. Never commit
+ * as `true`.
  */
 const val USE_SAMPLE_DATA: Boolean = false
 
@@ -80,8 +81,8 @@ const val USE_SAMPLE_DATA: Boolean = false
  */
 const val CHECK_ON_EVERY_STARTUP: Boolean = false
 
-/** Stand-in for `versions.json` under [USE_SAMPLE_DATA]: always an update. */
-val SAMPLE_VERSION_MANIFEST: VersionManifest = VersionManifest(
+/** Stand-in for `news.json` under [USE_SAMPLE_DATA]: always an update, two items. */
+val SAMPLE_NEWS_FEED: NewsFeed = NewsFeed(
     platforms = mapOf(
         UpdatePlatform.MAC to PlatformVersionInfo(
             latestVersionCode = 999_999L,
@@ -89,10 +90,6 @@ val SAMPLE_VERSION_MANIFEST: VersionManifest = VersionManifest(
             url = "https://lunarbor.dev/",
         ),
     ),
-)
-
-/** Stand-in for `news.json` under [USE_SAMPLE_DATA]. */
-val SAMPLE_NEWS_MANIFEST: NewsManifest = NewsManifest(
     items = listOf(
         NewsItem(
             id = "sample-welcome",

@@ -37,6 +37,20 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             // JsonElement builders for the MCP server (mcp/); no plugin needed.
             implementation(libs.kotlinx.serialization.json)
+            // News & updates: fetches news.json (newsupdates/NewsHttp.kt).
+            implementation(libs.ktor.client.core)
+        }
+        androidMain.dependencies {
+            implementation(libs.ktor.client.okhttp)
+        }
+        iosMain.dependencies {
+            implementation(libs.ktor.client.darwin)
+        }
+        jsMain.dependencies {
+            implementation(libs.ktor.client.js)
+        }
+        wasmJsMain.dependencies {
+            implementation(libs.ktor.client.js)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

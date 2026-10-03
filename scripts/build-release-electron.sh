@@ -21,7 +21,7 @@
 #      (the build number, CFBundleVersion; it must only ever go up) and, for
 #      a new version, "version".
 #   2. Build with this script and put the DMG live on lunarbor.dev.
-#   3. Only then bump lunarbor-www's versions.json → platforms.mac
+#   3. Only then bump lunarbor-www's news.json → platforms.mac
 #      (latestVersionCode = the new bundleVersion, latestVersionName, url),
 #      so running apps offer the update.
 set -euo pipefail

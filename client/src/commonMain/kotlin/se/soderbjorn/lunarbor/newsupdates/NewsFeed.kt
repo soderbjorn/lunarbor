@@ -1,19 +1,23 @@
 /*
- * NewsManifests.kt (commonMain)
- * -----------------------------
- * The two files the desktop app checks for news and updates, hosted on
- * lunarbor.dev beside each other, and their parser:
+ * NewsFeed.kt (commonMain)
+ * ------------------------
+ * The one file the desktop app checks for news and updates,
+ * `https://lunarbor.dev/news.json` (hosted in `lunarbor-www`), and its
+ * parser. It holds both halves:
  *
- *  - `versions.json` → [VersionManifest]: per platform, the latest
- *    published build (`latestVersionCode`, `latestVersionName`, `url`).
- *  - `news.json` → [NewsManifest]: short announcements, each with an
- *    opaque never-reused `id` and an `active` flag.
+ *  - `platforms`: per platform, the latest published build
+ *    (`latestVersionCode`, `latestVersionName`, `url`).
+ *  - `items`: short announcements, each with an opaque never-reused `id`
+ *    and an `active` flag.
  *
- * Same schema as Lunamux's files. Parsing is lenient ([NewsManifestParser]:
- * comments, trailing commas and unknown keys are fine, so an item can be
- * commented out); a malformed item is skipped rather than failing the
- * file. A `schemaVersion` newer than this build understands is read as
- * "nothing" by [NewsUpdatesBackingViewModel].
+ * Both keep Lunamux's shapes (its `versions.json` and `news.json`), merged
+ * into one file so a check is one request and a release edits one file.
+ *
+ * Parsing is lenient ([NewsFeedParser]: comments, trailing commas and
+ * unknown keys are fine, so an item can be commented out); a malformed
+ * platform entry or item is skipped rather than failing the file. A
+ * `schemaVersion` newer than this build understands is read as "nothing"
+ * by [NewsUpdatesBackingViewModel].
  *
  * commonMain only — no platform imports.
  */
@@ -31,22 +35,24 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 
-/** Keys under [VersionManifest.platforms]; the desktop app reads [MAC]. */
+/** Keys under [NewsFeed.platforms]; the desktop app reads [MAC]. */
 object UpdatePlatform {
     /** The macOS Electron app. */
     const val MAC: String = "mac"
 }
 
 /**
- * The top-level shape of `versions.json`.
+ * The shape of `news.json`.
  *
  * @property schemaVersion format version; one newer than
- *   [SUPPORTED_SCHEMA_VERSION] means "no update".
+ *   [SUPPORTED_SCHEMA_VERSION] means "no update, no news".
  * @property platforms an [UpdatePlatform] key → that platform's latest build.
+ * @property items the announcements, shown in this order.
  */
-data class VersionManifest(
+data class NewsFeed(
     val schemaVersion: Int = 1,
     val platforms: Map<String, PlatformVersionInfo> = emptyMap(),
+    val items: List<NewsItem> = emptyList(),
 ) {
     companion object {
         /** The highest [schemaVersion] this build knows how to read. */
@@ -67,23 +73,6 @@ data class PlatformVersionInfo(
     val latestVersionName: String,
     val url: String,
 )
-
-/**
- * The top-level shape of `news.json`.
- *
- * @property schemaVersion format version; one newer than
- *   [SUPPORTED_SCHEMA_VERSION] means "no news".
- * @property items the announcements, shown in this order.
- */
-data class NewsManifest(
-    val schemaVersion: Int = 1,
-    val items: List<NewsItem> = emptyList(),
-) {
-    companion object {
-        /** The highest [schemaVersion] this build knows how to read. */
-        const val SUPPORTED_SCHEMA_VERSION: Int = 1
-    }
-}
 
 /**
  * One announcement.
@@ -107,11 +96,11 @@ data class NewsItem(
 )
 
 /**
- * Lenient parser for both manifests.
+ * Lenient parser for `news.json`.
  *
  * Called by [NewsUpdatesBackingViewModel] after each fetch, and by tests.
  */
-object NewsManifestParser {
+object NewsFeedParser {
     @OptIn(ExperimentalSerializationApi::class)
     private val json = Json {
         ignoreUnknownKeys = true
@@ -121,14 +110,16 @@ object NewsManifestParser {
     }
 
     /**
-     * Parses `versions.json`.
+     * Parses `news.json`.
      *
      * @param text the file's text.
-     * @return the manifest, or `null` when the text is not a JSON object.
-     *   Platform entries missing a field are left out.
+     * @return the feed, or `null` when the text is not a JSON object.
+     *   Platform entries missing a field, and items without an `id`,
+     *   `title` or `body`, are left out; a missing `platforms` or `items`
+     *   reads as empty.
      */
-    fun parseVersions(text: String): VersionManifest? {
-        val root = parseObject(text) ?: return null
+    fun parse(text: String): NewsFeed? {
+        val root = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return null
         val platforms = (root["platforms"] as? JsonObject).orEmpty().mapNotNull { (key, value) ->
             val entry = value as? JsonObject ?: return@mapNotNull null
             val code = entry.long("latestVersionCode") ?: return@mapNotNull null
@@ -136,18 +127,6 @@ object NewsManifestParser {
             val url = entry.string("url") ?: return@mapNotNull null
             key to PlatformVersionInfo(code, name, url)
         }.toMap()
-        return VersionManifest(schemaVersion = root.int("schemaVersion") ?: 1, platforms = platforms)
-    }
-
-    /**
-     * Parses `news.json`.
-     *
-     * @param text the file's text.
-     * @return the manifest, or `null` when the text is not a JSON object.
-     *   Items without an `id`, `title` or `body` are left out.
-     */
-    fun parseNews(text: String): NewsManifest? {
-        val root = parseObject(text) ?: return null
         val items = (root["items"] as? JsonArray).orEmpty().mapNotNull { element ->
             val item = element as? JsonObject ?: return@mapNotNull null
             NewsItem(
@@ -159,11 +138,8 @@ object NewsManifestParser {
                 url = item.string("url")?.takeIf { it.isNotBlank() },
             )
         }
-        return NewsManifest(schemaVersion = root.int("schemaVersion") ?: 1, items = items)
+        return NewsFeed(schemaVersion = root.int("schemaVersion") ?: 1, platforms = platforms, items = items)
     }
-
-    private fun parseObject(text: String): JsonObject? =
-        runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull()
 
     private fun JsonObject.primitive(key: String): JsonPrimitive? = this[key] as? JsonPrimitive
 
