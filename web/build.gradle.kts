@@ -116,3 +116,40 @@ val generateDemoVault by tasks.registering(GenerateDemoVault::class) {
     outputDir.set(layout.buildDirectory.dir("generated/demoVault"))
 }
 kotlin.sourceSets.named("jsMain") { resources.srcDir(generateDemoVault) }
+
+// The fonts Lunarbor ships (`web/fonts/`: Instrument Sans, Unbounded,
+// JetBrains Mono): `fonts.css` with every `url('x.woff2')` replaced by a
+// data: URI, written as `bundled-fonts.css` next to web.js (linked from
+// index.html). Inlined rather than served as files because Chrome refuses
+// font files by URL on a page opened from disk (file://), and the browser
+// demo must run from there too.
+/** Inlines `web/fonts/fonts.css`'s font files as data: URIs (see the comment above). */
+abstract class GenerateBundledFonts : DefaultTask() {
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val fontsDir: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun generate() {
+        val dir = fontsDir.get().asFile
+        val css = dir.resolve("fonts.css").readText()
+        val inlined = Regex("""url\('([^']+\.woff2)'\)""").replace(css) { m ->
+            val file = dir.resolve(m.groupValues[1])
+            require(file.exists()) { "fonts.css names a missing file: ${file.name}" }
+            "url('data:font/woff2;base64,${Base64.getEncoder().encodeToString(file.readBytes())}')"
+        }
+        outputDir.get().asFile.deleteRecursively()
+        val out = outputDir.get().file("bundled-fonts.css").asFile
+        out.parentFile.mkdirs()
+        out.writeText(inlined)
+    }
+}
+
+val generateBundledFonts by tasks.registering(GenerateBundledFonts::class) {
+    fontsDir.set(layout.projectDirectory.dir("fonts"))
+    outputDir.set(layout.buildDirectory.dir("generated/bundledFonts"))
+}
+kotlin.sourceSets.named("jsMain") { resources.srcDir(generateBundledFonts) }

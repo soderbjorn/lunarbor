@@ -2297,6 +2297,14 @@ fun ensureStyles() {
             padding: 16px 24px;
             color: var(--t-text-dim, rgba(255, 255, 255, 0.55));
         }
+        /* Markdown headings take the Display font (App settings →
+           Appearance; e.g. Unbounded), the editor's own face while none
+           is picked. The page title does too (inline, MainScreen). */
+        .lunarbor-text.lunarbor-md-h1, .lunarbor-text.lunarbor-md-h2,
+        .lunarbor-text.lunarbor-md-h3, .lunarbor-text.lunarbor-md-h4,
+        .lunarbor-text.lunarbor-md-h5, .lunarbor-text.lunarbor-md-h6 {
+            font-family: var(--dt-font-display, inherit);
+        }
         .lunarbor-text.lunarbor-md-h1 {
             font-size: 1.6em;
             font-weight: 700;

@@ -1745,7 +1745,8 @@ class MainScreen(
             paddingBottom = "2px"
             paddingLeft = "${style.editorPaddingLeftPx}px"
             paddingRight = "${style.editorPaddingRightPx}px"
-            fontFamily = style.fontFamily
+            // The Display font (App settings → Appearance), else the editor's.
+            fontFamily = "var(--dt-font-display, ${style.fontFamily})"
             setProperty("white-space", "nowrap")
             setProperty("overflow", "hidden")
             setProperty("text-overflow", "ellipsis")
