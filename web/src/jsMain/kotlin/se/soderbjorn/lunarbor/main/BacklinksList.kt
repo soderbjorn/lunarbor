@@ -8,8 +8,8 @@
  * `PaneBackingViewModel.backlinksOf`).
  *
  * The header reads "Linked from · N" and folds the list (pane state,
- * `toggleBacklinksCollapsed`). Lines are grouped by the page they live in,
- * under its breadcrumb. A click goes to the line in place (pushing file
+ * `toggleBacklinksCollapsed`). One compact row per line: its text, then —
+ * dimmed, on the same row — the breadcrumb of the page it lives in. A click goes to the line in place (pushing file
  * history, like a search result); Shift-, ⌘- or Ctrl-click and a right-click
  * open it in a new window. Hidden when nothing links here.
  *
@@ -51,25 +51,23 @@ internal fun paintBacklinks(container: HTMLElement, state: PaneBackingViewModel.
     section.appendChild(header)
     if (!state.backlinksCollapsed) {
         val list = el("div", "lunarbor-backlinks-list")
-        for ((file, inFile) in hits.groupBy { it.fileRel }) {
-            val group = el("div", "lunarbor-backlinks-group")
-            group.appendChild(el("div", "lunarbor-search-hit-where lunarbor-backlinks-where", viewModel.searchHitCrumbs(inFile.first()).joinToString(" › ")))
-            group.setAttribute("data-backlink-file", file)
-            for (hit in inFile) group.appendChild(backlinkRow(hit, viewModel))
-            list.appendChild(group)
-        }
+        for (hit in hits) list.appendChild(backlinkRow(hit, viewModel))
         section.appendChild(list)
     }
     container.appendChild(section)
 }
 
-/** One linking line: its text; click goes there, modified or right-click opens a new window. */
+/**
+ * One linking line on one row: its text, then where it lives. A click goes
+ * there; a modified click or a right-click opens a new window.
+ */
 private fun backlinkRow(hit: TextHit, viewModel: MainViewModel): HTMLElement {
-    val row = el("div", "lunarbor-search-hit lunarbor-backlinks-row")
-    row.title = "Go to this line (⇧-click or right-click: new window)"
-    val body = el("div", "lunarbor-search-hit-body")
-    body.appendChild(el("div", "lunarbor-search-hit-text", hit.text))
-    row.appendChild(body)
+    val row = el("div", "lunarbor-backlinks-row")
+    val where = viewModel.searchHitCrumbs(hit).joinToString(" › ")
+    row.title = "${hit.text} — $where\nClick to go there; ⇧-click or right-click: new window"
+    row.setAttribute("data-backlink-file", hit.fileRel)
+    row.appendChild(el("span", "lunarbor-backlinks-text", hit.text))
+    row.appendChild(el("span", "lunarbor-backlinks-where", where))
     // Keep the editor's selection: act on click, not on the press.
     row.addEventListener("mousedown", { ev -> ev.preventDefault() })
     row.addEventListener("click", { ev ->
@@ -108,8 +106,15 @@ private const val BACKLINKS_CSS = """
 }
 .lunarbor-backlinks-head:hover { color: var(--t-text, #e6e6e6); }
 .lunarbor-backlinks-chevron { width: 10px; display: inline-block; }
-.lunarbor-backlinks-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-.lunarbor-backlinks-group { display: flex; flex-direction: column; gap: 2px; }
-.lunarbor-backlinks-where { padding: 0 8px; }
-.lunarbor-backlinks-row { cursor: pointer; }
+.lunarbor-backlinks-list { display: flex; flex-direction: column; margin-top: 4px; }
+.lunarbor-backlinks-row {
+    display: flex; align-items: baseline; gap: 12px; padding: 2px 8px; margin: 0 -8px;
+    border-radius: 6px; cursor: pointer; min-width: 0;
+}
+.lunarbor-backlinks-row:hover { background: var(--t-surface, #2a2a2a); }
+.lunarbor-backlinks-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lunarbor-backlinks-where {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 0.8em; color: var(--t-text-dim, #9a9a9a);
+}
 """
