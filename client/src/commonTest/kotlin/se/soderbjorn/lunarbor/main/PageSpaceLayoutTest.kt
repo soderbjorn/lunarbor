@@ -15,6 +15,8 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import se.soderbjorn.lunarbor.data.NoteRepository
+import se.soderbjorn.lunarbor.data.PrivacyFilter
+import se.soderbjorn.lunarbor.data.PrivacyMode
 import se.soderbjorn.lunarbor.testing.InMemoryFileSystem
 import kotlin.math.abs
 import kotlin.math.round
@@ -149,6 +151,21 @@ class PageSpaceLayoutTest {
     }
 
     @Test
+    fun rows_a_privacy_mode_hides_are_neither_pages_nor_preview_rows() {
+        val lines = listOf("* Open", "  * Seen", "  * Diary #private", "    * secret", "* Hidden #private", "  * kid")
+        val ids = lines.indices.map { LineId(it.toLong() + 1) }
+        val hidden = PrivacyLayout.hiddenRows(lines, PrivacyFilter.of(listOf("#private")))
+        val children = PageSpaceModel.childrenOf(
+            lines, ids, 0, lines.lastIndex, "_node.md",
+            folderOf = { null }, unloaded = emptySet(), previewOf = { null }, hidden = hidden,
+        )
+        assertEquals(listOf("Open"), children.map { it.title })
+        assertEquals(listOf("Seen"), children.single().items.map { it.title })
+        // Diary is hidden, so it is no grandchild page either.
+        assertTrue(children.single().children.isEmpty())
+    }
+
+    @Test
     fun titles_are_plain_text() {
         assertEquals("Bold and link", PageSpaceModel.plainTitle("# **Bold** and [link](https://x)"))
         assertEquals("Open tasks", PageSpaceModel.plainTitle("Open tasks {{search: #todo}}"))
@@ -224,6 +241,27 @@ class PageSpaceLayoutTest {
         val children = page(p).children
         assertEquals(listOf("A"), children.map { it.title })
         assertEquals(listOf("B"), children.single().items.map { it.title })
+    }
+
+    @Test
+    fun a_privacy_mode_hides_pages_from_node_listings_too() = runTest {
+        seed("_node.md", "- Work [↳](<Work/_node.md>)\n- Diary #private [↳](<Diary/_node.md>)\n")
+        seed("Work/_node.md", "- Plan [↳](<Plan/_node.md>)\n- Salary #private [↳](<Salary/_node.md>)\n- Notes\n")
+        seed("Work/Plan/_node.md", "- Q1\n")
+        seed("Work/Salary/_node.md", "- 2026\n")
+        seed("Diary/_node.md", "- Monday\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        val mode = PrivacyMode("m1", "Colleagues", listOf("private"))
+        registry.setPrivacyModes(listOf(mode))
+        registry.setPrivacyMode(mode.id)
+        val p = PaneBackingViewModel(registry, backgroundScope, "_node.md")
+        p.stateFlow.first { it.isLoaded }
+        runCurrent()
+        val home = page(p)
+        assertEquals(listOf(PageSpaceKeys.ofFolder("Work")), home.children.map { it.key })
+        val work = home.children.single()
+        assertEquals(listOf("Plan", "Notes"), work.items.map { it.title })
+        assertEquals(listOf(PageSpaceKeys.ofFolder("Work/Plan")), work.children.map { it.key })
     }
 
     @Test

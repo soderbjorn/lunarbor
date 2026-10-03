@@ -17,7 +17,8 @@
  *    and grandchildren — read from the open outline's rows, falling back
  *    to the registry's cached node listings (`requestLinkPreview`) for
  *    folders that are not loaded. `PaneBackingViewModel.spacePageOf`
- *    feeds it.
+ *    feeds it. What the privacy mode hides (LBR-10) is never a page and
+ *    never a preview row.
  *
  * Coordinates are CSS pixels in three.js's frame: x right, y up, z towards
  * the viewer. A page's position is its centre.
@@ -351,6 +352,9 @@ object PageSpaceModel {
      * also gets its own child pages, from rows or listings the same way.
      *
      * @param fileRel The outline's file, for keys of items without folders.
+     * @param hidden The rows a privacy mode hides ([PrivacyLayout.hiddenRows]),
+     *   or `null`: hidden items are neither pages nor preview rows. Listings
+     *   from [previewOf] must come already filtered.
      * @param depth How many levels of pages to return: 1 for children only,
      *   2 for children and grandchildren.
      */
@@ -363,6 +367,7 @@ object PageSpaceModel {
         folderOf: (LineId) -> String?,
         unloaded: Set<LineId>,
         previewOf: (String) -> List<LinkPreviewItem>?,
+        hidden: BooleanArray? = null,
         depth: Int = 2,
     ): List<SpaceChild> {
         val out = mutableListOf<SpaceChild>()
@@ -378,16 +383,18 @@ object PageSpaceModel {
             val subEnd = min(last, DocumentLayout.subtreeEnd(lines, r, col))
             val id = lineIds.getOrNull(r)
             val folder = id?.let(folderOf)
-            val hasRows = subEnd > itemEnd
-            if (id != null && (hasRows || folder != null || id in unloaded)) {
+            val hasRows = subEnd > itemEnd && (itemEnd + 1..subEnd).any { !PrivacyLayout.isHidden(hidden, it) }
+            if (PrivacyLayout.isHidden(hidden, r)) {
+                // Hidden with its whole subtree: no page, no preview.
+            } else if (id != null && (hasRows || folder != null || id in unloaded)) {
                 val items = if (hasRows) {
-                    itemsOf(lines, lineIds, itemEnd + 1, subEnd, folderOf)
+                    itemsOf(lines, lineIds, itemEnd + 1, subEnd, folderOf, hidden)
                 } else {
                     folder?.let(previewOf)?.let(::itemsOfListing).orEmpty()
                 }
                 val grand = when {
                     depth <= 1 -> emptyList()
-                    hasRows -> childrenOf(lines, lineIds, itemEnd + 1, subEnd, fileRel, folderOf, unloaded, previewOf, depth - 1)
+                    hasRows -> childrenOf(lines, lineIds, itemEnd + 1, subEnd, fileRel, folderOf, unloaded, previewOf, hidden, depth - 1)
                     folder != null -> childrenOfListing(folder, previewOf, depth - 1)
                     else -> emptyList()
                 }
@@ -435,7 +442,8 @@ object PageSpaceModel {
 
     /**
      * The items in rows [startRow]..[endRow] as preview rows, nested by
-     * indentation (depth 0 for the shallowest).
+     * indentation (depth 0 for the shallowest), leaving out the rows in
+     * [hidden] (a privacy mode's, [PrivacyLayout.hiddenRows]).
      */
     fun itemsOf(
         lines: List<String>,
@@ -443,10 +451,12 @@ object PageSpaceModel {
         startRow: Int,
         endRow: Int,
         folderOf: (LineId) -> String?,
+        hidden: BooleanArray? = null,
     ): List<SpaceItem> {
         val out = mutableListOf<SpaceItem>()
         val columns = ArrayList<Int>()
         for (r in max(0, startRow)..min(endRow, lines.lastIndex)) {
+            if (PrivacyLayout.isHidden(hidden, r)) continue
             val col = DocumentLayout.itemColumn(lines, r)
             if (col < 0) continue
             while (columns.isNotEmpty() && columns.last() >= col) columns.removeAt(columns.lastIndex)

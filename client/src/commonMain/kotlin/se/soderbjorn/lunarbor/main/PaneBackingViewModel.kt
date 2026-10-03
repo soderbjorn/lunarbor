@@ -2713,6 +2713,10 @@ class PaneBackingViewModel(
      * a zoomed leaf is keyed by its row, a note, image, drawing or web page
      * by its file, and those have no child pages.
      *
+     * Leaves out everything the pane's privacy mode hides ([State.privacy]):
+     * hidden rows ([hiddenRowsIn]) and hidden listing items, as link
+     * previews do.
+     *
      * Called by the web `PageSpaceView` on every state emission while 3D
      * mode is on; read-only.
      *
@@ -2743,6 +2747,10 @@ class PaneBackingViewModel(
         val lines = docState.lines
         val start = zoom?.let { DocumentLayout.itemLastRow(lines, it.zoomRow) + 1 } ?: 0
         val end = zoom?.endRowInclusive ?: lines.lastIndex
+        // What the privacy mode hides is neither a page nor a preview row:
+        // hidden rows of this outline, and hidden items of node listings.
+        val hidden = hiddenRowsIn(state)
+        val filter = state.privacy
         val children = PageSpaceModel.childrenOf(
             lines = lines,
             lineIds = docState.lineIds,
@@ -2751,13 +2759,17 @@ class PaneBackingViewModel(
             fileRel = file,
             folderOf = { doc.folderOf(it) },
             unloaded = docState.unloadedRefIds,
-            previewOf = { registry.requestLinkPreview(it) },
+            previewOf = { folder ->
+                val all = registry.requestLinkPreview(folder)
+                if (all == null || !filter.isActive) all else all.filterNot { previewItemHidden(folder, it, filter) }
+            },
+            hidden = hidden,
         )
         val title = when {
             zoom != null -> PageSpaceModel.plainTitle(zoom.titleText)
             else -> NoteRepository.displayNameOf(file)
         }
-        val items = PageSpaceModel.itemsOf(lines, docState.lineIds, start, end) { doc.folderOf(it) }
+        val items = PageSpaceModel.itemsOf(lines, docState.lineIds, start, end, { doc.folderOf(it) }, hidden)
         return SpacePage(key, title, parentKey, children, items)
     }
 
