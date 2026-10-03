@@ -543,6 +543,13 @@ class MainViewModel(
     fun wikiLinkHref(state: PaneBackingViewModel.State, name: String): String? =
         paneBackingViewModel.wikiLinkHref(state, name)
 
+    /** See [PaneBackingViewModel.backlinksOf]. */
+    fun backlinksOf(state: PaneBackingViewModel.State): List<se.soderbjorn.lunarbor.data.TextHit>? =
+        paneBackingViewModel.backlinksOf(state)
+
+    /** See [PaneBackingViewModel.toggleBacklinksCollapsed]. */
+    fun toggleBacklinksCollapsed() = paneBackingViewModel.toggleBacklinksCollapsed()
+
     /** See [PaneBackingViewModel.hasChildrenOnScreen]. */
     fun hasChildrenOnScreen(state: PaneBackingViewModel.State, row: Int): Boolean =
         paneBackingViewModel.hasChildrenOnScreen(state, row)

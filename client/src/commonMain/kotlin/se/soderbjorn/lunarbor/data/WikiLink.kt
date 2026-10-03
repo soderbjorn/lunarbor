@@ -9,8 +9,9 @@
  * leaves the text as it is.
  *
  * The syntax stays in the text as written — nothing here rewrites a file,
- * and a wiki link never enters the link index, so moves don't touch it
- * (the name resolves again against the moved target).
+ * and moves never touch it (the name resolves again against the moved
+ * target). The text index records each line's names ([namesIn]) only to
+ * find backlinks (LBR-7), never to rewrite them.
  *
  * commonMain only — no DOM, Android UI, or UIKit imports. Pure.
  */
@@ -78,6 +79,29 @@ object WikiLink {
             return (bar + 1) until innerEnd
         }
         return innerStart until innerEnd
+    }
+
+    /**
+     * The target names ([nameOf]) of every wiki link in [text], in order —
+     * `[[Note|shown]]` and `[[Note#Part]]` both give `Note`. Called by the
+     * text index for every line, to find backlinks.
+     */
+    fun namesIn(text: String): List<String> {
+        if (!text.contains("[[")) return emptyList()
+        val out = ArrayList<String>()
+        var from = 0
+        while (true) {
+            val at = text.indexOf("[[", from)
+            if (at < 0) break
+            val end = endAt(text, at)
+            if (end == null) {
+                from = at + 1
+                continue
+            }
+            out += nameOf(text.substring(at + 2, end - 2))
+            from = end
+        }
+        return out
     }
 
     /**

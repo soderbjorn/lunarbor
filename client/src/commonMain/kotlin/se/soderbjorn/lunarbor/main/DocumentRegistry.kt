@@ -19,7 +19,8 @@
  * target exist" cache the views use to strike broken links through
  * ([linkStatusFlow]), and the rewrite that keeps links and Starred entries
  * pointing at folders and files a save renamed or moved
- * ([applyPathMoves]).
+ * ([applyPathMoves]), and the backlinks of the pages panes show
+ * ([backlinksFlow], LBR-7).
  *
  * And owns the privacy modes (LBR-10): the vault's `_privacy.config`
  * ([privacyFlow], [setPrivacyModes]), the mode the whole app shows
@@ -306,6 +307,56 @@ class DocumentRegistry(
     val linkPreviewsFlow: StateFlow<Map<String, List<LinkPreviewItem>>> = _linkPreviews.asStateFlow()
 
     private val pendingPreviews: MutableSet<String> = mutableSetOf()
+
+    private val _backlinks: MutableStateFlow<Map<String, List<se.soderbjorn.lunarbor.data.TextHit>>> = MutableStateFlow(emptyMap())
+
+    /**
+     * Page path → the lines linking to it ([TextIndex.backlinks]: `lunarbor:`
+     * links and resolving `[[wiki]]` links, not from inside the page, less
+     * what the app's privacy mode hides), for every page a pane has shown
+     * the "Linked from" section of ([requestBacklinks]). Recomputed by
+     * [refreshVaultListings] — after every save, external change and window
+     * focus — and when the privacy mode changes. LBR-7.
+     */
+    val backlinksFlow: StateFlow<Map<String, List<se.soderbjorn.lunarbor.data.TextHit>>> = _backlinks.asStateFlow()
+
+    private val pendingBacklinks: MutableSet<String> = mutableSetOf()
+
+    /**
+     * The cached backlinks of the page [pathRel] (see [backlinksFlow]), or
+     * `null` while unknown — then they are computed (saving open documents
+     * and building the text index first, the first time) and land in the
+     * flow. Cheap enough to call on every repaint.
+     *
+     * Called by `PaneBackingViewModel.backlinksOf`.
+     */
+    fun requestBacklinks(pathRel: String): List<se.soderbjorn.lunarbor.data.TextHit>? {
+        _backlinks.value[pathRel]?.let { return it }
+        if (!pendingBacklinks.add(pathRel)) return null
+        scope.launch {
+            try {
+                flushAll()
+                textIndex.ensureBuilt()
+                val hits = backlinksOf(pathRel, vaultIndex.targets())
+                _backlinks.update { it + (pathRel to hits) }
+            } finally {
+                pendingBacklinks.remove(pathRel)
+            }
+        }
+        return null
+    }
+
+    /** [pathRel]'s backlinks against the link [targets] (for wiki links), under the app's privacy mode. */
+    private fun backlinksOf(pathRel: String, targets: List<se.soderbjorn.lunarbor.data.LinkTarget>) =
+        textIndex.backlinks(pathRel, { name -> WikiLink.resolve(name, targets)?.takeUnless { isPathHidden(it) } }, privacyFilter)
+
+    /** Recomputes every page in [backlinksFlow]. */
+    private suspend fun refreshBacklinks() {
+        val keys = _backlinks.value.keys.toList()
+        if (keys.isEmpty()) return
+        val targets = vaultIndex.targets()
+        _backlinks.update { current -> current + keys.associateWith { backlinksOf(it, targets) } }
+    }
 
     init {
         repository.noteTextObserver = { file, text ->
@@ -1104,6 +1155,7 @@ class DocumentRegistry(
         refreshLinkStatuses()
         refreshLinkPreviews()
         refreshWikiLinks()
+        refreshBacklinks()
         val keys = _vaultListings.value.keys.toList()
         if (keys.isEmpty()) return
         val updates = HashMap<String, List<VaultEntry>>()
@@ -1223,6 +1275,7 @@ class DocumentRegistry(
             for (key in requestedSearchNodes.toList()) runSearchNode(key)
             vaultIndex.invalidateTargets()
             refreshWikiLinks()
+            refreshBacklinks()
         }
     }
 

@@ -25,6 +25,9 @@
  * move the original to the trash) or a folder (a dialog first asks whether
  * to convert everything inside it too), and "Move to Trash" on a file.
  *
+ * Above the entries — on a node, a note or an image — sits the "Linked
+ * from" section (LBR-7, [paintBacklinks] in BacklinksList.kt).
+ *
  * Platform view only — no business rules.
  */
 
@@ -71,6 +74,13 @@ fun paintFolderContents(
     scope: CoroutineScope,
 ) {
     container.innerHTML = ""
+    // "Linked from" (BacklinksList.kt) comes first, on nodes, notes and images.
+    if (state.isLoaded || state.isFileView) {
+        val backlinks = document.createElement("div") as HTMLElement
+        backlinks.className = "lunarbor-backlinks-host"
+        paintBacklinks(backlinks, state, viewModel)
+        if (backlinks.hasChildNodes()) container.appendChild(backlinks)
+    }
     if (!state.isLoaded) return
     val folder = viewModel.currentNodeFolder(state) ?: return
     val entries = viewModel.folderContentsOf(state, folder) ?: return

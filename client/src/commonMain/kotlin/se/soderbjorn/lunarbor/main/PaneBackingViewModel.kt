@@ -246,6 +246,11 @@ class PaneBackingViewModel(
      * @property privacy What the app's privacy mode hides (mirror of
      *   [DocumentRegistry.PrivacyView.filter]); [PrivacyFilter.NONE] for
      *   "No privacy". Rows it hides are never on screen ([visibleRowsIn]).
+     * @property backlinks Mirror of [DocumentRegistry.backlinksFlow]: page
+     *   path → the lines linking to it. Read through [backlinksOf].
+     * @property backlinksCollapsed `true` when this pane has folded its
+     *   "Linked from" section ([toggleBacklinksCollapsed]); pane state, kept
+     *   across pages.
      * @property privacyRevision Mirror of [DocumentRegistry.PrivacyView.revision]:
      *   changes whenever what is hidden may have changed, so the view repaints
      *   (folder contents, links) even when [privacy] did not.
@@ -284,6 +289,8 @@ class PaneBackingViewModel(
         val drawingRevision: Int = 0,
         val privacy: PrivacyFilter = PrivacyFilter.NONE,
         val privacyRevision: Int = 0,
+        val backlinks: Map<String, List<TextHit>> = emptyMap(),
+        val backlinksCollapsed: Boolean = false,
     ) {
         /**
          * `true` while the search field holds at least one word: the view
@@ -625,6 +632,11 @@ class PaneBackingViewModel(
             }
         }
         scope.launch {
+            registry.backlinksFlow.collect { backlinks ->
+                _stateFlow.value = _stateFlow.value.copy(backlinks = backlinks)
+            }
+        }
+        scope.launch {
             registry.searchNodeResultsFlow.collect { results ->
                 _stateFlow.value = _stateFlow.value.copy(searchNodeResults = results)
             }
@@ -695,6 +707,40 @@ class PaneBackingViewModel(
         if (!foldedRef) return false
         val folder = document?.folderOf(id!!) ?: return true
         return registry.textIndex.hasVisibleItems(folder, state.privacy)
+    }
+
+    /**
+     * The page whose backlinks the pane shows (LBR-7): the link target this
+     * page is — the zoomed item's folder, the open outline's folder, or the
+     * open note, image or other file. `null` where nothing can link here:
+     * zoomed into a leaf (it has no folder) or into an item in the trash.
+     */
+    fun backlinksTarget(state: State = _stateFlow.value): String? {
+        val file = state.activeFileRel
+        if (file.isEmpty()) return null
+        if (state.isFileView || state.isMarkdownMode) return file
+        if (!NoteRepository.isOutlineFile(file)) return null
+        val zoomed = state.zoomedLineId?.takeIf { zoomInfoOf(state) != null } ?: return NoteRepository.folderOfOutline(file)
+        return document?.folderOf(zoomed)?.takeUnless { NoteRepository.isInTrash(it) }
+    }
+
+    /**
+     * The lines linking to this pane's page ([backlinksTarget]) — `lunarbor:`
+     * links and `[[wiki]]` links resolving to it, none from inside the page
+     * or hidden by the privacy mode — or `null` while they are being found
+     * ([DocumentRegistry.requestBacklinks]; the result arrives as a new
+     * [State.backlinks], which repaints) or when nothing can link here.
+     *
+     * Called by the web view for the "Linked from" section under the page.
+     */
+    fun backlinksOf(state: State): List<TextHit>? {
+        val target = backlinksTarget(state) ?: return null
+        return state.backlinks[target] ?: registry.requestBacklinks(target)
+    }
+
+    /** Folds or unfolds this pane's "Linked from" section. Called by its header. */
+    fun toggleBacklinksCollapsed() {
+        _stateFlow.value = _stateFlow.value.copy(backlinksCollapsed = !_stateFlow.value.backlinksCollapsed)
     }
 
     /**

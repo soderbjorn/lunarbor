@@ -25,6 +25,9 @@
  * counts for its children). A search node's `{{search: …}}` is not indexed
  * ([SearchNode.stripQuery]).
  *
+ * Each line also keeps the `lunarbor:` targets and `[[wiki]]` names it
+ * links to, so [backlinks] can list the lines linking to a page (LBR-7).
+ *
  * The same tags decide what a privacy mode hides (LBR-10, [PrivacyFilter]):
  * [search] and [tags] leave out every line under an item carrying a hidden
  * tag (and whole notes carrying one), and [isPathHidden] /
@@ -130,6 +133,10 @@ class TextIndex(
          * which a privacy mode tests ([PrivacyFilter]). In a note, the line's own.
          */
         val itemTags: Set<String>,
+        /** Targets of the line's `lunarbor:` links ([LunarborLink.linkPathsIn]). */
+        val links: Set<String> = emptySet(),
+        /** Target names of the line's `[[wiki]]` links ([WikiLink.namesIn]). */
+        val wikiNames: List<String> = emptyList(),
     )
 
     /**
@@ -421,6 +428,44 @@ class TextIndex(
     }
 
     /**
+     * The lines linking to the page at [target] — a folder (a node's, or any
+     * other) or a file — as hits to list and open: lines whose `lunarbor:`
+     * link points exactly at [target] (an outline path counts as its
+     * folder), or whose `[[wiki]]` link [resolveWiki] resolves to it. Links
+     * to things inside [target] do not count, nor do lines inside the page
+     * itself (in its folder or below, or in the note itself), nor lines
+     * [filter] hides. Ordered by file path (ignoring case), then line.
+     *
+     * Called by `DocumentRegistry.requestBacklinks`.
+     *
+     * @param resolveWiki The path a wiki link name resolves to, or `null`
+     *   (none, or ambiguous) — `WikiLink.resolve` over the vault's targets.
+     */
+    fun backlinks(target: String, resolveWiki: (String) -> String?, filter: PrivacyFilter = PrivacyFilter.NONE): List<TextHit> {
+        val page = if (NoteRepository.isOutlineFile(target)) NoteRepository.folderOfOutline(target) else target
+        val isFile = page in linesByFile && !NoteRepository.isOutlineFile(page)
+        val inside = if (page.isEmpty()) "" else "$page/"
+        val resolved = HashMap<String, String?>()
+        val inherited = HashMap<String, Set<String>>()
+        val out = ArrayList<TextHit>()
+        for (file in linesByFile.keys.sortedBy { it.lowercase() }) {
+            if (file.split('/').any { it.startsWith(".") }) continue
+            if (if (isFile) file == page else (page.isEmpty() || file.startsWith(inside))) continue
+            val entry = linesByFile.getValue(file)
+            if (filter.isActive && (filter.hides(inheritedTags(folderOfFile(file), inherited)) || filter.hides(entry.noteTags))) continue
+            for (line in entry.lines) {
+                if (filter.hides(line.itemTags)) continue
+                val byPath = line.links.any { (if (NoteRepository.isOutlineFile(it)) NoteRepository.folderOfOutline(it) else it) == page }
+                val byName = !byPath && line.wikiNames.any { name ->
+                    resolved.getOrPut(WikiLink.keyOf(name)) { resolveWiki(name) } == page
+                }
+                if (byPath || byName) out += TextHit(file, line.itemIndex, line.rowOffset, line.text)
+            }
+        }
+        return out
+    }
+
+    /**
      * `false` when the node folder [folderRel]'s outline is known and every
      * item in it is hidden by [filter] (or it has none); `true` otherwise —
      * also when the outline was never read. Lets a pane leave the fold
@@ -488,9 +533,13 @@ class TextIndex(
                     if (folder != null) owned[folder] = itemTags
                     for ((r, shown) in shownRows) {
                         if (shown.first.isBlank()) continue
+                        val raw = rows[r]
+                        val code = BlockLayout.isCodeLine(raw)
                         out += Line(
                             SearchQuery.normalize(shown.first), item, r - row, shown.first, shown.second,
                             shown.second.map(::tagKey).toSet(), folder, itemTags,
+                            if (code) emptySet() else LunarborLink.linkPathsIn(raw),
+                            if (code) emptyList() else WikiLink.namesIn(raw),
                         )
                     }
                 }
@@ -517,7 +566,12 @@ class TextIndex(
             val lines = text.replace("\r\n", "\n").split('\n').mapIndexedNotNull { i, raw ->
                 val (shown, tags) = visibleText(raw)
                 if (shown.isBlank()) null
-                else tags.map(::tagKey).toSet().let { keys -> Line(SearchQuery.normalize(shown), i, 0, shown, tags, keys, null, keys) }
+                else tags.map(::tagKey).toSet().let { keys ->
+                    Line(
+                        SearchQuery.normalize(shown), i, 0, shown, tags, keys, null, keys,
+                        LunarborLink.linkPathsIn(raw), WikiLink.namesIn(raw),
+                    )
+                }
             }
             return Entry(lines, emptyMap(), lines.flatMapTo(HashSet()) { it.lineTags })
         }
