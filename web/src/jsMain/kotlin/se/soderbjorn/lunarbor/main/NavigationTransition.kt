@@ -340,7 +340,15 @@ internal class NavigationTransition {
             setProperty("display", "block")
             setProperty("box-sizing", "border-box")
         }
-        val content = document.createElement("div") as HTMLElement
+        // Round the overlay's bottom corners like the pane's, so its
+        // corners never poke past the pane's rounded edge (into the Depth
+        // look's halo) while the snapshot is shown.
+        (root.closest(".dt-pane") as? HTMLElement)?.let { pane ->
+            val paneStyle = window.getComputedStyle(pane)
+            overlay.style.setProperty("border-bottom-left-radius", paneStyle.borderBottomLeftRadius)
+            overlay.style.setProperty("border-bottom-right-radius", paneStyle.borderBottomRightRadius)
+        }
+        val content =document.createElement("div") as HTMLElement
         content.style.apply {
             setProperty("display", "flex")
             setProperty("flex-direction", "column")
