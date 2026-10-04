@@ -11,7 +11,7 @@
  *
  *  - entering and leaving (the topbar cube, ⌃⌘3, Esc when nothing else
  *    wants it), and the shape, remembered under the persister key
- *    [PERSIST_KEY] — never in the vault;
+ *    [PERSIST_KEY] — never in the vault; the app always starts in 2D;
  *  - which windows are shown: only the focused one, filling the work area,
  *    or every window of the tab at its floating-pane rectangle and stacking
  *    order, proportions as in the 2D layout (⌃⌘1);
@@ -128,11 +128,12 @@ interface SpaceHost {
 
 /**
  * Whether 3D mode is turned on in App settings ("Enable 3D mode", off by
- * default in the app, on by default in the browser demo). While `false` nothing reaches it: the topbar cube is hidden
- * (no `data-lunarbor-space-enabled` on `<body>`), ⌃⌘3 / ⌃⌘1 do nothing,
- * the Keyboard Shortcuts sidebar leaves out its rows, and a remembered
- * "on" is not restored. Loaded by [SpaceMode.restore], changed by
- * [SpaceMode.setEnabled]; read by `LunarborHotkeysContent`.
+ * default in the app, on by default in the browser demo). While `false`
+ * nothing reaches it: the topbar cube is hidden (no
+ * `data-lunarbor-space-enabled` on `<body>`), ⌃⌘3 / ⌃⌘1 do nothing, and
+ * the Keyboard Shortcuts sidebar leaves out its rows. Loaded by
+ * [SpaceMode.restore], changed by [SpaceMode.setEnabled]; read by
+ * `LunarborHotkeysContent`.
  */
 var isSpaceModeEnabled: Boolean = false
     private set
@@ -213,8 +214,9 @@ class SpaceMode(
     }
 
     /**
-     * Turns 3D mode back on when it was on at the last exit (and in the
-     * view it was in). Called once by `AppShell` after the layout loaded.
+     * Loads whether the feature is enabled and the view and shape last used.
+     * Never enters 3D mode: the app always starts in 2D. Called once by
+     * `AppShell` after the layout loaded.
      */
     fun restore() {
         scope.launch {
@@ -230,7 +232,6 @@ class SpaceMode(
             if (obj == null) return@launch
             isSplit = obj.split == true
             shape = SpaceShape.of(obj.shape as? String)
-            if (obj.on == true) enter()
         }
     }
 
@@ -729,12 +730,12 @@ class SpaceMode(
     }
 
     private fun persist() {
-        val json = "{\"on\":$isActive,\"split\":$isSplit,\"shape\":\"${shape.name}\"}"
+        val json = "{\"split\":$isSplit,\"shape\":\"${shape.name}\"}"
         scope.launch { persister.write(PERSIST_KEY, json) }
     }
 
     companion object {
-        /** Persister key for `{ "on": Boolean, "split": Boolean, "shape": SpaceShape name }`. App state, not vault content. */
+        /** Persister key for `{ "split": Boolean, "shape": SpaceShape name }` (an older `on` is ignored). App state, not vault content. */
         const val PERSIST_KEY: String = "lunarborSpace"
 
         /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off, on in the demo). */
