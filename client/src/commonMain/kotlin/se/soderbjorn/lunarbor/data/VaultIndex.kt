@@ -22,6 +22,13 @@
  *     `DocumentRegistry` asks [filesLinkingInto] which closed files need
  *     their links rewritten.
  *
+ *  3. **Node stamps** (LBR-16) — each node folder's `updated` stamp, from
+ *     the front matter of the outline texts the link index sees ([noteText],
+ *     carried along by [moveKeys]). Navigate to (Cmd-O) orders by it:
+ *     [recentNodes] for an empty query, [search] with `byRecency` as the
+ *     tie-break. No extra disk reads: [ensureLinkIndex] reads every outline
+ *     once, and saves keep it current.
+ *
  * Links address folders and files by path, not bullets by title, so
  * there is no title-path resolution here any more: a link either names a
  * path that exists or it is broken.
@@ -115,12 +122,15 @@ class VaultIndex(
     /**
      * Targets whose title contains [query] (case-insensitive), best first,
      * at most [max]. Ranking: earlier match position; then folders before
-     * notes before other files; then shorter titles. A blank query matches
-     * nothing. Paths [isHidden] names are never listed.
+     * notes before other files; then shorter titles; with [byRecency],
+     * equally good matches then go newest [updatedOf] first (unknown
+     * last); then by path. A blank query matches nothing. Paths [isHidden]
+     * names are never listed.
      *
-     * Called by the Insert Link, "Link to node…" and Navigate-to modal.
+     * Called by the Insert Link, "Link to node…" and Navigate-to modal;
+     * only Navigate to passes [byRecency].
      */
-    suspend fun search(query: String, max: Int = 50): List<LinkTarget> {
+    suspend fun search(query: String, max: Int = 50, byRecency: Boolean = false): List<LinkTarget> {
         val needle = query.trim().lowercase()
         if (needle.isEmpty()) return emptyList()
         val scored = ArrayList<Pair<Long, LinkTarget>>()
@@ -138,9 +148,35 @@ class VaultIndex(
                 t.title.length.toLong().coerceAtMost(0xFFFFFF)
             scored += score to t
         }
-        scored.sortWith(compareBy<Pair<Long, LinkTarget>> { it.first }.thenBy { it.second.pathRel })
+        var order = compareBy<Pair<Long, LinkTarget>> { it.first }
+        if (byRecency) order = order.thenByDescending { updatedOf(it.second.pathRel) ?: Long.MIN_VALUE }
+        scored.sortWith(order.thenBy { it.second.pathRel })
         return scored.take(max).map { it.second }
     }
+
+    /**
+     * What Navigate to lists for an empty query: node folders with a known
+     * `updated` stamp, newest first, then the other folders in [targets]
+     * order (the vault walk's) — at most [max], hidden paths left out.
+     * Files are not listed. Call [ensureLinkIndex] first so every outline's
+     * stamp is known.
+     */
+    suspend fun recentNodes(max: Int = 50): List<LinkTarget> {
+        val hidden = isHidden
+        val folders = targets().filter { it.kind == VaultEntryKind.FOLDER && (hidden == null || !hidden(it.pathRel)) }
+        val (stamped, unknown) = folders.partition { updatedOf(it.pathRel) != null }
+        return (stamped.sortedByDescending { updatedOf(it.pathRel) } + unknown).take(max)
+    }
+
+    /**
+     * The `updated` stamp of the node folder [folderRel] in epoch
+     * milliseconds, as last seen in its outline's front matter; `null`
+     * when unknown (no stamp, not an ISO instant, or not seen yet).
+     */
+    fun updatedOf(folderRel: String): Long? = updatedByFolder[folderRel]
+
+    /** Node folder → its outline's `updated` stamp (epoch ms); unknown stamps are absent. */
+    private val updatedByFolder: MutableMap<String, Long> = HashMap()
 
     // ------------------------------------------------------------ link index
 
@@ -157,6 +193,11 @@ class VaultIndex(
      * files as they load and save.
      */
     fun noteText(fileRel: String, text: String?) {
+        if (NoteRepository.isOutlineFile(fileRel)) {
+            val folder = NoteRepository.folderOfOutline(fileRel)
+            val updated = text?.let { NodeFrontMatter.epochMillisOf(SubtreeCodec.splitFrontMatter(it).frontMatter?.updated) }
+            if (updated == null) updatedByFolder.remove(folder) else updatedByFolder[folder] = updated
+        }
         val links = if (text == null) emptySet() else LunarborLink.linkPathsIn(text)
         if (links.isEmpty()) linksByFile.remove(fileRel) else linksByFile[fileRel] = links
     }
@@ -181,7 +222,9 @@ class VaultIndex(
      * wins over the moved-along one.
      */
     fun moveKeys(moves: List<PathMove>) {
-        if (moves.isEmpty() || linksByFile.isEmpty()) return
+        if (moves.isEmpty()) return
+        moveStamps(moves)
+        if (linksByFile.isEmpty()) return
         val moved = HashMap<String, Set<String>>()
         val from = ArrayList<String>()
         for ((file, links) in linksByFile) {
@@ -192,6 +235,25 @@ class VaultIndex(
         }
         for (file in from) linksByFile.remove(file)
         for ((file, links) in moved) if (file !in linksByFile) linksByFile[file] = links
+    }
+
+    /**
+     * [moveKeys] for [updatedByFolder]: a stamp at or under a moved folder
+     * is now filed under its new path (a moved node keeps its stamps);
+     * one already recorded at the new path wins.
+     */
+    private fun moveStamps(moves: List<PathMove>) {
+        if (updatedByFolder.isEmpty()) return
+        val moved = HashMap<String, Long>()
+        val from = ArrayList<String>()
+        for ((folder, stamp) in updatedByFolder) {
+            val to = LunarborLink.remap(folder, moves) ?: continue
+            if (to == folder) continue
+            from += folder
+            moved[to] = stamp
+        }
+        for (folder in from) updatedByFolder.remove(folder)
+        for ((folder, stamp) in moved) if (folder !in updatedByFolder) updatedByFolder[folder] = stamp
     }
 
     /**

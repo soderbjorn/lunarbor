@@ -10,7 +10,11 @@
  *
  *  - the placeholder text shown in the input,
  *  - what to do when the user picks a hit (insert a `lunarbor:` link at the
- *    cursor, vs navigate this pane to the target).
+ *    cursor, vs navigate this pane to the target),
+ *  - for Navigate to only, recency (LBR-16): an empty query lists nodes by
+ *    their `updated` stamp, newest first (`VaultIndex.recentNodes`), and
+ *    equally good matches go newest first (`VaultIndex.search`'s
+ *    `byRecency`).
  *
  * They're expressed as two factory functions on the companion. View
  * layer only: the search, the link format and the navigation live in
@@ -43,12 +47,15 @@ import se.soderbjorn.lunarbor.data.VaultEntryKind
  * @param placeholder The text shown in the empty input.
  * @param action What to do once the user picks a hit. Receives the
  *   captured-at-open [OpenContext] (the selection to use as the label).
+ * @param byRecency `true` for Navigate to: recently changed nodes first
+ *   (an empty query lists them; otherwise they break ties).
  */
 internal class LinkSearchModal private constructor(
     private val parentScope: CoroutineScope,
     private val activePaneVmProvider: () -> MainViewModel?,
     private val placeholder: String,
     private val action: Action,
+    private val byRecency: Boolean = false,
 ) {
 
     /**
@@ -210,14 +217,15 @@ internal class LinkSearchModal private constructor(
         val list = listEl ?: return
         val vm = pinnedVm ?: return
         pendingSearchJob?.cancel()
-        if (query.isBlank()) {
+        if (query.isBlank() && !byRecency) {
             renderRows(emptyList())
             return
         }
         val prepared = prepareJob
         pendingSearchJob = parentScope.launch {
             prepared?.join()
-            val hits = vm.vaultIndex.search(query, max = 50)
+            val hits = if (query.isBlank()) vm.vaultIndex.recentNodes(max = 50)
+            else vm.vaultIndex.search(query, max = 50, byRecency = byRecency)
             if (listEl == null) return@launch
             renderRows(hits)
         }
@@ -356,7 +364,9 @@ internal class LinkSearchModal private constructor(
         /**
          * "Navigate to" flavour: at pick time, follow the hit's `lunarbor:` link
          * through `MainViewModel.navigateToLink`, so the zoom / open
-         * semantics match a real link click.
+         * semantics match a real link click. Lists recently changed nodes
+         * first (LBR-16): an empty query shows them newest first, and they
+         * win ties between equally good matches.
          *
          * @param onAfterPick Optional follow-up — typically the host
          *   focuses the pane's editor so the caret lands inside the
@@ -374,6 +384,7 @@ internal class LinkSearchModal private constructor(
             action = Action { vm, hit, _ ->
                 vm.navigateToLink(LunarborLink.format(hit.pathRel), onComplete = onAfterPick)
             },
+            byRecency = true,
         )
     }
 }
