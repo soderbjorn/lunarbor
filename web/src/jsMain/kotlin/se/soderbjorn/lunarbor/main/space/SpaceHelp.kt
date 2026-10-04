@@ -169,10 +169,9 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           <li><b>All windows / Focused window</b> (Pages only) — see below.</li>
           <li><b>Leave 3D</b> — back to the normal layout.</li>
         </ul>
-        <p>Along the bottom is the <b>dock</b>: on the left your tabs (with a pip per window; click one to
-        switch tab), on the right the active tab's windows as <code>1 · Page title</code> chips (click one
-        to focus that window; the focused one is outlined) and <b>+ Window</b>, which opens a new window
-        on the focused window's page.</p>
+        <p>In Pages, along the bottom is the <b>dock</b>: on the left your tabs (with a pip per window; click
+        one to switch tab), on the right the active tab's windows as <code>1 · Page title</code> chips (click
+        one to focus that window; the focused one is outlined).</p>
         ${keys(
             k("⌃⌘3") to "Enter or leave 3D mode (Ctrl-Alt-3 off the Mac). Also the cube in the top bar.",
             k("Esc") to "Leave 3D mode — unless a dialog, menu, the palette, a search field or other text field has the keyboard; then Esc goes to that first.",
@@ -278,7 +277,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         view and how many nodes and links are on the map, and says when it is still reading folders.</p>
         <h4>Good to know</h4>
         <ul>
-          <li>The map fills in as folders are read, and stays current as you edit, save, or change files
+          <li>The map appears once every folder has been read (a progress bar shows meanwhile), and stays current as you edit, save, or change files
           outside the app.</li>
           <li>Positions come only from the tree (folder names and the order of siblings) — never from
           chance — so the same vault always looks the same and you can learn where things are.</li>

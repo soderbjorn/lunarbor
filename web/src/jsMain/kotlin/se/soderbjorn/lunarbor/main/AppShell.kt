@@ -807,10 +807,6 @@ class AppShell(
             persistLayoutState()
         }
 
-        override fun newWindow() {
-            layoutState.activeTabId?.let { openWindowAtCurrentLocation(it) }
-        }
-
         override fun openPalette() = commandPalette.open()
 
     }

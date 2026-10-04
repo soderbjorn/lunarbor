@@ -10,8 +10,8 @@
  *
  * Where things come from:
  *  - the graph ([VaultGraphBuilder]) from the registry's node listings
- *    (`requestLinkPreview`, which this asks for folder by folder, so the
- *    map grows as listings land) and its link index
+ *    (`requestLinkPreview`, which this asks for folder by folder; only a
+ *    progress card shows until every listing has landed) and its link index
  *    (`linkIndexSnapshot`);
  *  - positions from [GraphLayout] (commonMain, pure, deterministic);
  *  - folds are the map's own (F), starting from
@@ -364,6 +364,12 @@ internal class MapView(
             } else if (window.performance.now() - linksFetchedAt > LINKS_REFRESH_MS) {
                 fetchLinks(force = false)
             }
+        }
+        // While listings are still being read only the progress card shows: the
+        // map appears once, whole, instead of growing in jerky steps.
+        if (!g.nodes.values.all { it.loaded }) {
+            renderHud()
+            return
         }
         // Listing refreshes (after every save, on focus) mostly change nothing:
         // skip the relayout then, which costs a noticeable pause on a big map.
@@ -1407,7 +1413,7 @@ internal val MAP_CSS: String = """
 .lunarbor-map-window.is-focused .lunarbor-map-window-label { color: var(--t-accent, #7aa2ff); }
 .lunarbor-map-window-title { overflow: hidden; text-overflow: ellipsis; }
 .lunarbor-map-loading {
-    position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); pointer-events: none;
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none;
     display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 16px; border-radius: 10px;
     background: color-mix(in srgb, var(--t-surface, #252526) 80%, transparent); border: 1px solid var(--t-border, rgba(255,255,255,.12));
     font: 12.5px var(--dt-font-prop, system-ui, sans-serif); color: var(--t-text-dim, #9aa0a6);

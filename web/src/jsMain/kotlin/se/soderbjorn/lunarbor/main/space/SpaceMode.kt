@@ -119,9 +119,6 @@ interface SpaceHost {
     /** Switches to tab [tabId] (as clicking it in the tab strip would). */
     fun selectTab(tabId: String)
 
-    /** Opens a new window in the active tab at the focused window's place ("New window"). */
-    fun newWindow()
-
     /** Opens the command palette. */
     fun openPalette()
 }
@@ -349,7 +346,8 @@ class SpaceMode(
     /**
      * Redraws the dock along the bottom: the tabs (title, a pip per window,
      * click to switch) and the active tab's windows (`1 · page title`,
-     * the focused one marked; click to focus it), then "+ Window".
+     * the focused one marked; click to focus it). Shown in Pages only: the
+     * maps hide it (CSS, `.is-map`).
      */
     private fun renderDock() {
         val dk = dock ?: return
@@ -390,12 +388,6 @@ class SpaceMode(
             })
             chips.appendChild(chip)
         }
-        val add = document.createElement("button") as HTMLElement
-        add.className = "lunarbor-space-chip is-add"
-        add.textContent = "+ Window"
-        add.title = "New window on this page"
-        add.addEventListener("click", { _ -> host.newWindow() })
-        chips.appendChild(add)
         dk.appendChild(chips)
     }
 
@@ -1010,7 +1002,7 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 }
 .lunarbor-space-chip:hover { color: var(--t-text, #e6e6e6); }
 .lunarbor-space-chip.is-focused { color: var(--t-text, #e6e6e6); border-color: var(--t-accent, #7aa2ff); }
-.lunarbor-space-chip.is-add { border-style: dashed; }
+.lunarbor-space.is-map .lunarbor-space-dock { display: none; }
 .lunarbor-space-backdrop { pointer-events: none; }
 .lunarbor-space-canvas { display: block; width: 100%; height: 100%; }
 .lunarbor-space-view { position: absolute; overflow: hidden; border-radius: 10px; }
