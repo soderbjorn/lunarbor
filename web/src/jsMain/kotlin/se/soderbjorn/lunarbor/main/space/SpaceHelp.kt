@@ -266,6 +266,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("P") to "Edit the selection: as double-click.",
             k("E") to "Back to Pages, where the focused window already is.",
             k("␣") to "Fold or unfold the selection.",
+            k("−") + " " + k("+") to "Less or more space between the bodies (their size stays); remembered.",
             k("F") to "Free flight (below).",
             k("K") to "Hide or show the keyboard legend in the bottom left.",
             k("L") to "Next view.",

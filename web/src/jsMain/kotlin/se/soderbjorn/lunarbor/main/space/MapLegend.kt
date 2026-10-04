@@ -108,6 +108,7 @@ internal class MapLegend {
                 Triple("edit-key", "P", "Edit the selection"),
                 Triple("open", "⏎", "Open it in the window"),
                 Triple("fold", "␣", "Fold / unfold"),
+                Triple("spread", "− +", "Less / more space between"),
                 Triple("fly", "F", "Free flight"),
                 Triple("shape", "L", "Next view"),
                 Triple("pages", "E", "Back to Pages"),

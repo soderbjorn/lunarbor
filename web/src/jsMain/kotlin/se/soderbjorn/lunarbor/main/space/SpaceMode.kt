@@ -229,7 +229,21 @@ class SpaceMode(
             if (obj == null) return@launch
             isSplit = obj.split == true
             shape = SpaceShape.of(obj.shape as? String)
+            (obj.spread as? Double)?.let { mapSpread = it }
         }
+    }
+
+    /**
+     * The maps' spacing (`MapView`'s − / +), remembered with the view and
+     * shape under [PERSIST_KEY]; `null` until set (the map's default).
+     */
+    internal var mapSpread: Double? = null
+        private set
+
+    /** Remembers the maps' spacing; called by `MapView` on − / +. */
+    internal fun setMapSpread(value: Double) {
+        mapSpread = value
+        persist()
     }
 
     /** `true` while the theme's background is dark (glowing colours); updated with the theme. */
@@ -707,12 +721,13 @@ class SpaceMode(
     }
 
     private fun persist() {
-        val json = "{\"split\":$isSplit,\"shape\":\"${shape.name}\"}"
+        val spread = mapSpread?.let { ",\"spread\":$it" } ?: ""
+        val json = "{\"split\":$isSplit,\"shape\":\"${shape.name}\"$spread}"
         scope.launch { persister.write(PERSIST_KEY, json) }
     }
 
     companion object {
-        /** Persister key for `{ "split": Boolean, "shape": SpaceShape name }` (an older `on` is ignored). App state, not vault content. */
+        /** Persister key for `{ "split": Boolean, "shape": SpaceShape name, "spread"?: Double }` (an older `on` is ignored). App state, not vault content. */
         const val PERSIST_KEY: String = "lunarborSpace"
 
         /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off, on in the demo). */

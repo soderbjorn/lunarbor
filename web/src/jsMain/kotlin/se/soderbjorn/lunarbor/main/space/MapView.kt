@@ -106,7 +106,7 @@ internal class MapView(
     private val T: dynamic = lib.raw
     private val renderer: dynamic = createRenderer()
     private val scene: dynamic = construct(T.Scene)
-    private val camera: dynamic = construct(T.PerspectiveCamera, FOV, 1.0, 0.1, 6000.0 * SPREAD)
+    private val camera: dynamic = construct(T.PerspectiveCamera, FOV, 1.0, 0.1, 6000.0 * MAX_SPREAD)
     private val labelsHost = div("lunarbor-map-labels")
     private val wires = document.createElementNS(SVG_NS, "svg")
     private val windowsHost = div("lunarbor-map-windows")
@@ -115,6 +115,14 @@ internal class MapView(
 
     /** The centred progress card shown while node listings are still being read ([renderHud]). */
     private val loading = div("lunarbor-map-loading")
+
+    /**
+     * How much farther apart than [GraphLayout] places them bodies sit
+     * (sizes unchanged), so labels and leaves are readable up close; − / +
+     * change it ([changeSpread]), remembered with 3D mode's settings
+     * ([SpaceMode.mapSpread]).
+     */
+    private var spread: Double = mode.mapSpread?.coerceIn(1.0, MAX_SPREAD) ?: DEFAULT_SPREAD
 
     /** The keyboard legend in the bottom left (K hides it). */
     private val legend = MapLegend()
@@ -428,7 +436,8 @@ internal class MapView(
         placed = graph to folded.toSet()
         // Spread out: bodies keep their size, the space between them grows,
         // so coming close enough to read labels does not crowd neighbours.
-        val positions = GraphLayout.layout(graph, folded, shape).mapValues { (_, p) -> SpaceVec(p.x * SPREAD, p.y * SPREAD, p.z * SPREAD) }
+        val s = spread
+        val positions = GraphLayout.layout(graph, folded, shape).mapValues { (_, p) -> SpaceVec(p.x * s, p.y * s, p.z * s) }
         for ((id, b) in bodies.toList()) {
             if (id !in positions) {
                 val anchor = GraphLayout.visibleAnchor(graph, folded, id)?.let { positions[it] }
@@ -567,6 +576,22 @@ internal class MapView(
         -sin(goalPhi) * sin(goalTheta),
     )
 
+    /**
+     * Widens ([factor] > 1) or narrows the space between bodies (+ / −):
+     * bodies glide to their new places and the point the camera looks at
+     * moves with them, so the view stays on the same part of the map.
+     */
+    private fun changeSpread(factor: Double) {
+        val next = (spread * factor).coerceIn(1.0, MAX_SPREAD)
+        if (next == spread) return
+        val k = next / spread
+        spread = next
+        mode.setMapSpread(next)
+        target = SpaceVec(target.x * k, target.y * k, target.z * k)
+        goalTarget = SpaceVec(goalTarget.x * k, goalTarget.y * k, goalTarget.z * k)
+        relayout(reframe = false)
+    }
+
     /** Takes off (F): the ship starts from the orbit camera's pose. */
     private fun takeOff() {
         val p = camera.position
@@ -589,7 +614,7 @@ internal class MapView(
     private fun land() {
         val p = flight.pos
         val f = flight.forward
-        val d = radius.coerceIn(8.0, 400.0 * SPREAD)
+        val d = radius.coerceIn(8.0, 400.0 * spread)
         target = SpaceVec(p.x + f.x * d, p.y + f.y * d, p.z + f.z * d)
         goalTarget = target
         radius = d
@@ -1013,7 +1038,7 @@ internal class MapView(
             follow = id
             val node = graph.nodes[id]
             val sub = if (node == null) 1 else graph.subtreeOf(id).size
-            goalRadius = (16 + 7 * SPREAD * sqrt(sub.toDouble())).coerceIn(16.0, 260.0 * SPREAD)
+            goalRadius = (16 + 7 * spread * sqrt(sub.toDouble())).coerceIn(16.0, 260.0 * spread)
         }
         renderHud()
         mode.requestFrame()
@@ -1118,13 +1143,13 @@ internal class MapView(
             if (wanted < MIN_RADIUS) {
                 // No floor: past the closest orbit, zooming in moves the
                 // camera and its centre forward together, into the map.
-                val step = goalRadius - wanted
+                val step = FORWARD_ZOOM * (1 - factor)
                 val dir = viewDirection()
                 follow = null
                 goalTarget = SpaceVec(goalTarget.x + dir.x * step, goalTarget.y + dir.y * step, goalTarget.z + dir.z * step)
                 goalRadius = MIN_RADIUS
             } else {
-                goalRadius = wanted.coerceAtMost(4000.0 * SPREAD)
+                goalRadius = wanted.coerceAtMost(4000.0 * MAX_SPREAD)
             }
             userMoved = true
             mode.requestFrame()
@@ -1210,6 +1235,8 @@ internal class MapView(
             "p", "P" -> { sel?.let { open(it, showPage = true) }; sel != null }
             "e", "E" -> { mode.setShape(SpaceShape.PAGES); true }
             " " -> { sel?.let { toggleFold(it) }; sel != null }
+            "-", "_" -> { changeSpread(1 / SPREAD_STEP); true }
+            "+", "=" -> { changeSpread(SPREAD_STEP); true }
             "l", "L" -> { mode.nextShape(); true }
             "?" -> { showSpaceHelp(shape); true }
             // C, as in Lunamux's "fly camera home".
@@ -1225,6 +1252,7 @@ internal class MapView(
                 "Enter" -> "open"
                 "p", "P" -> "edit-key"
                 " " -> "fold"
+                "-", "_", "+", "=" -> "spread"
                 "l", "L" -> "shape"
                 "c", "C" -> "home"
                 else -> null
@@ -1321,7 +1349,7 @@ internal class MapView(
         for (i in 0 until n) {
             val u = GraphLayout.hash01("s$i") * 2 - 1
             val th = GraphLayout.hash01("t$i") * 2 * PI
-            val r = (1800 + GraphLayout.hash01("r$i") * 1800) * SPREAD
+            val r = (1800 + GraphLayout.hash01("r$i") * 1800) * MAX_SPREAD
             val q = sqrt(1 - u * u)
             pos[i * 3] = cos(th) * q * r
             pos[i * 3 + 1] = u * r
@@ -1509,11 +1537,17 @@ internal class MapView(
         /** Free flight's thrust per Lunamux unit: the map is smaller than Lunamux's world. */
         const val FLIGHT_SCALE = 0.12
 
-        /**
-         * How much farther apart than [GraphLayout] places them bodies sit
-         * (sizes unchanged), so labels and leaves are readable up close.
-         */
-        const val SPREAD = 2.5
+        /** [spread] when nothing is remembered: bodies 2.5× farther apart than [GraphLayout] places them. */
+        const val DEFAULT_SPREAD = 2.5
+
+        /** The widest [spread] (− / + step between 1 and this); the starfield and far plane allow for it. */
+        const val MAX_SPREAD = 8.0
+
+        /** One − / + press multiplies or divides [spread] by this. */
+        const val SPREAD_STEP = 1.25
+
+        /** How far a full zoom-in notch past [MIN_RADIUS] moves forward, in world units. */
+        const val FORWARD_ZOOM = 10.0
 
         /** How far (px) the pointer may move between press and release and still count as a click. */
         const val CLICK_SLOP = 5
