@@ -168,6 +168,11 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                         iconSvg = ICON_PANE,
                     ),
                     HotkeyEntry(
+                        label = SPACE_SHAPE_LABEL,
+                        chord = effectiveChordLabel(AppShell.SPACE_SHAPE_ACTION),
+                        iconSvg = ICON_CUBE,
+                    ),
+                    HotkeyEntry(
                         label = "Leave 3D mode",
                         chord = listOf("Esc"),
                         iconSvg = ICON_ESC,
@@ -205,6 +210,9 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
 
 /** Row label of the ⌃⌘3 action ([AppShell.SPACE_TOGGLE_ACTION]). */
 private const val SPACE_TOGGLE_LABEL: String = "Toggle 3D mode"
+
+/** Row label of the ⌃⌘2 action ([AppShell.SPACE_SHAPE_ACTION]). */
+private const val SPACE_SHAPE_LABEL: String = "3D mode: next shape (Pages, Crown, Cone, Galaxy)"
 
 /** Row label of the ⌃⌘1 action ([AppShell.SPACE_SPLIT_ACTION]). */
 private const val SPACE_SPLIT_LABEL: String = "3D mode: the focused window, or all windows"

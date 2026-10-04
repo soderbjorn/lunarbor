@@ -272,6 +272,16 @@ class VaultIndex(
         return out
     }
 
+    /**
+     * Every note file's link targets (file → target paths), a snapshot.
+     * Builds the index first if needed. Read by 3D mode's map shapes
+     * (`DocumentRegistry.linkIndexSnapshot`) for the links between bodies.
+     */
+    suspend fun allLinks(): Map<String, Set<String>> {
+        ensureLinkIndex()
+        return HashMap(linksByFile)
+    }
+
     /** The target paths the index holds for [fileRel]; for tests and diagnostics. */
     fun linksIn(fileRel: String): Set<String> = linksByFile[fileRel] ?: emptySet()
 }

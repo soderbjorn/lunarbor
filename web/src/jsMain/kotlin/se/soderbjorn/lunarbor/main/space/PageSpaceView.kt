@@ -18,6 +18,9 @@
  *    or a dot in it, zooms the window there.
  *  - **Threads** — an SVG overlay drawing a curve from each child bullet's
  *    dot on the live page to that child's page.
+ *  - **Colour** — every page wears its area's hue (`SpaceMode.areaColor`,
+ *    3D mode's own palette): a coloured top edge and glow, item dots, and
+ *    the thread leading to it.
  *
  * The camera follows the pane's state: when `(activeFileRel, zoomedLineId)`
  * changes to another page, the view flies. Editing never moves it. Page
@@ -61,6 +64,7 @@ import se.soderbjorn.lunarbor.main.PageSpaceLayout
 import se.soderbjorn.lunarbor.main.PaneBackingViewModel
 import se.soderbjorn.lunarbor.main.SpaceChild
 import se.soderbjorn.lunarbor.main.SpaceItem
+import se.soderbjorn.lunarbor.main.SpacePalette
 import se.soderbjorn.lunarbor.main.SpacePage
 import se.soderbjorn.lunarbor.main.SpaceVec
 import se.soderbjorn.lunarbor.main.space.three.Camera3
@@ -600,9 +604,12 @@ internal class PageSpaceView(
             val x2 = (if (side > 0) kr.left else kr.right) - box.left
             val y2 = kr.top + min(24.0, kr.height / 2) - box.top
             val bend = max(30.0, kotlin.math.abs(x2 - x1) * 0.45)
+            val tint = mode.areaColor(SpacePalette.pathOfKey(c.key))?.let { " style=\"color: $it\"" } ?: ""
+            sb.append("<g$tint>")
             sb.append("<path class=\"lunarbor-space-thread\" d=\"M${f1(x1)} ${f1(y1)} C${f1(x1 + side * bend)} ${f1(y1)} ${f1(x2 - side * bend)} ${f1(y2)} ${f1(x2)} ${f1(y2)}\"/>")
             sb.append("<circle class=\"lunarbor-space-thread-end\" cx=\"${f1(x1)}\" cy=\"${f1(y1)}\" r=\"3\"/>")
             sb.append("<circle class=\"lunarbor-space-thread-end\" cx=\"${f1(x2)}\" cy=\"${f1(y2)}\" r=\"2.5\"/>")
+            sb.append("</g>")
         }
         val html = sb.toString()
         if (threads.innerHTML != html) threads.innerHTML = html
@@ -619,6 +626,7 @@ internal class PageSpaceView(
         // The page key and child pages on the view, for tests and inspection.
         element.setAttribute("data-page-key", page?.key ?: "")
         element.setAttribute("data-children", page?.children?.joinToString(",") { it.key } ?: "")
+        tint(live.frame, page?.key)
         val head = live.head
         head.innerHTML = ""
         val state = vm.currentBackingState
@@ -659,6 +667,12 @@ internal class PageSpaceView(
         host.setAttribute("data-sig", sig)
         host.innerHTML = ""
         for ((label, focused) in badges) host.appendChild(span(if (focused) "lunarbor-space-badge is-focused" else "lunarbor-space-badge", label))
+    }
+
+    /** Sets (or clears, at the root) the area colour `--lb-area` on [el] for page [key]. */
+    private fun tint(el: HTMLElement, key: String?) {
+        val c = key?.let { mode.areaColor(SpacePalette.pathOfKey(it)) }
+        if (c == null) el.style.removeProperty("--lb-area") else el.style.setProperty("--lb-area", c)
     }
 
     private fun navButton(glyph: String, title: String, enabled: Boolean, go: () -> Unit): HTMLElement {
@@ -800,6 +814,7 @@ internal class PageSpaceView(
             val sig = Triple(titleText, list, child?.children?.map { it.key })
             if (sig == drawn) return
             drawn = sig
+            tint(card, key)
             items = list
             title.textContent = titleText.ifEmpty { "Untitled" }
             body.innerHTML = ""

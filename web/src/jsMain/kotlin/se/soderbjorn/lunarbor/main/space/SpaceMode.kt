@@ -1,13 +1,17 @@
 /*
  * SpaceMode.kt (jsMain)
  * ---------------------
- * 3D mode, "Pages" (LBR-11): every node's page hangs at a fixed place in
- * space, and each window looks into that space through its own camera
- * ([PageSpaceView]). This file owns the mode as a whole:
+ * 3D mode (LBR-11) in four shapes ([SpaceShape]). In **Pages** every
+ * node's page hangs at a fixed place in space, and each window looks into
+ * that space through its own camera ([PageSpaceView]). The map shapes —
+ * **Crown**, **Cone** and **Galaxy** — show the whole node tree as bodies
+ * in space instead, with the tab's windows as cards beside the nodes they
+ * show ([MapView]); the strip's shape switcher, L (on the map) and ⌃⌘2
+ * change shape. This file owns the mode as a whole:
  *
  *  - entering and leaving (the topbar cube, ⌃⌘3, Esc when nothing else
- *    wants it), remembered under the persister key [PERSIST_KEY] — never in
- *    the vault;
+ *    wants it), and the shape, remembered under the persister key
+ *    [PERSIST_KEY] — never in the vault;
  *  - which windows are shown: only the focused one, filling the work area,
  *    or every window of the tab at its floating-pane rectangle and stacking
  *    order, proportions as in the 2D layout (⌃⌘1);
@@ -19,7 +23,9 @@
  *    scissor per view;
  *  - the render loop, which runs only while something moves;
  *  - the theme: the overlay and pages use `--t-*` variables directly, and
- *    the WebGL specks are recoloured whenever the theme changes.
+ *    the WebGL specks are recoloured whenever the theme changes. On top of
+ *    it 3D mode adds colours of its own ([SpacePalette], [areaColor]):
+ *    each area's hue on its pages, threads and bodies, and tinted specks.
  *
  * three.js is loaded on first entry ([loadThreeLib]) into its own chunk.
  * The tab and pane structure stays `AppShell`'s: it implements [SpaceHost]
@@ -40,9 +46,13 @@ import org.w3c.dom.HTMLCanvasElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
+import se.soderbjorn.lunarbor.main.DocumentRegistry
 import se.soderbjorn.lunarbor.main.LinkPreviewItem
 import se.soderbjorn.lunarbor.main.MainScreen
 import se.soderbjorn.lunarbor.main.MainViewModel
+import se.soderbjorn.lunarbor.main.PageSpaceKeys
+import se.soderbjorn.lunarbor.main.SpacePalette
+import se.soderbjorn.lunarbor.main.SpaceShape
 import se.soderbjorn.lunarbor.main.space.three.Object3
 import se.soderbjorn.lunarbor.main.space.three.PointsMaterial3
 import se.soderbjorn.lunarbor.main.space.three.ThreeLib
@@ -136,17 +146,30 @@ var isSpaceModeEnabled: Boolean = false
  *
  * @param host The app shell.
  * @param scope Scope for loading and the views' collectors.
- * @param persister Where on / off and single / split are remembered.
- * @param linkPreviewsFlow The registry's node listings
- *   (`DocumentRegistry.linkPreviewsFlow`); views refresh their previews
- *   when it changes.
+ * @param persister Where on / off, single / split and the shape are remembered.
+ * @param registry The app's registry: node listings for the page views'
+ *   previews and the map, links and the privacy mode for the map.
  */
 class SpaceMode(
     private val host: SpaceHost,
     private val scope: CoroutineScope,
     private val persister: Persister,
-    internal val linkPreviewsFlow: StateFlow<Map<String, List<LinkPreviewItem>>>,
+    private val registry: DocumentRegistry,
 ) {
+    /**
+     * The registry's node listings (`DocumentRegistry.linkPreviewsFlow`);
+     * page views refresh their previews when it changes.
+     */
+    internal val linkPreviewsFlow: StateFlow<Map<String, List<LinkPreviewItem>>> get() = registry.linkPreviewsFlow
+
+    /** The shape shown: Pages or one of the maps. Remembered. */
+    var shape: SpaceShape = SpaceShape.PAGES
+        private set
+
+    /** The map shapes' view, built the first time one is shown. */
+    private var map: MapView? = null
+    private var shapeButtons: HTMLElement? = null
+
     /** `true` while 3D mode is on (or opening). */
     var isActive: Boolean = false
         private set
@@ -203,8 +226,25 @@ class SpaceMode(
             }
             if (obj == null) return@launch
             isSplit = obj.split == true
+            shape = SpaceShape.of(obj.shape as? String)
             if (obj.on == true) enter()
         }
+    }
+
+    /** `true` while the theme's background is dark (glowing colours); updated with the theme. */
+    private var darkTheme = true
+
+    /**
+     * The CSS colour of the area [pathRel] lies in ([SpacePalette]: a vivid
+     * hue per top-level area, more colourful than the theme on purpose), or
+     * `null` at the root. Hues follow the root's unfiltered outline order,
+     * so a privacy mode never shifts them. Called by [PageSpaceView] for
+     * page edges, item dots and threads.
+     */
+    internal fun areaColor(pathRel: String): String? {
+        val hues = SpacePalette.areaHues(registry.requestLinkPreview("").orEmpty().mapNotNull { it.pathRel })
+        val h = SpacePalette.hueOf(pathRel, hues) ?: return null
+        return if (darkTheme) "hsl(${(h * 360).toInt()} 85% 62%)" else "hsl(${(h * 360).toInt()} 75% 45%)"
     }
 
     /** Turns 3D mode on or off (the cube button, ⌃⌘3). */
@@ -223,6 +263,57 @@ class SpaceMode(
         persist()
         updateSplitButton()
         if (isActive) rebuildViews()
+    }
+
+    /**
+     * Shows [next]: the page views for [SpaceShape.PAGES], the map for the
+     * others. Remembered; takes effect at once when 3D mode is on.
+     */
+    fun setShape(next: SpaceShape) {
+        if (!isSpaceModeEnabled || next == shape) return
+        val wasMap = shape.isMap
+        shape = next
+        persist()
+        updateShapeButtons()
+        if (!isActive || lib == null) return
+        overlay?.classList?.toggle("is-map", next.isMap)
+        if (next.isMap) {
+            if (!wasMap) {
+                // The editors go back to their (hidden) panes while the map shows.
+                for (v in views.values) v.dispose(focus = false)
+                views.clear()
+            }
+            showMap()
+            renderDock()
+        } else {
+            map?.hide()
+            rebuildViews()
+        }
+        requestFrame()
+    }
+
+    /** The shape after the current one (L on the map, ⌃⌘2). */
+    fun nextShape() = setShape(shape.next())
+
+    /** Builds the map on first use and shows it in the current shape. */
+    private fun showMap() {
+        val l = lib ?: return
+        val ov = overlay ?: return
+        val m = map ?: MapView(l, this, registry, scope).also {
+            map = it
+            ov.insertBefore(it.element, ov.querySelector(".lunarbor-space-strip"))
+        }
+        m.show(shape)
+        m.place(m.element.clientWidth, m.element.clientHeight)
+    }
+
+    /** Marks the current shape in the strip's switcher. */
+    private fun updateShapeButtons() {
+        val host = shapeButtons ?: return
+        for (i in 0 until host.children.length) {
+            val b = host.children.item(i) as HTMLElement
+            b.setAttribute("aria-pressed", (b.getAttribute("data-shape") == shape.name).toString())
+        }
     }
 
     /**
@@ -276,9 +367,15 @@ class SpaceMode(
         val chips = div("lunarbor-space-chips")
         val focused = host.focusedPaneId()
         for (p in host.spacePanes()) {
-            val title = views[p.id]?.page?.title
-                ?: host.viewModelOf(p.id)?.let { vm -> vm.spacePageOf(vm.currentBackingState)?.title }
-                ?: ""
+            val page = views[p.id]?.page
+                ?: host.viewModelOf(p.id)?.let { vm -> vm.spacePageOf(vm.currentBackingState) }
+            // The root page is "Home", as in the breadcrumb.
+            val title = when {
+                page?.key == PageSpaceKeys.ofFolder("") -> "Home"
+                page != null -> page.title
+                // Not loaded yet (the map shows no editors): the breadcrumb's last segment.
+                else -> host.breadcrumbOf(p.id).lastOrNull()?.label ?: ""
+            }
             val chip = document.createElement("button") as HTMLElement
             chip.className = if (p.id == focused) "lunarbor-space-chip is-focused" else "lunarbor-space-chip"
             chip.textContent = "${p.label.removePrefix("Window ")} · ${title.ifEmpty { "Untitled" }}"
@@ -312,6 +409,7 @@ class SpaceMode(
         if (!isActive) return
         ensureSpaceStyles()
         val ov = div("lunarbor-space")
+        ov.classList.toggle("is-map", shape.isMap)
         val canvasLayer = div("lunarbor-space-backdrop")
         ov.appendChild(canvasLayer)
         val vh = div("lunarbor-space-views")
@@ -353,6 +451,9 @@ class SpaceMode(
         themeObserver = null
         backdrop?.dispose()
         backdrop = null
+        map?.dispose()
+        map = null
+        shapeButtons = null
         overlay?.remove()
         overlay = null
         viewsHost = null
@@ -386,6 +487,14 @@ class SpaceMode(
     private fun rebuildViews() {
         val l = lib ?: return
         val vh = viewsHost ?: return
+        if (shape.isMap) {
+            if (map == null) showMap() else map?.onLayoutChanged()
+            renderDock()
+            val active = document.activeElement
+            if (active == null || active === document.body) map?.focus()
+            requestFrame()
+            return
+        }
         val shown = shownPanes()
         val ids = shown.map { it.id }.toSet()
         val focused = host.focusedPaneId()
@@ -428,6 +537,7 @@ class SpaceMode(
     private fun layoutViews(shown: List<SpacePane> = shownPanes()) {
         val vh = viewsHost ?: return
         backdrop?.setSize(window.innerWidth, window.innerHeight)
+        map?.let { it.place(it.element.clientWidth, it.element.clientHeight) }
         val aw = vh.clientWidth.toDouble()
         val ah = vh.clientHeight.toDouble()
         val gap = if (views.size > 1) 3.0 else 0.0
@@ -449,6 +559,19 @@ class SpaceMode(
      */
     private fun buildStrip(): HTMLElement {
         val strip = div("lunarbor-space-strip")
+        val shapes = div("lunarbor-space-shapes")
+        for (s in SpaceShape.entries) {
+            val b = document.createElement("button") as HTMLElement
+            b.className = "lunarbor-space-shape"
+            b.textContent = s.label
+            b.setAttribute("data-shape", s.name)
+            b.title = "${s.label} (⌃⌘2 for the next shape)"
+            b.addEventListener("click", { _ -> setShape(s) })
+            shapes.appendChild(b)
+        }
+        strip.appendChild(shapes)
+        shapeButtons = shapes
+        updateShapeButtons()
         fun button(html: String, title: String, onClick: () -> Unit): HTMLElement {
             val b = document.createElement("button") as HTMLElement
             b.className = "lunarbor-space-button"
@@ -460,6 +583,7 @@ class SpaceMode(
         }
         button("<span>Palette</span><kbd>⌘P</kbd>", "Command palette (⌘P)") { host.openPalette() }
         splitButton = button("", "The focused window alone, or all of the tab's windows (⌃⌘1)") { toggleSplit() }
+        splitButton?.classList?.add("lunarbor-space-split")
         updateSplitButton()
         val leave = document.createElement("button") as HTMLElement
         leave.className = "lunarbor-space-button"
@@ -473,9 +597,12 @@ class SpaceMode(
     /** Recolours the WebGL specks when the theme's variables change on `:root`. */
     private fun observeTheme() {
         backdrop?.applyTheme()
+        darkTheme = readDarkTheme()
         val root = document.documentElement ?: return
         val callback: () -> Unit = {
+            darkTheme = readDarkTheme()
             backdrop?.applyTheme()
+            map?.applyTheme()
             requestFrame()
         }
         themeObserver = js("new MutationObserver(function() { callback(); })")
@@ -501,6 +628,11 @@ class SpaceMode(
         val dt = min(0.05, max(0.0, (now - lastFrame) / 1000))
         lastFrame = now
         var moving = false
+        if (shape.isMap) {
+            if (map?.tick(dt) == true) moving = true
+            if (moving) frameHandle = window.requestAnimationFrame { t -> frame(t) }
+            return
+        }
         val bd = backdrop
         bd?.beginFrame()
         for (v in views.values) {
@@ -521,6 +653,24 @@ class SpaceMode(
         if (host.focusedPaneId() == paneId) return
         host.focusPane(paneId)
         views.values.forEach { it.renderBadges() }
+    }
+
+    /** Redraws the dock (the map calls it when a window moved or loaded). */
+    internal fun refreshDock() = renderDock()
+
+    /** The active tab's windows, for the map's window cards. */
+    internal fun mapPanes(): List<SpacePane> = host.spacePanes()
+
+    /** See [SpaceHost.focusedPaneId]. */
+    internal fun focusedPaneId(): String? = host.focusedPaneId()
+
+    /** See [SpaceHost.viewModelOf]. */
+    internal fun viewModelOf(paneId: String): MainViewModel? = host.viewModelOf(paneId)
+
+    /** Focuses [paneId] from the map (a window card); the map redraws via [onLayoutChanged]. */
+    internal fun focusPaneFromMap(paneId: String) {
+        if (host.focusedPaneId() != paneId) host.focusPane(paneId)
+        renderDock()
     }
 
     /** `true` when [paneId] is the tab's focused window. */
@@ -569,13 +719,18 @@ class SpaceMode(
         return tag == "INPUT" || tag == "TEXTAREA" || tag == "SELECT"
     }
 
+    private fun readDarkTheme(): Boolean {
+        val bg = window.getComputedStyle(document.documentElement!!).getPropertyValue("--t-bg").trim().ifEmpty { "#1e1e1e" }
+        return luminanceOfCss(bg) < 0.5
+    }
+
     private fun persist() {
-        val json = "{\"on\":$isActive,\"split\":$isSplit}"
+        val json = "{\"on\":$isActive,\"split\":$isSplit,\"shape\":\"${shape.name}\"}"
         scope.launch { persister.write(PERSIST_KEY, json) }
     }
 
     companion object {
-        /** Persister key for `{ "on": Boolean, "split": Boolean }`. App state, not vault content. */
+        /** Persister key for `{ "on": Boolean, "split": Boolean, "shape": SpaceShape name }`. App state, not vault content. */
         const val PERSIST_KEY: String = "lunarborSpace"
 
         /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off). */
@@ -624,8 +779,19 @@ private class Backdrop(
             dust[i * 3 + 1] = ((random.next() - 0.5) * 18_000).toFloat()
             dust[i * 3 + 2] = (5_000 - random.next() * 60_000).toFloat()
         }
-        val (starPoints, starMat) = lib.points(stars, 2.2, attenuate = false, sprite = sprite)
-        val (dustPoints, dustMat) = lib.points(dust, 16.0, attenuate = true, sprite = sprite)
+        // 3D mode's own colours: a share of the specks are tinted, the rest white.
+        fun tints(n: Int): FloatArray {
+            val c = FloatArray(n * 3)
+            for (i in 0 until n) {
+                val tinted = random.next() < 0.45
+                val hue = random.next()
+                val (r, g, b) = if (tinted) hslToRgb(hue, 0.85, 0.68) else Triple(1.0, 1.0, 1.0)
+                c[i * 3] = r.toFloat(); c[i * 3 + 1] = g.toFloat(); c[i * 3 + 2] = b.toFloat()
+            }
+            return c
+        }
+        val (starPoints, starMat) = lib.points(stars, 2.2, attenuate = false, sprite = sprite, colors = tints(STARS))
+        val (dustPoints, dustMat) = lib.points(dust, 16.0, attenuate = true, sprite = sprite, colors = tints(DUST))
         starPoints.frustumCulled = false
         dustPoints.frustumCulled = false
         world.add(starPoints)
@@ -653,7 +819,8 @@ private class Backdrop(
         val bg = css.getPropertyValue("--t-bg").trim().ifEmpty { "#1e1e1e" }
         val dark = luminanceOf(bg) < 0.5
         for ((m, isStar) in materials) {
-            m.color.setStyle(normalizeColor(dim))
+            // White on a dark space lets the tints show; the dim ink on a pale one.
+            m.color.setStyle(if (dark) "#ffffff" else normalizeColor(dim))
             m.blending = if (dark) lib.additiveBlending else lib.normalBlending
             m.opacity = when {
                 dark && isStar -> 0.85
@@ -734,6 +901,24 @@ private class Backdrop(
             }
         }
 
+        /** HSL (all 0..1) to linear-ish RGB (0..1), for the tinted specks. */
+        fun hslToRgb(h: Double, s: Double, l: Double): Triple<Double, Double, Double> {
+            val q = if (l < 0.5) l * (1 + s) else l + s - l * s
+            val p = 2 * l - q
+            fun ch(t0: Double): Double {
+                var t = t0
+                if (t < 0) t += 1.0
+                if (t > 1) t -= 1.0
+                return when {
+                    t < 1.0 / 6 -> p + (q - p) * 6 * t
+                    t < 0.5 -> q
+                    t < 2.0 / 3 -> p + (q - p) * (2.0 / 3 - t) * 6
+                    else -> p
+                }
+            }
+            return Triple(ch(h + 1.0 / 3), ch(h), ch(h - 1.0 / 3))
+        }
+
         /** Relative luminance (0..1) of a CSS colour. */
         fun luminanceOf(css: String): Double {
             val norm = normalizeColor(css)
@@ -749,12 +934,18 @@ private class Backdrop(
     }
 }
 
+/** See `Backdrop.normalizeColor`: any CSS colour as `#rrggbb` / `rgb(…)`. Used by [MapView]. */
+internal fun normalizeCssColor(css: String): String = Backdrop.normalizeColor(css)
+
+/** See `Backdrop.luminanceOf`: relative luminance (0..1) of a CSS colour. Used by [MapView]. */
+internal fun luminanceOfCss(css: String): Double = Backdrop.luminanceOf(css)
+
 /** Injects 3D mode's stylesheet once. Colours and fonts all come from the theme's variables. */
 private fun ensureSpaceStyles() {
     if (document.getElementById("lunarbor-space-styles") != null) return
     val style = document.createElement("style") as HTMLElement
     style.id = "lunarbor-space-styles"
-    style.textContent = SPACE_CSS
+    style.textContent = SPACE_CSS + MAP_CSS
     document.head?.appendChild(style)
 }
 
@@ -819,8 +1010,9 @@ body[data-lunarbor-space] .dt-pane-root { visibility: hidden; }
 .lunarbor-space-views:not(.is-single) .lunarbor-space-view { box-shadow: inset 0 0 0 1px var(--t-border, rgba(255,255,255,.12)); }
 .lunarbor-space-css3d { position: absolute; inset: 0; }
 .lunarbor-space-threads { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-.lunarbor-space-thread { fill: none; stroke: var(--t-accent, #7aa2ff); stroke-opacity: .6; stroke-width: 1.3; }
-.lunarbor-space-thread-end { fill: var(--t-accent, #7aa2ff); }
+.lunarbor-space-threads { color: var(--t-accent, #7aa2ff); }
+.lunarbor-space-thread { fill: none; stroke: currentColor; stroke-opacity: .75; stroke-width: 1.5; }
+.lunarbor-space-thread-end { fill: currentColor; }
 /* A page's slot is page-sized and transparent (the CSS3D object); its card
    is as tall as its content, at most the slot. Only the card takes the pointer. */
 .lunarbor-space-slot { display: flex; flex-direction: column; align-items: stretch; pointer-events: none; }
@@ -874,6 +1066,11 @@ body[data-lunarbor-space] .dt-pane-root { visibility: hidden; }
 .lunarbor-space-item-dot.is-node { box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-text-dim, #9aa0a6) 35%, transparent); }
 .lunarbor-space-item-dot:not(.is-inert):hover { background: var(--t-accent, #7aa2ff); }
 .lunarbor-space-item-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lunarbor-space-page { border-top: 3px solid var(--lb-area, var(--t-border, rgba(255,255,255,.12))); }
+.lunarbor-space-page[style*="--lb-area"] { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lb-area) 35%, transparent), 0 18px 50px rgba(0,0,0,.28), 0 0 42px color-mix(in srgb, var(--lb-area) 22%, transparent); }
+.lunarbor-space-page[style*="--lb-area"] .lunarbor-space-preview-title { color: color-mix(in srgb, var(--lb-area) 55%, var(--t-text, #e6e6e6)); }
+.lunarbor-space-page .lunarbor-space-item-dot { background: var(--lb-area, var(--t-text-dim, #9aa0a6)); }
+.lunarbor-space-page .lunarbor-space-item-dot.is-node { box-shadow: 0 0 0 3px color-mix(in srgb, var(--lb-area, var(--t-text-dim, #9aa0a6)) 35%, transparent); }
 .lunarbor-space-page.is-live.is-fill { flex: 1 1 auto; }
 .lunarbor-space-live-body { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .lunarbor-space-page.is-fill .lunarbor-space-live-body { flex: 1 1 auto; }

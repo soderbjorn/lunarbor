@@ -110,6 +110,13 @@ external interface Css3DRenderer3 {
  * @param css3d The `CSS3DRenderer.js` addon's module namespace.
  */
 class ThreeLib internal constructor(private val three: dynamic, private val css3d: dynamic) {
+    /**
+     * The raw `three` module namespace, for the map shapes' scene
+     * (`MapView`), which builds meshes, lines and lights the typed
+     * factories here don't cover. Keep its use inside `MapView`.
+     */
+    val raw: dynamic get() = three
+
     /** `THREE.AdditiveBlending`: glowing specks on a dark space. */
     val additiveBlending: Int get() = three.AdditiveBlending as Int
 
@@ -162,14 +169,21 @@ class ThreeLib internal constructor(private val three: dynamic, private val css3
      * @param sizePx Sprite size: CSS pixels when [attenuate] is `false`,
      *   world units shrinking with distance otherwise.
      * @param sprite A canvas holding the sprite's image (a soft dot).
+     * @param colors Optional per-point colours (`r, g, b` triples, 0..1),
+     *   multiplied by the material's colour.
      * @return The points object and its material (to recolour later).
      */
-    fun points(positions: FloatArray, sizePx: Double, attenuate: Boolean, sprite: HTMLCanvasElement): Pair<Object3, PointsMaterial3> {
+    fun points(positions: FloatArray, sizePx: Double, attenuate: Boolean, sprite: HTMLCanvasElement, colors: FloatArray? = null): Pair<Object3, PointsMaterial3> {
         val t = three
         val array = js("new Float32Array(positions.length)")
         for (i in positions.indices) array[i] = positions[i]
         val geometry = js("new t.BufferGeometry()")
         geometry.setAttribute("position", js("new t.BufferAttribute(array, 3)"))
+        if (colors != null) {
+            val tint = js("new Float32Array(colors.length)")
+            for (i in colors.indices) tint[i] = colors[i]
+            geometry.setAttribute("color", js("new t.BufferAttribute(tint, 3)"))
+        }
         val texture = js("new t.CanvasTexture(sprite)")
         val params: dynamic = js("({})")
         params.size = sizePx
@@ -177,6 +191,7 @@ class ThreeLib internal constructor(private val three: dynamic, private val css3
         params.map = texture
         params.transparent = true
         params.depthWrite = false
+        params.vertexColors = colors != null
         val material = js("new t.PointsMaterial(params)").unsafeCast<PointsMaterial3>()
         val points = js("new t.Points(geometry, material)").unsafeCast<Object3>()
         return points to material
