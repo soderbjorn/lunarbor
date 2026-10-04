@@ -154,6 +154,20 @@ class TextIndex(
     /** [inheritedTags] by folder, for [isPathHidden]; dropped on every change. */
     private val inheritCache = HashMap<String, Set<String>>()
 
+    /** One line of one file, as [backlinks] finds it; [ordinal] is its place in the file's lines. */
+    private class LineRef(val file: String, val ordinal: Int, val line: Line)
+
+    /**
+     * The index read the other way round, for [backlinks]: [byPath] maps a
+     * page (a folder, or a file — an outline link counts as its folder) to
+     * the lines with a `lunarbor:` link to it, [byWiki] a wiki name's key
+     * ([WikiLink.keyOf]) to the lines naming it. Dot folders are left out.
+     */
+    private class LinkRefs(val byPath: Map<String, List<LineRef>>, val byWiki: Map<String, List<LineRef>>)
+
+    /** [LinkRefs] of the index as it is; built on first use, dropped on every change. */
+    private var linkRefs: LinkRefs? = null
+
     private val linesByFile: MutableMap<String, Entry> = HashMap()
     private val buildMutex = Mutex()
     private var built = false
@@ -176,14 +190,20 @@ class TextIndex(
     fun noteText(fileRel: String, text: String?) {
         if (text == null || (NoteRepository.isAppFile(fileRel) && !NoteRepository.isOutlineFile(fileRel))) {
             if (linesByFile.remove(fileRel) != null) {
-                inheritCache.clear()
+                dropDerived()
                 onChanged?.invoke()
             }
             return
         }
         linesByFile[fileRel] = if (NoteRepository.isOutlineFile(fileRel)) outlineEntry(text) else noteEntry(text)
-        inheritCache.clear()
+        dropDerived()
         onChanged?.invoke()
+    }
+
+    /** Drops what is derived from [linesByFile]; called on every change to it. */
+    private fun dropDerived() {
+        inheritCache.clear()
+        linkRefs = null
     }
 
     /**
@@ -217,7 +237,7 @@ class TextIndex(
         for (file in from) linesByFile.remove(file)
         for ((file, lines) in moved) if (file !in linesByFile) linesByFile[file] = lines
         if (from.isNotEmpty()) {
-            inheritCache.clear()
+            dropDerived()
             onChanged?.invoke()
         }
     }
@@ -439,30 +459,62 @@ class TextIndex(
      * Called by `DocumentRegistry.requestBacklinks`.
      *
      * @param resolveWiki The path a wiki link name resolves to, or `null`
-     *   (none, or ambiguous) — `WikiLink.resolve` over the vault's targets.
+     *   (none, or ambiguous) — `VaultIndex.wikiResolver`; `null` when the
+     *   vault has no wiki links ([hasWikiLinks]). Called once per distinct
+     *   wiki name in the vault.
      */
-    fun backlinks(target: String, resolveWiki: (String) -> String?, filter: PrivacyFilter = PrivacyFilter.NONE): List<TextHit> {
+    fun backlinks(target: String, resolveWiki: ((String) -> String?)?, filter: PrivacyFilter = PrivacyFilter.NONE): List<TextHit> {
         val page = if (NoteRepository.isOutlineFile(target)) NoteRepository.folderOfOutline(target) else target
         val isFile = page in linesByFile && !NoteRepository.isOutlineFile(page)
         val inside = if (page.isEmpty()) "" else "$page/"
-        val resolved = HashMap<String, String?>()
+        val refs = linkRefsNow()
+        val candidates = LinkedHashSet<LineRef>()
+        refs.byPath[page]?.let { candidates += it }
+        if (resolveWiki != null) {
+            for ((key, lines) in refs.byWiki) if (resolveWiki(key) == page) candidates += lines
+        }
         val inherited = HashMap<String, Set<String>>()
-        val out = ArrayList<TextHit>()
-        for (file in linesByFile.keys.sortedBy { it.lowercase() }) {
+        return candidates
+            .filter { ref ->
+                val file = ref.file
+                if (if (isFile) file == page else (page.isEmpty() || file.startsWith(inside))) return@filter false
+                if (filter.hides(ref.line.itemTags)) return@filter false
+                !filter.isActive ||
+                    !(filter.hides(inheritedTags(folderOfFile(file), inherited)) || filter.hides(linesByFile.getValue(file).noteTags))
+            }
+            .sortedWith(compareBy<LineRef>({ it.file.lowercase() }, { it.file }, { it.ordinal }))
+            .map { TextHit(it.file, it.line.itemIndex, it.line.rowOffset, it.line.text) }
+    }
+
+    /**
+     * `true` when any indexed line holds a `[[wiki]]` link — only then does
+     * [backlinks] need a wiki resolver (which walks the vault for its
+     * targets). Called by `DocumentRegistry`.
+     */
+    fun hasWikiLinks(): Boolean = linkRefsNow().byWiki.isNotEmpty()
+
+    /** [linkRefs], built from [linesByFile] when it was dropped. */
+    private fun linkRefsNow(): LinkRefs {
+        linkRefs?.let { return it }
+        val byPath = HashMap<String, MutableList<LineRef>>()
+        val byWiki = HashMap<String, MutableList<LineRef>>()
+        for ((file, entry) in linesByFile) {
             if (file.split('/').any { it.startsWith(".") }) continue
-            if (if (isFile) file == page else (page.isEmpty() || file.startsWith(inside))) continue
-            val entry = linesByFile.getValue(file)
-            if (filter.isActive && (filter.hides(inheritedTags(folderOfFile(file), inherited)) || filter.hides(entry.noteTags))) continue
-            for (line in entry.lines) {
-                if (filter.hides(line.itemTags)) continue
-                val byPath = line.links.any { (if (NoteRepository.isOutlineFile(it)) NoteRepository.folderOfOutline(it) else it) == page }
-                val byName = !byPath && line.wikiNames.any { name ->
-                    resolved.getOrPut(WikiLink.keyOf(name)) { resolveWiki(name) } == page
+            entry.lines.forEachIndexed { i, line ->
+                if (line.links.isEmpty() && line.wikiNames.isEmpty()) return@forEachIndexed
+                val ref = LineRef(file, i, line)
+                for (link in line.links) {
+                    val path = if (NoteRepository.isOutlineFile(link)) NoteRepository.folderOfOutline(link) else link
+                    val list = byPath.getOrPut(path) { ArrayList() }
+                    if (list.lastOrNull() !== ref) list += ref
                 }
-                if (byPath || byName) out += TextHit(file, line.itemIndex, line.rowOffset, line.text)
+                for (name in line.wikiNames) {
+                    val list = byWiki.getOrPut(WikiLink.keyOf(name)) { ArrayList() }
+                    if (list.lastOrNull() !== ref) list += ref
+                }
             }
         }
-        return out
+        return LinkRefs(byPath, byWiki).also { linkRefs = it }
     }
 
     /**

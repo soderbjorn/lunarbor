@@ -138,5 +138,36 @@ object WikiLink {
         return found
     }
 
+    /**
+     * [resolve] over [targets] as a lookup table: built in one pass, so
+     * resolving many names costs one key each instead of a walk over every
+     * target. Same rules: a name matching two different targets resolves to
+     * `null`, the vault root never matches.
+     *
+     * Built once per target list by `VaultIndex.wikiResolver`, for
+     * `DocumentRegistry`'s wiki links and backlinks.
+     *
+     * @return A function from a link's target name ([nameOf]) to the
+     *   matching target's vault-relative path, or `null`.
+     */
+    fun resolver(targets: List<LinkTarget>): (String) -> String? {
+        val byKey = HashMap<String, String>()
+        val ambiguous = HashSet<String>()
+        for (t in targets) {
+            if (t.pathRel.isEmpty()) continue
+            val fileName = if (t.kind == VaultEntryKind.FOLDER) null else t.pathRel.substringAfterLast('/')
+            for (key in setOfNotNull(keyOf(t.title), fileName?.let(::keyOf))) {
+                if (key.isEmpty() || key in ambiguous) continue
+                val found = byKey[key]
+                if (found == null) byKey[key] = t.pathRel
+                else if (found != t.pathRel) {
+                    byKey.remove(key)
+                    ambiguous += key
+                }
+            }
+        }
+        return { name -> byKey[keyOf(name)] }
+    }
+
     private val WHITESPACE = Regex("\\s+")
 }

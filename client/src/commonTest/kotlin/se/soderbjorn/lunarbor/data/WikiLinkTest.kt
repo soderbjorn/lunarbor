@@ -61,6 +61,14 @@ class WikiLinkTest {
     }
 
     @Test
+    fun the_resolver_table_answers_like_resolve() {
+        val resolve = WikiLink.resolver(targets)
+        for (name in listOf("how to be  CONCISE", "How to be concise.md", "Signposting", "cover.png", "Missing", "Notes", "Home", "")) {
+            assertEquals(WikiLink.resolve(name, targets), resolve(name), name)
+        }
+    }
+
+    @Test
     fun decomposed_names_match_composed_ones() {
         val decomposed = LinkTarget("Café.md", "Café", VaultEntryKind.MARKDOWN)
         assertEquals("Café.md", WikiLink.resolve("Café", listOf(decomposed)))

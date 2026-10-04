@@ -337,7 +337,7 @@ class DocumentRegistry(
             try {
                 flushAll()
                 textIndex.ensureBuilt()
-                val hits = backlinksOf(pathRel, vaultIndex.targets())
+                val hits = backlinksOf(pathRel, backlinkWikiResolver())
                 _backlinks.update { it + (pathRel to hits) }
             } finally {
                 pendingBacklinks.remove(pathRel)
@@ -346,16 +346,24 @@ class DocumentRegistry(
         return null
     }
 
-    /** [pathRel]'s backlinks against the link [targets] (for wiki links), under the app's privacy mode. */
-    private fun backlinksOf(pathRel: String, targets: List<se.soderbjorn.lunarbor.data.LinkTarget>) =
-        textIndex.backlinks(pathRel, { name -> WikiLink.resolve(name, targets)?.takeUnless { isPathHidden(it) } }, privacyFilter)
+    /** [pathRel]'s backlinks, wiki links resolved by [resolveWiki], under the app's privacy mode. */
+    private fun backlinksOf(pathRel: String, resolveWiki: ((String) -> String?)?) =
+        textIndex.backlinks(pathRel, resolveWiki?.let { r -> { name -> r(name)?.takeUnless { isPathHidden(it) } } }, privacyFilter)
+
+    /**
+     * The wiki resolver backlinks need ([VaultIndex.wikiResolver]), or
+     * `null` when no indexed line holds a wiki link — then the vault walk
+     * for link targets is skipped altogether.
+     */
+    private suspend fun backlinkWikiResolver(): ((String) -> String?)? =
+        if (textIndex.hasWikiLinks()) vaultIndex.wikiResolver() else null
 
     /** Recomputes every page in [backlinksFlow]. */
     private suspend fun refreshBacklinks() {
         val keys = _backlinks.value.keys.toList()
         if (keys.isEmpty()) return
-        val targets = vaultIndex.targets()
-        _backlinks.update { current -> current + keys.associateWith { backlinksOf(it, targets) } }
+        val resolve = backlinkWikiResolver()
+        _backlinks.update { current -> current + keys.associateWith { backlinksOf(it, resolve) } }
     }
 
     init {
@@ -698,7 +706,7 @@ class DocumentRegistry(
         if (!pendingWikiLinks.add(key)) return null
         scope.launch {
             try {
-                val path = WikiLink.resolve(name, vaultIndex.targets())?.takeUnless { isPathHidden(it) }
+                val path = vaultIndex.wikiResolver()(name)?.takeUnless { isPathHidden(it) }
                 _wikiLinks.update { it + (key to path) }
             } finally {
                 pendingWikiLinks.remove(key)
@@ -711,9 +719,9 @@ class DocumentRegistry(
     private suspend fun refreshWikiLinks() {
         val keys = _wikiLinks.value.keys.toList()
         if (keys.isEmpty()) return
-        val targets = vaultIndex.targets()
+        val resolve = vaultIndex.wikiResolver()
         _wikiLinks.update { current ->
-            current + keys.associateWith { k -> WikiLink.resolve(k, targets)?.takeUnless { isPathHidden(it) } }
+            current + keys.associateWith { k -> resolve(k)?.takeUnless { isPathHidden(it) } }
         }
     }
 

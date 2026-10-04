@@ -96,6 +96,22 @@ class VaultIndex(
         targetsCache ?: listTargets().also { targetsCache = it }
     }
 
+    /** The [WikiLink.resolver] of a [targets] list, kept while that list is current. */
+    private var resolverCache: Pair<List<LinkTarget>, (String) -> String?>? = null
+
+    /**
+     * Resolves `[[wiki]]` link names against [targets] ([WikiLink.resolve]
+     * rules) through a lookup table built once per target list, so
+     * resolving every wiki name in the vault stays cheap.
+     *
+     * Called by `DocumentRegistry` for wiki links and backlinks.
+     */
+    suspend fun wikiResolver(): (String) -> String? {
+        val targets = targets()
+        resolverCache?.takeIf { it.first === targets }?.let { return it.second }
+        return WikiLink.resolver(targets).also { resolverCache = targets to it }
+    }
+
     /**
      * Targets whose title contains [query] (case-insensitive), best first,
      * at most [max]. Ranking: earlier match position; then folders before
