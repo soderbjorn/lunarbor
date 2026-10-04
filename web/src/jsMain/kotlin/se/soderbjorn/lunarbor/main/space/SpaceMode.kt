@@ -47,6 +47,7 @@ import org.w3c.dom.HTMLCanvasElement
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
+import se.soderbjorn.lunarbor.demo.isDemoMode
 import se.soderbjorn.lunarbor.main.DocumentRegistry
 import se.soderbjorn.lunarbor.main.LinkPreviewItem
 import se.soderbjorn.lunarbor.main.MainScreen
@@ -127,7 +128,7 @@ interface SpaceHost {
 
 /**
  * Whether 3D mode is turned on in App settings ("Enable 3D mode", off by
- * default). While `false` nothing reaches it: the topbar cube is hidden
+ * default in the app, on by default in the browser demo). While `false` nothing reaches it: the topbar cube is hidden
  * (no `data-lunarbor-space-enabled` on `<body>`), ⌃⌘3 / ⌃⌘1 do nothing,
  * the Keyboard Shortcuts sidebar leaves out its rows, and a remembered
  * "on" is not restored. Loaded by [SpaceMode.restore], changed by
@@ -217,7 +218,8 @@ class SpaceMode(
      */
     fun restore() {
         scope.launch {
-            applyEnabled(persister.read(ENABLED_KEY) == "true")
+            // Absent: off in the app, on in the browser demo (a showcase).
+            applyEnabled(persister.read(ENABLED_KEY)?.let { it == "true" } ?: isDemoMode())
             if (!isSpaceModeEnabled) return@launch
             val saved = persister.read(PERSIST_KEY) ?: return@launch
             val obj: dynamic = try {
@@ -735,7 +737,7 @@ class SpaceMode(
         /** Persister key for `{ "on": Boolean, "split": Boolean, "shape": SpaceShape name }`. App state, not vault content. */
         const val PERSIST_KEY: String = "lunarborSpace"
 
-        /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off). */
+        /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off, on in the demo). */
         const val ENABLED_KEY: String = "lunarborSpaceEnabled"
 
         /** The leave button's cube glyph. */
@@ -971,6 +973,8 @@ body[data-lunarbor-space] .dt-pane-root { visibility: hidden; }
     -webkit-app-region: drag;
 }
 .lunarbor-space-strip { gap: 6px; }
+/* Clear the macOS traffic lights floating over the corner (as lunula.css does for .dt-topbar). */
+body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-strip { padding-left: 80px; }
 .lunarbor-space-button {
     -webkit-app-region: no-drag; display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 8px; border-radius: 7px; border: 1px solid var(--t-border, rgba(255,255,255,.12));

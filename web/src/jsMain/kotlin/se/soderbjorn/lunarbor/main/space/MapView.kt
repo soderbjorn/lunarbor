@@ -907,7 +907,13 @@ internal class MapView(
         element.addEventListener("wheel", { e ->
             val we = e as WheelEvent
             we.preventDefault()
-            val factor = exp(we.deltaY * (if (we.deltaMode == 1) 0.04 else 0.0015))
+            // A trackpad pinch arrives as a ctrl-wheel with small deltas: zoom much harder per unit.
+            val rate = when {
+                we.deltaMode == 1 -> 0.04
+                we.ctrlKey -> PINCH_ZOOM_RATE
+                else -> WHEEL_ZOOM_RATE
+            }
+            val factor = exp(we.deltaY * rate)
             goalRadius = (goalRadius * factor).coerceIn(4.0, 4000.0)
             userMoved = true
             mode.requestFrame()
@@ -1240,6 +1246,13 @@ internal class MapView(
         const val ROOT_TITLE = "Home"
         const val LABEL_BUDGET = 40
         const val REBUILD_MS = 220
+
+        /** Zoom per wheel pixel of a mouse wheel or two-finger scroll (`exp(deltaY * rate)`). */
+        const val WHEEL_ZOOM_RATE = 0.003
+
+        /** Zoom per wheel pixel of a trackpad pinch (a ctrl-wheel; its deltas are small). */
+        const val PINCH_ZOOM_RATE = 0.025
+
         const val LINKS_REFRESH_MS = 4000.0
         const val ARC_STEPS = 12
         const val DUST_PER_BODY = 14

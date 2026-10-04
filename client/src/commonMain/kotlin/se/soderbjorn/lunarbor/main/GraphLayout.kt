@@ -285,20 +285,32 @@ object GraphLayout {
 
     /**
      * The folds a freshly built map starts with, so a big vault opens
-     * readable: nothing folded up to [FOLD_ALL_BELOW] bodies; beyond, every
-     * node with children at depth 3 and deeper, and at depth 2 and deeper
-     * past three times as many.
+     * readable but full: nodes are unfolded breadth first (shallowest
+     * first, in outline order) as long as the bodies on screen stay within
+     * [FOLD_ALL_BELOW]; a node whose children would not fit stays folded,
+     * and a later, smaller one may still open. The root is always open, so
+     * a vault whose top is one or two nodes deep never opens as a handful
+     * of folded bodies. Called by `MapView` once every listing has landed.
+     *
+     * @param graph The map's graph ([VaultGraph.nodes] in breadth-first order).
+     * @return The ids of the nodes that start folded.
      */
     fun defaultFolds(graph: VaultGraph): Set<String> {
-        val n = graph.nodes.size
-        val from = when {
-            n <= FOLD_ALL_BELOW -> return emptySet()
-            n <= FOLD_ALL_BELOW * 3 -> 3
-            else -> 2
+        val folded = graph.nodes.values.filter { it.children.isNotEmpty() }.mapTo(HashSet()) { it.id }
+        val root = graph.root ?: return folded
+        folded.remove(root.id)
+        var shown = 1 + root.children.size
+        val queue = ArrayDeque(root.children)
+        while (queue.isNotEmpty()) {
+            val node = graph.nodes[queue.removeFirst()] ?: continue
+            if (node.children.isEmpty() || shown + node.children.size > FOLD_ALL_BELOW) continue
+            folded.remove(node.id)
+            shown += node.children.size
+            queue.addAll(node.children)
         }
-        return graph.nodes.values.filter { it.depth >= from && it.children.isNotEmpty() }.mapTo(HashSet()) { it.id }
+        return folded
     }
 
-    /** See [defaultFolds]. */
+    /** How many bodies [defaultFolds] leaves on screen at most (the root's children always show). */
     const val FOLD_ALL_BELOW: Int = 300
 }
