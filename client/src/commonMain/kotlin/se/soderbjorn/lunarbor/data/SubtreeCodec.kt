@@ -35,6 +35,12 @@
  *    Its title is the plain text of the content's first line.
  *  - Anything else is kept verbatim as a text line.
  *
+ * A file may open with YAML front matter (`---` … `---`), which is
+ * metadata, not content (LBR-16): Lunarbor stamps `created` / `updated`
+ * there ([NodeFrontMatter]) and keeps every other key other tools wrote.
+ * [parseNodeFile] skips it, so it never becomes a bullet or a searchable
+ * line; [splitFrontMatter] / [withFrontMatter] read and write it.
+ *
  * ### In memory
  *
  * `Document` holds one flat, indented list of lines (the composed
@@ -100,6 +106,96 @@ sealed class NodeLine {
      */
     data class Text(val raw: String) : NodeLine()
 }
+
+/**
+ * The YAML front matter of a `_node.md` file (LBR-16): the lines between
+ * its opening and closing `---`, kept verbatim and in order so keys other
+ * tools wrote (Obsidian's `tags`, `aliases`, …) survive a save. Lunarbor
+ * reads and writes only two top-level keys, [CREATED] and [UPDATED]:
+ * ISO 8601 instants in UTC, second precision (`2026-10-04T12:34:56Z`).
+ * A missing key means the stamp is unknown.
+ *
+ * Written by `NoteRepository` whenever it writes an outline; read by
+ * `NoteRepository.nodeStampsOf` (agents' `read`) and `VaultIndex` (the
+ * Navigate-to recency order).
+ *
+ * @property lines The raw lines between the fences, without the fences.
+ */
+data class NodeFrontMatter(val lines: List<String> = emptyList()) {
+    /** `created` as written (quotes removed), or `null` when unknown. */
+    val created: String? get() = valueOf(CREATED)
+
+    /** `updated` as written (quotes removed), or `null` when unknown. */
+    val updated: String? get() = valueOf(UPDATED)
+
+    /**
+     * The value of the top-level key [key] (`key: value`, no indent),
+     * without surrounding quotes; `null` when absent or empty.
+     */
+    fun valueOf(key: String): String? {
+        val line = lines.firstOrNull { keyOf(it) == key } ?: return null
+        val v = line.substringAfter(':').trim()
+        val unquoted = if (v.length >= 2 && (v[0] == '"' || v[0] == '\'') && v.last() == v[0]) v.substring(1, v.length - 1) else v
+        return unquoted.ifEmpty { null }
+    }
+
+    /**
+     * A copy with [key] set to [value]: its line is replaced in place when
+     * present; otherwise added — [CREATED] first, [UPDATED] right after
+     * [CREATED] (or first), any other key last.
+     */
+    fun with(key: String, value: String): NodeFrontMatter {
+        val line = "$key: $value"
+        val at = lines.indexOfFirst { keyOf(it) == key }
+        if (at >= 0) return NodeFrontMatter(lines.toMutableList().also { it[at] = line })
+        val insertAt = when (key) {
+            CREATED -> 0
+            UPDATED -> lines.indexOfFirst { keyOf(it) == CREATED } + 1
+            else -> lines.size
+        }
+        return NodeFrontMatter(lines.toMutableList().also { it.add(insertAt, line) })
+    }
+
+    companion object {
+        /** Key of the time the app created the node's `_node.md`; never changed afterwards. */
+        const val CREATED: String = "created"
+
+        /** Key of the last time the node's own items changed. */
+        const val UPDATED: String = "updated"
+
+        /** The top-level key a front matter line sets, or `null` for a nested / list / comment line. */
+        private fun keyOf(line: String): String? {
+            if (line.isEmpty() || line[0] == ' ' || line[0] == '\t' || line[0] == '#' || line[0] == '-') return null
+            val colon = line.indexOf(':')
+            return if (colon > 0) line.substring(0, colon).trim() else null
+        }
+
+        /**
+         * [epochMillis] as a stamp: ISO 8601, UTC, whole seconds
+         * (`2026-10-04T12:34:56Z`).
+         */
+        @OptIn(kotlin.time.ExperimentalTime::class)
+        fun stampOf(epochMillis: Long): String =
+            kotlin.time.Instant.fromEpochSeconds(epochMillis.floorDiv(1000L)).toString()
+
+        /**
+         * The instant a stamp names, in epoch milliseconds, or `null` when
+         * [stamp] is `null` or not an ISO 8601 instant (another tool's
+         * format) — then it sorts as unknown.
+         */
+        @OptIn(kotlin.time.ExperimentalTime::class)
+        fun epochMillisOf(stamp: String?): Long? =
+            stamp?.let { runCatching { kotlin.time.Instant.parse(it).toEpochMilliseconds() }.getOrNull() }
+    }
+}
+
+/**
+ * A `_node.md` file's text split by [SubtreeCodec.splitFrontMatter].
+ *
+ * @property frontMatter The front matter, or `null` when the file has none.
+ * @property body Everything after it: the outline itself.
+ */
+data class NodeFileText(val frontMatter: NodeFrontMatter?, val body: String)
 
 /**
  * One node of the tree [SubtreeCodec.parseComposed] builds from the
@@ -210,11 +306,13 @@ object SubtreeCodec {
      * Parses the text of one `_node.md` file (see the file header for the
      * format). Blank lines only separate blocks; a run of `>` lines is one
      * block; `-`, `*` and `+` all start a bullet. Lines of any other shape
-     * are kept verbatim as [NodeLine.Text], so hand edits survive.
+     * are kept verbatim as [NodeLine.Text], so hand edits survive. Front
+     * matter is skipped ([splitFrontMatter]): it is metadata, never an item.
      */
     fun parseNodeFile(text: String): List<NodeLine> {
-        if (text.isEmpty()) return emptyList()
-        val raw = text.split("\n").map { it.removeSuffix("\r") }
+        val body = splitFrontMatter(text).body
+        if (body.isEmpty()) return emptyList()
+        val raw = body.split("\n").map { it.removeSuffix("\r") }
         val out = ArrayList<NodeLine>(raw.size)
         var i = 0
         while (i < raw.size) {
@@ -234,6 +332,42 @@ object SubtreeCodec {
             i++
         }
         return out
+    }
+
+    /**
+     * Splits a `_node.md` file's [text] into its front matter and body. The
+     * front matter is a first line `---` and everything up to the next line
+     * that is `---` (or `...`); without both fences there is none and the
+     * whole text is the body.
+     *
+     * Called by [parseNodeFile] and by `NoteRepository` when it writes an
+     * outline (to keep the stamps and other keys and compare bodies).
+     */
+    fun splitFrontMatter(text: String): NodeFileText {
+        if (!text.startsWith("---")) return NodeFileText(null, text)
+        val raw = text.split("\n")
+        if (raw[0].removeSuffix("\r").trimEnd() != "---") return NodeFileText(null, text)
+        for (i in 1 until raw.size) {
+            val line = raw[i].removeSuffix("\r").trimEnd()
+            if (line == "---" || line == "...") {
+                val fm = NodeFrontMatter(raw.subList(1, i).map { it.removeSuffix("\r") })
+                return NodeFileText(fm, raw.subList(i + 1, raw.size).joinToString("\n"))
+            }
+        }
+        return NodeFileText(null, text)
+    }
+
+    /**
+     * [body] (a [formatNodeFile] result) with [frontMatter] above it, fenced
+     * by `---` lines; just [body] when [frontMatter] is `null` or empty.
+     *
+     * Called by `NoteRepository` for every outline it writes.
+     */
+    fun withFrontMatter(frontMatter: NodeFrontMatter?, body: String): String {
+        if (frontMatter == null || frontMatter.lines.isEmpty()) return body
+        val sb = StringBuilder("---\n")
+        for (line in frontMatter.lines) sb.append(line).append('\n')
+        return sb.append("---\n").append(body).toString()
     }
 
     /** `true` when [line] belongs to a block: a `>` after at most 3 spaces. */
@@ -428,7 +562,13 @@ object SubtreeCodec {
         val sb = StringBuilder()
         var afterBlock = false
         for (item in items) {
-            if (afterBlock && (item is NodeLine.Block || item is NodeLine.Text)) sb.append('\n')
+            // Spelled as a `when` rather than `is A || is B`: Kotlin/Native
+            // (iOS) evaluated that disjunction as true for a leaf after a block.
+            val needsGap = when (item) {
+                is NodeLine.Block, is NodeLine.Text -> afterBlock
+                else -> false
+            }
+            if (needsGap) sb.append('\n')
             when (item) {
                 is NodeLine.Leaf -> sb.append(formatBullet(item.title, null)).append('\n')
                 is NodeLine.Folder -> sb.append(formatBullet(item.title, item.folder)).append('\n')

@@ -3427,11 +3427,14 @@ class PaneBackingViewModel(
      * Gets the link search ready to reflect the latest edits: saves every
      * open document (so a bullet that just got its first child already has
      * a folder, and a renamed one its new name) and drops the cached
-     * target list. Called when a link modal opens.
+     * target list. Builds the link index too (once; it is kept current
+     * afterwards), which gives every node's `updated` stamp to Navigate
+     * to's recency order (LBR-16). Called when a link modal opens.
      */
     suspend fun prepareLinkSearch() {
         registry.flushAll()
         registry.vaultIndex.invalidateTargets()
+        registry.vaultIndex.ensureLinkIndex()
     }
 
     /**

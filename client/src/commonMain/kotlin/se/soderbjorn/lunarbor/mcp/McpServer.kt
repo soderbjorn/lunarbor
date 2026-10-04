@@ -162,6 +162,9 @@ class McpServer(private val tools: McpTools) {
             How to work:
             - Orient with read "/" (the root node) and search. read shows one node's own items; an item that is a node
               itself ends in <!-- /its/path -->, which you read to go inside.
+            - read heads a node with its Created and Updated times (UTC). Updated is the last change to the node's own
+              items or title, not to nodes inside it; "unknown" means it has not changed since Lunarbor began keeping
+              these times.
             - Prefer nodes. Write notes, lists, plans, steps and facts as bullets, one idea per bullet, with detail as
               child bullets nested under it — also for lists. Use a ::: block only for continuous text that should stay
               whole (a transcript, an email, a document, code). Create a separate .md file (create_file) only as a last
