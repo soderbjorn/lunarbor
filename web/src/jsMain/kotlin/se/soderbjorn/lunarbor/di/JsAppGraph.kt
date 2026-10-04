@@ -59,14 +59,6 @@ interface JsAppGraph {
     val documentRegistry: DocumentRegistry
 
     /**
-     * The app's one [NoteRepository], the only thing that touches the
-     * vault's files. Exposed for `runFormatMigrations`, which `Main.kt`
-     * runs before [documentRegistry] is first used; everything else goes
-     * through the registry.
-     */
-    val noteRepository: NoteRepository
-
-    /**
      * Durable KV bridge for theme / layout / ui-settings. Backed by
      * [se.soderbjorn.lunarbor.di.LunarborElectronPersister] when running
      * inside the desktop wrapper (the preload script installs
