@@ -807,7 +807,6 @@ internal class MapView(
                 val anchor = anchors[p.id] ?: continue
                 val card = div(if (p.id == focused) "lunarbor-map-window is-focused" else "lunarbor-map-window")
                 card.setAttribute("data-pane", p.id)
-                card.appendChild(span("lunarbor-map-window-label", p.label))
                 card.appendChild(span("lunarbor-map-window-title", graph.nodes[anchor]?.title ?: ""))
                 card.title = "${p.label} — click to focus, double-click to write in it"
                 card.addEventListener("mousedown", { e ->
@@ -1409,8 +1408,6 @@ internal val MAP_CSS: String = """
     max-width: 240px;
 }
 .lunarbor-map-window.is-focused { border-color: var(--t-accent, #7aa2ff); }
-.lunarbor-map-window-label { color: var(--t-text-dim, #9aa0a6); font-size: 10.5px; }
-.lunarbor-map-window.is-focused .lunarbor-map-window-label { color: var(--t-accent, #7aa2ff); }
 .lunarbor-map-window-title { overflow: hidden; text-overflow: ellipsis; }
 .lunarbor-map-loading {
     position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none;

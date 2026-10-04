@@ -70,7 +70,7 @@ import kotlin.math.round
  * One window of the active tab, as 3D mode lays it out.
  *
  * @property id The toolkit pane id.
- * @property label Its badge text, `Window 1`, `Window 2`, … in tab order.
+ * @property label Its name, `Window 1`, `Window 2`, … in tab order (dock chips, card tooltips).
  * @property x Left edge as a fraction (0..1) of the pane area.
  * @property y Top edge as a fraction of the pane area.
  * @property w Width as a fraction of the pane area.
@@ -142,7 +142,7 @@ var isSpaceModeEnabled: Boolean = false
  * - `AppShell`: the topbar cube and the ⌃⌘3 action call [toggle], ⌃⌘1
  *   calls [toggleSplit]; [restore] at startup; [onLayoutChanged] after
  *   every tab / pane / focus change.
- * - [PageSpaceView]s call back for frames, focus and window badges.
+ * - [PageSpaceView]s call back for frames and focus.
  *
  * @param host The app shell.
  * @param scope Scope for loading and the views' collectors.
@@ -513,7 +513,7 @@ class SpaceMode(
         vh.classList.toggle("is-single", views.size <= 1)
         layoutViews(shown)
         fresh.forEach { it.start() }
-        views.values.forEach { it.renderBadges() }
+        views.values.forEach { it.renderFocus() }
         renderDock()
         // Put the keyboard in the focused window's live page, unless
         // something else (a modal, the palette, a field) holds it.
@@ -649,7 +649,7 @@ class SpaceMode(
     internal fun focusPane(paneId: String) {
         if (host.focusedPaneId() == paneId) return
         host.focusPane(paneId)
-        views.values.forEach { it.renderBadges() }
+        views.values.forEach { it.renderFocus() }
     }
 
     /** Redraws the dock (the map calls it when a window moved or loaded). */
@@ -676,23 +676,8 @@ class SpaceMode(
     /** See [SpaceHost.breadcrumbOf]. */
     internal fun breadcrumbOf(paneId: String): List<PaneTitleSegment> = host.breadcrumbOf(paneId)
 
-    /**
-     * The window badges for page [key]: `(label, focused)` for every window
-     * of the tab on that page, in tab order.
-     */
-    internal fun badgesFor(key: String): List<Pair<String, Boolean>> {
-        val panes = host.spacePanes()
-        if (panes.size < 2) return emptyList()
-        val focused = host.focusedPaneId()
-        return panes.mapNotNull { p ->
-            val onIt = views[p.id]?.page?.key ?: host.viewModelOf(p.id)?.let { vm -> vm.spacePageOf(vm.currentBackingState)?.key }
-            if (onIt == key) p.label to (p.id == focused) else null
-        }
-    }
-
-    /** A view moved to another page: every view's badges may change. */
+    /** A view moved to another page: the dock's window chips name its page. */
     internal fun onViewNavigated() {
-        views.values.forEach { it.renderBadges() }
         renderDock()
     }
 
@@ -1048,12 +1033,6 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 }
 .lunarbor-space-nav:hover:not([disabled]) { background: var(--t-surface-alt, rgba(255,255,255,.08)); color: var(--t-text, #e6e6e6); }
 .lunarbor-space-nav[disabled] { opacity: .35; cursor: default; }
-.lunarbor-space-badges { flex: none; display: flex; gap: 4px; }
-.lunarbor-space-badge {
-    font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
-    border: 1px solid var(--t-border, rgba(255,255,255,.12)); color: var(--t-text-dim, #9aa0a6);
-}
-.lunarbor-space-badge.is-focused { border-color: var(--t-accent, #7aa2ff); color: var(--t-accent, #7aa2ff); }
 .lunarbor-space-preview-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t-text, #e6e6e6); font-weight: 600; font-size: 13px; }
 .lunarbor-space-preview-body { flex: 1; min-height: 0; overflow: hidden; padding: 14px 22px; font-size: 14px; line-height: 1.55; }
 .lunarbor-space-preview-empty { color: var(--t-text-dim, #9aa0a6); }

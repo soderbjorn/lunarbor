@@ -193,15 +193,13 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         <h4>What you see</h4>
         <ul>
           <li><b>The live page</b>, with a header holding Back / Forward and the breadcrumb of where the
-          window is (every segment but the last is clickable), plus the window badges.</li>
+          window is (every segment but the last is clickable).</li>
           <li><b>Child pages</b> — the pages of this node's children hang behind it in a column on the
           left and one on the right, in outline order. Each is a read-only preview of that node's
           bullets.</li>
           <li><b>Grandchild pages</b> hang fainter, one column further out on their parent's side.</li>
           <li><b>Threads</b> run from each child bullet's dot on the live page to that child's page, so you
           can see where a dot leads before you click it.</li>
-          <li><b>Window badges</b> (<code>Window 1</code>, …) on a page's header show which of the tab's
-          windows are on it.</li>
         </ul>
         <h4>Moving</h4>
         <p>Only navigation moves the camera; editing never does. When an indent gives a bullet its first

@@ -90,7 +90,7 @@ import kotlin.math.sqrt
  * @param lib The loaded three.js library.
  * @param vm The pane's view model: state to follow, intents to send.
  * @param screen The pane's editor view, mounted on the live page.
- * @param mode The owning mode: render loop, focus, window badges.
+ * @param mode The owning mode: render loop, focus.
  * @param scope Scope for the state collectors; cancelled by [dispose].
  */
 internal class PageSpaceView(
@@ -446,7 +446,7 @@ internal class PageSpaceView(
             if (key !in wanted && pv.inScene) removeFromScene(pv)
             if (key !in wanted && key != leaving) previews.remove(key)
         }
-        renderBadges()
+        renderFocus()
     }
 
     private fun addToScene(pv: PreviewPage) {
@@ -619,8 +619,7 @@ internal class PageSpaceView(
 
     /**
      * Rebuilds the live page's header: Back / Forward, the breadcrumb of
-     * the window's whole location (every segment but the last navigates)
-     * and the window badges.
+     * the window's whole location (every segment but the last navigates).
      */
     private fun renderLiveHead() {
         // The page key and child pages on the view, for tests and inspection.
@@ -648,25 +647,12 @@ internal class PageSpaceView(
             crumbs.appendChild(el)
         }
         head.appendChild(crumbs)
-        head.appendChild(live.badges)
-        renderBadges()
+        renderFocus()
     }
 
-    /** Refreshes the window badges on every page this view shows ([SpaceMode.badgesFor]). */
-    fun renderBadges() {
-        val p = page
-        fillBadges(live.badges, p?.key)
-        for (pv in previews.values) if (pv.inScene) fillBadges(pv.badges, pv.key)
+    /** Outlines the live page while its window is the tab's focused one ([SpaceMode.isFocused]). */
+    fun renderFocus() {
         live.frame.classList.toggle("is-focused", mode.isFocused(paneId))
-    }
-
-    private fun fillBadges(host: HTMLElement, key: String?) {
-        val badges = if (key == null) emptyList() else mode.badgesFor(key)
-        val sig = badges.joinToString("|") { "${it.first}:${it.second}" }
-        if (host.getAttribute("data-sig") == sig) return
-        host.setAttribute("data-sig", sig)
-        host.innerHTML = ""
-        for ((label, focused) in badges) host.appendChild(span(if (focused) "lunarbor-space-badge is-focused" else "lunarbor-space-badge", label))
     }
 
     /** Sets (or clears, at the root) the area colour `--lb-area` on [el] for page [key]. */
@@ -718,7 +704,6 @@ internal class PageSpaceView(
         val slot: HTMLElement = div("lunarbor-space-slot")
         val frame: HTMLElement = div("lunarbor-space-page is-live")
         val head: HTMLElement = div("lunarbor-space-head")
-        val badges: HTMLElement = div("lunarbor-space-badges")
         private val bodyWrap: HTMLElement = div("lunarbor-space-live-body")
 
         /** Where the pane's `MainScreen` mounts ([MainScreen.mountInSpace]). */
@@ -746,7 +731,7 @@ internal class PageSpaceView(
     }
 
     /**
-     * A read-only page: a header (the page's title and window badges) and
+     * A read-only page: a header (the page's title) and
      * its items as a simple outline in the editor's fonts.
      *
      * @param key Its page key (changes when [rekeyPreviews] carries it over).
@@ -757,7 +742,6 @@ internal class PageSpaceView(
 
         /** The visible card, as tall as its items (at most the slot). */
         val card: HTMLElement = div("lunarbor-space-page")
-        val badges: HTMLElement = div("lunarbor-space-badges")
         private val title: HTMLElement = div("lunarbor-space-preview-title")
         private val body: HTMLElement = div("lunarbor-space-preview-body")
         val obj: Object3
@@ -784,7 +768,6 @@ internal class PageSpaceView(
         init {
             val head = div("lunarbor-space-head")
             head.appendChild(title)
-            head.appendChild(badges)
             card.appendChild(head)
             card.appendChild(body)
             el.appendChild(card)
