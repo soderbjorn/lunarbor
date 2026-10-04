@@ -109,3 +109,12 @@ Gotchas:
 - Vault content on disk: saved `.md` files land under the
   vault you launched with (the `==> Vault:` log line names it;
   resolution lives in `electron-main/.../RunPaths.kt`).
+
+## Regression scripts
+
+- `node scripts/verify-link-clicks.mjs <dataDir> <port>` (LBR-8) — plain /
+  Shift / ⌘ / Ctrl / right clicks on links, wiki links, dots, search-node
+  results, pane search results and backlinks: plain goes there, the others
+  open exactly one new, focused window and leave the clicked pane alone.
+  Seeds (wipes) `<dataDir>/vault`, launches through `scripts/ai-dev-run.sh`
+  once and stops the app when done.

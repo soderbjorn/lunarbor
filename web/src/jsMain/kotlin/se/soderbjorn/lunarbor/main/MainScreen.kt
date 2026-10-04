@@ -55,13 +55,13 @@ class MainScreen(
     private val viewModel: MainViewModel,
     private val scope: CoroutineScope,
     /**
-     * Invoked when the user shift-clicks an internal Lunarbor bullet
-     * link. Receives the link's `href` (a `lunarbor:/…` URL).
-     * The host opens the target in a new pane instead of navigating
-     * the current one. `null` falls back to in-pane navigation —
-     * shift-click behaves the same as a plain click.
+     * Opens a `lunarbor:` link (or resolved wiki link) in a new window
+     * instead of navigating this pane: a Shift- or ⌘-press on it (Ctrl
+     * off the Mac) or a right-click / the Mac's Ctrl-click
+     * ([OpenGesture]). Receives the link's `href` (a `lunarbor:/…` URL);
+     * the host adds the pane. `null` falls back to in-pane navigation.
      */
-    private val onShiftClickInternalLink: ((href: String) -> Unit)? = null,
+    private val onOpenLinkInNewPane: ((href: String) -> Unit)? = null,
     /**
      * Opens a search result in a new window (the host adds a pane at the
      * result's line). `null` opens nothing.
@@ -73,8 +73,9 @@ class MainScreen(
      */
     private val onScrollSettled: ((Double) -> Unit)? = null,
     /**
-     * Opens a location in a new window — a right-clicked bullet's item
-     * ([MainViewModel.locationOfRow]). `null` opens nothing.
+     * Opens a location in a new window — the item of a bullet dot that
+     * was right-clicked or Shift- / ⌘-pressed ([MainViewModel.locationOfRow],
+     * [OpenGesture]). `null` opens nothing.
      */
     private val onOpenLocationInNewPane: ((PaneBackingViewModel.FileHistoryEntry) -> Unit)? = null,
 ) {
@@ -286,6 +287,7 @@ class MainScreen(
      */
     fun render(root: HTMLElement) {
         viewModel.openSearchHitInNewWindow = onOpenSearchHit
+        viewModel.openLinkInNewWindow = onOpenLinkInNewPane
         ensureStyles()
         installRootStyles(root)
         if (inSpace && titleElement != null) {
@@ -1452,7 +1454,8 @@ class MainScreen(
         // Only act on the primary button; let middle/right clicks fall
         // through to the browser so context menus and "open in tab"
         // gestures still work.
-        if (ev.button.toInt() != 0) return false
+        val gesture = openGestureOf(ev)
+        if (gesture == OpenGesture.NONE) return false
         val target = ev.target as? Node ?: return false
         val href = ancestorHref(target) ?: return false
         if (!isExternalUrl(href)) return false
@@ -1461,6 +1464,9 @@ class MainScreen(
         // cursor and the URL would not open until the second press.
         ev.preventDefault()
         ev.stopPropagation()
+        // The Mac's Ctrl-click is a right-click: its `contextmenu` follows,
+        // and the press itself opens nothing.
+        if (gesture == OpenGesture.CONTEXT_MENU) return true
         // `noopener,noreferrer` makes the new context independent of this
         // window — required by Electron's `setWindowOpenHandler` contract
         // (so main.js can route to `shell.openExternal`) and best practice
@@ -1481,46 +1487,55 @@ class MainScreen(
     }
 
     /**
-     * If [ev] hit a span carrying a Lunarbor `lunarbor:` link (`data-href`),
-     * route it through the pane's [MainViewModel.navigateToLink] intent
-     * and suppress the default contenteditable caret placement. Returns
-     * `true` when the event was handled. A broken link (drawn struck
-     * through) is still routed: navigation does nothing, and the click
-     * re-checks the target.
+     * If [ev] hit a span carrying a Lunarbor `lunarbor:` link (`data-href`,
+     * also set on a resolved wiki link), acts on it by [OpenGesture] and
+     * suppresses the default contenteditable caret placement:
+     * - plain press → the pane's [MainViewModel.navigateToLink];
+     * - Shift- / ⌘-press (Ctrl off the Mac) → [onOpenLinkInNewPane], this
+     *   pane stays put, and the trailing click is swallowed
+     *   ([swallowTrailingClick]) so the toolkit does not raise this pane
+     *   back over the new one;
+     * - the Mac's Ctrl-press → nothing: the `contextmenu` that follows
+     *   opens the new window ([handleOpenInNewPaneContextMenu]).
      *
-     * Plain `#section` anchors and bare relative paths fall through, so
-     * the press lands as a normal caret place.
+     * Returns `true` when the event was handled. A broken link (drawn
+     * struck through) is still routed: navigation does nothing, and the
+     * click re-checks the target. Plain `#section` anchors and bare
+     * relative paths fall through, so the press lands as a normal caret
+     * place. Called by the editor's and the page title's `mousedown`.
      */
     private fun handleLunarborLinkMouseDown(ev: MouseEvent): Boolean {
-        if (ev.button.toInt() != 0) return false
+        val gesture = openGestureOf(ev)
+        if (gesture == OpenGesture.NONE) return false
         val target = ev.target as? Node ?: return false
         val href = ancestorHref(target) ?: return false
         if (!LunarborLink.isLunarborLink(href)) return false
         ev.preventDefault()
         ev.stopPropagation()
-        // Shift-click opens the link in a new pane instead of navigating
-        // the current one. The host (AppShell) creates the pane and
-        // routes the href into the new pane's view model.
-        val onShift = onShiftClickInternalLink
-        if (ev.shiftKey && onShift != null) {
-            onShift(href)
-        } else {
-            viewModel.navigateToLink(href)
+        val inNewPane = onOpenLinkInNewPane
+        when {
+            gesture == OpenGesture.CONTEXT_MENU -> {}
+            gesture == OpenGesture.NEW_WINDOW && inNewPane != null -> {
+                inNewPane(href)
+                swallowTrailingClick()
+            }
+            else -> viewModel.navigateToLink(href)
         }
         return true
     }
 
     /**
-     * Right-click on a `lunarbor:` link or a bullet's dot: opens the link's
-     * target, or the dot's item, in a new window (through the host's
-     * [onShiftClickInternalLink] / [onOpenLocationInNewPane]). Returns
-     * `true` when it did, so the context menu is suppressed.
+     * Right-click (or the Mac's Ctrl-click, which fires `contextmenu`) on
+     * a `lunarbor:` link or a bullet's dot: opens the link's target, or
+     * the dot's item, in a new window (through the host's
+     * [onOpenLinkInNewPane] / [onOpenLocationInNewPane]). Returns `true`
+     * when it did, so the context menu is suppressed.
      */
     private fun handleOpenInNewPaneContextMenu(ev: MouseEvent): Boolean {
         val target = ev.target as? Element ?: return false
         val href = ancestorHref(target)
         if (href != null && LunarborLink.isLunarborLink(href)) {
-            val open = onShiftClickInternalLink ?: return false
+            val open = onOpenLinkInNewPane ?: return false
             open(href)
             return true
         }
@@ -2442,9 +2457,13 @@ class MainScreen(
     private var dragScrollTimer: Int? = null
 
     /**
-     * Begins a drag session anchored on the bullet glyph at [absoluteRow].
+     * Begins a drag session anchored on the bullet glyph at [absoluteRow]
+     * — for a plain primary press ([OpenGesture.HERE]); a Shift- / ⌘-press
+     * opens the dot's item in a new window instead
+     * ([onOpenLocationInNewPane]), and a right press or the Mac's
+     * Ctrl-press is left to the `contextmenu` that follows.
      *
-     * Two cases:
+     * Two drag cases:
      * - If there is an active multi-row selection and [absoluteRow] is
      *   inside it, the drag moves the whole selected row range. Grabbing
      *   any bullet within a multi-row selection feels like "drag the thing
@@ -2461,11 +2480,25 @@ class MainScreen(
      * `onBulletMouseDown` callback we pass to `paint(...)`.
      */
     private fun beginDragFromBullet(absoluteRow: Int, ev: MouseEvent) {
-        // Only the main button drags; a right-click opens a new window.
-        if (ev.button.toInt() != 0) return
         val backing = viewModel.currentBackingState
         // Markdown mode (TRF-7): rows are text, not movable bullets.
         if (backing.isMarkdownMode) return
+        when (openGestureOf(ev)) {
+            // A right-click, or the Mac's Ctrl-click: the `contextmenu`
+            // that follows opens the item in a new window.
+            OpenGesture.NONE, OpenGesture.CONTEXT_MENU -> return
+            // Shift- / ⌘-press: the item in a new window, no drag, no zoom.
+            OpenGesture.NEW_WINDOW -> {
+                val open = onOpenLocationInNewPane
+                val location = viewModel.locationOfRow(absoluteRow)
+                if (open != null && location != null) {
+                    open(location)
+                    swallowTrailingClick()
+                }
+                return
+            }
+            OpenGesture.HERE -> {}
+        }
         val sel = PaneBackingViewModel.selectionOf(backing)
         if (sel != null && sel.startRow != sel.endRow && absoluteRow in sel.startRow..sel.endRow) {
             startDragSession(sel.startRow, sel.endRow, ev, DragSession.Origin.Selection)

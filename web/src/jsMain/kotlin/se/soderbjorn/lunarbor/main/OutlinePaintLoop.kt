@@ -1289,7 +1289,9 @@ private fun firstLineHeightCss(text: String, style: EditorStyle): String {
  * The open preview of a link bullet's node: its bullets, one level
  * deeper than the link, greyed and not editable. A folder-backed item
  * wears the folded ring. Clicking an item opens it — its own folder, or
- * for a leaf the linked node — through [MainViewModel.navigateToLink].
+ * for a leaf the linked node — through [MainViewModel.navigateToLink];
+ * a Shift- / ⌘-click or a right-click opens it in a new window
+ * ([MainViewModel.openLinkInNewWindow], [OpenGesture]).
  *
  * Called by [buildRowElement], which appends it inside the link bullet's
  * row, under the text; `contenteditable="false"` keeps it out of caret
@@ -1327,10 +1329,25 @@ private fun buildLinkPreview(
             ev.preventDefault()
             ev.stopPropagation()
         })
+        val href = LunarborLink.format(item.pathRel ?: preview.pathRel)
         row.addEventListener("click", { ev ->
             ev.preventDefault()
             ev.stopPropagation()
-            viewModel.navigateToLink(LunarborLink.format(item.pathRel ?: preview.pathRel))
+            // Same rule as a link ([OpenGesture]); the Mac's Ctrl-click
+            // is left to its `contextmenu`.
+            val inNewWindow = viewModel.openLinkInNewWindow
+            when (openGestureOf(ev as MouseEvent)) {
+                OpenGesture.HERE -> viewModel.navigateToLink(href)
+                OpenGesture.NEW_WINDOW ->
+                    if (inNewWindow != null) inNewWindow(href) else viewModel.navigateToLink(href)
+                OpenGesture.CONTEXT_MENU, OpenGesture.NONE -> {}
+            }
+        })
+        row.addEventListener("contextmenu", { ev ->
+            val open = viewModel.openLinkInNewWindow ?: return@addEventListener
+            ev.preventDefault()
+            ev.stopPropagation()
+            open(href)
         })
         box.appendChild(row)
     }
@@ -1345,8 +1362,9 @@ private fun buildLinkPreview(
  * [PaneBackingViewModel.SEARCH_NODE_INLINE] of them and a "…and N more"
  * that zooms into the node; on its own page, all the registry keeps
  * ([DocumentRegistry.SEARCH_NODE_MAX_HITS]). Pressing a row goes there in
- * this pane ([MainViewModel.navigateToSearchHit]); a right-click opens
- * it in a new window ([MainViewModel.openSearchHitInNewWindow]). The node's
+ * this pane ([MainViewModel.navigateToSearchHit]); a Shift- / ⌘-press or a
+ * right-click opens it in a new window
+ * ([MainViewModel.openSearchHitInNewWindow], [OpenGesture]). The node's
  * −/+ control folds the whole list (its fold state). Everything acts on
  * mousedown: a repaint between press and release (the editor's selection
  * sync) would replace the element and swallow a click. Not editable and
@@ -1392,9 +1410,19 @@ private fun buildSearchNodeResults(
         row.appendChild(text)
         row.appendChild(where)
         row.addEventListener("mousedown", { ev ->
-            if ((ev as MouseEvent).button.toInt() == 0) viewModel.navigateToSearchHit(hit)
+            // Same rule as a link ([OpenGesture]): plain goes there,
+            // Shift / ⌘ opens a new window, the Mac's Ctrl-press waits for
+            // its `contextmenu`.
+            when (openGestureOf(ev as MouseEvent)) {
+                OpenGesture.HERE -> viewModel.navigateToSearchHit(hit)
+                OpenGesture.NEW_WINDOW -> viewModel.openSearchHitInNewWindow?.let { open ->
+                    open(hit)
+                    swallowTrailingClick()
+                }
+                OpenGesture.CONTEXT_MENU, OpenGesture.NONE -> {}
+            }
         })
-        // Right-click opens it in a new window, like a link or a file.
+        // Right-click (the Mac's Ctrl-click too) opens it in a new window, like a link or a file.
         row.addEventListener("contextmenu", { ev ->
             ev.preventDefault()
             ev.stopPropagation()

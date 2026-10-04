@@ -2562,7 +2562,7 @@ class AppShell(
             MainScreen(
                 paneViewModels.getValue(id),
                 scope,
-                onShiftClickInternalLink = { href ->
+                onOpenLinkInNewPane = { href ->
                     val tabId = layoutState.activeTabId ?: return@MainScreen
                     openLinkInNewPane(tabId, sourcePaneId = id, href = href)
                 },
@@ -2632,8 +2632,9 @@ class AppShell(
 
     /**
      * Opens the Lunarbor internal link [href] in a new pane spawned
-     * from [sourcePaneId]. Wired via [MainScreen.onShiftClickInternalLink]
-     * so shift-clicking a `lunarbor:` link creates a new pane
+     * from [sourcePaneId]. Wired via [MainScreen.onOpenLinkInNewPane]
+     * so a Shift- / ⌘-press or a right-click on a `lunarbor:` link
+     * (`OpenGesture`) creates a new pane
      * rooted at the link target, leaving the originating pane
      * untouched. Auto layout (if active) immediately re-tiles to fit
      * both panes.

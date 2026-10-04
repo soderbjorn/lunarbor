@@ -407,11 +407,23 @@ internal class PaneSearchBar(
             row.appendChild(body)
             row.appendChild(open)
             row.addEventListener("mousedown", { ev -> ev.preventDefault() })
-            row.addEventListener("click", {
-                select(i)
-                goTo(hit)
+            row.addEventListener("click", { ev ->
+                // Same rule as a link ([OpenGesture]): plain goes there,
+                // Shift / ⌘ opens a new window, the Mac's Ctrl-click is
+                // left to its `contextmenu`.
+                when (openGestureOf(ev as MouseEvent)) {
+                    OpenGesture.HERE -> {
+                        select(i)
+                        goTo(hit)
+                    }
+                    OpenGesture.NEW_WINDOW -> {
+                        select(i)
+                        onOpenHit(hit)
+                    }
+                    OpenGesture.CONTEXT_MENU, OpenGesture.NONE -> {}
+                }
             })
-            // Right-click opens it in a new window, like a link or a file.
+            // Right-click (the Mac's Ctrl-click too) opens it in a new window, like a link or a file.
             row.addEventListener("contextmenu", { ev ->
                 ev.preventDefault()
                 ev.stopPropagation()
