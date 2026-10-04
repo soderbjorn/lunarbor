@@ -3,7 +3,9 @@
    as a data: URI into `bundled-fonts.css`, linked from index.html, so the
    faces load offline in Electron and in the browser demo — also from a page
    opened from disk (file://), where Chrome refuses font files by URL.
-   Registered as picker presets by `registerLunarborFonts` (BundledFonts.kt). */
+   Lunula's font picker lists Instrument Sans and Unbounded as built-in
+   presets and offers them wherever the page declares the family through
+   @font-face (as this file does), so Lunarbor registers nothing itself. */
 
 /* Instrument Sans — outline text and chrome. Variable, 400–700. */
 @font-face {

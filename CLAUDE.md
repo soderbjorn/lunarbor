@@ -150,7 +150,7 @@ One folder per parent bullet. A bullet is backed by a folder if and only if it h
 
 ## App settings and the vault
 
-**Fonts** (`web/fonts/`, OFL, listed in `NOTICE`): Lunarbor ships Instrument Sans, Unbounded and JetBrains Mono. `fonts.css` there is inlined by `:web:generateBundledFonts` into `bundled-fonts.css` (data: URIs, so they load offline and from a `file://` demo page; linked from `index.html`). `BundledFonts.kt` registers Instrument Sans (proportional rows) and Unbounded (`FontKind.Display`: the Display font row only) as picker presets; the page title and Markdown headings use the Display font (`--dt-font-display`), else the editor's.
+**Fonts** (`web/fonts/`, OFL, listed in `NOTICE`): Lunarbor ships Instrument Sans, Unbounded and JetBrains Mono. `fonts.css` there is inlined by `:web:generateBundledFonts` into `bundled-fonts.css` (data: URIs, so they load offline and from a `file://` demo page; linked from `index.html`). Instrument Sans (proportional rows) and Unbounded (`FontKind.Display`: the Display font row only) are Lunula built-in presets, offered in any Lunula app whose page declares the family through `@font-face` (`detectInstalledFonts`) — here, `bundled-fonts.css` — and hidden in apps that ship no files; the page title and Markdown headings use the Display font (`--dt-font-display`), else the editor's.
 
 The surfaces look is Lunula's: Appearance → Surfaces, Depth (default — lifted panes, accent glow and sheen, an ambient wash) or Flat, saved in the toolkit's appearance shape; Lunarbor adds no rules of its own beyond the navigation overlay's corners (see Navigation animation).
 
@@ -374,7 +374,6 @@ web/src/jsMain/.../
   main/AppShell.kt                    ← per-pane VM construction + lifecycle
   main/PaneLocationStore.kt           ← persisted pane → location (file + zoom)
   main/AppSettingsContent.kt          ← App settings + keyboard-shortcuts sidebars
-  main/BundledFonts.kt                ← Instrument Sans / Unbounded font-picker presets
   main/BackupSettings.kt              ← App settings → Backup section + automatic-backup answer
   main/AgentAccessSettings.kt         ← App settings → Agent access (MCP)
   main/PrivacyDialog.kt               ← Configure privacy dialog + top-bar mode chip

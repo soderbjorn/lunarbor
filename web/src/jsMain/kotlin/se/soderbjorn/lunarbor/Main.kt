@@ -12,7 +12,6 @@ import se.soderbjorn.lunarbor.di.createJsAppGraph
 import se.soderbjorn.lunarbor.main.AppShell
 import se.soderbjorn.lunarbor.main.installBackupScheduler
 import se.soderbjorn.lunarbor.main.installMcpBridge
-import se.soderbjorn.lunarbor.main.registerLunarborFonts
 import se.soderbjorn.lunarbor.mcp.McpServer
 import se.soderbjorn.lunarbor.mcp.McpTools
 import se.soderbjorn.lunarbor.main.setLunarborVaultRoot
@@ -60,8 +59,6 @@ fun main() {
  */
 private suspend fun start() {
     val app = document.getElementById("app") as HTMLElement
-    // Instrument Sans / Unbounded in the font pickers (files: bundled-fonts.css).
-    registerLunarborFonts()
     val graph = createJsAppGraph()
     setLunarborVaultRoot(graph.documentRegistry.rootDirectory)
     val shell = AppShell(
