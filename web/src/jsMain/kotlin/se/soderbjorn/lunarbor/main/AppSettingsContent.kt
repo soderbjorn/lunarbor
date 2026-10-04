@@ -18,7 +18,10 @@
  *        automatic interval and last backup — see BackupSettings.kt.
  *     4. An **Agent access** section (Electron only): the MCP server's
  *        switch, key and setup instructions — see AgentAccessSettings.kt.
- *     5. An **Experimental** section: "Enable 3D mode" (off by default;
+ *     5. A **Privacy** section: "Edit privacy modes…" opens the Configure
+ *        privacy dialog (PrivacyDialog.kt). It never shows the current
+ *        mode — nothing in the chrome tells an onlooker one is on.
+ *     6. An **Experimental** section: "Enable 3D mode" (off by default;
  *        `SpaceMode.setEnabled`).
  *  - **Keyboard shortcuts** (`AppShellSpec.hotkeysContent`): the curated
  *    [lunarborHotkeysSpec] list, grouped, with keycap chords. Replaces the
@@ -57,6 +60,7 @@ import kotlin.js.Promise
  *   "Back up now" calls it before zipping the vault.
  * @property privacyModes The vault's privacy modes (`DocumentRegistry.privacyFlow`),
  *   offered as Agent access connections' privacy scopes.
+ * @property openPrivacy Opens the Configure privacy dialog (`openPrivacyDialog`).
  * @property spaceModeEnabled Whether 3D mode is turned on
  *   (`isSpaceModeEnabled`), read when the body is built.
  * @property setSpaceModeEnabled Turns 3D mode on or off (`SpaceMode.setEnabled`).
@@ -68,6 +72,7 @@ class AppSettingsHandlers(
     val switchVault: suspend (String) -> String?,
     val flushEdits: suspend () -> Unit,
     val privacyModes: () -> List<se.soderbjorn.lunarbor.data.PrivacyMode> = { emptyList() },
+    val openPrivacy: () -> Unit = {},
     val spaceModeEnabled: () -> Boolean = { false },
     val setSpaceModeEnabled: (Boolean) -> Unit = {},
 )
@@ -89,8 +94,36 @@ fun buildAppSettingsContent(handlers: AppSettingsHandlers): HTMLElement {
     if (vaultBridge() != null) body.appendChild(buildVaultSection(handlers))
     if (backupBridge() != null) body.appendChild(buildBackupSection(handlers.scope, handlers.flushEdits))
     if (mcpBridge() != null) body.appendChild(buildAgentAccessSection(handlers.scope, handlers.privacyModes))
+    body.appendChild(buildPrivacySection(handlers))
     body.appendChild(buildExperimentalSection(handlers))
     return body
+}
+
+/**
+ * The Privacy section: a note and an "Edit privacy modes…" button that
+ * opens the Configure privacy dialog. Deliberately says nothing about
+ * which mode is on.
+ */
+private fun buildPrivacySection(handlers: AppSettingsHandlers): HTMLElement {
+    val section = document.createElement("section") as HTMLElement
+    section.className = "lunarbor-app-settings-section"
+    val title = document.createElement("h3") as HTMLElement
+    title.className = "lunarbor-app-settings-section-title"
+    title.textContent = "Privacy"
+    section.appendChild(title)
+
+    val row = div("lunarbor-vault-row")
+    val note = div("lunarbor-app-settings-note")
+    note.textContent = "Hide everything tagged with chosen tags."
+    row.appendChild(note)
+    val edit = document.createElement("button") as HTMLButtonElement
+    edit.type = "button"
+    edit.className = "lunarbor-vault-change"
+    edit.textContent = "Edit privacy modes…"
+    edit.addEventListener("click", { _: Event -> handlers.openPrivacy() })
+    row.appendChild(edit)
+    section.appendChild(row)
+    return section
 }
 
 /**
@@ -382,6 +415,7 @@ private const val APP_SETTINGS_CSS = """
     border: 1px solid var(--t-border, rgba(255,255,255,0.12)); border-radius: 8px; cursor: pointer;
 }
 .lunarbor-vault-change:disabled { opacity: 0.45; cursor: default; }
+.lunarbor-app-settings-note { flex: 1; min-width: 0; font-size: 12px; color: var(--t-text-dim, #9a9a9a); }
 .lunarbor-vault-note { font-size: 12px; color: var(--t-text-dim, #9a9a9a); }
 .lunarbor-vault-note.is-error { color: var(--t-danger, #e5534b); }
 body.appearance-light .lunarbor-app-settings-nav-button,

@@ -612,6 +612,7 @@ class AppShell(
                             switchVault = { dir -> switchVault(dir) },
                             flushEdits = { documentRegistry.flushAll() },
                             privacyModes = { documentRegistry.privacyFlow.value.modes },
+                            openPrivacy = { openPrivacyDialog(scope, documentRegistry) },
                             spaceModeEnabled = { isSpaceModeEnabled },
                             setSpaceModeEnabled = { spaceMode.setEnabled(it) },
                         ),
