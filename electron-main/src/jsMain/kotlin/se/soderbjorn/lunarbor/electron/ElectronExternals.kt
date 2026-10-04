@@ -89,6 +89,16 @@ external interface ElectronApp {
      * news & update check (NewsHost.kt).
      */
     fun getVersion(): String
+
+    /**
+     * Sets what the macOS About panel (`role("about")`) shows. Without it
+     * the panel reads the running bundle's `Info.plist`, which under
+     * `electron .` in dev is `Electron.app`'s (Electron's own version).
+     * Called by `NewsHost.applyAboutPanelVersion`.
+     *
+     * @param options `{ applicationVersion, version }` and friends.
+     */
+    fun setAboutPanelOptions(options: dynamic)
 }
 
 external interface IpcMain {

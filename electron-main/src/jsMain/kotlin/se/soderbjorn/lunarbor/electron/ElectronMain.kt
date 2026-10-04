@@ -231,6 +231,7 @@ fun main() {
         // because `app.getPath("userData")` is only valid afterwards.
         chromePrefs = loadChromePrefs()
         applyDevDockIcon()
+        NewsHost.applyAboutPanelVersion()
         installLunarborAssetProtocol()
         buildAppMenu()
         createWindow()

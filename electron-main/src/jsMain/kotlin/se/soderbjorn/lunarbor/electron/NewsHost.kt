@@ -9,6 +9,8 @@
  *    `--lunarbor-version-code=` (`CFBundleVersion` — see [readBundleVersion])
  *    to the preload, which exposes them as `noteApi.appVersionName` /
  *    `appVersionCode`.
+ *    The same pair is shown in the macOS About panel
+ *    ([applyAboutPanelVersion]), so dev runs don't show Electron's version.
  *  - The bell's state between launches, `lunarbor-news.json` beside
  *    `lunarbor-backup.json` (`{ dismissedNewsIds, dismissedUpdateVersionCode,
  *    lastCheckEpochMillis }`), over `lunarbor:getNewsState` /
@@ -22,7 +24,8 @@ package se.soderbjorn.lunarbor.electron
  * Registers the news IPC handlers and remembers where the state file is.
  *
  * ### Callers
- * - `main` (ElectronMain.kt): [install] once, before the first window.
+ * - `main` (ElectronMain.kt): [install] once, before the first window;
+ *   [applyAboutPanelVersion] once the app is ready.
  * - `createWindow`: [versionArguments] for the preload.
  */
 internal object NewsHost {
@@ -63,6 +66,21 @@ internal object NewsHost {
         "--lunarbor-version-name=${js("encodeURIComponent")(app.getVersion())}",
         "--lunarbor-version-code=${js("encodeURIComponent")(readBundleVersion())}",
     )
+
+    /**
+     * Makes the macOS About panel show Lunarbor's version name and code
+     * (`0.2.0 (2)`) rather than whatever the running bundle's `Info.plist`
+     * says — under `electron .` in dev that is `Electron.app`, so the panel
+     * would show Electron's version. Harmless when packaged (same values).
+     *
+     * Called by `main` (ElectronMain.kt) once the app is ready.
+     */
+    fun applyAboutPanelVersion() {
+        val opts: dynamic = js("({})")
+        opts.applicationVersion = app.getVersion()
+        opts.version = readBundleVersion()
+        app.setAboutPanelOptions(opts)
+    }
 
     /** The state file's text, or `null` when there is none (the renderer starts fresh). */
     private fun readState(): String? = try {
