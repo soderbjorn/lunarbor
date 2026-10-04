@@ -104,7 +104,7 @@ internal class MapView(
     private val T: dynamic = lib.raw
     private val renderer: dynamic = createRenderer()
     private val scene: dynamic = construct(T.Scene)
-    private val camera: dynamic = construct(T.PerspectiveCamera, FOV, 1.0, 0.1, 6000.0)
+    private val camera: dynamic = construct(T.PerspectiveCamera, FOV, 1.0, 0.1, 6000.0 * SPREAD)
     private val labelsHost = div("lunarbor-map-labels")
     private val wires = document.createElementNS(SVG_NS, "svg")
     private val windowsHost = div("lunarbor-map-windows")
@@ -412,7 +412,9 @@ internal class MapView(
      */
     private fun relayout(reframe: Boolean) {
         placed = graph to folded.toSet()
-        val positions = GraphLayout.layout(graph, folded, shape)
+        // Spread out: bodies keep their size, the space between them grows,
+        // so coming close enough to read labels does not crowd neighbours.
+        val positions = GraphLayout.layout(graph, folded, shape).mapValues { (_, p) -> SpaceVec(p.x * SPREAD, p.y * SPREAD, p.z * SPREAD) }
         for ((id, b) in bodies.toList()) {
             if (id !in positions) {
                 val anchor = GraphLayout.visibleAnchor(graph, folded, id)?.let { positions[it] }
@@ -866,7 +868,7 @@ internal class MapView(
             follow = id
             val node = graph.nodes[id]
             val sub = if (node == null) 1 else graph.subtreeOf(id).size
-            goalRadius = (16 + 7 * sqrt(sub.toDouble())).coerceIn(16.0, 260.0)
+            goalRadius = (16 + 7 * SPREAD * sqrt(sub.toDouble())).coerceIn(16.0, 260.0 * SPREAD)
         }
         renderHud()
         mode.requestFrame()
@@ -964,7 +966,7 @@ internal class MapView(
                 else -> WHEEL_ZOOM_RATE
             }
             val factor = exp(we.deltaY * rate)
-            goalRadius = (goalRadius * factor).coerceIn(4.0, 4000.0)
+            goalRadius = (goalRadius * factor).coerceIn(4.0, 4000.0 * SPREAD)
             userMoved = true
             mode.requestFrame()
         }, js("({ passive: false })"))
@@ -1139,7 +1141,7 @@ internal class MapView(
         for (i in 0 until n) {
             val u = GraphLayout.hash01("s$i") * 2 - 1
             val th = GraphLayout.hash01("t$i") * 2 * PI
-            val r = 1800 + GraphLayout.hash01("r$i") * 1800
+            val r = (1800 + GraphLayout.hash01("r$i") * 1800) * SPREAD
             val q = sqrt(1 - u * u)
             pos[i * 3] = cos(th) * q * r
             pos[i * 3 + 1] = u * r
@@ -1320,6 +1322,12 @@ internal class MapView(
         const val ROOT_TITLE = "Home"
         const val LABEL_BUDGET = 40
         const val REBUILD_MS = 220
+
+        /**
+         * How much farther apart than [GraphLayout] places them bodies sit
+         * (sizes unchanged), so labels and leaves are readable up close.
+         */
+        const val SPREAD = 2.5
 
         /** How far (px) the pointer may move between press and release and still count as a click. */
         const val CLICK_SLOP = 5
