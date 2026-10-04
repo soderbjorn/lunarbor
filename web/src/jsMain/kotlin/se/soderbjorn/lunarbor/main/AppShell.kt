@@ -71,6 +71,7 @@ import se.soderbjorn.lunula.web.shell.AppShellSpec
 import se.soderbjorn.lunula.web.shell.PaneAddMenuItem
 import se.soderbjorn.lunula.web.shell.PaneOverflowSpec
 import se.soderbjorn.lunula.web.shell.TopbarAction
+import se.soderbjorn.lunarbor.demo.isDemoMode
 import se.soderbjorn.lunula.web.shell.mountAppShell
 import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
@@ -575,12 +576,7 @@ class AppShell(
                     ),
                     // 3D mode (space/SpaceMode.kt), also ⌃⌘3. Hidden by CSS
                     // until App settings → "Enable 3D mode" turns it on.
-                    TopbarAction(
-                        id = "lunarbor-topbar-space",
-                        iconHtml = ICON_CUBE,
-                        label = "3D mode (⌃⌘3)",
-                        onActivate = { spaceMode.toggle() },
-                    ),
+                    spaceTopbarAction(),
                 ) + listOfNotNull(
                     // News & updates (desktop only; NewsUpdates.kt).
                     newsUpdates?.let { newsTopbarAction(it) },
@@ -2069,6 +2065,67 @@ class AppShell(
     }
 
     /**
+     * The top-bar cube that toggles 3D mode ([SpaceMode.toggle], also ⌃⌘3).
+     * Its id, `lunarbor-topbar-space`, is what the chrome CSS hides while
+     * 3D mode is disabled ([ensureLunarborChromeStyles]).
+     *
+     * In the browser demo ([isDemoMode]) the bare cube is dressed as in
+     * Lunamux's web demo: a visible "3D Mode" label, a small "EXPERIMENTAL"
+     * tag and an accent glow that stops by itself after ~15 s — website
+     * visitors have no reason to hover an unlabelled icon, and 3D mode is
+     * the demo's showpiece. The desktop app keeps the quiet icon.
+     *
+     * Called once, while building the shell spec in [render].
+     *
+     * @return the cube's [TopbarAction]; in the demo it carries its own element.
+     */
+    private fun spaceTopbarAction(): TopbarAction {
+        val label = "3D mode (⌃⌘3)"
+        if (!isDemoMode()) {
+            return TopbarAction(
+                id = SPACE_TOPBAR_ID,
+                iconHtml = ICON_CUBE,
+                label = label,
+                onActivate = { spaceMode.toggle() },
+            )
+        }
+        // Styled like the toolkit's own action buttons (transparent, no
+        // border), widened into a labelled pill.
+        val button = document.createElement("button") as HTMLElement
+        button.id = SPACE_TOPBAR_ID
+        button.setAttribute("type", "button")
+        button.title = label
+        button.setAttribute("aria-label", label)
+        button.innerHTML = ICON_CUBE
+        button.style.cssText = "display:inline-flex;align-items:center;gap:6px;padding:4px 8px;" +
+            "background:transparent;border:0;border-radius:6px;color:inherit;cursor:pointer;"
+        button.addEventListener("click", { spaceMode.toggle() })
+
+        val text = document.createElement("span") as HTMLElement
+        text.textContent = "3D Mode"
+        text.style.cssText = "font-size:12px;font-weight:600;line-height:normal;white-space:nowrap;"
+        button.appendChild(text)
+
+        val tag = document.createElement("span") as HTMLElement
+        tag.textContent = "EXPERIMENTAL"
+        tag.style.cssText = "align-self:flex-start;margin-top:1px;font-size:8px;font-weight:700;" +
+            "line-height:normal;letter-spacing:0.5px;color:var(--t-accent, #7aa2ff);"
+        button.appendChild(tag)
+
+        // A slow accent glow swell for the first ~15 s (inline `style=`
+        // cannot declare @keyframes, so they ride in a <style>).
+        val glow = document.createElement("style") as HTMLElement
+        glow.textContent = "@keyframes lunarbor-space-demo-glow{" +
+            "0%,100%{box-shadow:0 0 0 transparent;}" +
+            "50%{box-shadow:0 0 12px color-mix(in srgb, var(--t-accent, #7aa2ff) 55%, transparent);}}"
+        document.head?.appendChild(glow)
+        button.style.setProperty("animation", "lunarbor-space-demo-glow 3s ease-in-out infinite")
+        window.setTimeout({ button.style.removeProperty("animation") }, 15_000)
+
+        return TopbarAction(id = SPACE_TOPBAR_ID, label = label, onActivate = { spaceMode.toggle() }, element = button)
+    }
+
+    /**
      * Injects lunarbor-only chrome styles that aren't part of the toolkit
      * stylesheet: the disabled state for header buttons (Back / Forward
      * stay in place when inert, dimmed instead of removed), the Back /
@@ -3104,6 +3161,9 @@ class AppShell(
             "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
                 "<path d=\"M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3\"/></svg>"
+
+        /** DOM id of the 3D mode cube ([spaceTopbarAction]); the chrome CSS hides it while disabled. */
+        private const val SPACE_TOPBAR_ID: String = "lunarbor-topbar-space"
 
         /** Cube glyph: the top-bar button that toggles 3D mode (Lunamux's `ICON_CUBE`). */
         private const val ICON_CUBE: String =
