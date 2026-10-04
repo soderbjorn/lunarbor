@@ -265,14 +265,31 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("⏎") to "Open the selection in the focused window.",
             k("P") to "Edit the selection: as double-click.",
             k("E") to "Back to Pages, where the focused window already is.",
-            k("F") to "Fold or unfold the selection.",
+            k("␣") to "Fold or unfold the selection.",
+            k("F") to "Free flight (below).",
+            k("K") to "Hide or show the keyboard legend in the bottom left.",
             k("L") to "Next view.",
-            k("Home") to "Clear the selection and show the whole map again.",
+            k("C") to "Clear the selection and show the whole map again.",
             k("?") to "This help.",
         )}
         <p>With a body selected, a bar along the bottom shows its path (click a part to go there) and
         buttons for <b>Edit page</b>, <b>Open in window</b> and <b>Fold / Unfold</b>. The top left shows the
         view and how many nodes and links are on the map, and says when it is still reading folders.</p>
+        <h4>Free flight</h4>
+        <p>${k("F")} turns the camera into a spaceship, as in Lunamux; ${k("F")} again lands it, and the
+        map's orbit carries on from where you are. The legend switches to the flight keys.</p>
+        ${keys(
+            k("W") + " " + k("S") to "Throttle forward / reverse.",
+            k("A") + " " + k("D") to "Strafe left / right.",
+            k("⇧") to "Descend.",
+            k("↑") + " " + k("↓") to "Pitch.",
+            k("←") + " " + k("→") to "Yaw.",
+            k("Q") + " " + k("E") to "Roll.",
+            k("C") to "Land and fly back to the whole map.",
+            k("⏎") to "Edit the node ahead (the one in the dashed ring).",
+            k("K") to "Hide or show the legend.",
+            k("Esc") to "Leave 3D mode.",
+        )}
         <h4>Good to know</h4>
         <ul>
           <li>The map appears once every folder has been read (a progress bar shows meanwhile), and stays current as you edit, save, or change files

@@ -14,12 +14,12 @@
  *    progress card shows until every listing has landed) and its link index
  *    (`linkIndexSnapshot`);
  *  - positions from [GraphLayout] (commonMain, pure, deterministic);
- *  - folds are the map's own (F), starting from
+ *  - folds are the map's own (Space), starting from
  *    [GraphLayout.defaultFolds] so a big vault opens readable;
- *  - colours from [SpacePalette]: each top-level area a vivid hue of its
- *    own (3D mode is meant to be more colourful than the theme), each
- *    body a little lighter or shifted, branches in their child's hue and
- *    link arcs blending from one end's hue to the other's.
+ *  - colours from [SpacePalette]: each area, and each branch inside it, a
+ *    vivid hue of its own (3D mode is meant to be more colourful than the
+ *    theme), branches in their child's hue and link arcs blending from one
+ *    end's hue to the other's.
  *
  * **Privacy (LBR-10):** the graph is built with the app's current privacy
  * filter — an item carrying a hiding tag, or a hidden folder, is left out
@@ -27,11 +27,13 @@
  * and rebuilt whenever `DocumentRegistry.privacyFlow` changes. Window
  * cards sit on the nearest visible body.
  *
- * Input: drag to orbit, right- or Shift-drag to pan, scroll to zoom;
- * click a body to select it and fly there; click it again, or double-click
- * a body, to open its page in Pages to edit it (in the focused window). Keys (while the map has focus): ← → siblings, ↑ parent,
- * ↓ child, ⏎ open in the focused window, P open and show its page, E back
- * to the page of the focused window, F fold, L next shape, ? help
+ * Input: drag to orbit, right- or Shift-drag to pan, scroll to zoom (past
+ * the closest orbit, forward); click a body to select it and fly there;
+ * click it again, or double-click a body, to open its page in Pages to
+ * edit it (in the focused window). Keys (while the map has focus): ← →
+ * siblings, ↑ parent, ↓ child, ⏎ open in the focused window, P edit its
+ * page, E back to Pages, Space fold, C whole map, L next shape, F free
+ * flight ([FreeFlight]), K the legend ([MapLegend]), ? help
  * ([showSpaceHelp]).
  *
  * Rendering: one WebGL canvas (instanced spheres, one line buffer each
@@ -113,6 +115,15 @@ internal class MapView(
 
     /** The centred progress card shown while node listings are still being read ([renderHud]). */
     private val loading = div("lunarbor-map-loading")
+
+    /** The keyboard legend in the bottom left (K hides it). */
+    private val legend = MapLegend()
+
+    /** Free flight (F): while on, it owns the camera instead of the orbit. */
+    private val flight = FreeFlight(FLIGHT_SCALE, legend)
+
+    /** The dashed ring on the body ahead while flying ([flightTargetId]). */
+    private val flightTarget = div("lunarbor-flight-target")
 
     private var width = 1
     private var height = 1
@@ -224,6 +235,8 @@ internal class MapView(
         element.appendChild(hud)
         element.appendChild(bar)
         element.appendChild(loading)
+        element.appendChild(flightTarget)
+        element.appendChild(legend.element)
         buildScene()
         installInput()
     }
@@ -266,6 +279,7 @@ internal class MapView(
 
     /** Hides the map (a switch to Pages); collectors keep running cheaply. */
     fun hide() {
+        if (flight.isOn) land()
         element.style.display = "none"
     }
 
@@ -493,6 +507,12 @@ internal class MapView(
             }
             if (b.cur != b.target || (b.scale < 1.0 && !b.leaving) || b.leaving) moving = true
         }
+        if (flight.isOn) {
+            flight.step(dt * 60)
+            if (flight.isMoving) moving = true
+            render()
+            return moving
+        }
         follow?.let { f -> bodies[f]?.let { goalTarget = it.cur } }
         val nt = lerp(target, goalTarget, kc)
         target = if (dist(nt, goalTarget) < 0.005 * max(1.0, goalRadius / 50)) goalTarget else nt
@@ -512,12 +532,22 @@ internal class MapView(
     /** Applies everything to the scene, renders, then places labels and window cards. */
     private fun render() {
         val r = renderer ?: return
-        camera.position.set(
-            target.x + radius * sin(phi) * cos(theta),
-            target.y + radius * cos(phi),
-            target.z + radius * sin(phi) * sin(theta),
-        )
-        camera.lookAt(target.x, target.y, target.z)
+        if (flight.isOn) {
+            val p = flight.pos
+            val f = flight.forward
+            val u = flight.up
+            camera.up.set(u.x, u.y, u.z)
+            camera.position.set(p.x, p.y, p.z)
+            camera.lookAt(p.x + f.x, p.y + f.y, p.z + f.z)
+        } else {
+            camera.up.set(0.0, 1.0, 0.0)
+            camera.position.set(
+                target.x + radius * sin(phi) * cos(theta),
+                target.y + radius * cos(phi),
+                target.z + radius * sin(phi) * sin(theta),
+            )
+            camera.lookAt(target.x, target.y, target.z)
+        }
         camera.updateMatrixWorld()
         writeBodies()
         writeLines()
@@ -525,6 +555,118 @@ internal class MapView(
         project()
         placeLabels()
         placeWindows()
+        placeFlightTarget()
+    }
+
+    // --------------------------------------------------------- free flight
+
+    /** The orbit camera's viewing direction (unit length), from its goal angles. */
+    private fun viewDirection(): SpaceVec = SpaceVec(
+        -sin(goalPhi) * cos(goalTheta),
+        -cos(goalPhi),
+        -sin(goalPhi) * sin(goalTheta),
+    )
+
+    /** Takes off (F): the ship starts from the orbit camera's pose. */
+    private fun takeOff() {
+        val p = camera.position
+        flight.start(
+            SpaceVec(p.x as Double, p.y as Double, p.z as Double),
+            target,
+            SpaceVec(0.0, 1.0, 0.0),
+        )
+        follow = null
+        userMoved = true
+        renderHud()
+        mode.requestFrame()
+    }
+
+    /**
+     * Lands (F again, or leaving the map): the orbit takes over exactly
+     * where the ship is, looking where it looked, around a point
+     * [radius] ahead; only a roll is undone.
+     */
+    private fun land() {
+        val p = flight.pos
+        val f = flight.forward
+        val d = radius.coerceIn(8.0, 400.0 * SPREAD)
+        target = SpaceVec(p.x + f.x * d, p.y + f.y * d, p.z + f.z * d)
+        goalTarget = target
+        radius = d
+        goalRadius = d
+        phi = kotlin.math.acos(((p.y - target.y) / d).coerceIn(-1.0, 1.0)).coerceIn(0.12, PI - 0.12)
+        goalPhi = phi
+        theta = kotlin.math.atan2(p.z - target.z, p.x - target.x)
+        goalTheta = theta
+        follow = null
+        flight.stop()
+        flightTarget.style.display = "none"
+        renderHud()
+        mode.requestFrame()
+    }
+
+    /**
+     * The body ahead while flying: of the bodies in front, the one whose
+     * screen position is nearest the centre, within a third of the view.
+     */
+    private fun flightTargetId(): String? {
+        val cx = width / 2.0
+        val cy = height / 2.0
+        val reach = min(width, height) / 3.0
+        var best: Body? = null
+        var bestD = Double.MAX_VALUE
+        for (b in bodies.values) {
+            if (!b.front || b.leaving) continue
+            val d = sqrt((b.sx - cx) * (b.sx - cx) + (b.sy - cy) * (b.sy - cy)) - b.sr
+            if (d < reach && d < bestD) {
+                best = b
+                bestD = d
+            }
+        }
+        return best?.id
+    }
+
+    /** Draws the dashed ring on [flightTargetId]'s body (hidden when landed). */
+    private fun placeFlightTarget() {
+        val id = if (flight.isOn) flightTargetId() else null
+        val b = id?.let { bodies[it] }
+        if (b == null) {
+            flightTarget.style.display = "none"
+            return
+        }
+        val size = 2 * b.sr + 16
+        flightTarget.style.display = "block"
+        flightTarget.style.left = "${b.sx}px"
+        flightTarget.style.top = "${b.sy}px"
+        flightTarget.style.width = "${size}px"
+        flightTarget.style.height = "${size}px"
+    }
+
+    /**
+     * Keys while flying (Lunamux's): held flight keys steer; F lands, K
+     * hides the legend, C lands and flies home, Enter edits the body ahead.
+     * Every other plain key is swallowed; Escape and ⌘ / Ctrl chords pass
+     * (Escape leaves 3D, as in Lunamux).
+     */
+    private fun onFlightKey(e: KeyboardEvent) {
+        if (e.key == "Escape" || e.metaKey || e.ctrlKey) return
+        e.preventDefault()
+        e.stopPropagation()
+        when {
+            e.code == "KeyF" -> land()
+            e.code == "KeyK" -> legend.toggle()
+            e.code == "KeyC" -> {
+                land()
+                select(null, fly = false)
+                userMoved = false
+                relayout(reframe = true)
+            }
+            e.key == "Enter" -> {
+                legend.flash("engage")
+                flightTargetId()?.let { id -> land(); open(id, showPage = true) }
+            }
+            flight.press(e.code) -> mode.requestFrame()
+        }
     }
 
     private fun writeBodies() {
@@ -883,6 +1025,7 @@ internal class MapView(
      */
     private fun open(id: String, showPage: Boolean) {
         openedAt = window.performance.now()
+        if (flight.isOn) land()
         val vm = mode.focusedPaneId()?.let { mode.viewModelOf(it) } ?: return
         selected = id
         // With [showPage], Pages opens once the window has arrived, so its
@@ -962,6 +1105,8 @@ internal class MapView(
         element.addEventListener("wheel", { e ->
             val we = e as WheelEvent
             we.preventDefault()
+            // The ship flies by keys only, as in Lunamux.
+            if (flight.isOn) return@addEventListener
             // A trackpad pinch arrives as a ctrl-wheel with small deltas: zoom much harder per unit.
             val rate = when {
                 we.deltaMode == 1 -> 0.04
@@ -969,11 +1114,26 @@ internal class MapView(
                 else -> WHEEL_ZOOM_RATE
             }
             val factor = exp(we.deltaY * rate)
-            goalRadius = (goalRadius * factor).coerceIn(4.0, 4000.0 * SPREAD)
+            val wanted = goalRadius * factor
+            if (wanted < MIN_RADIUS) {
+                // No floor: past the closest orbit, zooming in moves the
+                // camera and its centre forward together, into the map.
+                val step = goalRadius - wanted
+                val dir = viewDirection()
+                follow = null
+                goalTarget = SpaceVec(goalTarget.x + dir.x * step, goalTarget.y + dir.y * step, goalTarget.z + dir.z * step)
+                goalRadius = MIN_RADIUS
+            } else {
+                goalRadius = wanted.coerceAtMost(4000.0 * SPREAD)
+            }
             userMoved = true
             mode.requestFrame()
         }, js("({ passive: false })"))
         element.addEventListener("keydown", { e -> onKey(e as KeyboardEvent) })
+        element.addEventListener("keyup", { e ->
+            if (flight.release((e as KeyboardEvent).code)) e.preventDefault()
+        })
+        element.addEventListener("blur", { _ -> flight.releaseAll() })
     }
 
     private val onMove: (Event) -> Unit = { e ->
@@ -987,7 +1147,7 @@ internal class MapView(
                 dragged = true
                 userMoved = true
             }
-            if (dragged) {
+            if (dragged && !flight.isOn) {
                 val dx = x - last.first
                 val dy = y - last.second
                 if (dragPan) pan(dx, dy) else {
@@ -1035,28 +1195,45 @@ internal class MapView(
     }
 
     private fun onKey(e: KeyboardEvent) {
+        if (flight.isOn) return onFlightKey(e)
         if (e.metaKey || e.ctrlKey || e.altKey) return
+        if (e.code == "KeyF" || e.code == "KeyK") {
+            if (e.code == "KeyF") takeOff() else legend.toggle()
+            e.preventDefault()
+            e.stopPropagation()
+            return
+        }
         val sel = selected
         val handled = when (e.key) {
             "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight" -> { walk(e.key); true }
             "Enter" -> { sel?.let { open(it, showPage = false) }; sel != null }
             "p", "P" -> { sel?.let { open(it, showPage = true) }; sel != null }
             "e", "E" -> { mode.setShape(SpaceShape.PAGES); true }
-            "f", "F" -> { sel?.let { toggleFold(it) }; sel != null }
+            " " -> { sel?.let { toggleFold(it) }; sel != null }
             "l", "L" -> { mode.nextShape(); true }
             "?" -> { showSpaceHelp(shape); true }
-            "Home" -> { select(null, fly = false); userMoved = false; relayout(reframe = true); true }
+            // C, as in Lunamux's "fly camera home".
+            "c", "C" -> { select(null, fly = false); userMoved = false; relayout(reframe = true); true }
             else -> false
         }
         if (handled) {
             e.preventDefault()
             e.stopPropagation()
+            when (e.key) {
+                "ArrowLeft", "ArrowRight" -> "walk"
+                "ArrowUp", "ArrowDown" -> "walk-v"
+                "Enter" -> "open"
+                "p", "P" -> "edit-key"
+                " " -> "fold"
+                "l", "L" -> "shape"
+                "c", "C" -> "home"
+                else -> null
+            }?.let { legend.flash(it) }
         }
     }
 
     // ----------------------------------------------------------------- HUD
 
-    /** The shape and count (top left) and the selection's actions (bottom). */
     /**
      * Shows the progress card while node listings are still being read
      * (a large or cloud-synced vault can take a while), hides it after.
@@ -1077,6 +1254,7 @@ internal class MapView(
         loading.appendChild(track)
     }
 
+    /** The shape and count (top left) and the selection's actions (bottom). */
     private fun renderHud() {
         val total = graph.nodes.size
         val loading = graph.nodes.values.count { !it.loaded }
@@ -1090,7 +1268,6 @@ internal class MapView(
             else if (linksReading || linksWanted) append(" · reading links…")
             if (graph.truncated) append(" · first ${VaultGraphBuilder.MAX_NODES} shown")
         }))
-        hud.appendChild(span("lunarbor-map-hud-keys", "Click a selected body or double-click to edit · drag to orbit · ⇧/right-drag to pan · scroll to zoom · ←→↑↓ walk · ⏎ open · F fold · L shape · ? help"))
         bar.innerHTML = ""
         val id = selected
         val node = id?.let { graph.nodes[it] }
@@ -1114,7 +1291,7 @@ internal class MapView(
         }
         action("Edit page", "P") { open(node.id, showPage = true) }
         action("Open in window", "⏎") { open(node.id, showPage = false) }
-        if (node.children.isNotEmpty()) action(if (node.id in folded) "Unfold" else "Fold", "F") { toggleFold(node.id) }
+        if (node.children.isNotEmpty()) action(if (node.id in folded) "Unfold" else "Fold", "␣") { toggleFold(node.id) }
     }
 
     // --------------------------------------------------------------- scene
@@ -1326,6 +1503,12 @@ internal class MapView(
         const val LABEL_BUDGET = 40
         const val REBUILD_MS = 220
 
+        /** The closest orbit; zooming in further moves forward instead (see the wheel handler). */
+        const val MIN_RADIUS = 2.0
+
+        /** Free flight's thrust per Lunamux unit: the map is smaller than Lunamux's world. */
+        const val FLIGHT_SCALE = 0.12
+
         /**
          * How much farther apart than [GraphLayout] places them bodies sit
          * (sizes unchanged), so labels and leaves are readable up close.
@@ -1389,7 +1572,7 @@ internal class MapView(
 }
 
 /** 3D mode's map CSS (appended to the space stylesheet by `ensureSpaceStyles`). */
-internal val MAP_CSS: String = """
+internal val MAP_CSS: String = MapLegend.CSS + FreeFlight.CSS + """
 .lunarbor-space.is-map .lunarbor-space-backdrop, .lunarbor-space.is-map .lunarbor-space-views { display: none; }
 .lunarbor-space-map { position: absolute; inset: 36px 8px 48px 8px; overflow: hidden; outline: none; border-radius: 10px; cursor: grab; }
 .lunarbor-space-map:active { cursor: grabbing; }
@@ -1434,7 +1617,6 @@ internal val MAP_CSS: String = """
     font: 12px var(--dt-font-prop, system-ui, sans-serif); color: var(--t-text-dim, #9aa0a6);
 }
 .lunarbor-map-hud-shape { color: var(--t-text, #e6e6e6); font-weight: 600; font-size: 13px; }
-.lunarbor-map-hud-keys { margin-left: auto; opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .lunarbor-map-bar {
     position: absolute; left: 12px; bottom: 10px; right: 12px; display: flex; gap: 6px; align-items: center;
     font: 12px var(--dt-font-prop, system-ui, sans-serif);
