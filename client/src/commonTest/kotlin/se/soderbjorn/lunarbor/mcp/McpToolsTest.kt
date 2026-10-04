@@ -91,6 +91,22 @@ class McpToolsTest {
         assertTrue(t.run("read", "path" to "/Nope").isError)
     }
 
+    @Test
+    fun read_gives_a_nodes_stamps_but_never_its_front_matter() = runTest {
+        seed("_node.md", "---\ncreated: 2026-10-04T12:34:56Z\nupdated: 2026-10-04T13:02:11Z\ntags: [home]\n---\n- Milk\n")
+        seed("Recipes/_node.md", "- Soup\n")
+        val t = tools()
+        val text = t.run("read", "path" to "/").text
+        assertTrue("Path: /\nCreated: 2026-10-04T12:34:56Z\nUpdated: 2026-10-04T13:02:11Z\n\n* Milk" in text, text)
+        assertFalse("tags" in text || "---" in text, text)
+        val old = t.run("read", "path" to "/Recipes").text
+        assertTrue("Created: unknown\nUpdated: unknown\n" in old, old)
+        // An agent edit stamps the node like any other edit (the test clock is 0).
+        assertFalse(t.run("append", "path" to "/Recipes", "text" to "* Stew").isError)
+        val after = t.run("read", "path" to "/Recipes").text
+        assertTrue("Created: unknown\nUpdated: 1970-01-01T00:00:00Z\n" in after, after)
+    }
+
     // ----------------------------------------------------------------- edits
 
     @Test
@@ -231,7 +247,7 @@ class McpToolsTest {
         assertEquals("- Budget 2027 #work\n- Diary #private\n", fs.read(root, "Work/_node.md"))
         // Read, then rewrite the whole node from what was read: the hidden
         // items survive, where they were.
-        val shown = call("read", "path" to "/").text.substringAfter("Path: /\n\n").substringBefore("\n\nAlso in this folder")
+        val shown = call("read", "path" to "/").text.substringAfter("Path: /\n").substringAfter("\n\n").substringBefore("\n\nAlso in this folder")
         // Dropping /Work would trash the hidden item inside it: refused.
         val dropping = call("edit", "path" to "/", "old_text" to shown, "new_text" to "* Only this now", "delete_nodes" to true)
         assertTrue(dropping.isError && "cannot delete" in dropping.text, dropping.text)

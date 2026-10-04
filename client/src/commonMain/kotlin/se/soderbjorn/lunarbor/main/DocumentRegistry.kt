@@ -45,6 +45,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import se.soderbjorn.lunarbor.data.NodeFrontMatter
 import se.soderbjorn.lunarbor.data.NodeLine
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.PathMove
@@ -953,6 +954,13 @@ class DocumentRegistry(
      * matter. See [NoteRepository.nodeItemsOf]. Called by `McpTools`.
      */
     suspend fun nodeItemsOf(folderRel: String): List<NodeLine> = repository.nodeItemsOf(folderRel)
+
+    /**
+     * The node folder [folderRel]'s `created` / `updated` stamps (LBR-16),
+     * as on disk. Callers [flushAll] first. See
+     * [NoteRepository.nodeStampsOf]. Called by `McpTools` for `read`.
+     */
+    suspend fun nodeStampsOf(folderRel: String): NodeFrontMatter = repository.nodeStampsOf(folderRel)
 
     /**
      * The folder a zoom into [titlePath] under the node folder [folderRel]
