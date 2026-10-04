@@ -260,13 +260,13 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             "Right-drag, or " + k("⇧") + " drag" to "Pan.",
             "Scroll / pinch" to "Zoom in and out.",
             "Click a body or label" to "Select it and fly to it; the camera keeps it centred.",
-            "Double-click" to "Open that node in the focused window (the window's card swings over).",
+            "Double-click" to "Edit that node: open it in the focused window and switch to Pages, on its page.",
             "Click a window card" to "Focus that window and fly to its node. Double-click: back to Pages to write in it.",
             k("←") + " " + k("→") to "Previous / next sibling.",
             k("↑") to "Parent.",
             k("↓") to "First child (unfolds the body if it is folded).",
             k("⏎") to "Open the selection in the focused window.",
-            k("P") to "Open the selection in the focused window and switch to Pages, on its page.",
+            k("P") to "Edit the selection: as double-click.",
             k("E") to "Back to Pages, where the focused window already is.",
             k("F") to "Fold or unfold the selection.",
             k("L") to "Next view.",
@@ -274,7 +274,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("?") to "This help.",
         )}
         <p>With a body selected, a bar along the bottom shows its path (click a part to go there) and
-        buttons for <b>Open in window</b>, <b>Its page</b> and <b>Fold / Unfold</b>. The top left shows the
+        buttons for <b>Edit page</b>, <b>Open in window</b> and <b>Fold / Unfold</b>. The top left shows the
         view and how many nodes and links are on the map, and says when it is still reading folders.</p>
         <h4>Good to know</h4>
         <ul>

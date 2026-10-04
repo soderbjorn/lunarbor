@@ -28,8 +28,8 @@
  * cards sit on the nearest visible body.
  *
  * Input: drag to orbit, right- or Shift-drag to pan, scroll to zoom;
- * click a body to select it and fly there, double-click to open it in the
- * focused window. Keys (while the map has focus): ← → siblings, ↑ parent,
+ * click a body to select it and fly there, double-click to open its page
+ * in Pages to edit it (in the focused window). Keys (while the map has focus): ← → siblings, ↑ parent,
  * ↓ child, ⏎ open in the focused window, P open and show its page, E back
  * to the page of the focused window, F fold, L next shape, ? help
  * ([showSpaceHelp]).
@@ -111,6 +111,9 @@ internal class MapView(
     private val hud = div("lunarbor-map-hud")
     private val bar = div("lunarbor-map-bar")
 
+    /** The centred progress card shown while node listings are still being read ([renderHud]). */
+    private val loading = div("lunarbor-map-loading")
+
     private var width = 1
     private var height = 1
 
@@ -150,6 +153,15 @@ internal class MapView(
     private var linksByFile: Map<String, Set<String>> = emptyMap()
     private var linksFetchedAt = -1e9
     private var linksJob: Job? = null
+
+    /**
+     * Set when the link index should be read once every listing has
+     * landed ([rebuild]). The link scan reads every note in the vault, and
+     * the main process's file reads share one small thread pool, so on a
+     * slow disk (a cloud-synced vault) starting it first would queue the
+     * listings behind it and leave the map empty for many seconds.
+     */
+    private var linksWanted = false
     private var rebuildHandle: Int? = null
     private val jobs = mutableListOf<Job>()
     private var dark = true
@@ -202,6 +214,7 @@ internal class MapView(
         element.appendChild(windowsHost)
         element.appendChild(hud)
         element.appendChild(bar)
+        element.appendChild(loading)
         buildScene()
         installInput()
     }
@@ -227,12 +240,12 @@ internal class MapView(
                         val first = lastFilter == null
                         lastFilter = pv.filter
                         lastRevision = pv.revision
-                        if (!first) fetchLinks(force = true)
+                        if (!first) linksWanted = true
                         scheduleRebuild(0)
                     }
                 }
             }
-            fetchLinks(force = true)
+            linksWanted = true
             rebuild()
         } else if (changed) {
             relayout(reframe = true)
@@ -334,7 +347,15 @@ internal class MapView(
         folded.retainAll(graph.nodes.keys)
         if (selected != null && selected !in graph.nodes) selected = null
         if (follow != null && follow !in graph.nodes) follow = null
-        if (window.performance.now() - linksFetchedAt > LINKS_REFRESH_MS) fetchLinks(force = false)
+        // Links only once the bodies are in (see [linksWanted]).
+        if (g.nodes.values.all { it.loaded }) {
+            if (linksWanted) {
+                linksWanted = false
+                fetchLinks(force = true)
+            } else if (window.performance.now() - linksFetchedAt > LINKS_REFRESH_MS) {
+                fetchLinks(force = false)
+            }
+        }
         // Keep the whole map in view while listings land, until the user takes over.
         relayout(reframe = !framed || !userMoved)
     }
@@ -354,6 +375,8 @@ internal class MapView(
             if (fresh != linksByFile) {
                 linksByFile = fresh
                 scheduleRebuild(0)
+            } else {
+                renderHud()
             }
         }
     }
@@ -902,7 +925,7 @@ internal class MapView(
             val t = me.target as? org.w3c.dom.Element
             if (t != null && t.closest(".lunarbor-map-window, .lunarbor-map-label, .lunarbor-map-bar, .lunarbor-map-hud") != null) return@addEventListener
             val box = element.getBoundingClientRect()
-            pick(me.clientX - box.left, me.clientY - box.top)?.let { open(it, showPage = false) }
+            pick(me.clientX - box.left, me.clientY - box.top)?.let { open(it, showPage = true) }
         })
         element.addEventListener("wheel", { e ->
             val we = e as WheelEvent
@@ -1000,18 +1023,40 @@ internal class MapView(
     // ----------------------------------------------------------------- HUD
 
     /** The shape and count (top left) and the selection's actions (bottom). */
+    /**
+     * Shows the progress card while node listings are still being read
+     * (a large or cloud-synced vault can take a while), hides it after.
+     * Called by [renderHud].
+     *
+     * @param total Bodies known so far.
+     * @param unread Those whose listing has not landed yet.
+     */
+    private fun renderLoading(total: Int, unread: Int) {
+        loading.style.display = if (unread == 0) "none" else ""
+        if (unread == 0) return
+        val read = total - unread
+        loading.innerHTML = ""
+        loading.appendChild(span("lunarbor-map-loading-text", "Reading the vault… $read of $total nodes"))
+        val track = div("lunarbor-map-loading-track")
+        // The total grows as listings land (each names its children), so the bar can step back a little.
+        track.appendChild(div("lunarbor-map-loading-fill").also { it.style.width = "${(100.0 * read / max(1, total)).coerceIn(4.0, 100.0)}%" })
+        loading.appendChild(track)
+    }
+
     private fun renderHud() {
         val total = graph.nodes.size
         val loading = graph.nodes.values.count { !it.loaded }
+        renderLoading(total, loading)
         hud.innerHTML = ""
         hud.appendChild(span("lunarbor-map-hud-shape", shape.label))
         hud.appendChild(span("lunarbor-map-hud-count", buildString {
             append("$total node${if (total == 1) "" else "s"}")
             if (graph.links.isNotEmpty()) append(" · ${graph.links.size} link${if (graph.links.size == 1) "" else "s"}")
             if (loading > 0) append(" · reading $loading…")
+            else if (linksJob?.isActive == true || linksWanted) append(" · reading links…")
             if (graph.truncated) append(" · first ${VaultGraphBuilder.MAX_NODES} shown")
         }))
-        hud.appendChild(span("lunarbor-map-hud-keys", "Drag to orbit · ⇧/right-drag to pan · scroll to zoom · ←→↑↓ walk · ⏎ open · P page · F fold · L shape · ? help"))
+        hud.appendChild(span("lunarbor-map-hud-keys", "Double-click to edit · drag to orbit · ⇧/right-drag to pan · scroll to zoom · ←→↑↓ walk · ⏎ open · F fold · L shape · ? help"))
         bar.innerHTML = ""
         val id = selected
         val node = id?.let { graph.nodes[it] }
@@ -1033,8 +1078,8 @@ internal class MapView(
             b.addEventListener("click", { _ -> go(); focus() })
             bar.appendChild(b)
         }
+        action("Edit page", "P") { open(node.id, showPage = true) }
         action("Open in window", "⏎") { open(node.id, showPage = false) }
-        action("Its page", "P") { open(node.id, showPage = true) }
         if (node.children.isNotEmpty()) action(if (node.id in folded) "Unfold" else "Fold", "F") { toggleFold(node.id) }
     }
 
@@ -1251,7 +1296,7 @@ internal class MapView(
         const val WHEEL_ZOOM_RATE = 0.003
 
         /** Zoom per wheel pixel of a trackpad pinch (a ctrl-wheel; its deltas are small). */
-        const val PINCH_ZOOM_RATE = 0.025
+        const val PINCH_ZOOM_RATE = 0.018
 
         const val LINKS_REFRESH_MS = 4000.0
         const val ARC_STEPS = 12
@@ -1334,6 +1379,15 @@ internal val MAP_CSS: String = """
 .lunarbor-map-window-label { color: var(--t-text-dim, #9aa0a6); font-size: 10.5px; }
 .lunarbor-map-window.is-focused .lunarbor-map-window-label { color: var(--t-accent, #7aa2ff); }
 .lunarbor-map-window-title { overflow: hidden; text-overflow: ellipsis; }
+.lunarbor-map-loading {
+    position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); pointer-events: none;
+    display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 12px 16px; border-radius: 10px;
+    background: color-mix(in srgb, var(--t-surface, #252526) 80%, transparent); border: 1px solid var(--t-border, rgba(255,255,255,.12));
+    font: 12.5px var(--dt-font-prop, system-ui, sans-serif); color: var(--t-text-dim, #9aa0a6);
+}
+.lunarbor-map-loading-track { width: 220px; height: 4px; border-radius: 2px; overflow: hidden; background: color-mix(in srgb, var(--t-text, #e6e6e6) 12%, transparent); }
+.lunarbor-map-loading-fill { height: 100%; border-radius: 2px; background: var(--t-accent, #7aa2ff); transition: width .25s ease; }
+@media (prefers-reduced-motion: reduce) { .lunarbor-map-loading-fill { transition: none; } }
 .lunarbor-map-hud {
     position: absolute; left: 12px; top: 10px; right: 12px; display: flex; gap: 10px; align-items: baseline; pointer-events: none;
     font: 12px var(--dt-font-prop, system-ui, sans-serif); color: var(--t-text-dim, #9aa0a6);
