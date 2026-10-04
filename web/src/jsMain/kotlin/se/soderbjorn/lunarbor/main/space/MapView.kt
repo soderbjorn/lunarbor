@@ -578,8 +578,10 @@ internal class MapView(
 
     /**
      * Widens ([factor] > 1) or narrows the space between bodies (+ / −):
-     * bodies glide to their new places and the point the camera looks at
-     * moves with them, so the view stays on the same part of the map.
+     * bodies glide to their new places, and the point the camera looks at
+     * and its distance scale with them, so the map stays the same size on
+     * screen while the bodies (whose size never changes) grow apart or
+     * closer — not a zoom.
      */
     private fun changeSpread(factor: Double) {
         val next = (spread * factor).coerceIn(1.0, MAX_SPREAD)
@@ -589,6 +591,7 @@ internal class MapView(
         mode.setMapSpread(next)
         target = SpaceVec(target.x * k, target.y * k, target.z * k)
         goalTarget = SpaceVec(goalTarget.x * k, goalTarget.y * k, goalTarget.z * k)
+        goalRadius = (goalRadius * k).coerceIn(MIN_RADIUS, 4000.0 * MAX_SPREAD)
         relayout(reframe = false)
     }
 
