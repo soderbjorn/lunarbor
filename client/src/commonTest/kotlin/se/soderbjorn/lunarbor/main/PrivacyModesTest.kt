@@ -244,10 +244,10 @@ class PrivacyModesTest {
 
     @Test
     fun switching_the_mode_moves_panes_off_hidden_places() = runTest {
-        seed("_node.md", "- A\n- Health #private [↳](<Health #private/_node.md>)\n- Diary #private\n  * entry\n")
-        seed("Health #private/_node.md", "- Pills\n")
+        seed("_node.md", "- A\n- Health #private [↳](<Health/_node.md>)\n- Diary #private\n  * entry\n")
+        seed("Health/_node.md", "- Pills\n")
         val r = registry(on = false)
-        val onFile = pane(r, "Health #private/_node.md")
+        val onFile = pane(r, "Health/_node.md")
         val zoomed = pane(r)
         zoomed.zoomInto(zoomed.lines.indexOf("  * entry"))
         runCurrent()
@@ -259,15 +259,15 @@ class PrivacyModesTest {
         assertNull(zoomed.stateFlow.value.zoomedLineId)
         assertEquals(listOf("* A"), zoomed.shown())
         // Navigating there again lands on the nearest visible node.
-        onFile.navigateToVaultFile("Health #private/_node.md")
+        onFile.navigateToVaultFile("Health/_node.md")
         runCurrent()
         assertEquals("_node.md", onFile.stateFlow.value.activeFileRel)
     }
 
     @Test
     fun folder_contents_and_links_follow_the_mode() = runTest {
-        seed("_node.md", "- Health #private [↳](<Health #private/_node.md>)\n- See [h](lunarbor:/Health%20%23private)\n")
-        seed("Health #private/_node.md", "- Pills\n")
+        seed("_node.md", "- Health #private [↳](<Health/_node.md>)\n- See [h](lunarbor:/Health)\n")
+        seed("Health/_node.md", "- Pills\n")
         seed("secret.md", "#private\n")
         seed("open.md", "hi\n")
         val r = registry()
@@ -276,7 +276,7 @@ class PrivacyModesTest {
         runCurrent()
         val shown = p.folderContentsOf(p.stateFlow.value, "")!!.map { it.pathRel }
         assertEquals(listOf("open.md"), shown)
-        assertTrue(p.isLinkBroken(p.stateFlow.value, "lunarbor:/Health%20%23private"))
+        assertTrue(p.isLinkBroken(p.stateFlow.value, "lunarbor:/Health"))
     }
 
     // ------------------------------------------------- the file and dialog

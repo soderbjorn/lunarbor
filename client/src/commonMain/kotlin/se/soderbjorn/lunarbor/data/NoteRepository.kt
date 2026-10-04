@@ -684,7 +684,7 @@ class NoteRepository(
                         out += when (item) {
                             is ComposedItem.Bullet -> NodeLine.Folder(item.title, name)
                             is ComposedItem.Block ->
-                                NodeLine.Block(item.content, name, FolderName.plainTextOf(item.title))
+                                NodeLine.Block(item.content, name, FolderName.nameTextOf(item.title))
                         }
                         if (item.row in unloadedRows && existing != null) {
                             if (item.children.isNotEmpty()) {
@@ -1214,6 +1214,123 @@ class NoteRepository(
     }
 
     /**
+     * What [migrateTagFreeFolderNames] did.
+     *
+     * @property moves Every node folder it renamed, from its path before
+     *   the migration to its path after (a renamed folder inside a renamed
+     *   folder is listed with both full paths), for remapping remembered
+     *   paths with [LunarborLink.remap]. Empty when nothing needed renaming.
+     * @property rewrittenFiles Vault-relative paths (after the migration)
+     *   of every note or outline file it rewrote.
+     * @property backupFolder Where the originals of those files were kept
+     *   (`.trash/<timestamp> format migration`), or `null` when none was
+     *   rewritten.
+     */
+    data class FolderNameMigration(
+        val moves: List<PathMove>,
+        val rewrittenFiles: List<String>,
+        val backupFolder: String?,
+    )
+
+    /**
+     * One-time vault format migration: node folders are named without the
+     * item's `#tags` ([FolderName.forTitle] now uses
+     * [FolderName.nameTextOf]), so `* 1-1 #private` lives in `1-1/`, not
+     * `1-1 #private/`. Walks every node from the root, before anything is
+     * loaded, and in one pass:
+     *
+     * - renames each folder-backed bullet's or block's folder that is named
+     *   by the old rule (its title's plain text with the tags, ` (n)`
+     *   allowed) to the new name (` (2)`, … when a sibling has it), and
+     *   rewrites the parent outline's child links;
+     * - rewrites every `lunarbor:` link into a renamed folder in every note
+     *   and outline (Starred included).
+     *
+     * Each file is copied to `.trash/<timestamp> format migration/<path>`
+     * before it is first rewritten. Folders named some other way (by hand,
+     * by another tool) are left alone, so running it again changes nothing.
+     *
+     * Called by the web entry point (`FormatMigrations.kt`) once per vault,
+     * before the DI graph's registry loads anything; it also remaps the
+     * persisted pane locations and folds with [FolderNameMigration.moves].
+     */
+    suspend fun migrateTagFreeFolderNames(): FolderNameMigration {
+        val moves = ArrayList<PathMove>()
+        val rewritten = LinkedHashSet<String>()
+        val backupDir = "$TRASH_DIR/${formatTimestamp(nowMillis())} format migration"
+        suspend fun backUp(fileRel: String, text: String) {
+            if (fileRel in rewritten) return
+            val dest = "$backupDir/$fileRel"
+            fileSystem.ensureDirectory(abs(dest.substringBeforeLast('/')))
+            fileSystem.writeFile(abs(dest), text)
+        }
+        fun key(name: String) = name.toNfc().lowercase()
+        fun legacyName(title: String): String =
+            FolderName.plainTextOf(title).let { if (it.isEmpty()) FolderName.UNTITLED else FolderName.encode(it) }
+
+        // [dir]: the node's folder now; [origDir]: where it was before.
+        suspend fun walk(dir: String, origDir: String) {
+            val rel = outlineFileOf(dir)
+            val text = fileSystem.readFileIfExists(abs(rel)) ?: return
+            val items = SubtreeCodec.parseNodeFile(text).toMutableList()
+            // Sibling names as compared: NFC (macOS names are decomposed), lower case.
+            val taken = fileSystem.listDirectory(abs(dir)).mapTo(HashSet()) { key(it) }
+            val children = ArrayList<Pair<String, String>>()
+            var changed = false
+            for ((i, item) in items.withIndex()) {
+                val (name, title) = when (item) {
+                    is NodeLine.Folder -> item.folder to item.title
+                    is NodeLine.Block -> (item.folder ?: continue) to SubtreeCodec.blockTitleOf(item.content)
+                    else -> continue
+                }
+                val oldBase = legacyName(title)
+                val newBase = FolderName.forTitle(title)
+                val renames = key(oldBase) != key(newBase) &&
+                    FolderName.isVariantOf(key(name), key(oldBase)) &&
+                    !FolderName.isVariantOf(key(name), key(newBase)) &&
+                    key(name) in taken
+                if (!renames) {
+                    children += join(dir, name) to join(origDir, name)
+                    continue
+                }
+                val newName = FolderName.unique(newBase, taken - key(name))
+                fileSystem.moveDirectory(abs(join(dir, name)), abs(join(dir, newName)))
+                taken -= key(name)
+                taken += key(newName)
+                println("[migration] ${join(dir, name)} → ${join(dir, newName)}")
+                moves += PathMove(join(origDir, name), join(dir, newName))
+                items[i] = when (item) {
+                    is NodeLine.Folder -> NodeLine.Folder(item.title, newName)
+                    is NodeLine.Block -> item.copy(folder = newName)
+                    else -> item
+                }
+                children += join(dir, newName) to join(origDir, name)
+                changed = true
+            }
+            if (changed) {
+                backUp(rel, text)
+                val out = SubtreeCodec.formatNodeFile(items)
+                fileSystem.writeFile(abs(rel), out)
+                observe(rel, out)
+                rewritten += rel
+            }
+            for ((now, orig) in children) walk(now, orig)
+        }
+        walk("", "")
+        if (moves.isNotEmpty()) {
+            for (fileRel in listLinkBearingFiles()) {
+                val text = fileSystem.readFileIfExists(abs(fileRel)) ?: continue
+                val out = LunarborLink.rewriteText(text, moves) ?: continue
+                backUp(fileRel, text)
+                fileSystem.writeFile(abs(fileRel), out)
+                observe(fileRel, out)
+                rewritten += fileRel
+            }
+        }
+        return FolderNameMigration(moves, rewritten.toList(), backupDir.takeIf { rewritten.isNotEmpty() })
+    }
+
+    /**
      * Where the file [fileRel] goes when it is renamed to [title]: a `.md`
      * note becomes `<title>.md`, an image or drawing ([isFileViewPath])
      * `<title><its own extension>` — a typed extension that matches it is
@@ -1497,7 +1614,7 @@ class NoteRepository(
         val items = if (outline == null) emptyList() else SubtreeCodec.parseNodeFile(outline)
         val titleOf = HashMap<String, String>()
         for (item in items) {
-            if (item is NodeLine.Folder) titleOf[item.folder.lowercase()] = FolderName.plainTextOf(item.title)
+            if (item is NodeLine.Folder) titleOf[item.folder.lowercase()] = FolderName.nameTextOf(item.title)
             if (item is NodeLine.Block && item.folder != null) titleOf[item.folder.lowercase()] = item.title
         }
         val visible = entries.filter {

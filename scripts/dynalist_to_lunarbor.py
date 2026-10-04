@@ -141,12 +141,18 @@ def _has_matching_closer(text: str, start: int, closer: str, italic: bool) -> bo
     return False
 
 
-def inline_display_text(text: str) -> str:
-    """Mirror of `InlineMarkdownTokenizer.tokenize(text).displayText`: the
-    visible text of one line with bold / italic / strike / code markers,
-    link syntax and images removed. Hashtags stay visible, so they need no
-    case of their own here."""
+def _is_tag_name_char(ch: str) -> bool:
+    """Mirror of the tokenizer's `isTagNameChar`."""
+    return ch.isalnum() or ch in "_-"
+
+
+def _display_and_tags(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Mirror of `InlineMarkdownTokenizer.tokenize(text)`: the visible text
+    of one line with bold / italic / strike / code markers, link syntax and
+    images removed, plus the display ranges `(start, end)` of its `#tags`
+    (which stay visible)."""
     out: list[str] = []
+    tags: list[tuple[int, int]] = []
     active: list[tuple[str, str]] = []
     pos = 0
     n = len(text)
@@ -173,6 +179,16 @@ def inline_display_text(text: str) -> str:
                 out.append(text[pos + 1:label_end])
                 pos = close + 1
                 continue
+        if (text[pos] == "#" and pos + 1 < n and text[pos + 1].isalpha()
+                and not (pos > 0 and _is_tag_name_char(text[pos - 1]))):
+            end = pos + 2
+            while end < n and _is_tag_name_char(text[end]):
+                end += 1
+            start = len("".join(out))
+            out.append(text[pos:end])
+            tags.append((start, start + end - pos))
+            pos = end
+            continue
         opener = None
         for style in _STYLES:
             if style in active:
@@ -195,16 +211,38 @@ def inline_display_text(text: str) -> str:
             continue
         out.append(text[pos])
         pos += 1
-    return "".join(out)
+    return "".join(out), tags
+
+
+def inline_display_text(text: str) -> str:
+    """Mirror of `InlineMarkdownTokenizer.tokenize(text).displayText`."""
+    return _display_and_tags(text)[0]
+
+
+def _strip_line_prefix(title: str) -> str:
+    for prefix in _LINE_PREFIXES:
+        if title.startswith(prefix):
+            return title[len(prefix):]
+    return title
 
 
 def plain_text_of(title: str) -> str:
     """Mirror of `FolderName.plainTextOf`."""
-    for prefix in _LINE_PREFIXES:
-        if title.startswith(prefix):
-            title = title[len(prefix):]
-            break
-    return inline_display_text(title)
+    return inline_display_text(_strip_line_prefix(title))
+
+
+def name_text_of(title: str) -> str:
+    """Mirror of `FolderName.nameTextOf`: the plain text without its `#tags`,
+    each taken out with one adjoining space."""
+    shown, tags = _display_and_tags(_strip_line_prefix(title))
+    for start, end in reversed(tags):
+        space_after = end == len(shown) or shown[end] == " "
+        if start > 0 and shown[start - 1] == " " and space_after:
+            start -= 1
+        elif start == 0 and end < len(shown) and shown[end] == " ":
+            end += 1
+        shown = shown[:start] + shown[end:]
+    return shown
 
 
 def _encode_uncapped(plain: str) -> str:
@@ -236,7 +274,7 @@ def encode_name(plain: str) -> str:
 
 def folder_name_for_title(title: str) -> str:
     """Mirror of `FolderName.forTitle`."""
-    plain = plain_text_of(title)
+    plain = name_text_of(title)
     return encode_name(plain) if plain else UNTITLED
 
 

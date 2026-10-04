@@ -260,7 +260,7 @@ object SubtreeCodec {
             val link = parseTrailingChildLink(last)
             if (link != null && link.start == 0) {
                 val content = lines.dropLast(1)
-                return NodeLine.Block(content, link.folder, FolderName.plainTextOf(blockTitleOf(content)))
+                return NodeLine.Block(content, link.folder, FolderName.nameTextOf(blockTitleOf(content)))
             }
             if (last.startsWith("\\[") && parseTrailingChildLink(last.substring(1))?.start == 0) {
                 return NodeLine.Block(lines.dropLast(1) + lines.last().replaceFirst("\\[", "["))

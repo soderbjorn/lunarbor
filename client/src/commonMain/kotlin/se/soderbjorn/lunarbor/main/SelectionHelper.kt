@@ -449,9 +449,10 @@ internal fun zoomPathSegmentsOf(
     // (by `bulletAncestorsOf` / `zoomInfoOf`). Run it through the inline
     // tokenizer so `**bold**`, `[label](href)`, `#tag`, etc. collapse to
     // their visible text — the sidebar pane label shows a clean string.
-    // A search node's `{{search: …}}` is its query, not part of its name.
+    // A search node's `{{search: …}}` is its query, not part of its name,
+    // and `#tags` label the item rather than name it (FolderName.withoutTags).
     return (ancestors.map { it.titleText } + zoom.titleText)
-        .map { InlineMarkdownTokenizer.tokenize(se.soderbjorn.lunarbor.data.SearchNode.stripQuery(it)).displayText }
+        .map { FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(SearchNode.stripQuery(it))) }
 }
 
 /**

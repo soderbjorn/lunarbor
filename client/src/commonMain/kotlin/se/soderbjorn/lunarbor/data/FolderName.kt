@@ -4,7 +4,8 @@
  * Turns a bullet title into the name of the folder that backs it, and back.
  *
  * Every bullet with content lives in its own folder (see `NoteRepository`).
- * The folder name is derived from the title's plain text — Markdown markers
+ * The folder name is derived from the title's name ([nameTextOf]: plain text,
+ * `#tags` left out) — Markdown markers
  * removed — and percent-encoded where the character would be unsafe or
  * surprising on disk, so the encoding can always be reversed with [decode]:
  *
@@ -51,7 +52,7 @@ object FolderName {
      *   Markdown allowed, no `* ` marker).
      */
     fun forTitle(title: String): String {
-        val plain = plainTextOf(title)
+        val plain = nameTextOf(title)
         if (plain.isEmpty()) return UNTITLED
         return encode(plain)
     }
@@ -67,6 +68,52 @@ object FolderName {
         val prefix = LineMarkdownPrefix.detect(shown, 0)
         val body = if (prefix.style != null) shown.substring(prefix.markerEnd) else shown
         return InlineMarkdownTokenizer.tokenize(body).displayText
+    }
+
+    /**
+     * The item's *name*: [plainTextOf] without its `#tags` (as the
+     * tokenizer recognises them), each taken out with one adjoining space
+     * so `1-1 #private` is `1-1` and `Meet #x with Bob` is `Meet with Bob`.
+     * Tags are labels on the item, not part of what it is called: folder
+     * names ([forTitle]), breadcrumbs, pane labels, link-target titles and
+     * Starred labels use this, while the item's line keeps its tags (they
+     * still show as pills, are searched and drive privacy modes). A title
+     * without tags gives exactly [plainTextOf]'s text.
+     *
+     * @param title The item's title as stored (inline Markdown allowed,
+     *   no `* ` marker).
+     */
+    fun nameTextOf(title: String): String {
+        val shown = SearchNode.stripQuery(title)
+        val prefix = LineMarkdownPrefix.detect(shown, 0)
+        val body = if (prefix.style != null) shown.substring(prefix.markerEnd) else shown
+        return withoutTags(InlineMarkdownTokenizer.tokenize(body))
+    }
+
+    /**
+     * [line]'s display text with its tag runs removed (see [nameTextOf]).
+     * For text whose line-level prefix is already stripped — the
+     * breadcrumb and pane-label callers pass a zoom title as is.
+     */
+    fun withoutTags(line: TokenizedLine): String {
+        if (line.runs.none { it.isTag }) return line.displayText
+        // Display ranges of the tags, in display order.
+        val ranges = ArrayList<IntRange>()
+        var at = 0
+        for (run in line.runs) {
+            if (run.isTag) ranges += at until at + run.text.length
+            at += run.text.length
+        }
+        val sb = StringBuilder(line.displayText)
+        for (r in ranges.asReversed()) {
+            var start = r.first
+            var end = r.last + 1
+            val spaceAfter = end == sb.length || sb[end] == ' '
+            if (start > 0 && sb[start - 1] == ' ' && spaceAfter) start--
+            else if (start == 0 && end < sb.length && sb[end] == ' ') end++
+            sb.deleteRange(start, end)
+        }
+        return sb.toString()
     }
 
     /**

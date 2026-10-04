@@ -193,9 +193,9 @@ class McpToolsTest {
 
     @Test
     fun a_privacy_scoped_connection_never_sees_what_its_mode_hides() = runTest {
-        seed("_node.md", "- Secret #private\n- Work [↳](<Work/_node.md>)\n- Health #Private [↳](<Health #Private/_node.md>)\n- Milk\n")
+        seed("_node.md", "- Secret #private\n- Work [↳](<Work/_node.md>)\n- Health #Private [↳](<Health/_node.md>)\n- Milk\n")
         seed("Work/_node.md", "- Budget #work\n- Diary #private\n")
-        seed("Health #Private/_node.md", "- Pills\n")
+        seed("Health/_node.md", "- Pills\n")
         seed("Plan.md", "Ideas #private\n")
         seed("Open.md", "Hello #privateer\n")
         val registry = DocumentRegistry(repo, backgroundScope)
@@ -209,7 +209,7 @@ class McpToolsTest {
         assertTrue("* Work  <!-- /Work -->" in rootText && "* Milk" in rootText, rootText)
         assertFalse("Secret" in rootText || "Health" in rootText || "Plan.md" in rootText, rootText)
         assertTrue("/Open.md" in rootText, rootText)
-        for (hidden in listOf("/Health #Private", "lunarbor:/Health%20%23Private", "/Plan.md", "/_privacy.config")) {
+        for (hidden in listOf("/Health", "lunarbor:/Health", "/Plan.md", "/_privacy.config")) {
             val r = call("read", "path" to hidden)
             assertTrue(r.isError && "Nothing at" in r.text, "$hidden: ${r.text}")
         }
@@ -224,7 +224,7 @@ class McpToolsTest {
         // Edits keep what the agent never saw, in place.
         assertFalse(call("append", "path" to "/", "text" to "* Eggs").isError)
         assertEquals(
-            "- Secret #private\n- Work [↳](<Work/_node.md>)\n- Health #Private [↳](<Health #Private/_node.md>)\n- Milk\n- Eggs\n",
+            "- Secret #private\n- Work [↳](<Work/_node.md>)\n- Health #Private [↳](<Health/_node.md>)\n- Milk\n- Eggs\n",
             fs.read(root, "_node.md"),
         )
         assertFalse(call("edit", "path" to "/Work", "old_text" to "* Budget #work", "new_text" to "* Budget 2027 #work").isError)
@@ -238,15 +238,15 @@ class McpToolsTest {
         val rewritten = call("edit", "path" to "/", "old_text" to shown, "new_text" to "* Only this now\n* Work  <!-- /Work -->")
         assertFalse(rewritten.isError, rewritten.text)
         assertEquals(
-            "- Secret #private\n- Only this now\n- Health #Private [↳](<Health #Private/_node.md>)\n- Work [↳](<Work/_node.md>)\n",
+            "- Secret #private\n- Only this now\n- Health #Private [↳](<Health/_node.md>)\n- Work [↳](<Work/_node.md>)\n",
             fs.read(root, "_node.md"),
         )
-        assertEquals("- Pills\n", fs.read(root, "Health #Private/_node.md"))
+        assertEquals("- Pills\n", fs.read(root, "Health/_node.md"))
         // Nothing hidden can be changed, nor taken along by a delete.
         assertTrue(call("delete", "path" to "/Work").isError)
-        assertTrue(call("move", "path" to "/Health #Private", "to" to "/Work").isError)
-        assertTrue(call("create_file", "folder" to "/Health #Private", "name" to "x", "text" to "y").isError)
-        assertEquals("- Pills\n", fs.read(root, "Health #Private/_node.md"))
+        assertTrue(call("move", "path" to "/Health", "to" to "/Work").isError)
+        assertTrue(call("create_file", "folder" to "/Health", "name" to "x", "text" to "y").isError)
+        assertEquals("- Pills\n", fs.read(root, "Health/_node.md"))
 
         // The app's own mode plays no part; an unscoped connection sees everything.
         registry.setPrivacyMode("m1")

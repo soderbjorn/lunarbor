@@ -37,8 +37,18 @@ def plain(title):
     t = re.sub(r"(?<!\w)\*(?!\s)(.+?)(?<!\s)\*", r"\1", t)
     return t.strip()
 
+TAG = r"#[^\W\d_][\w-]*"
+
+def name_of(title):
+    """The title's plain text without its #tags (FolderName.nameTextOf):
+    tags label an item, they don't name its folder."""
+    t = plain(title)
+    t = re.sub(r" " + TAG + r"(?= |$)", "", t)
+    t = re.sub(r"^" + TAG + r"( |$)", "", t)
+    return re.sub(r"(?<![\w-])" + TAG, "", t)
+
 def fname(title):
-    p = plain(title) or "Untitled"
+    p = name_of(title) or "Untitled"
     trailing = len(p)
     while trailing > 0 and p[trailing - 1] in ". ":
         trailing -= 1

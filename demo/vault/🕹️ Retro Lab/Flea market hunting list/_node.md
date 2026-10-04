@@ -1,2 +1,2 @@
-- Things I am **definitely not** going to buy #someday [↳](<Things I am definitely not going to buy #someday/_node.md>)
+- Things I am **definitely not** going to buy #someday [↳](<Things I am definitely not going to buy/_node.md>)
 - Things I need [↳](<Things I need/_node.md>)

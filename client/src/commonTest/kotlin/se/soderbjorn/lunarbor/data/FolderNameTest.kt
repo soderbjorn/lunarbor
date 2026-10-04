@@ -93,4 +93,30 @@ class FolderNameTest {
         assertFalse(FolderName.isVariantOf("Untitled (x)", "Untitled"))
         assertFalse(FolderName.isVariantOf("untitled", "Untitled"))
     }
+
+    @Test
+    fun tags_are_left_out_of_names_with_one_adjoining_space() {
+        assertEquals("1-1", FolderName.nameTextOf("1-1 #framna-sensitive"))
+        assertEquals("1-1", FolderName.nameTextOf("1-1 #a #b"))
+        assertEquals("Meet with Bob", FolderName.nameTextOf("Meet #x with Bob"))
+        assertEquals("Plan", FolderName.nameTextOf("#work Plan"))
+        assertEquals("Trip to Lisbon", FolderName.nameTextOf("**Trip** to Lisbon #travel"))
+        assertEquals("", FolderName.nameTextOf("#private"))
+        // Not tags: kept as written.
+        assertEquals("Issue id#42", FolderName.nameTextOf("Issue id#42"))
+        assertEquals("C# notes", FolderName.nameTextOf("C# notes"))
+    }
+
+    @Test
+    fun a_title_without_tags_names_exactly_like_its_plain_text() {
+        for (t in listOf("Q3/Q4 plan", "  spaced  out  ", "# Heading", "See [x](https://e.com)")) {
+            assertEquals(FolderName.plainTextOf(t), FolderName.nameTextOf(t))
+        }
+    }
+
+    @Test
+    fun folder_names_leave_tags_out() {
+        assertEquals("1-1", FolderName.forTitle("1-1 #framna-sensitive"))
+        assertEquals(FolderName.UNTITLED, FolderName.forTitle("#private"))
+    }
 }

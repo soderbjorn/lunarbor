@@ -53,9 +53,10 @@ the folder tree). It is ordinary Markdown: a list, with quotes for blocks.
   block's text stays here; its children live in `folder`, exactly like a
   bullet's. The folder is named after the block's first line.
 
-Folder names are the title's plain text with unsafe characters
-percent-encoded (`Q3/Q4 plan` is stored as `Q3%2FQ4 plan`), capped at 120
-bytes; sibling collisions get ` (2)`, ` (3)`, …; an empty title is
+Folder names are the title's plain text without its `#tags` (`1-1 #private`
+is stored in `1-1`; the tag stays on the bullet's line), with unsafe
+characters percent-encoded (`Q3/Q4 plan` is stored as `Q3%2FQ4 plan`), capped
+at 120 bytes; sibling collisions get ` (2)`, ` (3)`, …; an empty title is
 `Untitled`.
 
 ## Saving

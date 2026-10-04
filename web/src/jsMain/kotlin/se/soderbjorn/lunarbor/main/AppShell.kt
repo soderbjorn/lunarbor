@@ -72,6 +72,7 @@ import se.soderbjorn.lunula.web.shell.PaneAddMenuItem
 import se.soderbjorn.lunula.web.shell.PaneOverflowSpec
 import se.soderbjorn.lunula.web.shell.TopbarAction
 import se.soderbjorn.lunula.web.shell.mountAppShell
+import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.main.space.SpaceHost
@@ -1303,7 +1304,7 @@ class AppShell(
             fileLabel = filePathLabel(file)
             path = if (file != stored.fileRel) null else stored.zoomTitlePath
                 .takeWhile { !filter.hides(se.soderbjorn.lunarbor.data.TextIndex.tagKeysOfRow("* $it")) }
-                .map { InlineMarkdownTokenizer.tokenize(it).displayText.ifBlank { "(untitled)" } }
+                .map { FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(it)).ifBlank { "(untitled)" } }
                 .takeIf { it.isNotEmpty() }
                 ?.joinToString(" / ")
         } else {
@@ -1579,10 +1580,12 @@ class AppShell(
         // markers (`**bold**`, `*italic*`, `` `code` ``, `~~strike~~`,
         // `[label](href)`) via the same tokenizer the editor's paint
         // loop uses, so the breadcrumb shows clean, plain-text labels
-        // regardless of the underlying bullet's formatting. Navigation
-        // is keyed on `lineId`, so the text-stripping never affects
-        // where a click takes you.
-        fun flat(s: String) = InlineMarkdownTokenizer.tokenize(s).displayText
+        // regardless of the underlying bullet's formatting. `#tags` are
+        // left out too: they label the item (and show as pills on its
+        // row and the page title), they don't name it. Navigation is
+        // keyed on `lineId`, so the text-stripping never affects where a
+        // click takes you.
+        fun flat(s: String) = FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(s))
         for (ancestor in vm.bulletAncestors(backing)) {
             segments += PaneTitleSegment(
                 label = flat(ancestor.titleText).ifBlank { "(untitled)" },
@@ -3059,7 +3062,7 @@ class AppShell(
 
     companion object {
         /** Persister key of the fold memory ([loadFoldMemory]). */
-        private const val FOLD_MEMORY_KEY: String = "lunarborOpenFolders"
+        internal const val FOLD_MEMORY_KEY: String = "lunarborOpenFolders"
 
         /**
          * Persister key of the app's current privacy mode, per vault:

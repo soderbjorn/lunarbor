@@ -1407,7 +1407,7 @@ class PaneBackingViewModel(
         if (!state.isLoaded || state.isMarkdownMode) return null
         zoomInfoOf(state)?.let { zoom ->
             if (isProtectedRow(state, zoom.zoomRow)) return null
-            return InlineMarkdownTokenizer.tokenize(SearchNode.stripQuery(zoom.titleText)).displayText.trim()
+            return FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(SearchNode.stripQuery(zoom.titleText))).trim()
         }
         if (!NoteRepository.isOutlineFile(state.activeFileRel) || parentFileOf(state.activeFileRel) == null) return null
         if (registry.hasHiddenUnder(NoteRepository.folderOfOutline(state.activeFileRel))) return null
@@ -3508,7 +3508,7 @@ class PaneBackingViewModel(
         val docState = s.documentState
         if (zoomed != null && docState != null && document?.folderOf(zoomed) == pathRel) {
             val row = docState.lineIds.indexOf(zoomed)
-            if (row >= 0) FolderName.plainTextOf(SubtreeCodec.titleOf(docState.lines[row])).takeIf { it.isNotBlank() }?.let { return it }
+            if (row >= 0) FolderName.nameTextOf(SubtreeCodec.titleOf(docState.lines[row])).takeIf { it.isNotBlank() }?.let { return it }
         }
         if (pathRel.isEmpty()) return NoteRepository.ROOT_DISPLAY_NAME
         val name = pathRel.substringAfterLast('/')
