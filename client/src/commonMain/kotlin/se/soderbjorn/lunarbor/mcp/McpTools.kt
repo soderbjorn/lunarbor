@@ -126,6 +126,8 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
             description = "Read a node (its outline items and the other files in its folder) or any file. " +
                 "Start with path \"/\", the vault's root node. Items that are nodes themselves end in " +
                 "<!-- /path -->; read that path to go inside. Use the text exactly as shown for edit's old_text. " +
+                "A node's header gives its Created and Updated times (UTC; Updated is the last change to its own " +
+                "items or title, not to nodes inside it), or \"unknown\" for nodes not changed since stamps began. " +
                 "Markdown notes and other text files come back as text, images as images, and other files (PDFs, " +
                 "archives, …) as base64 data, up to 10 MB.",
             inputSchema = schema(
@@ -498,8 +500,16 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
     private fun isoDate(ms: Long): String =
         kotlin.time.Instant.fromEpochMilliseconds(ms).toString().take(16).replace('T', ' ')
 
-    /** `# Title` and `Path: /…` heading a node's text. */
-    private suspend fun nodeHeader(folder: String): String = "# ${nodeTitle(folder)}\nPath: ${display(folder)}\n\n"
+    /**
+     * `# Title`, `Path: /…` and the node's `Created:` / `Updated:` stamps
+     * (LBR-16; "unknown" when its outline carries none) heading a node's
+     * text. The front matter itself is never shown as outline text.
+     */
+    private suspend fun nodeHeader(folder: String): String {
+        val stamps = registry.nodeStampsOf(folder)
+        return "# ${nodeTitle(folder)}\nPath: ${display(folder)}\n" +
+            "Created: ${stamps.created ?: "unknown"}\nUpdated: ${stamps.updated ?: "unknown"}\n\n"
+    }
 
     /**
      * The node's items as on disk, nested nodes read [depth] − 1 levels

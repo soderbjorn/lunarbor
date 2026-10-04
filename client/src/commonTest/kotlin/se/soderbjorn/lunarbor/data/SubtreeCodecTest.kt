@@ -10,6 +10,7 @@ import se.soderbjorn.lunarbor.main.BlockLayout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 
 class SubtreeCodecTest {
 
@@ -22,6 +23,58 @@ class SubtreeCodecTest {
 
     private fun roundTrip(items: List<NodeLine>): List<NodeLine> =
         SubtreeCodec.parseNodeFile(SubtreeCodec.formatNodeFile(items))
+
+    // ------------------------------------------------- front matter (LBR-16)
+
+    @Test
+    fun front_matter_round_trips_and_is_never_an_item() {
+        val text = "---\ncreated: 2026-10-04T12:34:56Z\nupdated: 2026-10-04T13:02:11Z\n---\n" + sample
+        val split = SubtreeCodec.splitFrontMatter(text)
+        assertEquals("2026-10-04T12:34:56Z", split.frontMatter?.created)
+        assertEquals("2026-10-04T13:02:11Z", split.frontMatter?.updated)
+        assertEquals(sample, split.body)
+        // The front matter is skipped: the same items as without it.
+        assertEquals(SubtreeCodec.parseNodeFile(sample), SubtreeCodec.parseNodeFile(text))
+        assertEquals(text, SubtreeCodec.withFrontMatter(split.frontMatter, split.body))
+    }
+
+    @Test
+    fun no_front_matter_means_unknown_stamps() {
+        val split = SubtreeCodec.splitFrontMatter(sample)
+        assertNull(split.frontMatter)
+        assertEquals(sample, split.body)
+        // A lone `---` with no closing fence is not front matter.
+        val open = "---\n- a\n"
+        assertNull(SubtreeCodec.splitFrontMatter(open).frontMatter)
+        assertEquals(sample, SubtreeCodec.withFrontMatter(null, sample))
+        // A missing key is unknown too.
+        val onlyUpdated = SubtreeCodec.splitFrontMatter("---\nupdated: 2026-10-04T13:02:11Z\n---\n- a\n").frontMatter!!
+        assertNull(onlyUpdated.created)
+        assertEquals("2026-10-04T13:02:11Z", onlyUpdated.updated)
+    }
+
+    @Test
+    fun stamping_keeps_other_tools_keys_in_place() {
+        val fm = SubtreeCodec.splitFrontMatter("---\ntags:\n  - recipe\naliases: [Soups]\n---\n- a\n").frontMatter!!
+        val stamped = fm.with(NodeFrontMatter.UPDATED, "2026-10-04T13:02:11Z")
+        assertEquals(listOf("updated: 2026-10-04T13:02:11Z", "tags:", "  - recipe", "aliases: [Soups]"), stamped.lines)
+        val both = stamped.with(NodeFrontMatter.CREATED, "2026-10-04T12:00:00Z")
+            .with(NodeFrontMatter.UPDATED, "2026-10-05T08:00:00Z")
+        assertEquals(
+            listOf("created: 2026-10-04T12:00:00Z", "updated: 2026-10-05T08:00:00Z", "tags:", "  - recipe", "aliases: [Soups]"),
+            both.lines,
+        )
+        // Quoted values (as YAML writers may emit) read without the quotes.
+        assertEquals("2026-10-04T12:00:00Z", NodeFrontMatter(listOf("created: \"2026-10-04T12:00:00Z\"")).created)
+    }
+
+    @Test
+    fun stamps_are_utc_whole_seconds_and_parse_back() {
+        assertEquals("1970-01-01T00:00:01Z", NodeFrontMatter.stampOf(1_500L))
+        assertEquals(1_000L, NodeFrontMatter.epochMillisOf("1970-01-01T00:00:01Z"))
+        assertNull(NodeFrontMatter.epochMillisOf("last Tuesday"))
+        assertNull(NodeFrontMatter.epochMillisOf(null))
+    }
 
     @Test
     fun parses_the_ticket_example() {

@@ -6,6 +6,8 @@
 
 package se.soderbjorn.lunarbor.testing
 
+import se.soderbjorn.lunarbor.data.NoteRepository
+import se.soderbjorn.lunarbor.data.SubtreeCodec
 import se.soderbjorn.lunarbor.platform.FileSystem
 import se.soderbjorn.lunarbor.platform.VaultDirectoryEntry
 
@@ -104,15 +106,29 @@ class InMemoryFileSystem : FileSystem {
     /**
      * Snapshot of the tree under [root] as sorted relative paths: folders
      * end in `/`, files are `path = content`. Handy for exact assertions.
+     * Outlines show their body only ([read]).
      */
     fun tree(root: String): List<String> {
         val prefix = "$root/"
         val out = ArrayList<String>()
         for (d in dirs) if (d.startsWith(prefix)) out += d.substring(prefix.length) + "/"
-        for ((f, c) in files) if (f.startsWith(prefix)) out += f.substring(prefix.length) + " = " + c
+        for ((f, c) in files) if (f.startsWith(prefix)) out += f.substring(prefix.length) + " = " + bodyOf(f, c)
         return out.sorted()
     }
 
-    /** Content of the file at [root]/[rel], or `null`. */
-    fun read(root: String, rel: String): String? = files["$root/$rel"]
+    /**
+     * Content of the file at [root]/[rel], or `null`. A `_node.md`
+     * outline's `created` / `updated` front matter (LBR-16) is left out, so
+     * assertions about the outline itself need not know the clock; [raw]
+     * gives the file as written.
+     */
+    fun read(root: String, rel: String): String? = files["$root/$rel"]?.let { bodyOf(rel, it) }
+
+    /** Content of the file at [root]/[rel] exactly as written, front matter included. */
+    fun raw(root: String, rel: String): String? = files["$root/$rel"]
+
+    private fun bodyOf(path: String, text: String): String =
+        if (path.endsWith("/" + NoteRepository.OUTLINE_FILE_NAME) || path == NoteRepository.OUTLINE_FILE_NAME) {
+            SubtreeCodec.splitFrontMatter(text).body
+        } else text
 }

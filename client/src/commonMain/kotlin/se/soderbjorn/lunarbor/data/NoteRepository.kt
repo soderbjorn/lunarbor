@@ -163,7 +163,8 @@ data class AttachmentMove(val fromFolder: String, val toFolder: String, val name
  * @property rootFileName The file panes open with; the vault root's
  *   outline, [OUTLINE_FILE_NAME], by default.
  * @param fileSystem Platform (or, in tests, in-memory) filesystem.
- * @param nowMillis Wall clock, used only to stamp trash folder names.
+ * @param nowMillis Wall clock: stamps trash folder names and the
+ *   `created` / `updated` front matter of outlines it writes (LBR-16).
  */
 class NoteRepository(
     private val fileSystem: FileSystem,
@@ -449,26 +450,32 @@ class NoteRepository(
                 val now = postMovePath(d, plan.moves)
                 if (now.isNotEmpty()) fileSystem.deleteDirectoryIfEmpty(abs(now))
             }
+            val stamp = NodeFrontMatter.stampOf(nowMillis())
+            val written = HashSet<String>()
+            val retitled = ArrayList<String>()
             for ((folder, text) in plan.writes) {
                 val path = abs(outlineFileOf(folder))
                 val onDisk = fileSystem.readFileIfExists(path)
-                if (onDisk == text) continue
                 // An empty node never creates its outline file.
                 if (text.isEmpty() && onDisk == null) continue
-                println("[autosave]   write $path")
-                fileSystem.writeFile(path, text)
-                observe(outlineFileOf(folder), text)
+                if (onDisk != null) retitled += retitledChildren(folder, onDisk, text, plan.priorNames)
+                if (writeOutlineFile(outlineFileOf(folder), text, onDisk, stamp)) {
+                    println("[autosave]   write $path")
+                    written += folder
+                }
             }
+            // A node's title lives in its parent's outline; retitling it
+            // stamps its own outline too (its content is unchanged).
+            for (folder in retitled) if (folder !in written) touchOutline(folder, stamp)
             for (folder in plan.clearedOutlines) {
                 fileSystem.deleteFile(abs(outlineFileOf(folder)))
                 observe(outlineFileOf(folder), null)
             }
             for ((folder, extra) in plan.appends) {
                 val path = abs(outlineFileOf(folder))
-                val existing = fileSystem.readFileIfExists(path) ?: ""
-                val merged = SubtreeCodec.formatNodeFile(SubtreeCodec.parseNodeFile(existing) + extra)
-                fileSystem.writeFile(path, merged)
-                observe(outlineFileOf(folder), merged)
+                val existing = fileSystem.readFileIfExists(path)
+                val merged = SubtreeCodec.formatNodeFile(SubtreeCodec.parseNodeFile(existing ?: "") + extra)
+                writeOutlineFile(outlineFileOf(folder), merged, existing, stamp)
             }
             return SaveResult(
                 promotedByRow = plan.assigned.mapValues { (_, folder) -> PromotedRef(folder) },
@@ -521,6 +528,15 @@ class NoteRepository(
 
         /** Row → items already in the outline of the folder it adopted. */
         val adoptedItems = HashMap<Int, List<NodeLine>>()
+
+        /**
+         * Desired folder → the folder name it had in the same parent's
+         * outline before this save, for every folder-backed item that was
+         * already an item of that node (renamed or not). Lets the write
+         * loop match old and new parent lines to spot retitled nodes
+         * ([retitledChildren]).
+         */
+        val priorNames = HashMap<String, String>()
 
         /** Every folder currently known to belong to a live bullet. */
         private val trackedFolders: Set<String> = current.values.toHashSet()
@@ -675,6 +691,9 @@ class NoteRepository(
                         val target = join(desired, name)
                         assigned[item.row] = target
                         val existing = curOf[item.row]
+                        if (existing != null && cur != null && parentOf(existing) == cur) {
+                            priorNames[target] = existing.substringAfterLast('/')
+                        }
                         if (current[item.row] == null) promotions++
                         if (existing != null && existing != target) {
                             val travelsWithParent = cur != null && parentOf(existing) == cur &&
@@ -1170,12 +1189,10 @@ class NoteRepository(
     suspend fun convertFolderTree(folderRel: String): TreeConversion {
         val written = ArrayList<String>()
         val notes = LinkedHashMap<String, String>()
+        val stamp = NodeFrontMatter.stampOf(nowMillis())
         suspend fun writeOutline(folder: String, items: List<NodeLine>) {
-            val rel = outlineFileOf(folder)
-            val text = SubtreeCodec.formatNodeFile(items)
-            fileSystem.writeFile(abs(rel), text)
-            observe(rel, text)
-            written += rel
+            this@NoteRepository.writeOutline(folder, items, stamp)
+            written += outlineFileOf(folder)
         }
         suspend fun walk(dir: String) {
             val entries = fileSystem.listDirectoryEntries(abs(dir)).filter { !it.name.startsWith(".") }
@@ -1620,8 +1637,11 @@ class NoteRepository(
         }
         val dstItems = if (samePlace) srcItems else nodeItemsOf(dstParent).toMutableList()
         dstItems.add((index ?: dstItems.size).coerceIn(0, dstItems.size), moved)
-        if (!samePlace) writeOutline(srcParent, srcItems)
-        writeOutline(dstParent, dstItems)
+        val stamp = NodeFrontMatter.stampOf(nowMillis())
+        if (!samePlace) writeOutline(srcParent, srcItems, stamp)
+        writeOutline(dstParent, dstItems, stamp)
+        // Retitled: the node's own outline is stamped too (LBR-16).
+        if (item is NodeLine.Folder && title != item.title) touchOutline(dstFolder, stamp)
         return dstFolder
     }
 
@@ -1660,14 +1680,116 @@ class NoteRepository(
     /** The file [fileRel] as UTF-8 text, or `null`. Called by `McpTools` via the registry. */
     suspend fun readTextFile(fileRel: String): String? = fileSystem.readFileIfExists(abs(fileRel))
 
-    /** Writes the node [folderRel]'s outline from [items] and feeds the indexes. */
-    private suspend fun writeOutline(folderRel: String, items: List<NodeLine>) {
+    /**
+     * Writes the node [folderRel]'s outline from [items] and feeds the
+     * indexes, stamping it per [writeOutlineFile].
+     *
+     * @param stamp The time to stamp ([NodeFrontMatter.stampOf]).
+     * @return `true` when the file was written (its items changed).
+     */
+    private suspend fun writeOutline(
+        folderRel: String,
+        items: List<NodeLine>,
+        stamp: String = NodeFrontMatter.stampOf(nowMillis()),
+    ): Boolean {
         val rel = outlineFileOf(folderRel)
-        val text = SubtreeCodec.formatNodeFile(items)
         fileSystem.ensureDirectory(abs(folderRel))
+        return writeOutlineFile(rel, SubtreeCodec.formatNodeFile(items), fileSystem.readFileIfExists(abs(rel)), stamp)
+    }
+
+    /**
+     * Writes the outline file [fileRel] with the outline [body]
+     * ([SubtreeCodec.formatNodeFile]) under its front matter (LBR-16), the
+     * one place outline text reaches disk:
+     *
+     *  - a body equal to the one on disk writes nothing — the front matter
+     *    is not part of that comparison, so an unchanged save never
+     *    restamps;
+     *  - a new file gets `created` and `updated` set to [stamp];
+     *  - otherwise the front matter on disk is kept (other tools' keys
+     *    included) and `updated` is set to [stamp] — unless the items are
+     *    the same and only the formatting differs (another tool's `*`
+     *    markers, blank lines), which is rewritten without a new stamp.
+     *
+     * Reports the written text to [noteTextObserver].
+     *
+     * @param onDisk The file's current text, `null` when it does not exist.
+     * @return `true` when the file was written.
+     */
+    private suspend fun writeOutlineFile(fileRel: String, body: String, onDisk: String?, stamp: String): Boolean {
+        val old = onDisk?.let(SubtreeCodec::splitFrontMatter)
+        if (old != null && old.body == body) return false
+        var fm = old?.frontMatter ?: NodeFrontMatter()
+        if (old == null) fm = fm.with(NodeFrontMatter.CREATED, stamp)
+        if (old == null || SubtreeCodec.parseNodeFile(onDisk) != SubtreeCodec.parseNodeFile(body)) {
+            fm = fm.with(NodeFrontMatter.UPDATED, stamp)
+        }
+        val text = SubtreeCodec.withFrontMatter(fm, body)
+        fileSystem.writeFile(abs(fileRel), text)
+        observe(fileRel, text)
+        return true
+    }
+
+    /**
+     * Sets `updated` to [stamp] in the node [folderRel]'s outline, its
+     * items unchanged; nothing when it has no outline. Used for a retitled
+     * node, whose title lives in its parent's outline (LBR-16).
+     */
+    private suspend fun touchOutline(folderRel: String, stamp: String) {
+        val rel = outlineFileOf(folderRel)
+        val onDisk = fileSystem.readFileIfExists(abs(rel)) ?: return
+        val split = SubtreeCodec.splitFrontMatter(onDisk)
+        val fm = (split.frontMatter ?: NodeFrontMatter()).with(NodeFrontMatter.UPDATED, stamp)
+        val text = SubtreeCodec.withFrontMatter(fm, split.body)
+        if (text == onDisk) return
         fileSystem.writeFile(abs(rel), text)
         observe(rel, text)
     }
+
+    /**
+     * Child folders of the node [folder] whose title changed between its
+     * outline on disk ([oldText]) and the one about to be written
+     * ([newText]): items present in both — matched through [priorNames],
+     * so a rename that moved the folder still pairs up — whose bullet
+     * title (or block title) differs. Called by [save]'s write loop.
+     */
+    private fun retitledChildren(folder: String, oldText: String, newText: String, priorNames: Map<String, String>): List<String> {
+        if (SubtreeCodec.splitFrontMatter(oldText).body == newText) return emptyList()
+        fun titleOf(line: NodeLine): String? = when (line) {
+            is NodeLine.Folder -> line.title
+            is NodeLine.Block -> if (line.folder != null) SubtreeCodec.blockTitleOf(line.content) else null
+            else -> null
+        }
+        fun folderOf(line: NodeLine): String? = when (line) {
+            is NodeLine.Folder -> line.folder
+            is NodeLine.Block -> line.folder
+            else -> null
+        }
+        val oldTitles = HashMap<String, String>()
+        for (line in SubtreeCodec.parseNodeFile(oldText)) {
+            val name = folderOf(line) ?: continue
+            oldTitles[name.lowercase()] = titleOf(line) ?: continue
+        }
+        val out = ArrayList<String>()
+        for (line in SubtreeCodec.parseNodeFile(newText)) {
+            val name = folderOf(line) ?: continue
+            val child = join(folder, name)
+            val prior = priorNames[child] ?: continue
+            val oldTitle = oldTitles[prior.lowercase()] ?: continue
+            if (oldTitle != titleOf(line)) out += child
+        }
+        return out
+    }
+
+    /**
+     * The `created` / `updated` stamps of the node folder [folderRel]
+     * (LBR-16), read from its outline's front matter; both `null` when it
+     * has no outline or no front matter. Called by `McpTools.read` (via
+     * `DocumentRegistry.nodeStampsOf`).
+     */
+    suspend fun nodeStampsOf(folderRel: String): NodeFrontMatter =
+        fileSystem.readFileIfExists(abs(outlineFileOf(folderRel)))
+            ?.let { SubtreeCodec.splitFrontMatter(it).frontMatter } ?: NodeFrontMatter()
 
     /**
      * Whether the vault file [fileRel] exists. The root outline always

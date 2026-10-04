@@ -53,6 +53,28 @@ the folder tree). It is ordinary Markdown: a list, with quotes for blocks.
   block's text stays here; its children live in `folder`, exactly like a
   bullet's. The folder is named after the block's first line.
 
+The file may start with front matter holding the node's timestamps:
+
+```
+---
+created: 2026-10-04T12:34:56Z
+updated: 2026-10-04T13:02:11Z
+---
+- Buy oat milk
+```
+
+Both are UTC. `created` is set when Lunarbor creates the node's
+`_node.md` and never changes; `updated` is set whenever the node's own
+items change — a bullet or block added, removed, edited or moved, a
+child renamed — and also when the node itself is renamed. Changes deeper
+down do not touch it, and a save that changes nothing leaves the file
+alone. The front matter is not part of the outline: it never shows up as a
+bullet or in search. Keys other apps put there (Obsidian's `tags`, say) are
+kept. Nodes saved before Lunarbor kept these times simply have none: their
+`updated` appears with their next change, and their `created` stays
+unknown. Agents see both times when they read a node, and Navigate to
+(Cmd-O) lists recently changed nodes first.
+
 Folder names are the title's plain text without its `#tags` (`1-1 #private`
 is stored in `1-1`; the tag stays on the bullet's line), with unsafe
 characters percent-encoded (`Q3/Q4 plan` is stored as `Q3%2FQ4 plan`), capped
@@ -131,7 +153,9 @@ of hidden nodes stay exactly where and as they are.
 
 Lunarbor watches the vault. When another program (a coding agent, an
 editor, a sync tool) changes a node or note that is open, it is reloaded
-from disk at once; edits not yet saved in the app are replaced. The
+from disk at once; edits not yet saved in the app are replaced. Changes made
+outside the app are not timestamped; whatever front matter is on disk is
+read as it is. The
 folder contents list and link previews follow too.
 
 ## Why this shape
