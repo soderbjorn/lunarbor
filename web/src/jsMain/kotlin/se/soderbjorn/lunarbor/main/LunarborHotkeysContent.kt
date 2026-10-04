@@ -20,6 +20,7 @@
  */
 package se.soderbjorn.lunarbor.main
 
+import se.soderbjorn.lunarbor.main.space.isSpaceModeEnabled
 import se.soderbjorn.lunula.web.hotkey.HotkeyBindings
 import se.soderbjorn.lunula.web.hotkey.HotkeyEntry
 import se.soderbjorn.lunula.web.hotkey.HotkeyGroup
@@ -43,7 +44,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
     val ctrl = if (isMac) "⌃" else "Ctrl"
 
     return HotkeysModalSpec(
-        groups = listOf(
+        groups = listOfNotNull(
             HotkeyGroup(
                 title = "Outline navigation",
                 entries = listOf(
@@ -155,6 +156,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                     ),
                 ),
             ),
+            // 3D mode, only while App settings has it on (space/SpaceMode.kt).
             HotkeyGroup(
                 title = "3D mode",
                 entries = listOf(
@@ -174,7 +176,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                         iconSvg = ICON_ESC,
                     ),
                 ),
-            ),
+            ).takeIf { isSpaceModeEnabled },
             HotkeyGroup(
                 title = "App",
                 entries = listOf(

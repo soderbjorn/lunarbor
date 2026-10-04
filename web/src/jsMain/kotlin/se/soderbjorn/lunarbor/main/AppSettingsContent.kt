@@ -18,6 +18,8 @@
  *        automatic interval and last backup — see BackupSettings.kt.
  *     4. An **Agent access** section (Electron only): the MCP server's
  *        switch, key and setup instructions — see AgentAccessSettings.kt.
+ *     5. An **Experimental** section: "Enable 3D mode" (off by default;
+ *        `SpaceMode.setEnabled`).
  *  - **Keyboard shortcuts** (`AppShellSpec.hotkeysContent`): the curated
  *    [lunarborHotkeysSpec] list, grouped, with keycap chords. Replaces the
  *    old cheatsheet modal; Cmd-/ and `Lunarbor → Hotkeys…` open it.
@@ -35,6 +37,7 @@ import kotlinx.coroutines.await
 import kotlinx.coroutines.launch
 import org.w3c.dom.HTMLButtonElement
 import org.w3c.dom.HTMLElement
+import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.events.Event
 import se.soderbjorn.lunula.web.hotkey.openHotkeyConfigDialog
 import kotlin.js.Promise
@@ -54,6 +57,9 @@ import kotlin.js.Promise
  *   "Back up now" calls it before zipping the vault.
  * @property privacyModes The vault's privacy modes (`DocumentRegistry.privacyFlow`),
  *   offered as Agent access connections' privacy scopes.
+ * @property spaceModeEnabled Whether 3D mode is turned on
+ *   (`isSpaceModeEnabled`), read when the body is built.
+ * @property setSpaceModeEnabled Turns 3D mode on or off (`SpaceMode.setEnabled`).
  */
 class AppSettingsHandlers(
     val scope: CoroutineScope,
@@ -62,6 +68,8 @@ class AppSettingsHandlers(
     val switchVault: suspend (String) -> String?,
     val flushEdits: suspend () -> Unit,
     val privacyModes: () -> List<se.soderbjorn.lunarbor.data.PrivacyMode> = { emptyList() },
+    val spaceModeEnabled: () -> Boolean = { false },
+    val setSpaceModeEnabled: (Boolean) -> Unit = {},
 )
 
 /**
@@ -81,7 +89,35 @@ fun buildAppSettingsContent(handlers: AppSettingsHandlers): HTMLElement {
     if (vaultBridge() != null) body.appendChild(buildVaultSection(handlers))
     if (backupBridge() != null) body.appendChild(buildBackupSection(handlers.scope, handlers.flushEdits))
     if (mcpBridge() != null) body.appendChild(buildAgentAccessSection(handlers.scope, handlers.privacyModes))
+    body.appendChild(buildExperimentalSection(handlers))
     return body
+}
+
+/**
+ * The Experimental section: the "Enable 3D mode" switch, like Lunamux's
+ * "Enable 3D app switcher". Applies at once — the topbar cube, ⌃⌘3 / ⌃⌘1
+ * and their Keyboard Shortcuts rows follow it.
+ */
+private fun buildExperimentalSection(handlers: AppSettingsHandlers): HTMLElement {
+    val section = document.createElement("section") as HTMLElement
+    section.className = "lunarbor-app-settings-section"
+    val title = document.createElement("h3") as HTMLElement
+    title.className = "lunarbor-app-settings-section-title"
+    title.textContent = "Experimental"
+    section.appendChild(title)
+
+    val row = document.createElement("label") as HTMLElement
+    row.className = "lunarbor-app-settings-toggle"
+    val box = document.createElement("input") as HTMLInputElement
+    box.type = "checkbox"
+    box.checked = handlers.spaceModeEnabled()
+    box.addEventListener("change", { _: Event -> handlers.setSpaceModeEnabled(box.checked) })
+    row.appendChild(box)
+    val text = document.createElement("span") as HTMLElement
+    text.textContent = "Enable 3D mode"
+    row.appendChild(text)
+    section.appendChild(row)
+    return section
 }
 
 /**
@@ -331,6 +367,8 @@ private const val APP_SETTINGS_CSS = """
     margin: 4px 0 2px; font-size: 11px; font-weight: 600; line-height: 1.2;
     letter-spacing: 0.08em; text-transform: uppercase; color: var(--t-text-dim, #9a9a9a);
 }
+.lunarbor-app-settings-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
+.lunarbor-app-settings-toggle input { margin: 0; accent-color: var(--t-accent); }
 .lunarbor-vault-row { display: flex; align-items: center; gap: 10px; }
 .lunarbor-vault-path {
     flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

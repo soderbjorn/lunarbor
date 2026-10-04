@@ -115,6 +115,17 @@ interface SpaceHost {
 }
 
 /**
+ * Whether 3D mode is turned on in App settings ("Enable 3D mode", off by
+ * default). While `false` nothing reaches it: the topbar cube is hidden
+ * (no `data-lunarbor-space-enabled` on `<body>`), ⌃⌘3 / ⌃⌘1 do nothing,
+ * the Keyboard Shortcuts sidebar leaves out its rows, and a remembered
+ * "on" is not restored. Loaded by [SpaceMode.restore], changed by
+ * [SpaceMode.setEnabled]; read by `LunarborHotkeysContent`.
+ */
+var isSpaceModeEnabled: Boolean = false
+    private set
+
+/**
  * The 3D "Pages" mode. One per app, built by `AppShell`.
  *
  * ### Callers
@@ -182,6 +193,8 @@ class SpaceMode(
      */
     fun restore() {
         scope.launch {
+            applyEnabled(persister.read(ENABLED_KEY) == "true")
+            if (!isSpaceModeEnabled) return@launch
             val saved = persister.read(PERSIST_KEY) ?: return@launch
             val obj: dynamic = try {
                 JSON.parse<dynamic>(saved)
@@ -196,6 +209,7 @@ class SpaceMode(
 
     /** Turns 3D mode on or off (the cube button, ⌃⌘3). */
     fun toggle() {
+        if (!isSpaceModeEnabled) return
         if (isActive) exit() else scope.launch { enter() }
     }
 
@@ -204,10 +218,31 @@ class SpaceMode(
      * tab (⌃⌘1). Remembered; takes effect at once when 3D mode is on.
      */
     fun toggleSplit() {
+        if (!isSpaceModeEnabled) return
         isSplit = !isSplit
         persist()
         updateSplitButton()
         if (isActive) rebuildViews()
+    }
+
+    /**
+     * Turns the feature on or off (App settings → "Enable 3D mode"),
+     * remembered under [ENABLED_KEY]. Turning it off leaves 3D mode first
+     * when it is open.
+     *
+     * @param enabled The new value of [isSpaceModeEnabled].
+     */
+    fun setEnabled(enabled: Boolean) {
+        if (!enabled && isActive) exit()
+        applyEnabled(enabled)
+        scope.launch { persister.write(ENABLED_KEY, enabled.toString()) }
+    }
+
+    /** Sets [isSpaceModeEnabled] and the `<body>` attribute that shows the topbar cube. */
+    private fun applyEnabled(enabled: Boolean) {
+        isSpaceModeEnabled = enabled
+        if (enabled) document.body?.setAttribute("data-lunarbor-space-enabled", "")
+        else document.body?.removeAttribute("data-lunarbor-space-enabled")
     }
 
     /** Shows the view the split button switches to next. */
@@ -542,6 +577,9 @@ class SpaceMode(
     companion object {
         /** Persister key for `{ "on": Boolean, "split": Boolean }`. App state, not vault content. */
         const val PERSIST_KEY: String = "lunarborSpace"
+
+        /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off). */
+        const val ENABLED_KEY: String = "lunarborSpaceEnabled"
 
         /** The leave button's cube glyph. */
         private const val ICON_LEAVE: String =

@@ -76,6 +76,7 @@ import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.main.space.SpaceHost
+import se.soderbjorn.lunarbor.main.space.isSpaceModeEnabled
 import se.soderbjorn.lunarbor.main.space.SpaceMode
 import se.soderbjorn.lunarbor.main.space.SpacePane
 import se.soderbjorn.lunarbor.main.space.SpaceTab
@@ -572,7 +573,8 @@ class AppShell(
                         label = "Command palette (⌘P)",
                         onActivate = { commandPalette.open() },
                     ),
-                    // 3D mode (space/SpaceMode.kt), also ⌃⌘3.
+                    // 3D mode (space/SpaceMode.kt), also ⌃⌘3. Hidden by CSS
+                    // until App settings → "Enable 3D mode" turns it on.
                     TopbarAction(
                         id = "lunarbor-topbar-space",
                         iconHtml = ICON_CUBE,
@@ -610,6 +612,8 @@ class AppShell(
                             switchVault = { dir -> switchVault(dir) },
                             flushEdits = { documentRegistry.flushAll() },
                             privacyModes = { documentRegistry.privacyFlow.value.modes },
+                            spaceModeEnabled = { isSpaceModeEnabled },
+                            setSpaceModeEnabled = { spaceMode.setEnabled(it) },
                         ),
                     )
                 },
@@ -706,6 +710,7 @@ class AppShell(
      * Shortcuts sidebar lists them and they can be rebound): toggle 3D
      * mode (⌃⌘3; Ctrl-Alt-3 off the Mac) and switch between the focused
      * window alone and all of the tab's windows (⌃⌘1; Ctrl-Alt-1).
+     * Both do nothing while the feature is off ([SpaceMode.setEnabled]).
      */
     private fun installSpaceShortcuts() {
         val isMac = se.soderbjorn.lunula.web.hotkey.isMacPlatform()
@@ -1158,6 +1163,24 @@ class AppShell(
             title = "Configure privacy",
             run = { openPrivacyDialog(scope, documentRegistry) },
         )
+        // One switch per mode other than the current one, plus "None"
+        // while a mode is on.
+        val privacy = documentRegistry.privacyFlow.value
+        if (privacy.currentId != null) {
+            out += CommandPalette.Command(
+                id = "privacy-mode:none",
+                title = "Privacy mode: None",
+                run = { scope.launch { documentRegistry.setPrivacyMode(null) } },
+            )
+        }
+        for (mode in privacy.modes) {
+            if (mode.id == privacy.currentId) continue
+            out += CommandPalette.Command(
+                id = "privacy-mode:${mode.id}",
+                title = "Privacy mode: ${mode.name}",
+                run = { scope.launch { documentRegistry.setPrivacyMode(mode.id) } },
+            )
+        }
         // The pane's search field (also the header's magnifier and Cmd-F).
         out += CommandPalette.Command(
             id = "search-in-pane",
@@ -2057,6 +2080,7 @@ class AppShell(
         style.id = "lunarbor-chrome-style"
         style.textContent = """
             body[data-lunarbor-space] .lunarbor-space-cube { color: var(--t-accent, #7aa2ff); }
+            body:not([data-lunarbor-space-enabled]) #lunarbor-topbar-space { display: none !important; }
             .dt-pane-action.$DISABLED_CLASS {
                 opacity: 0.32;
                 pointer-events: none;
