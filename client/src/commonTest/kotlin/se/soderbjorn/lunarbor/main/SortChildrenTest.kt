@@ -60,8 +60,8 @@ class SortChildrenTest {
         p.sortChildrenByName()
         registry.flushAll()
         // The untitled bullet, now last, is not saved (as any trailing empty bullet).
-        assertEquals("- apple [↳](<apple/_node.md>)\n- **Banana**\n- Note 2\n- note 10\n", fs.readFileIfExists("$root/_node.md"))
-        assertEquals("- x\n", fs.readFileIfExists("$root/apple/_node.md"))
+        assertEquals("- apple [↳](<apple/_node.md>)\n- **Banana**\n- Note 2\n- note 10\n", fs.read(root, "_node.md"))
+        assertEquals("- x\n", fs.read(root, "apple/_node.md"))
     }
 
     @Test
