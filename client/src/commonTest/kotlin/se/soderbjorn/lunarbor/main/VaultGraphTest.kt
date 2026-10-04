@@ -157,12 +157,32 @@ class VaultGraphTest {
         val sorted = hues.values.sorted()
         // Golden-angle steps: no two of three areas closer than a tenth of the wheel.
         assertTrue(sorted.zipWithNext().all { (a, b) -> b - a > 0.1 } && 1 - sorted.last() + sorted.first() > 0.1)
-        assertEquals(hues["Work"], SpacePalette.hueOf("Work/Alpha/_node.md", hues))
+        assertEquals(hues["Work"], SpacePalette.hueOf("Work/_node.md", hues))
+        assertEquals(hues["Work"], SpacePalette.hueOf("Work", hues))
+        // A branch takes a hue of its own; deeper nodes stay near it.
+        val alpha = SpacePalette.hueOf("Work/Alpha", hues)!!
+        assertEquals(alpha, SpacePalette.hueOf("Work/Alpha/_node.md", hues))
+        val deep = SpacePalette.hueOf("Work/Alpha/Deep", hues)!!
+        assertTrue(minOf(kotlin.math.abs(deep - alpha), 1 - kotlin.math.abs(deep - alpha)) <= 0.04 + 1e-9)
         assertNull(SpacePalette.hueOf("", hues))
         assertNull(SpacePalette.hueOf("Inbox.md", hues))
         assertTrue(SpacePalette.hueOf("Unknown/x", hues) != null)
         assertEquals("Work/Alpha", SpacePalette.pathOfKey(PageSpaceKeys.ofFolder("Work/Alpha")))
         assertEquals("Work/_node.md", SpacePalette.pathOfKey(PageSpaceKeys.ofLine("Work/_node.md", LineId(3))))
+    }
+
+    @Test
+    fun palette_finds_the_areas_below_a_single_child_chain() {
+        val tree = mapOf(
+            "" to listOf("Main"),
+            "Main" to listOf("Main/Work", "Main/Life"),
+        )
+        val hues = SpacePalette.areaHues { tree[it] ?: emptyList() }
+        assertEquals(setOf("Main/Work", "Main/Life"), hues.keys)
+        assertNull(SpacePalette.hueOf("Main", hues))
+        assertNull(SpacePalette.hueOf("Main/_node.md", hues))
+        assertEquals(hues["Main/Work"], SpacePalette.hueOf("Main/Work", hues))
+        assertTrue(SpacePalette.hueOf("Main/Life/Trips", hues) != null)
     }
 
     @Test

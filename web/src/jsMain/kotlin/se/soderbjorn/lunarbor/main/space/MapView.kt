@@ -123,7 +123,7 @@ internal class MapView(
 
     private var graph: VaultGraph = VaultGraph.EMPTY
 
-    /** Area hues ([SpacePalette.areaHues]) from the root's unfiltered listing. */
+    /** Area hues ([SpacePalette.areaHues]) from the unfiltered listings. */
     private var hues: Map<String, Double> = emptyMap()
     private var folded: MutableSet<String> = HashSet()
     private var foldsSeeded = false
@@ -346,7 +346,7 @@ internal class MapView(
             filter.isActive && (filter.hides(item.tagKeys) || item.pathRel?.let { registry.isPathHidden(it, filter) } == true)
         }
         val g = VaultGraphBuilder.build(ROOT_TITLE, { registry.requestLinkPreview(it) }, hiddenItem)
-        hues = SpacePalette.areaHues(registry.requestLinkPreview("").orEmpty().mapNotNull { it.pathRel })
+        hues = SpacePalette.areaHues { folder -> registry.requestLinkPreview(folder)?.mapNotNull { it.pathRel } }
         val links = VaultGraphBuilder.linkEdges(g, linksByFile) { filter.isActive && registry.isPathHidden(it, filter) }
         graph = g.copy(links = links)
         if (!foldsSeeded && g.nodes.values.all { it.loaded }) {
@@ -633,11 +633,14 @@ internal class MapView(
             color.setStyle(if (dark) "#f4f1e6" else "#5b5446")
             return
         }
-        val base = SpacePalette.hueOf(id, hues) ?: GraphLayout.hash01(node.area.lowercase())
-        // Siblings vary a little around their area's hue; deeper bodies are lighter.
-        val hue = (base + (GraphLayout.hash01("$id|hue") - 0.5) * 0.06 + 1) % 1
-        val light = (if (dark) 0.55 else 0.45) + min(node.depth - 1, 4) * 0.03
-        val sat = if (dark) 0.88 else 0.78
+        // A chain node above the areas (Home → Main → …) stays neutral like the root.
+        val hue = SpacePalette.hueOf(id, hues) ?: run {
+            color.setStyle(if (dark) "#e9e4d6" else "#6b6352")
+            return
+        }
+        // Deeper bodies are a little lighter.
+        val light = (if (dark) 0.56 else 0.46) + min(node.depth - 1, 4) * 0.025
+        val sat = if (dark) 1.0 else 0.9
         color.setHSL(hue, if (node.loaded) sat else sat * 0.35, if (node.loaded) light else light * 0.85)
     }
 
@@ -1175,9 +1178,9 @@ internal class MapView(
 
     private fun standardMaterial(): dynamic {
         val p: dynamic = js("({})")
-        p.roughness = 0.55
-        p.metalness = 0.05
-        p.emissive = construct(T.Color, 0x101014)
+        p.roughness = 0.45
+        p.metalness = 0.0
+        p.emissive = construct(T.Color, 0x1a1a1e)
         return construct(T.MeshStandardMaterial, p)
     }
 

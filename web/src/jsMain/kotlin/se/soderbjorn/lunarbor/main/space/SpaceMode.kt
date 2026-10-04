@@ -243,7 +243,7 @@ class SpaceMode(
      * page edges, item dots and threads.
      */
     internal fun areaColor(pathRel: String): String? {
-        val hues = SpacePalette.areaHues(registry.requestLinkPreview("").orEmpty().mapNotNull { it.pathRel })
+        val hues = SpacePalette.areaHues { folder -> registry.requestLinkPreview(folder)?.mapNotNull { it.pathRel } }
         val h = SpacePalette.hueOf(pathRel, hues) ?: return null
         return if (darkTheme) "hsl(${(h * 360).toInt()} 85% 62%)" else "hsl(${(h * 360).toInt()} 75% 45%)"
     }
