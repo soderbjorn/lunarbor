@@ -15,6 +15,7 @@
  *  - which windows are shown: only the focused one, filling the work area,
  *    or every window of the tab at its floating-pane rectangle and stacking
  *    order, proportions as in the 2D layout (⌃⌘1);
+ *  - the help dialog ([showSpaceHelp]), from the strip's Help button;
  *  - the overlay: a layer over the whole window — sidebar, top bar and
  *    panes all hidden under it (menus, popups, modals and the palette
  *    still open above it) — with a slim draggable strip on top holding the
@@ -581,6 +582,7 @@ class SpaceMode(
             strip.appendChild(b)
             return b
         }
+        button("<span>Help</span>", "How 3D mode and each view work") { showSpaceHelp(shape) }
         button("<span>Palette</span><kbd>⌘P</kbd>", "Command palette (⌘P)") { host.openPalette() }
         splitButton = button("", "The focused window alone, or all of the tab's windows (⌃⌘1)") { toggleSplit() }
         splitButton?.classList?.add("lunarbor-space-split")
@@ -703,11 +705,11 @@ class SpaceMode(
 
     /**
      * `true` when this Escape belongs to something else: a modal, menu,
-     * the palette or the link popup is open, an open pane search, or the
+     * the palette, the link popup or 3D mode's help is open, an open pane search, or the
      * keyboard is in a text field (a modal's input, the search field).
      */
     private fun somethingElseOwnsEscape(): Boolean {
-        if (document.querySelector(".dt-modal-backdrop, .dt-menu-backdrop, .lunarbor-palette-backdrop, .lunarbor-link-popup") != null) return true
+        if (document.querySelector(".dt-modal-backdrop, .dt-menu-backdrop, .lunarbor-palette-backdrop, .lunarbor-link-popup, .lunarbor-space-help-backdrop") != null) return true
         val active = document.activeElement
         if (active != null && isTextField(active)) return true
         val focused = host.focusedPaneId() ?: return false

@@ -1,7 +1,7 @@
 {
   "name": "lunarbor-electron",
   "productName": "Lunarbor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Electron desktop wrapper for the Lunarbor web app",
   "main": "main.js",
   "private": true,
@@ -33,7 +33,7 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.productivity",
-      "bundleVersion": "2",
+      "bundleVersion": "3",
       "icon": "icons/icon.icns",
       "identity": "Robert Söderbjörn (CCJP95ZXG4)",
       "hardenedRuntime": true,

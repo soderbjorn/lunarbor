@@ -31,7 +31,8 @@
  * click a body to select it and fly there, double-click to open it in the
  * focused window. Keys (while the map has focus): ← → siblings, ↑ parent,
  * ↓ child, ⏎ open in the focused window, P open and show its page, E back
- * to the page of the focused window, F fold, L next shape.
+ * to the page of the focused window, F fold, L next shape, ? help
+ * ([showSpaceHelp]).
  *
  * Rendering: one WebGL canvas (instanced spheres, one line buffer each
  * for branches and links, points for glow, dust and stars) plus DOM labels
@@ -980,6 +981,7 @@ internal class MapView(
             "e", "E" -> { mode.setShape(SpaceShape.PAGES); true }
             "f", "F" -> { sel?.let { toggleFold(it) }; sel != null }
             "l", "L" -> { mode.nextShape(); true }
+            "?" -> { showSpaceHelp(shape); true }
             "Home" -> { select(null, fly = false); userMoved = false; relayout(reframe = true); true }
             else -> false
         }
@@ -1003,7 +1005,7 @@ internal class MapView(
             if (loading > 0) append(" · reading $loading…")
             if (graph.truncated) append(" · first ${VaultGraphBuilder.MAX_NODES} shown")
         }))
-        hud.appendChild(span("lunarbor-map-hud-keys", "Drag to orbit · ⇧/right-drag to pan · scroll to zoom · ←→↑↓ walk · ⏎ open · P page · F fold · L shape"))
+        hud.appendChild(span("lunarbor-map-hud-keys", "Drag to orbit · ⇧/right-drag to pan · scroll to zoom · ←→↑↓ walk · ⏎ open · P page · F fold · L shape · ? help"))
         bar.innerHTML = ""
         val id = selected
         val node = id?.let { graph.nodes[it] }
