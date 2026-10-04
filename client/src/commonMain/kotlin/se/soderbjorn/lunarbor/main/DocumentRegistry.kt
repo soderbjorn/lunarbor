@@ -745,6 +745,17 @@ class DocumentRegistry(
         return null
     }
 
+    /**
+     * Every note file's `lunarbor:` link targets ([VaultIndex.allLinks]),
+     * open documents saved first. Unfiltered: the caller drops what the
+     * privacy mode hides ([isPathHidden]). Read by 3D mode's map shapes
+     * (web `MapView`) to draw links between bodies.
+     */
+    suspend fun linkIndexSnapshot(): Map<String, Set<String>> {
+        flushAll()
+        return vaultIndex.allLinks()
+    }
+
     /** Re-reads every node in [linkPreviewsFlow] from the disk. */
     private suspend fun refreshLinkPreviews() {
         val keys = _linkPreviews.value.keys.toList()

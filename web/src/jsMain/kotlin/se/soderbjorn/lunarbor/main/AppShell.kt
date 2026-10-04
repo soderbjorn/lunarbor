@@ -244,7 +244,7 @@ class AppShell(
      * [notifyToolkitTabs]; see [spaceHost].
      */
     private val spaceMode: SpaceMode by lazy {
-        SpaceMode(spaceHost, scope, persister, documentRegistry.linkPreviewsFlow)
+        SpaceMode(spaceHost, scope, persister, documentRegistry)
     }
 
     /** Pending `requestAnimationFrame` of a coalesced [SpaceMode.onLayoutChanged]. */
@@ -706,11 +706,12 @@ class AppShell(
     }
 
     /**
-     * Registers 3D mode's two configurable actions with the toolkit's
+     * Registers 3D mode's three configurable actions with the toolkit's
      * [se.soderbjorn.lunula.web.hotkey.HotkeyBindings] (so the Keyboard
      * Shortcuts sidebar lists them and they can be rebound): toggle 3D
      * mode (⌃⌘3; Ctrl-Alt-3 off the Mac) and switch between the focused
-     * window alone and all of the tab's windows (⌃⌘1; Ctrl-Alt-1).
+     * window alone and all of the tab's windows (⌃⌘1; Ctrl-Alt-1), and
+     * step to the next shape — Pages, Crown, Cone, Galaxy (⌃⌘2; Ctrl-Alt-2).
      * Both do nothing while the feature is off ([SpaceMode.setEnabled]).
      */
     private fun installSpaceShortcuts() {
@@ -722,6 +723,9 @@ class AppShell(
         se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
             se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(SPACE_SPLIT_ACTION, "3D mode: focused window or all windows", listOf(chord("1"))),
         ) { spaceMode.toggleSplit() }
+        se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
+            se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(SPACE_SHAPE_ACTION, "3D mode: next shape", listOf(chord("2"))),
+        ) { spaceMode.nextShape() }
     }
 
     /**
@@ -3116,6 +3120,9 @@ class AppShell(
 
         /** Hotkey action id: 3D mode's focused-window / all-windows switch ([installSpaceShortcuts]). */
         internal const val SPACE_SPLIT_ACTION: String = "lunarbor.space.split"
+
+        /** Hotkey action id: 3D mode's next shape — Pages, Crown, Cone, Galaxy (⌃⌘2). */
+        internal const val SPACE_SHAPE_ACTION: String = "lunarbor.space.shape"
 
         /** Page-with-fold icon used for sidebar rows representing notes/tabs. */
         private const val ICON_NOTE: String =
