@@ -10,8 +10,9 @@
  * The header reads "Linked from · N" and folds the list (pane state,
  * `toggleBacklinksCollapsed`). One compact row per line: its text, then —
  * dimmed, on the same row — the breadcrumb of the page it lives in. A click goes to the line in place (pushing file
- * history, like a search result); Shift-, ⌘- or Ctrl-click and a right-click
- * open it in a new window. Hidden when nothing links here.
+ * history, like a search result); Shift- or ⌘-click (Ctrl-click off the
+ * Mac) and a right-click (the Mac's Ctrl-click) open it in a new window —
+ * the same rule as links ([OpenGesture]). Hidden when nothing links here.
  *
  * Platform view code only — builds DOM, delegates every action. Reuses the
  * pane search's result-row look (`lunarbor-search-hit-*`). */
@@ -71,9 +72,13 @@ private fun backlinkRow(hit: TextHit, viewModel: MainViewModel): HTMLElement {
     // Keep the editor's selection: act on click, not on the press.
     row.addEventListener("mousedown", { ev -> ev.preventDefault() })
     row.addEventListener("click", { ev ->
-        val me = ev as MouseEvent
-        if (me.shiftKey || me.metaKey || me.ctrlKey) viewModel.openSearchHitInNewWindow?.invoke(hit)
-        else viewModel.navigateToSearchHit(hit)
+        // Same rule as a link ([OpenGesture]); the Mac's Ctrl-click is a
+        // right-click, whose `contextmenu` below opens the one new window.
+        when (openGestureOf(ev as MouseEvent)) {
+            OpenGesture.HERE -> viewModel.navigateToSearchHit(hit)
+            OpenGesture.NEW_WINDOW -> viewModel.openSearchHitInNewWindow?.invoke(hit)
+            OpenGesture.CONTEXT_MENU, OpenGesture.NONE -> {}
+        }
     })
     row.addEventListener("contextmenu", { ev ->
         ev.preventDefault()

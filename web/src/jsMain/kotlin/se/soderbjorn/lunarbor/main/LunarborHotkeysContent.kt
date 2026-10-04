@@ -34,10 +34,7 @@ import se.soderbjorn.lunula.web.hotkey.toChordLabel
  * sidebar opens.
  */
 internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
-    val isMac: Boolean = run {
-        val ua = js("(typeof navigator !== 'undefined' && navigator.userAgent) || ''") as String
-        ua.contains("Mac") || ua.contains("iPhone") || ua.contains("iPad")
-    }
+    val isMac: Boolean = isMacPlatform
     val cmd = if (isMac) "⌘" else "Win"
     val opt = if (isMac) "⌥" else "Alt"
     val shift = if (isMac) "⇧" else "Shift"
