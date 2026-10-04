@@ -259,7 +259,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             "Drag" to "Orbit around the point you are looking at.",
             "Right-drag, or " + k("⇧") + " drag" to "Pan.",
             "Scroll / pinch" to "Zoom in and out.",
-            "Click a body or label" to "Select it and fly to it; the camera keeps it centred.",
+            "Click a body or label" to "Select it and fly to it; the camera keeps it centred. Click the selected body again to edit it.",
             "Double-click" to "Edit that node: open it in the focused window and switch to Pages, on its page.",
             "Click a window card" to "Focus that window and fly to its node. Double-click: back to Pages to write in it.",
             k("←") + " " + k("→") to "Previous / next sibling.",

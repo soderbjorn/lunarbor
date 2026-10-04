@@ -217,6 +217,14 @@ object GraphLayout {
             val ib = visibleAnchor(graph, folded, b)?.let { index[it] } ?: continue
             if (ia != ib) springs += doubleArrayOf(ia.toDouble(), ib.toDouble(), 12.0, 0.035)
         }
+        // A hub (a node many links point at) would add up all its springs'
+        // stiffness and make the step unstable: each end feels its springs
+        // divided by its degree.
+        val degree = IntArray(n)
+        for (sp in springs) {
+            degree[sp[0].toInt()]++
+            degree[sp[1].toInt()]++
+        }
         val vx = DoubleArray(n)
         val vy = DoubleArray(n)
         val vz = DoubleArray(n)
@@ -260,8 +268,10 @@ object GraphLayout {
                 val ddz = pz[b] - pz[a]
                 val d = sqrt(ddx * ddx + ddy * ddy + ddz * ddz) + 1e-4
                 val s = (d - sp[2]) * sp[3] / d
-                fx[a] += ddx * s; fy[a] += ddy * s; fz[a] += ddz * s
-                fx[b] -= ddx * s; fy[b] -= ddy * s; fz[b] -= ddz * s
+                val sa = s / max(1, degree[a])
+                val sb = s / max(1, degree[b])
+                fx[a] += ddx * sa; fy[a] += ddy * sa; fz[a] += ddz * sa
+                fx[b] -= ddx * sb; fy[b] -= ddy * sb; fz[b] -= ddz * sb
             }
             val cool = 1 - it.toDouble() / (steps * 1.25)
             for (i in 0 until n) {
@@ -271,14 +281,25 @@ object GraphLayout {
                 vx[i] = (vx[i] + fx[i] * cool) * 0.8
                 vy[i] = (vy[i] + fy[i] * cool) * 0.8
                 vz[i] = (vz[i] + fz[i] * cool) * 0.8
+                // Cap a step's speed, so no force can throw a body out of the map.
+                val v = sqrt(vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i])
+                if (v > MAX_STEP) {
+                    val k = MAX_STEP / v
+                    vx[i] *= k; vy[i] *= k; vz[i] *= k
+                }
                 px[i] += vx[i]; py[i] += vy[i]; pz[i] += vz[i]
             }
             px[root] = 0.0; py[root] = 0.0; pz[root] = 0.0
         }
         val out = LinkedHashMap<String, SpaceVec>()
-        ids.forEachIndexed { i, id -> out[id] = SpaceVec(px[i], py[i] - 2, pz[i]) }
+        ids.forEachIndexed { i, id ->
+            out[id] = if (px[i].isFinite() && py[i].isFinite() && pz[i].isFinite()) SpaceVec(px[i], py[i] - 2, pz[i]) else crown.getValue(id)
+        }
         return out
     }
+
+    /** The galaxy's speed limit per simulation step, in world units. */
+    private const val MAX_STEP: Double = 6.0
 
     /** How far bodies push each other apart in the galaxy, in world units. */
     const val REPULSION_REACH: Double = 18.0

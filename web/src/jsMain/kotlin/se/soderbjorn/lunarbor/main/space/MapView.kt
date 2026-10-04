@@ -28,8 +28,8 @@
  * cards sit on the nearest visible body.
  *
  * Input: drag to orbit, right- or Shift-drag to pan, scroll to zoom;
- * click a body to select it and fly there, double-click to open its page
- * in Pages to edit it (in the focused window). Keys (while the map has focus): ← → siblings, ↑ parent,
+ * click a body to select it and fly there; click it again, or double-click
+ * a body, to open its page in Pages to edit it (in the focused window). Keys (while the map has focus): ← → siblings, ↑ parent,
  * ↓ child, ⏎ open in the focused window, P open and show its page, E back
  * to the page of the focused window, F fold, L next shape, ? help
  * ([showSpaceHelp]).
@@ -153,6 +153,15 @@ internal class MapView(
     private var linksByFile: Map<String, Set<String>> = emptyMap()
     private var linksFetchedAt = -1e9
     private var linksJob: Job? = null
+
+    /** `true` while [fetchLinks] waits for the link index (the HUD says "reading links…"). */
+    private var linksReading = false
+
+    /** When [open] last ran (`performance.now()`), so a double-click does not open twice. */
+    private var openedAt = -1e9
+
+    /** The graph and folds [relayout] last placed; a rebuild that yields both unchanged skips the relayout. */
+    private var placed: Pair<VaultGraph, Set<String>>? = null
 
     /**
      * Set when the link index should be read once every listing has
@@ -356,6 +365,12 @@ internal class MapView(
                 fetchLinks(force = false)
             }
         }
+        // Listing refreshes (after every save, on focus) mostly change nothing:
+        // skip the relayout then, which costs a noticeable pause on a big map.
+        if (placed == graph to folded.toSet()) {
+            renderHud()
+            return
+        }
         // Keep the whole map in view while listings land, until the user takes over.
         relayout(reframe = !framed || !userMoved)
     }
@@ -365,13 +380,16 @@ internal class MapView(
         if (!force && linksJob?.isActive == true) return
         linksFetchedAt = window.performance.now()
         linksJob?.cancel()
+        linksReading = true
         linksJob = scope.launch {
             val fresh = try {
                 registry.linkIndexSnapshot()
             } catch (t: Throwable) {
+                linksReading = false
                 console.warn("Lunarbor: map could not read links", t)
                 return@launch
             }
+            linksReading = false
             if (fresh != linksByFile) {
                 linksByFile = fresh
                 scheduleRebuild(0)
@@ -387,6 +405,7 @@ internal class MapView(
      * anchor and go.
      */
     private fun relayout(reframe: Boolean) {
+        placed = graph to folded.toSet()
         val positions = GraphLayout.layout(graph, folded, shape)
         for ((id, b) in bodies.toList()) {
             if (id !in positions) {
@@ -853,6 +872,7 @@ internal class MapView(
      * to its folder); with [showPage], switches to Pages to write there.
      */
     private fun open(id: String, showPage: Boolean) {
+        openedAt = window.performance.now()
         val vm = mode.focusedPaneId()?.let { mode.viewModelOf(it) } ?: return
         selected = id
         // With [showPage], Pages opens once the window has arrived, so its
@@ -925,6 +945,8 @@ internal class MapView(
             val t = me.target as? org.w3c.dom.Element
             if (t != null && t.closest(".lunarbor-map-window, .lunarbor-map-label, .lunarbor-map-bar, .lunarbor-map-hud") != null) return@addEventListener
             val box = element.getBoundingClientRect()
+            // The click before it may already have opened the body (a click on the selection).
+            if (window.performance.now() - openedAt < 600) return@addEventListener
             pick(me.clientX - box.left, me.clientY - box.top)?.let { open(it, showPage = true) }
         })
         element.addEventListener("wheel", { e ->
@@ -951,7 +973,7 @@ internal class MapView(
         if (last != null && start != null) {
             val x = me.clientX.toDouble()
             val y = me.clientY.toDouble()
-            if (!dragged && (abs(x - start.first) > 3 || abs(y - start.second) > 3)) {
+            if (!dragged && (abs(x - start.first) > CLICK_SLOP || abs(y - start.second) > CLICK_SLOP)) {
                 dragged = true
                 userMoved = true
             }
@@ -977,7 +999,9 @@ internal class MapView(
         if (!dragged && dragStart != null && me.button.toInt() == 0) {
             val box = element.getBoundingClientRect()
             val hit = pick(me.clientX - box.left, me.clientY - box.top)
-            select(hit, fly = hit != null)
+            // A click on the body already selected opens it for editing.
+            if (hit != null && hit == selected && me.detail <= 1) open(hit, showPage = true)
+            else select(hit, fly = hit != null)
         }
         dragStart = null
         dragLast = null
@@ -1053,10 +1077,10 @@ internal class MapView(
             append("$total node${if (total == 1) "" else "s"}")
             if (graph.links.isNotEmpty()) append(" · ${graph.links.size} link${if (graph.links.size == 1) "" else "s"}")
             if (loading > 0) append(" · reading $loading…")
-            else if (linksJob?.isActive == true || linksWanted) append(" · reading links…")
+            else if (linksReading || linksWanted) append(" · reading links…")
             if (graph.truncated) append(" · first ${VaultGraphBuilder.MAX_NODES} shown")
         }))
-        hud.appendChild(span("lunarbor-map-hud-keys", "Double-click to edit · drag to orbit · ⇧/right-drag to pan · scroll to zoom · ←→↑↓ walk · ⏎ open · F fold · L shape · ? help"))
+        hud.appendChild(span("lunarbor-map-hud-keys", "Click a selected body or double-click to edit · drag to orbit · ⇧/right-drag to pan · scroll to zoom · ←→↑↓ walk · ⏎ open · F fold · L shape · ? help"))
         bar.innerHTML = ""
         val id = selected
         val node = id?.let { graph.nodes[it] }
@@ -1291,6 +1315,9 @@ internal class MapView(
         const val ROOT_TITLE = "Home"
         const val LABEL_BUDGET = 40
         const val REBUILD_MS = 220
+
+        /** How far (px) the pointer may move between press and release and still count as a click. */
+        const val CLICK_SLOP = 5
 
         /** Zoom per wheel pixel of a mouse wheel or two-finger scroll (`exp(deltaY * rate)`). */
         const val WHEEL_ZOOM_RATE = 0.003

@@ -9,6 +9,7 @@
 
 package se.soderbjorn.lunarbor.main
 
+import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -194,5 +195,21 @@ class VaultGraphTest {
         assertTrue("Main/B" in folded) // another 200 would not
         assertFalse("Main/A/1" in folded) // small ones still open after a big one stays shut
         assertTrue(nodes.keys.count { it !in folded && nodes.getValue(it).children.isNotEmpty() } > 3)
+    }
+
+    @Test
+    fun galaxyStaysFiniteAroundAHubManyLinksPointAt() {
+        // Home → Hub + 300 nodes, every one of them linking to Hub.
+        val nodes = LinkedHashMap<String, GraphNode>()
+        val kids = listOf("Hub") + (1..300).map { "N$it" }
+        nodes[""] = GraphNode("", null, "Home", 0, kids, 0)
+        for (k in kids) nodes[k] = GraphNode(k, "", k, 1, emptyList(), 0)
+        val links = (1..300).map { "N$it" to "Hub" }
+
+        val positions = GraphLayout.layout(VaultGraph(nodes, links), emptySet(), SpaceShape.GALAXY)
+
+        assertEquals(nodes.keys, positions.keys)
+        assertTrue(positions.values.all { it.x.isFinite() && it.y.isFinite() && it.z.isFinite() })
+        assertTrue(positions.values.all { abs(it.x) < 2000 && abs(it.z) < 2000 })
     }
 }
