@@ -55,6 +55,7 @@ external interface FsWatcher {
 
 external interface OsModule {
     fun homedir(): String
+    fun tmpdir(): String
 }
 
 external interface PathModule {

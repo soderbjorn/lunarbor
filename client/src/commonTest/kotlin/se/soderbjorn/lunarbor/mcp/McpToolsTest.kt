@@ -5,11 +5,13 @@
  * write ([AgentOutline]), the tools working on a vault through the
  * registry ([McpTools] — reads, edits that follow the folder save rules,
  * refusals that keep nodes from being deleted by accident, create and
- * delete, privacy scopes), and the JSON-RPC layer ([McpServer]).
+ * delete, privacy scopes, a call stuck on file access timing out), and the
+ * JSON-RPC layer ([McpServer]).
  */
 
 package se.soderbjorn.lunarbor.mcp
 
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -21,6 +23,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.PrivacyMode
 import se.soderbjorn.lunarbor.main.DocumentRegistry
+import se.soderbjorn.lunarbor.platform.FileSystem
+import se.soderbjorn.lunarbor.platform.VaultDirectoryEntry
 import se.soderbjorn.lunarbor.testing.InMemoryFileSystem
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -373,6 +377,38 @@ class McpToolsTest {
         assertFalse(img.isError, img.text)
         assertEquals("image", img.extra.single()["type"]!!.jsonPrimitive.content)
         assertTrue(t.run("edit", "path" to "/data.csv", "old_text" to "a", "new_text" to "b").isError)
+    }
+
+    // -------------------------------------------------------------- timeout
+
+    /** Answers like [inner], except that reads never come back while [stalled]. */
+    private class StallingFileSystem(private val inner: InMemoryFileSystem) : FileSystem by inner {
+        var stalled = false
+
+        override suspend fun readFileIfExists(path: String): String? {
+            if (stalled) awaitCancellation()
+            return inner.readFileIfExists(path)
+        }
+
+        override suspend fun listDirectoryEntries(path: String): List<VaultDirectoryEntry> {
+            if (stalled) awaitCancellation()
+            return inner.listDirectoryEntries(path)
+        }
+    }
+
+    @Test
+    fun a_call_stuck_on_file_access_times_out_and_frees_the_tools() = runTest {
+        seed("_node.md", "- Milk\n")
+        val stalling = StallingFileSystem(fs)
+        val t = McpTools(DocumentRegistry(NoteRepository(stalling, root, nowMillis = { 0L }), backgroundScope))
+        stalling.stalled = true
+        val stuck = t.run("read", "path" to "/")
+        assertTrue(stuck.isError)
+        assertTrue("in time" in stuck.text, stuck.text)
+        stalling.stalled = false
+        // The lock was released: the next call runs normally.
+        val text = t.run("read", "path" to "/").text
+        assertTrue("* Milk" in text, text)
     }
 
     // ---------------------------------------------------------------- server

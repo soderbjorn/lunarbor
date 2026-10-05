@@ -25,6 +25,13 @@ external interface Dialog {
      * property to pick a new vault root.
      */
     fun showOpenDialog(window: BrowserWindow, options: dynamic): Promise<dynamic>
+
+    /**
+     * Native message box attached to [window] as a sheet. Resolves to
+     * `{ response: Int }`, the index of the button pressed. Used by
+     * [FsWatchdog] to offer a restart when file access stops responding.
+     */
+    fun showMessageBox(window: BrowserWindow, options: dynamic): Promise<dynamic>
 }
 
 external interface Protocol {
@@ -59,6 +66,12 @@ external interface ElectronApp {
     fun on(event: String, listener: (dynamic, dynamic) -> Unit): ElectronApp
     fun whenReady(): Promise<Unit>
     fun getPath(name: String): String
+
+    /** Starts a new instance when this one exits; see [FsWatchdog]. */
+    fun relaunch()
+
+    /** Exits at once, without `before-quit` handlers; see [FsWatchdog]. */
+    fun exit(exitCode: Int)
 
     /**
      * Override a special directory. Called with `"userData"` before

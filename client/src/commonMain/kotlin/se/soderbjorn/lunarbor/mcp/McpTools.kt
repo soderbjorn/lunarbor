@@ -34,6 +34,7 @@ package se.soderbjorn.lunarbor.mcp
 
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -321,7 +322,10 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
 
     /**
      * Runs the tool [name] with [args]. Never throws: refusals and
-     * failures come back as error results the agent can read.
+     * failures come back as error results the agent can read. A call that
+     * has not finished after [CALL_TIMEOUT_MS] (waiting for the lock
+     * included) is cancelled and answered with an error, so one stuck call
+     * cannot block every later one.
      *
      * Called by [McpServer] for `tools/call`.
      *
@@ -340,27 +344,40 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         if (tool.writes && !allowEdits) {
             return Result("Edits are turned off in Lunarbor's settings (Agent access). Only reading and searching are allowed.", true)
         }
-        return lock.withLock {
-            extra.clear()
-            try {
-                filter = scopeFilter
-                // What is hidden is known only once every note was read.
-                if (filter.isActive) {
-                    registry.flushAll()
-                    registry.textIndex.ensureBuilt()
-                }
-                val text = cap(run(name, args))
-                Result(text, extra = extra.toList())
-            } catch (e: Refusal) {
-                Result(e.message ?: "Refused", true)
-            } catch (e: AgentOutline.ParseException) {
-                Result(e.message ?: "Could not read the text", true)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                println("[lunarbor] MCP tool $name failed: $e")
-                Result("That failed inside Lunarbor: ${e.message ?: e.toString()}", true)
+        // A stuck call (file access that never answers) would otherwise hold
+        // the lock forever and every later call would queue behind it. The
+        // timeout covers the wait for the lock too, and cancels the run, which
+        // releases it.
+        return withTimeoutOrNull(CALL_TIMEOUT_MS) { lock.withLock { runLocked(name, args, scopeFilter) } }
+            ?: Result(
+                "Lunarbor did not finish this in time (${CALL_TIMEOUT_MS / 1000} s), so it was stopped; " +
+                    "a change it was making may be partly applied. Lunarbor may not be able to reach its files: " +
+                    "ask the user to check that Lunarbor is responding, and restart it if it offers to.",
+                true,
+            )
+    }
+
+    /** [call]'s body, under [lock]: sets the scope, runs the tool, turns failures into error results. */
+    private suspend fun runLocked(name: String, args: JsonObject, scopeFilter: PrivacyFilter): Result {
+        extra.clear()
+        return try {
+            filter = scopeFilter
+            // What is hidden is known only once every note was read.
+            if (filter.isActive) {
+                registry.flushAll()
+                registry.textIndex.ensureBuilt()
             }
+            val text = cap(run(name, args))
+            Result(text, extra = extra.toList())
+        } catch (e: Refusal) {
+            Result(e.message ?: "Refused", true)
+        } catch (e: AgentOutline.ParseException) {
+            Result(e.message ?: "Could not read the text", true)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            println("[lunarbor] MCP tool $name failed: $e")
+            Result("That failed inside Lunarbor: ${e.message ?: e.toString()}", true)
         }
     }
 
@@ -1098,6 +1115,13 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
     companion object {
         /** Deepest `read` depth. */
         const val MAX_DEPTH: Int = 5
+
+        /**
+         * Longest a tool call may take, its wait for the lock included —
+         * under the main process's 120 s relay timeout, so the agent gets
+         * this error rather than a bare HTTP timeout.
+         */
+        const val CALL_TIMEOUT_MS: Long = 90_000
 
         /** Longest result text. */
         const val MAX_RESULT_CHARS: Int = 60_000

@@ -6,7 +6,10 @@
  * over `lunarbor:mcpRequest`; the renderer answers it against the live
  * vault (`McpServer` in commonMain, via `web/.../McpBridge.kt`) and sends the
  * response back over `lunarbor:mcpResponse`. Stateless: no sessions, no
- * server-sent events (GET is 405, which clients accept).
+ * server-sent events (GET is 405, which clients accept). A request the
+ * renderer has not answered in 120 s gets a 504; while [FsWatchdog]
+ * reports file access stuck, requests get a 503 at once saying so, since
+ * the renderer could not finish them.
  *
  * Connections: the settings hold any number of them, each with its own
  * name, key, privacy scope and edits switch. The key a request carries
@@ -56,6 +59,23 @@ internal const val MCP_PATH: String = "/mcp"
 
 /** Largest request body accepted. */
 private const val MCP_MAX_BODY_BYTES: Int = 4 * 1024 * 1024
+
+/** What became of a request relayed to the renderer ([McpHost]'s `forward`). */
+private sealed interface Relayed {
+    /** The renderer's JSON response, or `""` when nothing is to be sent back. */
+    class Answer(val text: String) : Relayed
+
+    /** No window's renderer can answer. */
+    object NoRenderer : Relayed
+
+    /** No answer within [MCP_REPLY_TIMEOUT_MS]. */
+    object TimedOut : Relayed
+}
+
+/** The answer while [FsWatchdog] reports file access stuck. */
+private const val FILE_ACCESS_STUCK_TEXT: String =
+    "Lunarbor's file access has stopped responding, so it cannot read or save notes. " +
+        "Ask the user to restart Lunarbor (it offers to)."
 
 /** How long a request waits for the renderer's answer. */
 private const val MCP_REPLY_TIMEOUT_MS: Int = 120_000
@@ -331,11 +351,20 @@ internal object McpHost {
         req.on("end") {
             if (tooLarge) return@on Unit
             val body = js("Buffer").concat(chunks).toString("utf8") as String
-            forward(body, connection) { answer ->
-                when {
-                    answer == null -> reply(res, 503, "text/plain", "Lunarbor is not ready to answer (no window open, or it is starting).")
-                    answer.isEmpty() -> { res.statusCode = 202; res.end() }
-                    else -> reply(res, 200, "application/json", answer)
+            if (FsWatchdog.isStuck) {
+                return@on reply(res, 503, "text/plain", FILE_ACCESS_STUCK_TEXT)
+            }
+            forward(body, connection) { relayed ->
+                when (relayed) {
+                    Relayed.NoRenderer -> reply(res, 503, "text/plain", "Lunarbor is not ready to answer (no window open, or it is starting).")
+                    Relayed.TimedOut -> reply(
+                        res, 504, "text/plain",
+                        if (FsWatchdog.isStuck) FILE_ACCESS_STUCK_TEXT
+                        else "Lunarbor did not answer in time. Ask the user to check that Lunarbor is responding.",
+                    )
+                    is Relayed.Answer ->
+                        if (relayed.text.isEmpty()) { res.statusCode = 202; res.end() }
+                        else reply(res, 200, "application/json", relayed.text)
                 }
             }
         }
@@ -343,14 +372,12 @@ internal object McpHost {
 
     /**
      * Sends [body] to the renderer, with [connection]'s edits switch and
-     * privacy scope, and calls [done] with its answer: the JSON response, `""`
-     * when nothing is to be sent back, or `null` when no renderer can
-     * answer (or it took too long).
+     * privacy scope, and calls [done] with what became of it ([Relayed]).
      */
-    private fun forward(body: String, connection: McpConnection, done: (String?) -> Unit) {
+    private fun forward(body: String, connection: McpConnection, done: (Relayed) -> Unit) {
         val w = window()
         if (w == null || w.isDestroyed() || readyContentsId == null || w.webContents.asDynamic().id != readyContentsId) {
-            return done(null)
+            return done(Relayed.NoRenderer)
         }
         val id = nextRequestId++
         var finished = false
@@ -358,14 +385,14 @@ internal object McpHost {
             if (!finished) {
                 finished = true
                 pending.remove(id)
-                done(null)
+                done(Relayed.TimedOut)
             }
         }, MCP_REPLY_TIMEOUT_MS)
         pending[id] = { answer ->
             if (!finished) {
                 finished = true
                 js("clearTimeout")(timer)
-                done(answer ?: "")
+                done(Relayed.Answer(answer ?: ""))
             }
         }
         w.webContents.send("lunarbor:mcpRequest", id, body, connection.allowEdits, connection.privacy)
