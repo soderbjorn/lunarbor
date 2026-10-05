@@ -950,9 +950,12 @@ class AppShell(
             if (ke.defaultPrevented) return@lambda
             val target = ke.target as? org.w3c.dom.Node ?: return@lambda
             if (isInsideEditable(target)) return@lambda
-            if (!shouldDelegateToEditor(ke)) return@lambda
             val paneId = focusedPaneId() ?: return@lambda
             val mainScreen = paneEditors[paneId] ?: return@lambda
+            // Enter / Escape act on a highlighted search-node result, which
+            // a search node's read-only page has with the focus on <body>.
+            val onHit = mainScreen.isOnSearchNodeHit && (ke.key == "Enter" || ke.key == "Escape")
+            if (!onHit && !shouldDelegateToEditor(ke)) return@lambda
             // The editor's handler may preventDefault; mirror that here
             // so the browser doesn't run its own behaviour for chords
             // we just consumed (e.g. Cmd-Z's browser undo).
@@ -1252,16 +1255,20 @@ class AppShell(
         // pane's "Hide done items" view filter — outlines only.
         focusedPaneViewModel()?.let { vm ->
             val st = vm.currentBackingState
-            // While the pane search lists results, Toggle done acts on the
-            // highlighted one, where it is stored (LBR-22).
+            // While the pane search lists results, or the arrow keys are on
+            // a search node's results, Toggle done acts on the highlighted
+            // one, where it is stored (LBR-22).
             val screen = focusedPaneId()?.let { paneEditors[it] }
-            val hit = if (st.isSearchActive) screen?.selectedSearchHit else null
+            val paneHit = if (st.isSearchActive) screen?.selectedSearchHit else null
+            val hit = paneHit ?: screen?.selectedSearchNodeHit
             if (hit != null) {
                 if (hit.canToggleDone) {
                     out += CommandPalette.Command(
                         id = "toggle-done",
                         title = "Toggle done",
-                        run = { screen?.toggleSelectedSearchHitDone() },
+                        run = {
+                            if (paneHit != null) screen?.toggleSelectedSearchHitDone() else screen?.toggleSelectedSearchNodeHitDone()
+                        },
                     )
                 }
             } else if (vm.canToggleDone(st)) {

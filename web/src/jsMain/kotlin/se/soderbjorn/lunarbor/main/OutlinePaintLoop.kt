@@ -1295,9 +1295,9 @@ private fun firstLineHeightCss(text: String, style: EditorStyle): String {
  * ([DocumentRegistry.SEARCH_NODE_MAX_HITS]). Pressing a row goes there in
  * this pane ([MainViewModel.navigateToSearchHit]); a Shift- / ⌘-press or a
  * right-click opens it in a new window
- * ([MainViewModel.openSearchHitInNewWindow], [OpenGesture]); its ✓
- * circle, on hover, toggles done on the line itself ([buildHitDoneToggle],
- * [MainViewModel.toggleDoneOnHit], LBR-22). The node's
+ * ([MainViewModel.openSearchHitInNewWindow], [OpenGesture]). The arrow
+ * keys walk the rows from the editor ([SearchNodeHitCursor]): Enter goes
+ * there, Toggle done (LBR-22) acts on the highlighted one. The node's
  * −/+ control folds the whole list (its fold state). Everything acts on
  * mousedown: a repaint between press and release (the editor's selection
  * sync) would replace the element and swallow a click. Not editable and
@@ -1317,6 +1317,8 @@ private fun buildSearchNodeResults(
     val box = document.createElement("div") as HTMLElement
     box.className = "lunarbor-search-node"
     box.setAttribute("contenteditable", "false")
+    // Found again by the keyboard's hit cursor ([SearchNodeHitCursor]) after every repaint.
+    box.setAttribute(SEARCH_NODE_ROW_ATTR, nodeRow.toString())
     if (!isPage) box.style.setProperty("margin-left", "calc(${style.indentStepPx}px - $BLOCK_DOT_SLOT)")
     // Keep presses away from the editor's caret placement and drag code.
     box.addEventListener("mousedown", { ev ->
@@ -1342,14 +1344,8 @@ private fun buildSearchNodeResults(
         where.className = "lunarbor-search-node-where"
         // From the node's tree down: the rest of the path is where the node is.
         where.appendChild(isolatedText(viewModel.searchHitCrumbs(hit, under = view.scopeFolder).joinToString(" › ")))
-        // Toggle done (LBR-22): the ✓ circle before the text, on hover;
-        // never on note lines or code rows. Allowed on a read-only page:
-        // it edits the result's own line, not the page.
-        if (hit.canToggleDone) {
-            row.appendChild(buildHitDoneToggle(hit) { viewModel.toggleDoneOnHit(hit) })
-        } else {
-            row.appendChild((document.createElement("span") as HTMLElement).also { it.className = "lunarbor-hit-done-spacer" })
-        }
+        // No ✓ circle here: Toggle done (palette, ⌃↩) acts on the hit
+        // the keyboard highlights ([SearchNodeHitCursor]).
         row.appendChild(text)
         row.appendChild(where)
         row.addEventListener("mousedown", { ev ->
@@ -1390,6 +1386,13 @@ private fun buildSearchNodeResults(
     }
     return box
 }
+
+/**
+ * Attribute on a search node's result box naming the node's document row,
+ * so [SearchNodeHitCursor] finds the box again after a repaint. Each child
+ * of the box is one entry: a hit row, then "…and N more" when listed.
+ */
+internal const val SEARCH_NODE_ROW_ATTR = "data-search-node-row"
 
 /** A search node's count: "Searching…", "No matches", "1 match", "N matches". */
 internal fun searchCountText(result: se.soderbjorn.lunarbor.data.TextSearchResult?): String = when {
@@ -2201,6 +2204,15 @@ fun ensureStyles() {
         }
         .lunarbor-search-node-hit:hover {
             background: rgba(127, 127, 127, 0.10);
+        }
+        /* The entry the arrow keys are on (SearchNodeHitCursor); the
+           editor's caret is hidden meanwhile. */
+        .lunarbor-search-node-hit.is-key-selected,
+        .lunarbor-search-node-more.is-key-selected {
+            background: var(--t-accent-soft, rgba(90, 160, 255, 0.18));
+        }
+        .lunarbor-hit-cursor-active {
+            caret-color: transparent;
         }
         .lunarbor-search-node-text {
             color: var(--t-accent, #5ab0ff);

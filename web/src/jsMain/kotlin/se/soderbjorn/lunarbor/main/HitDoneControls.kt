@@ -1,8 +1,9 @@
 /* HitDoneControls.kt (jsMain)
  *
  * Toggle done on search result rows (LBR-22), view side: the small ✓
- * circle a result row shows on hover (pane search and search nodes alike)
- * and the "Marked done · Undo" toast shown after a toggle.
+ * circle a pane search result row shows on hover (search-node rows have
+ * none: Toggle done acts on the one the keyboard highlights) and the
+ * "Marked done · Undo" toast shown after a toggle.
  *
  * The edit itself is commonMain (`PaneBackingViewModel.toggleDoneOnHit` →
  * `DocumentRegistry.toggleDoneOnHit`); this file only builds DOM and
@@ -26,8 +27,8 @@ import se.soderbjorn.lunarbor.data.TextHit
  * the press stops here, so the row's own handler (go there, open a new
  * window) never sees it.
  *
- * Called by `PaneSearchBar.paintResults` and `OutlinePaintLoop`'s
- * `buildSearchNodeResults` for every hit with [TextHit.canToggleDone].
+ * Called by `PaneSearchBar.paintResults` for every hit with
+ * [TextHit.canToggleDone].
  *
  * @param hit The result the circle toggles.
  * @param onToggle Runs the toggle (`MainViewModel.toggleDoneOnHit`).
@@ -148,8 +149,7 @@ private fun ensureHitDoneStyles() {
             align-self: center;
         }
         .lunarbor-search-hit:hover .lunarbor-hit-done-toggle,
-        .lunarbor-search-hit-selected .lunarbor-hit-done-toggle,
-        .lunarbor-search-node-hit:hover .lunarbor-hit-done-toggle {
+        .lunarbor-search-hit-selected .lunarbor-hit-done-toggle {
             opacity: 1;
         }
         .lunarbor-hit-done-toggle:hover {

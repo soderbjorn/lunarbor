@@ -685,6 +685,22 @@ class MainScreen(
     /** Toggle done on the highlighted search result ([PaneSearchBar.toggleSelectedDone]); the palette's command. */
     fun toggleSelectedSearchHitDone() = searchBar.toggleSelectedDone()
 
+    /** The arrow keys' cursor over a search node's result rows ([SearchNodeHitCursor]). */
+    private val searchNodeHitCursor = SearchNodeHitCursor(viewModel)
+
+    /**
+     * The search-node result the arrow keys highlight, or `null`
+     * ([SearchNodeHitCursor.selectedHit]). Read by [AppShell]'s palette to
+     * offer "Toggle done" on it (LBR-22).
+     */
+    val selectedSearchNodeHit: se.soderbjorn.lunarbor.data.TextHit? get() = searchNodeHitCursor.selectedHit()
+
+    /** `true` while the arrow keys highlight a search node's result ([SearchNodeHitCursor.isActive]). */
+    val isOnSearchNodeHit: Boolean get() = searchNodeHitCursor.isActive
+
+    /** Toggle done on the highlighted search-node result ([SearchNodeHitCursor.toggleSelectedDone]); the palette's command. */
+    fun toggleSelectedSearchNodeHitDone() = searchNodeHitCursor.toggleSelectedDone()
+
     /** Serial of the last Toggle done toast shown ([showHitDoneToast]). */
     private var shownToastSerial = 0
 
@@ -757,6 +773,7 @@ class MainScreen(
         linkHoverPopup.attach(editor)
         editor.addEventListener("mousedown", { event ->
             val me = event as MouseEvent
+            searchNodeHitCursor.clear(editor)
             if (handleExternalLinkMouseDown(me)) return@addEventListener
             if (handleLunarborLinkMouseDown(me)) return@addEventListener
             // Resize-handle drag has to win against the click-popover
@@ -888,6 +905,9 @@ class MainScreen(
      */
     private fun handleKey(editor: HTMLElement, event: KeyboardEvent) {
         val cmd = event.ctrlKey || event.metaKey
+        // The arrow keys walk a search node's result rows (also on its
+        // read-only page): they take the key first while on them.
+        if (searchNodeHitCursor.handleKey(editor, event) { syncSelectionFromDom(editor) }) return
         if (viewModel.currentBackingState.isReadOnlyPage) {
             // Read-only: only the way up leaves it from here (Back and
             // Forward are app-wide shortcuts).
@@ -1763,6 +1783,8 @@ class MainScreen(
         scroller.scrollTop = savedScrollTop
         // The hovered row's −/+ and dot stay put instead of blinking (LBR-17).
         carryHoverAcrossRepaint(editor)
+        // The arrow keys' highlight on a search node's results survives the rebuild.
+        searchNodeHitCursor.applyHighlight(editor)
 
         if (!state.isLoaded) return
         // Map model selection back to DOM. Selection-aware: if anchor is
