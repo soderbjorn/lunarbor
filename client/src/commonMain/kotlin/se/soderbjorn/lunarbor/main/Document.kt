@@ -589,14 +589,11 @@ class Document(
         // folder, else the subtree of the row whose items they are.
         val range: IntRange
         val column: Int
-        if (folder == folderRel) {
+        val owner = itemsRowOf(folder) ?: return null
+        if (owner < 0) {
             range = lines.indices
             column = 0
         } else {
-            val owner = state.lineIds.indices.firstOrNull { r ->
-                val id = state.lineIds[r]
-                id !in state.unloadedRefIds && id !in trashedIds && refFolderOf(id) == folder
-            } ?: return null
             val ownerCol = DocumentLayout.itemColumn(lines, owner)
             if (ownerCol < 0) return null
             range = (DocumentLayout.itemLastRow(lines, owner) + 1)..DocumentLayout.subtreeEnd(lines, owner, ownerCol)
@@ -611,6 +608,48 @@ class Document(
             if (item == itemIndex) return minOf(r + rowOffset, DocumentLayout.itemLastRow(lines, r))
         }
         return null
+    }
+
+    /**
+     * Where the items of the node folder [folder] are in this document:
+     * `-1` when it is this document's own folder (its top-level rows),
+     * the row of the loaded, expanded item (folder-backed row or mirror)
+     * whose children they are, or `null` when this document does not hold
+     * them (not an outline, not loaded, folded, or not spliced in here).
+     *
+     * Called by [rowOfStoredItem] and by `DocumentRegistry.createJournalDay`
+     * (LBR-23), which picks the open document that already shows a
+     * journal node's items to add a day to.
+     */
+    fun itemsRowOf(folder: String): Int? {
+        if (!bulletsOnly) return null
+        val state = _stateFlow.value
+        if (!state.isLoaded) return null
+        if (folder == folderRel) return -1
+        return state.lineIds.indices.firstOrNull { r ->
+            val id = state.lineIds[r]
+            id !in state.unloadedRefIds && id !in trashedIds && refFolderOf(id) == folder
+        }
+    }
+
+    /**
+     * Inserts [contents] as new, ordinary rows at [row] in one emission
+     * (each with a fresh [LineId]; every existing row keeps its own) — the
+     * real counterpart of [insertPendingRows]: the next save writes them.
+     *
+     * Called by `DocumentRegistry.createJournalDay` (LBR-23), when an
+     * agent's `today` creates a journal day for real.
+     *
+     * @param row Insertion index in the current lines (`lines.size` appends).
+     * @param contents Full lines, indent and marker included.
+     * @return The new rows' ids, in order; empty when the document has not
+     *   loaded or [contents] is empty.
+     */
+    fun insertRows(row: Int, contents: List<String>): List<LineId> {
+        if (!_stateFlow.value.isLoaded || contents.isEmpty()) return emptyList()
+        val ids = insertRowsAt(row, contents)
+        recomputeDirty()
+        return ids
     }
 
     /**

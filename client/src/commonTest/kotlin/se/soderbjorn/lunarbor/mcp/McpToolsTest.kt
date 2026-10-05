@@ -5,13 +5,15 @@
  * write ([AgentOutline]), the tools working on a vault through the
  * registry ([McpTools] — reads, edits that follow the folder save rules,
  * refusals that keep nodes from being deleted by accident, create and
- * delete, privacy scopes, a call stuck on file access timing out), and the
- * JSON-RPC layer ([McpServer]).
+ * delete, privacy scopes, a call stuck on file access timing out, the
+ * journal's `today` — LBR-23), and the JSON-RPC layer ([McpServer]).
  */
 
 package se.soderbjorn.lunarbor.mcp
 
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -22,7 +24,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.PrivacyMode
+import se.soderbjorn.lunarbor.main.CalendarDate
 import se.soderbjorn.lunarbor.main.DocumentRegistry
+import se.soderbjorn.lunarbor.main.PaneBackingViewModel
 import se.soderbjorn.lunarbor.platform.FileSystem
 import se.soderbjorn.lunarbor.platform.VaultDirectoryEntry
 import se.soderbjorn.lunarbor.testing.InMemoryFileSystem
@@ -409,6 +413,163 @@ class McpToolsTest {
         // The lock was released: the next call runs normally.
         val text = t.run("read", "path" to "/").text
         assertTrue("* Milk" in text, text)
+    }
+
+    // ------------------------------------------------------- journal (LBR-23)
+
+    private val monday = CalendarDate(2026, 10, 5)
+    private val dayPath = "Journal/2026/Week 41/2026-10-05 Monday"
+
+    /** Tools whose clock says it is [today] (Monday 2026-10-05 by default). */
+    private fun TestScope.journalTools(registry: DocumentRegistry = DocumentRegistry(repo, backgroundScope), today: CalendarDate = monday) =
+        McpTools(registry, today = { today })
+
+    private suspend fun McpTools.callAs(name: String, allowEdits: Boolean = true, privacy: String? = null, vararg args: Pair<String, Any>) =
+        call(name, JsonObject(args.associate { (k, v) -> k to JsonPrimitive(v.toString()) }), allowEdits, privacy)!!
+
+    @Test
+    fun today_gives_the_path_of_today_and_of_a_given_date() = runTest {
+        seed("_node.md", "- Milk\n- Journal [↳](<Journal/_node.md>)\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n")
+        seed("Journal/2026/_node.md", "- Week 41 [↳](<Week 41/_node.md>)\n")
+        seed("Journal/2026/Week 41/_node.md", "- 2026-10-06 Tuesday\n- 2026-10-05 Monday [↳](<2026-10-05 Monday/_node.md>)\n")
+        seed("$dayPath/_node.md", "- Called the plumber\n")
+        val t = journalTools()
+        val before = fs.tree(root)
+
+        val now = t.callAs("today")
+        assertFalse(now.isError, now.text)
+        assertTrue("Path: /$dayPath\n" in now.text && "today" in now.text, now.text)
+        // Read-only connections get the path of an existing day too.
+        val readOnly = t.callAs("today", allowEdits = false)
+        assertTrue("Path: /$dayPath\n" in readOnly.text, readOnly.text)
+        assertTrue("* Called the plumber" in t.callAs("read", args = arrayOf("path" to "/$dayPath")).text)
+
+        // A day without children (no folder yet) still has a path that read
+        // and append take; the first child makes it a node.
+        val tuesday = t.callAs("today", args = arrayOf("date" to "2026-10-06"))
+        assertTrue("Path: /Journal/2026/Week 41/2026-10-06 Tuesday\n" in tuesday.text && "no items yet" in tuesday.text, tuesday.text)
+        val empty = t.callAs("read", args = arrayOf("path" to "/Journal/2026/Week 41/2026-10-06 Tuesday"))
+        assertFalse(empty.isError, empty.text)
+        assertTrue("(no items yet)" in empty.text, empty.text)
+        assertEquals(before, fs.tree(root))
+        val appended = t.callAs("append", args = arrayOf("path" to "/Journal/2026/Week 41/2026-10-06 Tuesday", "text" to "* Dentist"))
+        assertFalse(appended.isError, appended.text)
+        assertEquals("- Dentist\n", fs.read(root, "Journal/2026/Week 41/2026-10-06 Tuesday/_node.md"))
+        assertTrue("* Dentist" in appended.text, appended.text)
+
+        // ISO weeks: 2025-12-29 is in 2026's week 01. A past day is only
+        // looked up, never created.
+        val past = t.callAs("today", args = arrayOf("date" to "2025-12-29"))
+        assertFalse(past.isError, past.text)
+        assertTrue("/Journal/2026/Week 01/2025-12-29 Monday" in past.text && "never created" in past.text, past.text)
+        assertNull(fs.read(root, "Journal/2026/Week 01/_node.md"))
+        assertTrue(t.callAs("today", args = arrayOf("date" to "2026-02-30")).isError)
+        assertTrue(t.callAs("today", args = arrayOf("date" to "next week")).isError)
+    }
+
+    @Test
+    fun today_creates_the_day_only_when_edits_are_on() = runTest {
+        seed("_node.md", "- Milk\n")
+        val t = journalTools()
+
+        val off = t.callAs("today", allowEdits = false)
+        assertFalse(off.isError, off.text)
+        assertTrue("has no journal node yet" in off.text && "/$dayPath" in off.text, off.text)
+        assertEquals("- Milk\n", fs.read(root, "_node.md"))
+        assertNull(fs.read(root, "Journal/_node.md"))
+
+        val on = t.callAs("today")
+        assertFalse(on.isError, on.text)
+        assertTrue("Created" in on.text && "Path: /$dayPath\n" in on.text, on.text)
+        // Journal last at the root; each item newest first below it.
+        assertEquals("- Milk\n- Journal [↳](<Journal/_node.md>)\n", fs.read(root, "_node.md"))
+        assertEquals("- 2026 [↳](<2026/_node.md>)\n", fs.read(root, "Journal/_node.md"))
+        assertEquals("- 2026-10-05 Monday\n", fs.read(root, "Journal/2026/Week 41/_node.md"))
+        // Called again: found, not made twice.
+        assertTrue("It exists" in t.callAs("today").text)
+        assertEquals("- 2026-10-05 Monday\n", fs.read(root, "Journal/2026/Week 41/_node.md"))
+
+        // The agent writes to it at once.
+        assertFalse(t.callAs("append", args = arrayOf("path" to "/$dayPath", "text" to "* Called the plumber")).isError)
+        assertEquals("- Called the plumber\n", fs.read(root, "$dayPath/_node.md"))
+
+        // A future day may be created; it goes first in its week.
+        val wed = t.callAs("today", args = arrayOf("date" to "2026-10-07"))
+        assertTrue("Created" in wed.text, wed.text)
+        assertEquals(
+            "- 2026-10-07 Wednesday\n- 2026-10-05 Monday [↳](<2026-10-05 Monday/_node.md>)\n",
+            fs.read(root, "Journal/2026/Week 41/_node.md"),
+        )
+        // Read-only: a missing future day is not created either.
+        assertTrue("not created" in t.callAs("today", allowEdits = false, args = arrayOf("date" to "2026-10-12")).text)
+        assertNull(fs.read(root, "Journal/2026/Week 42/_node.md"))
+    }
+
+    @Test
+    fun a_new_day_gets_the_daily_template() = runTest {
+        seed("_node.md", "- Templates [↳](<Templates/_node.md>)\n")
+        seed("Templates/_node.md", "- Daily [↳](<Daily/_node.md>)\n")
+        seed("Templates/Daily/_node.md", "- Open tasks {{search: #todo is:open in:/Journal}}\n- Meetings [↳](<Meetings/_node.md>)\n")
+        seed("Templates/Daily/Meetings/_node.md", "- standup\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        registry.dailyTemplate.set("Templates/Daily")
+        val t = journalTools(registry)
+
+        val r = t.callAs("today")
+        assertFalse(r.isError, r.text)
+        assertTrue("from the daily template" in r.text, r.text)
+        assertEquals(
+            "- Open tasks {{search: #todo is:open in:/Journal}}\n- Meetings [↳](<Meetings/_node.md>)\n",
+            fs.read(root, "$dayPath/_node.md"),
+        )
+        assertEquals("- standup\n", fs.read(root, "$dayPath/Meetings/_node.md"))
+        // The template is untouched.
+        assertEquals("- standup\n", fs.read(root, "Templates/Daily/Meetings/_node.md"))
+    }
+
+    @Test
+    fun a_day_a_pane_prepared_is_committed_in_place() = runTest {
+        seed("_node.md", "- Milk\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        val pane = PaneBackingViewModel(registry, backgroundScope, "_node.md")
+        pane.stateFlow.first { it.isLoaded }
+        runCurrent()
+        assertEquals(PaneBackingViewModel.TodayOutcome.OPENED, pane.navigateToToday(monday))
+        runCurrent()
+        val linesBefore = pane.stateFlow.value.lines
+        val idsBefore = pane.stateFlow.value.documentState!!.lineIds
+        assertNull(fs.read(root, "Journal/_node.md"))
+
+        val r = journalTools(registry).callAs("today")
+        assertFalse(r.isError, r.text)
+        runCurrent()
+        // The pane's rows are the real day now: same rows, same ids, saved.
+        val s = pane.stateFlow.value
+        assertEquals(linesBefore, s.lines)
+        assertEquals(idsBefore, s.documentState!!.lineIds)
+        val doc = registry.acquire("_node.md")
+        assertTrue(s.documentState!!.lineIds.none { doc.isPending(it) })
+        registry.release("_node.md")
+        assertEquals("- 2026-10-05 Monday\n", fs.read(root, "Journal/2026/Week 41/_node.md"))
+        assertEquals(1, linesBefore.count { "2026-10-05 Monday" in it })
+    }
+
+    @Test
+    fun a_scope_hiding_the_journal_finds_and_creates_nothing() = runTest {
+        seed("_node.md", "- Milk\n- Journal #private [↳](<Journal/_node.md>)\n")
+        seed("Journal/_node.md", "- 2025 [↳](<2025/_node.md>)\n")
+        seed("Journal/2025/_node.md", "- Week 52\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        registry.setPrivacyModes(listOf(PrivacyMode("m1", "Colleagues", listOf("private"))))
+        val t = journalTools(registry)
+
+        val r = t.callAs("today", privacy = "m1")
+        assertTrue(r.isError && "Nothing at /$dayPath" in r.text, r.text)
+        assertEquals("- 2025 [↳](<2025/_node.md>)\n", fs.read(root, "Journal/_node.md"))
+        assertNull(fs.read(root, "Journal/2026/_node.md"))
+        // Without the scope the same call creates it.
+        assertTrue("Created" in t.callAs("today").text)
     }
 
     // ---------------------------------------------------------------- server

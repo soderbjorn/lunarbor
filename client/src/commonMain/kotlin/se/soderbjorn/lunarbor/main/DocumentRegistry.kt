@@ -46,6 +46,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import se.soderbjorn.lunarbor.data.DoneState
+import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.ImagePaths
 import se.soderbjorn.lunarbor.data.LunarborLink
 import se.soderbjorn.lunarbor.data.NodeFrontMatter
@@ -1081,6 +1082,148 @@ class DocumentRegistry(
         }
     }
 
+    // ------------------------------------------------- journal days for agents (LBR-23)
+
+    /**
+     * The part of a journal path that exists on disk: from the root down,
+     * the item matching each of [titles] ([DailyNotes.matchesTitle]; the
+     * first match, bullets only), stopping after the first item that is
+     * not folder-backed or at the first title not found. Callers
+     * [flushAll] first when unsaved edits matter. Rows the Today command
+     * prepared and nobody typed in are not on disk, so they do not count.
+     *
+     * Called by `McpTools` (`today`) and [createJournalDay].
+     *
+     * @param titles The path's titles, outermost first ([DailyNotes.titlePath]).
+     * @return One step per item found, outermost first.
+     */
+    suspend fun journalStepsOf(titles: List<String>): List<JournalStep> {
+        val out = ArrayList<JournalStep>(titles.size)
+        var folder = ""
+        for (title in titles) {
+            val item = repository.nodeItemsOf(folder).firstOrNull {
+                (it is NodeLine.Leaf && DailyNotes.matchesTitle(it.title, title)) ||
+                    (it is NodeLine.Folder && DailyNotes.matchesTitle(it.title, title))
+            } ?: break
+            when (item) {
+                is NodeLine.Folder -> {
+                    folder = if (folder.isEmpty()) item.folder else "$folder/${item.folder}"
+                    out += JournalStep(item.title, folder)
+                }
+                is NodeLine.Leaf -> {
+                    out += JournalStep(item.title, null)
+                    break
+                }
+                else -> break
+            }
+        }
+        return out
+    }
+
+    /**
+     * Creates the journal item path [titles] for real — what the Today
+     * command ([PaneBackingViewModel.navigateToToday]) prepares, but saved
+     * at once, because an agent is about to write to it:
+     *
+     *  1. saves every open document, and finds the deepest folder-backed
+     *     item of the path on disk ([journalStepsOf]);
+     *  2. picks the [Document] to add to: an open one that already holds
+     *     that node's items ([Document.itemsRowOf] — its own outline, or
+     *     an outline with the node expanded), preferring one with pending
+     *     rows (a pane that prepared the day: committing them in place
+     *     keeps the pane's rows and caret, where a reload from disk would
+     *     drop them), then the node's own outline; else acquires the
+     *     node's outline;
+     *  3. walks the rest of the path in it ([DailyNotes.findChild]); a row
+     *     on the way that is pending is committed with its whole group
+     *     ([Document.commitPendingRows]) — the pane's prepared day, with
+     *     its template rows or placeholder, becomes the real one;
+     *  4. inserts the items still missing, newest first like the Today
+     *     command (a new `Journal` last at the root), with the daily
+     *     template's items ([dailyTemplateRows], LBR-21) under a new day —
+     *     or nothing under it when there is no template: a day without
+     *     children is a plain bullet (its folder comes with its first
+     *     child);
+     *  5. saves ([Document.flush]); other documents holding a written node
+     *     reload through the save's usual refresh.
+     *
+     * An existing day is never changed (no template is applied to it).
+     * The caller checks the privacy scope first: nothing is created where
+     * [filter] hides `Journal` or a part of the path.
+     *
+     * Called by `McpTools` (`today`, with edits on, for today or a future
+     * day).
+     *
+     * @param titles The path's titles, outermost first ([DailyNotes.titlePath]).
+     * @param filter The connection's privacy scope; the template copy
+     *   leaves out what it hides.
+     * @return `true` when a new day was given the template's items.
+     */
+    suspend fun createJournalDay(titles: List<String>, filter: PrivacyFilter): Boolean {
+        flushAll()
+        val steps = journalStepsOf(titles)
+        // The deepest node on disk: where the missing items are added.
+        var parent = ""
+        var found = 0
+        for (step in steps) {
+            val folder = step.folder ?: break
+            parent = folder
+            found++
+        }
+        // The new day's folder as the save will name it (for the template's
+        // self-containment check).
+        val template = if (steps.size >= titles.size) null else {
+            val below = (found until titles.size).map { FolderName.forTitle(steps.getOrNull(it)?.title ?: titles[it]) }
+            dailyTemplateRows((listOf(parent).filter { it.isNotEmpty() } + below).joinToString("/"), filter)
+        }
+        val holders = openDocuments().filter { it.itemsRowOf(parent) != null }
+        val holder = holders.firstOrNull { it.hasPendingRows }
+            ?: holders.firstOrNull { it.fileRel == NoteRepository.outlineFileOf(parent) }
+            ?: holders.firstOrNull()
+        val fileRel = holder?.fileRel ?: NoteRepository.outlineFileOf(parent)
+        val doc = acquire(fileRel)
+        try {
+            doc.stateFlow.first { it.isLoaded }
+            var parentRow = doc.itemsRowOf(parent) ?: return false
+            var level = found
+            while (level < titles.size) {
+                val st = doc.stateFlow.value
+                val row = DailyNotes.findChild(st.lines, parentRow, titles[level])
+                if (row < 0) break
+                doc.pendingGroupOf(st.lineIds[row])?.let { doc.commitPendingRows(it) }
+                parentRow = row
+                level++
+            }
+            val missing = titles.drop(level)
+            var templated = false
+            if (missing.isNotEmpty()) {
+                val lines = doc.stateFlow.value.lines
+                val (at, indent) = when {
+                    parentRow >= 0 -> DailyNotes.firstChildRow(lines, parentRow) to
+                        DocumentLayout.itemColumn(lines, parentRow) + PaneBackingViewModel.TAB_SIZE
+                    // `Journal` itself: last among the root's items.
+                    level == 0 -> {
+                        val top = DailyNotes.childItemRows(lines, -1).firstOrNull()
+                        DailyNotes.lastTopLevelRow(lines) to (top?.let { DocumentLayout.itemColumn(lines, it) } ?: 0)
+                    }
+                    // A node's own outline: first among its items.
+                    else -> {
+                        val top = DailyNotes.childItemRows(lines, -1).firstOrNull()
+                        (top ?: 0) to (top?.let { DocumentLayout.itemColumn(lines, it) } ?: 0)
+                    }
+                }
+                templated = !template.isNullOrEmpty()
+                // Without a template the day gets no placeholder child.
+                val rows = DailyNotes.preparedRows(missing, indent, template).let { if (templated) it else it.dropLast(1) }
+                doc.insertRows(at, rows)
+            }
+            doc.flush()
+            return templated
+        } finally {
+            release(fileRel)
+        }
+    }
+
     // ------------------------------------------------------- agents (MCP)
 
     /**
@@ -1581,6 +1724,15 @@ class DocumentRegistry(
         const val TEMPLATE_MAX_ROWS: Int = 2_000
     }
 }
+
+/**
+ * One item of a journal path found on disk ([DocumentRegistry.journalStepsOf], LBR-23).
+ *
+ * @property title The item's title as written.
+ * @property folder Its vault folder, or `null` for a bullet without
+ *   children (no folder; the walk stops there).
+ */
+data class JournalStep(val title: String, val folder: String?)
 
 /**
  * One Toggle done on a search result ([DocumentRegistry.toggleDoneOnHit],

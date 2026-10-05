@@ -19,6 +19,13 @@
  * rows, so untouched items keep their identity and nested nodes their
  * folders.
  *
+ * `today` (LBR-23) finds a journal day's node — `/Journal/<year>/Week
+ * <NN>/<YYYY-MM-DD Weekday>`, by the same rules as the Today command
+ * ([DailyNotes]) — and, with edits on, creates today or a future day for
+ * real ([DocumentRegistry.createJournalDay]), daily template included.
+ * A day without children is a bullet with no folder yet; its would-be
+ * path still works for `read`, `append` and `create_node` ([Target.LeafDay]).
+ *
  * A connection may be scoped to a privacy mode (App settings → Agent
  * access, one key per connection; LBR-10): what that mode hides does not
  * exist for the agent — not read, listed or searched, a path into it reads
@@ -54,10 +61,13 @@ import se.soderbjorn.lunarbor.data.TextIndex
 import se.soderbjorn.lunarbor.data.TextScope
 import se.soderbjorn.lunarbor.data.VaultEntryKind
 import se.soderbjorn.lunarbor.main.BlockLayout
+import se.soderbjorn.lunarbor.main.CalendarDate
+import se.soderbjorn.lunarbor.main.DailyNotes
 import se.soderbjorn.lunarbor.main.Document
 import se.soderbjorn.lunarbor.main.DocumentLayout
 import se.soderbjorn.lunarbor.main.DocumentRegistry
 import se.soderbjorn.lunarbor.main.FolderContents
+import se.soderbjorn.lunarbor.main.JournalStep
 import se.soderbjorn.lunarbor.main.LineId
 import se.soderbjorn.lunarbor.main.PaneBackingViewModel
 import se.soderbjorn.lunarbor.main.PrivacyLayout
@@ -72,8 +82,15 @@ import se.soderbjorn.lunarbor.main.PrivacyLayout
  *   through it, so agents and panes share one view of the vault.
  * @param workspace The app's windows and tabs, or `null` on a platform
  *   without them (the window tools are then not offered).
+ * @param today The user's local date, for `today` (LBR-23): the web
+ *   layer passes the local clock's date (as the Today command uses);
+ *   tests pass a fixed one. Defaults to the date in UTC.
  */
-class McpTools(private val registry: DocumentRegistry, private val workspace: AgentWorkspace? = null) {
+class McpTools(
+    private val registry: DocumentRegistry,
+    private val workspace: AgentWorkspace? = null,
+    private val today: () -> CalendarDate = ::utcToday,
+) {
 
     /**
      * One tool as `tools/list` describes it.
@@ -120,6 +137,9 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
      */
     private var filter = PrivacyFilter.NONE
 
+    /** Whether the running call's connection may change the vault; set by [call] under [lock]. */
+    private var editsAllowed = false
+
     /** Every tool, in the order `tools/list` shows them. */
     val tools: List<Tool> = listOf(
         Tool(
@@ -165,6 +185,17 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
             description = "List the #tags used in a tree, most used first, with how many lines carry each.",
             inputSchema = schema(
                 "path" to stringProp("Node whose tree to look in (default: the whole vault)."),
+            ),
+        ),
+        Tool(
+            name = "today",
+            description = "Find the user's journal node for today, or for date: each day is a node at " +
+                "/Journal/<year>/Week <NN>/<YYYY-MM-DD Weekday> (ISO week and its year), newest first. Returns its path; " +
+                "then use read, append or edit on it. When edits are allowed and today (or a future date) has no node " +
+                "yet, it is created at once — with the user's daily template, if one is set — so you can append to it. " +
+                "Past days are only looked up, never created.",
+            inputSchema = schema(
+                "date" to stringProp("The day as YYYY-MM-DD, e.g. \"2026-10-05\" (default: today on the user's clock)."),
             ),
         ),
         Tool(
@@ -345,11 +376,12 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         if (tool.writes && !allowEdits) {
             return Result("Edits are turned off in Lunarbor's settings (Agent access). Only reading and searching are allowed.", true)
         }
+        val edits = allowEdits
         // A stuck call (file access that never answers) would otherwise hold
         // the lock forever and every later call would queue behind it. The
         // timeout covers the wait for the lock too, and cancels the run, which
         // releases it.
-        return withTimeoutOrNull(CALL_TIMEOUT_MS) { lock.withLock { runLocked(name, args, scopeFilter) } }
+        return withTimeoutOrNull(CALL_TIMEOUT_MS) { lock.withLock { runLocked(name, args, scopeFilter, edits) } }
             ?: Result(
                 "Lunarbor did not finish this in time (${CALL_TIMEOUT_MS / 1000} s), so it was stopped; " +
                     "a change it was making may be partly applied. Lunarbor may not be able to reach its files: " +
@@ -359,10 +391,11 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
     }
 
     /** [call]'s body, under [lock]: sets the scope, runs the tool, turns failures into error results. */
-    private suspend fun runLocked(name: String, args: JsonObject, scopeFilter: PrivacyFilter): Result {
+    private suspend fun runLocked(name: String, args: JsonObject, scopeFilter: PrivacyFilter, allowEdits: Boolean): Result {
         extra.clear()
         return try {
             filter = scopeFilter
+            editsAllowed = allowEdits
             // What is hidden is known only once every note was read.
             if (filter.isActive) {
                 registry.flushAll()
@@ -388,6 +421,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         "list_folder" -> listFolder(optionalPath(args, "path"), (args.int("depth") ?: 1).coerceIn(1, MAX_DEPTH))
         "move" -> move(path(args, "path"), path(args, "to"), args.int("position"), args.string("new_name"))
         "list_tags" -> listTags(optionalPath(args, "path"))
+        "today" -> journalDay(args.string("date"))
         "edit" -> edit(path(args, "path"), required(args, "old_text"), required(args, "new_text"), args.bool("delete_nodes") == true)
         "append" -> append(path(args, "path"), required(args, "text"))
         "create_node" -> createNode(path(args, "parent"), required(args, "title"), args.string("items").orEmpty())
@@ -425,6 +459,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
                 "Note ${display(target.fileRel)} (Markdown)\n\n" + text.ifEmpty { "(empty)" }
             }
             is Target.File -> readFile(target.fileRel)
+            is Target.LeafDay -> "# ${target.title}\nPath: ${display(target.path)}\nCreated: unknown\nUpdated: unknown\n\n(no items yet)"
         }
     }
 
@@ -660,6 +695,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
             }
             is Target.Note -> editNote(target.fileRel) { current -> replaceOnce(current, old, newText.replace("\r\n", "\n"), target.fileRel) }
             is Target.File -> throw notEditable(target.fileRel)
+            is Target.LeafDay -> throw Refusal("${display(target.path)} has no items yet, so there is nothing to replace. Add items with append.")
         }
     }
 
@@ -677,6 +713,11 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
                 (if (body.isEmpty()) added else "$body\n$added") + if (current.endsWith("\n")) "\n" else ""
             }
             is Target.File -> throw notEditable(target.fileRel)
+            is Target.LeafDay -> {
+                val items = AgentOutline.parse(added)
+                if (hasNode(items)) throw Refusal("New items cannot carry <!-- /path --> annotations: those name existing nodes.")
+                addToLeafDay(target, items)
+            }
         }
     }
 
@@ -686,7 +727,11 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         val children = AgentOutline.parse(itemsText)
         if (hasNode(children)) throw Refusal("New items cannot carry <!-- /path --> annotations: those name existing nodes.")
         val node = AgentOutline.Item(AgentOutline.Kind.BULLET, title.trim(), children = children)
-        val folder = (targetOf(parent) as? Target.Node)?.folder ?: throw Refusal("${display(parent)} is a note; nodes go in nodes.")
+        val folder = when (val target = targetOf(parent)) {
+            is Target.Node -> target.folder
+            is Target.LeafDay -> return addToLeafDay(target, listOf(node))
+            else -> throw Refusal("${display(parent)} is a note; nodes go in nodes.")
+        }
         return editNode(folder) { current -> (AgentOutline.parse(current) + node) to false }
     }
 
@@ -1035,6 +1080,141 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         return if (dropped.isEmpty()) "" else " Moved to the trash: ${dropped.joinToString { display(it) }}."
     }
 
+    // --------------------------------------------------------------- journal
+
+    /**
+     * `today` (LBR-23): the journal day for [dateArg] (`YYYY-MM-DD`, or
+     * today on the user's clock when `null`) — its path, by the Today
+     * command's rules ([DailyNotes.titlePath]), read from disk
+     * ([DocumentRegistry.journalStepsOf]):
+     *
+     * - it exists → its path (a day without children: its would-be path,
+     *   which `read` / `append` accept, [Target.LeafDay]);
+     * - missing, edits on, today or later → created for real
+     *   ([DocumentRegistry.createJournalDay], daily template included);
+     * - missing and in the past → said so; past days are never created;
+     * - missing with edits off → says the day has no node yet.
+     *
+     * Where the connection's privacy scope hides `Journal` or a part of the
+     * path, the answer is [notFound] for the day's path, as for any hidden
+     * path, and nothing is created.
+     */
+    private suspend fun journalDay(dateArg: String?): String {
+        val now = today()
+        val date = if (dateArg.isNullOrBlank()) now else parseDate(dateArg.trim())
+        val titles = DailyNotes.titlePath(date)
+        val name = DailyNotes.dayTitle(date)
+        registry.flushAll()
+        var steps = registry.journalStepsOf(titles)
+        if (isJournalHidden(steps, titles)) throw notFound(journalPathOf(steps, titles))
+        if (steps.size < titles.size) {
+            val path = display(journalPathOf(steps, titles))
+            val label = if (date == now) "Today ($name)" else name
+            when {
+                date.epochDay < now.epochDay ->
+                    return "$name has no journal node (it would be $path). Past days are only looked up, never created."
+                !editsAllowed ->
+                    return "$label has no journal node yet (it would be $path). Edits are turned off for this " +
+                        "connection, so it was not created."
+            }
+            val templated = registry.createJournalDay(titles, filter)
+            steps = registry.journalStepsOf(titles)
+            if (steps.size < titles.size) throw Refusal("$label's journal node could not be created at $path.")
+            val created = "Created the journal node for $label" + (if (templated) " from the daily template" else "") + "."
+            return "$created\nPath: ${display(journalPathOf(steps, titles))}\n\nAdd to it with append, or read it."
+        }
+        val path = display(journalPathOf(steps, titles))
+        val what = if (steps.last().folder == null) " It has no items yet." else ""
+        return "Journal node for ${if (date == now) "today, " else ""}$name:\nPath: $path\n\nIt exists.$what " +
+            "Read it, or add to it with append."
+    }
+
+    /** [text] as a date (`YYYY-MM-DD`, a real day), or a refusal. */
+    private fun parseDate(text: String): CalendarDate {
+        val m = DATE.matchEntire(text) ?: throw Refusal("date must be YYYY-MM-DD, e.g. 2026-10-05.")
+        val (y, mo, d) = m.destructured
+        val year = y.toInt()
+        val month = mo.toInt()
+        val day = d.toInt()
+        if (month !in 1..12 || day !in 1..CalendarDate.daysInMonth(year, month)) throw Refusal("$text is not a date.")
+        return CalendarDate(year, month, day)
+    }
+
+    /**
+     * The vault path of the journal item [titles] names: the folders of
+     * the items found ([steps]), then each missing item's folder as the
+     * save rules will name it ([FolderName.forTitle]).
+     */
+    private fun journalPathOf(steps: List<JournalStep>, titles: List<String>): String {
+        var folder = ""
+        for ((i, title) in titles.withIndex()) {
+            val step = steps.getOrNull(i)
+            folder = step?.folder ?: join(folder, FolderName.forTitle(step?.title ?: title))
+        }
+        return folder
+    }
+
+    /**
+     * `true` when the connection's privacy scope hides a part of the
+     * journal path [titles]: an item found ([steps]) carries a hiding tag,
+     * or a folder on the way — existing, or as it would be named — is
+     * hidden.
+     */
+    private fun isJournalHidden(steps: List<JournalStep>, titles: List<String>): Boolean {
+        if (!filter.isActive) return false
+        var folder = ""
+        for ((i, title) in titles.withIndex()) {
+            val step = steps.getOrNull(i)
+            if (step != null && filter.hides(TextIndex.tagKeysOfRow("* " + step.title))) return true
+            folder = step?.folder ?: join(folder, FolderName.forTitle(step?.title ?: title))
+            if (registry.isPathHidden(folder, filter)) return true
+        }
+        return false
+    }
+
+    /**
+     * The journal day without children whose would-be path is [rel]
+     * ([Target.LeafDay]): [rel]'s last segment is a day title
+     * ([DailyNotes.dateOfDayTitle]) and the node folder above it has a
+     * bullet without children whose folder name ([FolderName.forTitle])
+     * that is. `null` otherwise, and when the connection's privacy scope
+     * hides the bullet.
+     */
+    private suspend fun leafDayAt(rel: String): Target.LeafDay? {
+        val name = rel.substringAfterLast('/')
+        if (DailyNotes.dateOfDayTitle(FolderName.decode(name)) == null) return null
+        val parent = rel.substringBeforeLast('/', "")
+        if (parent.isNotEmpty() && registry.kindOf(parent) != VaultEntryKind.FOLDER) return null
+        registry.flushAll()
+        val line = registry.nodeItemsOf(parent).firstOrNull {
+            it is NodeLine.Leaf && FolderName.forTitle(it.title).equals(name, ignoreCase = true)
+        } as? NodeLine.Leaf ?: return null
+        if (isHiddenLine(parent, line)) return null
+        return Target.LeafDay(parent, line.title, rel)
+    }
+
+    /**
+     * Gives the journal day [target] its first children [items], which
+     * makes it a node with a folder of its own (an edit of its parent's
+     * outline, [editNode]).
+     *
+     * @return The day as it is after the save (or its parent, should the
+     *   day's folder not be found).
+     */
+    private suspend fun addToLeafDay(target: Target.LeafDay, items: List<AgentOutline.Item>): String {
+        val parentText = editNode(target.parent) { current ->
+            val all = AgentOutline.parse(current).toMutableList()
+            val i = all.indexOfFirst { it.kind == AgentOutline.Kind.BULLET && it.node == null && it.text == target.title }
+            if (i < 0) throw Refusal("${display(target.path)} changed meanwhile; call today again.")
+            all[i] = all[i].copy(children = all[i].children + items)
+            all to false
+        }
+        val folder = registry.nodeItemsOf(target.parent).firstOrNull {
+            it is NodeLine.Folder && it.title == target.title
+        }?.let { join(target.parent, (it as NodeLine.Folder).folder) } ?: return parentText
+        return "Saved.\n\n" + read(folder, 1)
+    }
+
     // ---------------------------------------------------------------- helpers
 
     /** What a path names: a node (its folder) or a `.md` note. */
@@ -1044,6 +1224,18 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
 
         /** Any other file: readable, not editable here. */
         data class File(val fileRel: String) : Target()
+
+        /**
+         * A journal day that is a bullet without children (LBR-23): no
+         * folder yet, so no path on disk — but `today` gives agents the
+         * path its folder will have, and `read` / `append` / `create_node`
+         * accept it ([leafDayAt]). The first child makes it a node.
+         *
+         * @property parent The node folder the day is an item of.
+         * @property title The day's title as written.
+         * @property path The would-be path ([FolderName.forTitle] of the title under [parent]).
+         */
+        data class LeafDay(val parent: String, val title: String, val path: String) : Target()
     }
 
     /**
@@ -1059,7 +1251,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
             VaultEntryKind.FOLDER -> Target.Node(rel)
             VaultEntryKind.MARKDOWN -> if (NoteRepository.isAppFile(rel)) Target.File(rel) else Target.Note(rel)
             VaultEntryKind.IMAGE, VaultEntryKind.DRAWING, VaultEntryKind.HTML, VaultEntryKind.FILE -> Target.File(rel)
-            null -> throw notFound(rel)
+            null -> leafDayAt(rel) ?: throw notFound(rel)
         }
     }
 
@@ -1149,6 +1341,9 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
         /** Extensions `create_file` writes: text formats only. */
         val TEXT_EXTENSIONS: Set<String> = setOf("md", "txt", "csv", "tsv", "json", "yaml", "yml", "xml", "html", "css", "js", "ts", "kt", "py", "sh", "toml", "ini", "log")
 
+        /** `today`'s `date` argument: `YYYY-MM-DD`. */
+        private val DATE = Regex("""^(\d{4})-(\d{2})-(\d{2})$""")
+
         /** [rel] as agents see paths: with a leading slash, `/` for the root. */
         fun display(rel: String): String = "/$rel"
 
@@ -1178,3 +1373,10 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
             }
     }
 }
+
+/**
+ * Today's date in UTC: [McpTools]' default clock, for platforms that do
+ * not pass the user's local date (tests pass a fixed one).
+ */
+private fun utcToday(): CalendarDate =
+    CalendarDate.ofEpochDay(kotlin.time.Clock.System.now().toEpochMilliseconds().floorDiv(86_400_000L))
