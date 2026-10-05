@@ -1017,6 +1017,24 @@ class MainScreen(
                 }
             }
         }
+        if (event.key == "ArrowRight" && !event.altKey && !event.metaKey && !event.ctrlKey) {
+            // The mirror: plain ArrowRight at the end of a row's text. The
+            // browser would step into the next row's contenteditable=false
+            // bullet prefix first and the model would then snap the caret
+            // to the start of its text — a visible two-step hop. Route
+            // through the view model so the caret lands there directly.
+            if (syncSelectionFromDom(editor)) {
+                val backing = viewModel.stateFlow.value.backingState
+                if (backing != null) {
+                    val line = backing.lines.getOrNull(backing.cursorRow)
+                    if (line != null && DocumentLayout.isAtVisibleTextEnd(line, backing.cursorCol)) {
+                        event.preventDefault()
+                        viewModel.moveRight(extend = event.shiftKey)
+                        return
+                    }
+                }
+            }
+        }
         if (event.key == "ArrowDown" && !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
             // Plain ArrowDown on the last row of a block that nothing
             // follows: the browser has nowhere to go, so leave the block

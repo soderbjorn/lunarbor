@@ -123,6 +123,23 @@ object DocumentLayout {
     }
 
     /**
+     * `true` when [col] sits at the visible end of [line]'s text: at or
+     * past its end, or separated from it only by hidden inline markers
+     * (the closing `**` of bold, `` ` `` of inline code, …). The mirror of
+     * [isAtVisibleTextStart].
+     *
+     * Used by `TextEditingViewModel.moveRight` and the web view's Arrow
+     * Right handling to decide when a press wraps to the next row.
+     */
+    fun isAtVisibleTextEnd(line: String, col: Int): Boolean {
+        if (col >= line.length) return true
+        val start = caretStartCol(line)
+        if (BlockLayout.isCodeLine(line) || col < start) return false
+        val markers = InlineMarkdownTokenizer.tokenize(line.substring(start)).markerCols
+        return (col until line.length).all { (it - start) in markers }
+    }
+
+    /**
      * Nesting column of [line]: the bullet's `*` column for a bullet line,
      * otherwise its leading-space count (the whole length for an
      * all-whitespace line, `0` for the empty string).

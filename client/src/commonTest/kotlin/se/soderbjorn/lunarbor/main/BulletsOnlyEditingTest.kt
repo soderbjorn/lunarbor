@@ -450,6 +450,26 @@ class BulletsOnlyEditingTest {
         assertTrue(!DocumentLayout.isAtVisibleTextStart("* plain", 3))
     }
 
+    @Test
+    fun arrow_right_before_hidden_closing_marker_wraps_to_next_row() = runTest {
+        val p = pane("- **bold**\n- `code`\n- C\n")
+        // Caret just before the hidden closing `**`: visually the end.
+        p.setSelection(0, 8, 0, 8)
+        p.moveRight()
+        assertEquals(1 to 2, p.stateFlow.value.let { it.cursorRow to it.cursorCol })
+        p.setSelection(1, "* `code`".length, 1, "* `code`".length)
+        p.moveRight()
+        assertEquals(2 to 2, p.stateFlow.value.let { it.cursorRow to it.cursorCol })
+    }
+
+    @Test
+    fun visible_text_end_counts_only_hidden_markers() {
+        assertTrue(DocumentLayout.isAtVisibleTextEnd("* `code`", 8))
+        assertTrue(DocumentLayout.isAtVisibleTextEnd("* `code`", 7))
+        assertTrue(!DocumentLayout.isAtVisibleTextEnd("* `code`", 6))
+        assertTrue(!DocumentLayout.isAtVisibleTextEnd("* plain", 5))
+    }
+
     // ------------------------------------------------------- pure helper
 
     @Test

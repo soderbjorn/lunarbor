@@ -1541,7 +1541,9 @@ internal class TextEditingViewModel(
         }
         val line = st.lines[st.cursorRow]
         val (r, c) = when {
-            st.cursorCol < line.length -> st.cursorRow to skipMarkersRight(line, st.cursorCol + 1)
+            // Only hidden markers (e.g. bold's closing `**`) after the
+            // caret still counts as the end: wrap.
+            !DocumentLayout.isAtVisibleTextEnd(line, st.cursorCol) -> st.cursorRow to skipMarkersRight(line, st.cursorCol + 1)
             else -> {
                 val next = nextVisibleRow(st, st.cursorRow)
                 if (next != null) next to DocumentLayout.caretStartCol(st.lines[next])
