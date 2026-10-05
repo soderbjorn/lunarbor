@@ -136,9 +136,11 @@ points at or through it, in open documents and on disk. A link
 whose target has gone missing (trashed, or moved in Finder) is drawn struck
 through and left as it is.
 
-A bullet whose only link points at a node can be expanded like a parent: it
-then shows that node's bullets under the link, greyed and read-only — a
-preview, not a copy. Click one to open it.
+A bullet whose only link points at a node is a mirror: it unfolds like a
+parent and shows that node's own bullets under the link, editable. Edits
+are saved to the node's `_node.md`; the mirror bullet itself is saved as the
+plain link line, so the files look the same as for any link. Its dot is a
+ring in the accent colour.
 
 `Starred.md` in the vault root stores bookmarks as the same `lunarbor:` links,
 so they stay current the same way. It is app data rather than a note:
