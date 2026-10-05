@@ -81,6 +81,7 @@ import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.PathMove
 import se.soderbjorn.lunarbor.data.PrivacyFilter
 import se.soderbjorn.lunarbor.data.SubtreeCodec
+import se.soderbjorn.lunarbor.data.bareUrlEndAt
 import se.soderbjorn.lunarbor.data.TagCount
 import se.soderbjorn.lunarbor.data.TextHit
 import se.soderbjorn.lunarbor.data.SearchNode
@@ -3370,7 +3371,7 @@ class PaneBackingViewModel(
     /**
      * Inserts a link to [target] at the cursor: `[label](lunarbor:/…)`, labelled
      * with [label] or, when that is blank, the target's title. See
-     * [insertMarkdownLink]. Called by the Insert Link / "Link to node…"
+     * [insertMarkdownLink]. Called by the Insert Link / "Insert Mirror…"
      * modal once the user picks a target.
      */
     fun insertLinkTo(target: LinkTarget, label: String = "") {
@@ -3378,37 +3379,50 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Points the link at [row] / [col] ([LinkSource.at]) at [target]: the
-     * whole link — a Markdown link or a `[[…]]` wiki link — becomes
-     * `[label](lunarbor:/…)`, keeping the text it showed. One undoable edit.
-     * Called by the web link popup's "Change link…" once the user picks a
-     * target in the link search. No-op when no link is there.
+     * The link at [row] / [col] ([LinkSource.at]), or `null`. Called by the
+     * web Edit link dialog to fill in the link's text and URL.
      *
      * @param row Document row of the link.
      * @param col Any column inside the link's source span.
      */
-    fun retargetLinkAt(row: Int, col: Int, target: LinkTarget) {
+    fun linkAt(row: Int, col: Int): LinkSource? = linkSourceAt(row, col)
+
+    /**
+     * Rewrites the link at [row] / [col] — a Markdown link, a `[[…]]` wiki
+     * link or a bare URL — as `[text](url)`. [text] is plain text: its
+     * `\ [ ] ( )` are escaped ([SubtreeCodec.escapeLabel]), other Markdown
+     * stays. A blank [text] shows the URL; a URL shown as itself is written
+     * bare; a blank [url] removes the link ([removeLinkAt]). One undoable
+     * edit; nothing happens when the result equals what is there. Called by
+     * the web Edit link dialog's Save.
+     *
+     * @param row Document row of the link.
+     * @param col Any column inside the link's source span.
+     * @param text The text the link should show.
+     * @param url Where it should point: any URL, a `lunarbor:/…` path.
+     */
+    fun updateLinkAt(row: Int, col: Int, text: String, url: String) {
         val link = linkSourceAt(row, col) ?: return
-        replaceLinkSource(row, link, "[" + link.label + "](" + SubtreeCodec.formatLinkUrlForLabel(LunarborLink.format(target.pathRel)) + ")")
+        val target = url.trim()
+        if (target.isEmpty()) {
+            removeLinkAt(row, col)
+            return
+        }
+        val shown = text.trim().ifEmpty { target }
+        val replacement = if (shown == target && bareUrlEndAt(target, 0) == target.length) target
+        else "[" + SubtreeCodec.escapeLabel(shown) + "](" + SubtreeCodec.formatLinkUrlForLabel(target) + ")"
+        val line = _stateFlow.value.lines.getOrNull(row) ?: return
+        if (line.substring(link.start, link.end) == replacement) return
+        replaceLinkSource(row, link, replacement)
     }
 
     /**
      * Unlinks the link at [row] / [col], leaving the text it showed. One
-     * undoable edit. Called by the web link popup's "Remove link".
+     * undoable edit. Called by the web Edit link dialog's "Remove link".
      */
     fun removeLinkAt(row: Int, col: Int) {
         val link = linkSourceAt(row, col) ?: return
         replaceLinkSource(row, link, link.label)
-    }
-
-    /**
-     * Puts the caret at the end of the link's text at [row] / [col] (before
-     * `]` or `]]`), so it can be edited by typing — clicking a link follows
-     * it instead. Called by the web link popup's "Edit text".
-     */
-    fun editLinkTextAt(row: Int, col: Int) {
-        val link = linkSourceAt(row, col) ?: return
-        moveTo(row, link.labelEnd)
     }
 
     private fun linkSourceAt(row: Int, col: Int): LinkSource? {

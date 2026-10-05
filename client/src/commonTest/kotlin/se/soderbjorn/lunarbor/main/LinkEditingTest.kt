@@ -1,9 +1,9 @@
 /*
  * LinkEditingTest.kt (commonTest)
  * -------------------------------
- * Tests for the link popup's intents on [PaneBackingViewModel]:
- * [PaneBackingViewModel.retargetLinkAt], [PaneBackingViewModel.removeLinkAt]
- * and [PaneBackingViewModel.editLinkTextAt], against the real stack on
+ * Tests for the Edit link dialog's intents on [PaneBackingViewModel]:
+ * [PaneBackingViewModel.linkAt], [PaneBackingViewModel.updateLinkAt] and
+ * [PaneBackingViewModel.removeLinkAt], against the real stack on
  * [InMemoryFileSystem].
  */
 
@@ -13,9 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import se.soderbjorn.lunarbor.data.LinkTarget
 import se.soderbjorn.lunarbor.data.NoteRepository
-import se.soderbjorn.lunarbor.data.VaultEntryKind
 import se.soderbjorn.lunarbor.testing.InMemoryFileSystem
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -40,12 +38,32 @@ class LinkEditingTest {
     private val PaneBackingViewModel.lines get() = stateFlow.value.lines
 
     @Test
-    fun changing_a_wiki_link_makes_a_tf_link_with_the_same_text() = runTest {
+    fun changing_a_wiki_link_makes_a_markdown_link_with_the_same_text() = runTest {
         val p = note("Read [[How to be concise]] (Wes)")
-        p.retargetLinkAt(0, 8, LinkTarget("Reading/Concise.md", "Concise", VaultEntryKind.MARKDOWN))
+        p.updateLinkAt(0, 8, "How to be concise", "lunarbor:/Reading/Concise.md")
         assertEquals("Read [How to be concise](lunarbor:/Reading/Concise.md) (Wes)", p.lines[0])
         p.undo()
         assertEquals("Read [[How to be concise]] (Wes)", p.lines[0])
+    }
+
+    @Test
+    fun updating_sets_text_and_url_and_escapes_brackets() = runTest {
+        val p = note("See [soups](lunarbor:/Soups) now")
+        val link = p.linkAt(0, 6)!!
+        assertEquals("soups" to "lunarbor:/Soups", link.text to link.url)
+        p.updateLinkAt(0, 6, "Soups [all]", "https://example.org/a b")
+        assertEquals("See [Soups \\[all\\]](<https://example.org/a b>) now", p.lines[0])
+        assertEquals("Soups [all]", p.linkAt(0, 6)!!.text)
+    }
+
+    @Test
+    fun a_url_shown_as_itself_is_written_bare_and_a_blank_url_unlinks() = runTest {
+        val p = note("See [x](https://a.org) now")
+        p.updateLinkAt(0, 6, "", "https://b.org")
+        assertEquals("See https://b.org now", p.lines[0])
+        val q = note("See [soups](lunarbor:/Soups) now")
+        q.updateLinkAt(0, 6, "soups", " ")
+        assertEquals("See soups now", q.lines[0])
     }
 
     @Test
@@ -53,13 +71,5 @@ class LinkEditingTest {
         val p = note("See [soups](lunarbor:/Soups) now")
         p.removeLinkAt(0, 6)
         assertEquals("See soups now", p.lines[0])
-    }
-
-    @Test
-    fun edit_text_puts_the_caret_at_the_end_of_the_label() = runTest {
-        val p = note("See [soups](lunarbor:/Soups) now")
-        p.editLinkTextAt(0, 6)
-        val s = p.stateFlow.value
-        assertEquals(0 to 10, s.cursorRow to s.cursorCol)
     }
 }

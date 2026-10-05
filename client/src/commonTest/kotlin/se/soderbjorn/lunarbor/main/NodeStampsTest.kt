@@ -181,7 +181,7 @@ class NodeStampsTest {
         // With a query, match quality still wins (folders before notes);
         // recency only breaks ties between equally good matches, unknown last.
         assertEquals(listOf("B", "A", "C", "A/Soup.md"), index.search("soup", byRecency = true).map { it.pathRel })
-        // Without byRecency (Insert Link, Link to node), ties fall back to the path.
+        // Without byRecency (Insert Link, Insert Mirror), ties fall back to the path.
         assertEquals(listOf("A", "B", "C", "A/Soup.md"), index.search("soup").map { it.pathRel })
 
         // A save that restamps moves a node up; a move carries its stamp along.

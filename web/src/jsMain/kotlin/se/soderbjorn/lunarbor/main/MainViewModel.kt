@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import se.soderbjorn.lunarbor.data.InlineStyle
 import se.soderbjorn.lunarbor.data.LineStyle
 import se.soderbjorn.lunarbor.data.VaultEntry
+import se.soderbjorn.lunarbor.data.LinkSource
 import se.soderbjorn.lunarbor.data.LinkTarget
 import se.soderbjorn.lunarbor.data.VaultIndex
 
@@ -542,14 +543,14 @@ class MainViewModel(
     /** See `PaneBackingViewModel.insertLinkTo`. */
     fun insertLinkTo(target: LinkTarget, label: String = "") = paneBackingViewModel.insertLinkTo(target, label)
 
-    /** See `PaneBackingViewModel.retargetLinkAt`. */
-    fun retargetLinkAt(row: Int, col: Int, target: LinkTarget) = paneBackingViewModel.retargetLinkAt(row, col, target)
+    /** See `PaneBackingViewModel.linkAt`. */
+    fun linkAt(row: Int, col: Int): LinkSource? = paneBackingViewModel.linkAt(row, col)
+
+    /** See `PaneBackingViewModel.updateLinkAt`. */
+    fun updateLinkAt(row: Int, col: Int, text: String, url: String) = paneBackingViewModel.updateLinkAt(row, col, text, url)
 
     /** See `PaneBackingViewModel.removeLinkAt`. */
     fun removeLinkAt(row: Int, col: Int) = paneBackingViewModel.removeLinkAt(row, col)
-
-    /** See `PaneBackingViewModel.editLinkTextAt`. */
-    fun editLinkTextAt(row: Int, col: Int) = paneBackingViewModel.editLinkTextAt(row, col)
 
     /** See `PaneBackingViewModel.wikiLinkHref`. */
     fun wikiLinkHref(state: PaneBackingViewModel.State, name: String): String? =

@@ -170,7 +170,7 @@ class AppShell(
     private val starredModals: MutableMap<String, StarredModal> = mutableMapOf()
 
     /**
-     * Per-pane Insert Link / "Link to node…" modals, keyed by
+     * Per-pane Insert Link / "Insert Mirror…" modals, keyed by
      * `"<paneId>|<placeholder>"`. Same lifecycle
      * pattern as [starredModals]: lazily created on first open from the
      * command palette, reused thereafter, cleared in [closeFloatingPane].
@@ -1071,10 +1071,10 @@ class AppShell(
         // whole vault, from the root, however deep the pane is zoomed.
         out += CommandPalette.Command(
             id = "link-to-node",
-            title = "Link to node…",
+            title = "Insert Mirror…",
             run = {
                 val paneId = focusedPaneId()
-                if (paneId != null) openInsertLinkModal(paneId, placeholder = "Link to node…")
+                if (paneId != null) openInsertLinkModal(paneId, placeholder = "Mirror a node…")
             },
         )
         out += CommandPalette.Command(
@@ -2012,7 +2012,7 @@ class AppShell(
 
     /**
      * Opens the per-pane Insert Link modal — for both "Insert Link" and
-     * "Link to node…", which differ only in [placeholder]. Same lifecycle
+     * "Insert Mirror…", which differ only in [placeholder]. Same lifecycle
      * pattern as [openStarredModal] — lazy first-open create, reuse
      * thereafter, one modal per pane and placeholder.
      */
@@ -2531,36 +2531,24 @@ class AppShell(
                 position: fixed;
                 z-index: 1000;
                 display: flex;
-                flex-direction: column;
-                gap: 6px;
-                max-width: 420px;
-                padding: 6px 8px;
-                border-radius: 6px;
+                padding: 2px;
+                border-radius: 7px;
                 background: var(--t-surface-alt, rgba(30, 30, 30, 0.95));
                 border: 1px solid var(--t-border, rgba(255, 255, 255, 0.10));
-                color: var(--t-text, #e6e6e6);
-                font-size: 12px;
-                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+                box-shadow: 0 6px 18px rgba(0, 0, 0, 0.30);
             }
-            .lunarbor-link-popup-target {
-                color: var(--t-text-dim, rgba(255, 255, 255, 0.55));
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-            .lunarbor-link-popup-actions { display: flex; gap: 6px; }
             .lunarbor-link-popup-button {
-                padding: 2px 10px;
-                border-radius: 4px;
-                border: 1px solid var(--t-border, rgba(255, 255, 255, 0.15));
-                background: var(--t-surface, rgba(0, 0, 0, 0.20));
-                color: inherit;
-                font: inherit;
+                padding: 3px 10px;
+                border: 0;
+                border-radius: 5px;
+                background: transparent;
+                color: var(--t-text, #e6e6e6);
+                font: 600 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
                 cursor: pointer;
                 white-space: nowrap;
             }
             .lunarbor-link-popup-button:hover {
-                background: var(--t-border, rgba(255, 255, 255, 0.10));
+                background: color-mix(in srgb, var(--t-accent) 18%, transparent);
             }
             /* Hotkeys-modal stylesheet ships with the toolkit's
                [ToolkitHotkeysModal]; no app-side injection needed. */

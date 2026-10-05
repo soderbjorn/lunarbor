@@ -10,7 +10,7 @@
  *    parent keeps every link and Starred entry pointing at it (or at files
  *    inside it) working after the next save — in closed files on disk and
  *    in open documents alike;
- *  - "Link to node…" searches the whole vault and a link to a node under
+ *  - "Insert Mirror…" searches the whole vault and a link to a node under
  *    `Private/`, clicked from under `Work/`, zooms there;
  *  - the search never offers a leaf bullet or an empty folder;
  *  - a link whose target was moved outside the app shows as broken and

@@ -54,7 +54,7 @@ data class PathMove(val from: String, val to: String) {
  * The `lunarbor:` link codec.
  *
  * ### Callers
- * - `PaneBackingViewModel` formats links for Insert Link / "Link to node…"
+ * - `PaneBackingViewModel` formats links for Insert Link / "Insert Mirror…"
  *   and parses them when a link is clicked or drawn.
  * - `NoteRepository` formats Starred entries.
  * - `DocumentRegistry` / `VaultIndex` rewrite and index links.

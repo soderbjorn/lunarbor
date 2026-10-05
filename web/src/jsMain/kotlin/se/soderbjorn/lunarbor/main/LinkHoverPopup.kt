@@ -1,16 +1,14 @@
 /*
  * LinkHoverPopup.kt (jsMain)
  * --------------------------
- * The small popup that appears when the pointer rests on a link in the
- * editor for a moment. A click on a link follows it, so without this
- * there is no way to change a link: the popup names where the link goes
- * and offers "Change link…" (the link search, picking a new target),
- * "Edit text" (the caret at the end of the link's text) and "Remove link"
- * (the text stays; not offered on a bare URL, which is a link to itself).
+ * The small "Edit link" button that pops up under a link the pointer
+ * rests on for a moment. A click on a link follows it, so without this
+ * there is no way to change a link: the button opens the Edit link dialog
+ * ([openLinkEditDialog]) — text, URL, Remove link. Its tooltip names
+ * where the link goes.
  *
- * View glue only: every edit is a `MainViewModel` intent
- * (`retargetLinkAt`, `editLinkTextAt`, `removeLinkAt`), addressed by the
- * link's document row and a model column inside it. Styled by the
+ * View glue only: the dialog does the edits, addressed by the link's
+ * document row and a model column inside it. Styled by the
  * `.lunarbor-link-popup*` rules injected by `AppShell`.
  */
 
@@ -31,9 +29,8 @@ import se.soderbjorn.lunarbor.data.LunarborLink
  * Hover popup for the links of one editor. One instance per [MainScreen].
  *
  * @param viewModel The pane's view model; receives the edits.
- * @param scope Scope for the link search modal "Change link…" opens.
- * @param focusEditor Puts focus back in the editor, so "Edit text" leaves
- *   a live caret.
+ * @param scope Scope for the Edit link dialog's vault search.
+ * @param focusEditor Puts focus back in the editor once the dialog closes.
  */
 internal class LinkHoverPopup(
     private val viewModel: MainViewModel,
@@ -127,27 +124,14 @@ internal class LinkHoverPopup(
         popup.style.top = "${rect.bottom + 4}px"
         popup.style.left = "${rect.left}px"
 
-        val target = document.createElement("div") as HTMLElement
-        target.className = "lunarbor-link-popup-target"
         // A target the privacy mode hides is not named: it reads as missing.
-        target.textContent = LunarborLink.parse(href)?.let { path ->
+        val edit = button("Edit link") {
+            openLinkEditDialog(viewModel, scope, row, col, href, focusEditor)
+        }
+        edit.title = LunarborLink.parse(href)?.let { path ->
             if (viewModel.isPathHidden(path)) "Not found" else LunarborLink.displayPath(path)
         } ?: href
-        popup.appendChild(target)
-
-        val actions = document.createElement("div") as HTMLElement
-        actions.className = "lunarbor-link-popup-actions"
-        actions.appendChild(button("Change link…") { changeLink(row, col, link.textContent.orEmpty()) })
-        actions.appendChild(button("Edit text") {
-            viewModel.editLinkTextAt(row, col)
-            focusEditor()
-        })
-        // A link showing its own URL (a bare `https://…`) would just link
-        // again once unlinked.
-        if (link.textContent != href) {
-            actions.appendChild(button("Remove link") { viewModel.removeLinkAt(row, col) })
-        }
-        popup.appendChild(actions)
+        popup.appendChild(edit)
 
         popup.addEventListener("mouseenter", { _ -> cancelHide() })
         popup.addEventListener("mouseleave", { _ -> scheduleHide() })
@@ -175,20 +159,6 @@ internal class LinkHoverPopup(
             window.removeEventListener("scroll", onScroll, true)
             document.removeEventListener("mousedown", onDocDown, true)
         }
-    }
-
-    /**
-     * Opens the link search pre-filled with the link's text; the picked
-     * target replaces the link ([MainViewModel.retargetLinkAt]).
-     */
-    private fun changeLink(row: Int, col: Int, shownText: String) {
-        val query = shownText.removePrefix("[[").removeSuffix("]]").substringBefore('|').trim()
-        LinkSearchModal.forChangeLink(
-            parentScope = scope,
-            activePaneVmProvider = { viewModel },
-            row = row,
-            col = col,
-        ).open(initialQuery = query)
     }
 
     private fun button(label: String, onClick: () -> Unit): HTMLButtonElement {

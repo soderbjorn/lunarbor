@@ -5,7 +5,7 @@
  *
  *  1. **Link targets** — every folder and file a link may point at
  *     ([LinkTarget], from `NoteRepository.listLinkTargets`), searched by
- *     the Insert Link / "Link to node…" / Navigate-to modal ([search]).
+ *     the Insert Link / "Insert Mirror…" / Navigate-to modal ([search]).
  *     Always the whole vault from the root, however deep the pane is
  *     zoomed. Only linkable targets are listed: non-empty folders (node
  *     folders and foreign ones alike) and files; leaf bullets have no
@@ -127,7 +127,7 @@ class VaultIndex(
      * last); then by path. A blank query matches nothing. Paths [isHidden]
      * names are never listed.
      *
-     * Called by the Insert Link, "Link to node…" and Navigate-to modal;
+     * Called by the Insert Link, "Insert Mirror…" and Navigate-to modal;
      * only Navigate to passes [byRecency].
      */
     suspend fun search(query: String, max: Int = 50, byRecency: Boolean = false): List<LinkTarget> {

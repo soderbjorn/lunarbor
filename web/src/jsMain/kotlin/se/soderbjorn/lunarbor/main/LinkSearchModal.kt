@@ -1,7 +1,7 @@
 /*
  * LinkSearchModal.kt (jsMain)
  * ---------------------------
- * Single modal class shared by the "Insert Link" and "Link to node…"
+ * Single modal class shared by the "Insert Link" and "Insert Mirror…"
  * commands and the "Navigate to" command (Cmd-O). Same DOM, same keyboard
  * handling, same search-as-you-type backed by `VaultIndex.search` — over
  * the whole vault from the root, however deep the pane is zoomed, and
@@ -314,7 +314,7 @@ internal class LinkSearchModal private constructor(
 
     companion object {
         /**
-         * "Insert Link" / "Link to node…" flavour: at pick time, insert a
+         * "Insert Link" / "Insert Mirror…" flavour: at pick time, insert a
          * `[label](lunarbor:/…)` link at the cursor via
          * `MainViewModel.insertLinkTo`. If the user had an editor
          * selection at open time, that text becomes the link's label;
@@ -338,27 +338,6 @@ internal class LinkSearchModal private constructor(
                 vm.insertLinkTo(hit, ctx.selectedText)
                 onAfterPick()
             },
-        )
-
-        /**
-         * "Change link…" flavour, from the link popup ([LinkHoverPopup]):
-         * the picked target replaces the link at [row] / [col] through
-         * `MainViewModel.retargetLinkAt`, keeping the link's text. A new
-         * instance per use, since it is bound to one link.
-         *
-         * @param row Document row of the link.
-         * @param col A model column inside the link's source span.
-         */
-        fun forChangeLink(
-            parentScope: CoroutineScope,
-            activePaneVmProvider: () -> MainViewModel?,
-            row: Int,
-            col: Int,
-        ): LinkSearchModal = LinkSearchModal(
-            parentScope = parentScope,
-            activePaneVmProvider = activePaneVmProvider,
-            placeholder = "Change the link to a node or file…",
-            action = Action { vm, hit, _ -> vm.retargetLinkAt(row, col, hit) },
         )
 
         /**
