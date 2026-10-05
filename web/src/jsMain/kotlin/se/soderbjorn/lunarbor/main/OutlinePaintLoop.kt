@@ -1567,6 +1567,80 @@ private fun buildChevron(
 }
 
 /**
+ * Class that stands in for `:hover` on freshly painted elements; every
+ * `:hover` rule of a row's hover-only controls also matches it (see
+ * [ensureStyles]).
+ */
+private const val HOVER_CARRY_CLASS: String = "lunarbor-hover"
+
+/** Last pointer position in client coordinates; negative when outside the window. */
+private var pointerX: Double = -1.0
+private var pointerY: Double = -1.0
+
+/** `true` while some element wears [HOVER_CARRY_CLASS]. */
+private var hoverCarried: Boolean = false
+
+/** Guards [installHoverTracking]. */
+private var hoverTrackingInstalled: Boolean = false
+
+/**
+ * Tracks the pointer for [carryHoverAcrossRepaint]: remembers where it
+ * is and drops the carried hover on the first move, when the browser's
+ * own `:hover` has caught up. Installed once, on the document.
+ */
+private fun installHoverTracking() {
+    if (hoverTrackingInstalled) return
+    hoverTrackingInstalled = true
+    document.addEventListener("mousemove", { event ->
+        val me = event as MouseEvent
+        pointerX = me.clientX.toDouble()
+        pointerY = me.clientY.toDouble()
+        clearHoverCarry()
+    }, true)
+    document.documentElement?.addEventListener("mouseleave", {
+        pointerX = -1.0
+        pointerY = -1.0
+        clearHoverCarry()
+    })
+}
+
+/** Removes [HOVER_CARRY_CLASS] from every element that wears it. */
+private fun clearHoverCarry() {
+    if (!hoverCarried) return
+    hoverCarried = false
+    val carried = document.querySelectorAll(".$HOVER_CARRY_CLASS")
+    for (i in 0 until carried.length) (carried.item(i) as? HTMLElement)?.classList?.remove(HOVER_CARRY_CLASS)
+}
+
+/**
+ * Keeps hover-only controls steady across a repaint (LBR-17). [paint]
+ * rebuilds every row, and Chrome applies `:hover` to the new elements
+ * under a still pointer only a frame or more later, so the hovered row's
+ * −/+ (and its dot's hover ring, a block's ×) vanished and faded back in
+ * on every keystroke anywhere, and several times per fold. This marks the
+ * element under the pointer and its ancestors up to [editor] with
+ * [HOVER_CARRY_CLASS], so they paint hovered from the start, with no
+ * transition; the next pointer move hands back to `:hover`.
+ *
+ * Called by `MainScreen.reconcile` right after [paint] (and the scroll
+ * restore, so the hit test sees the final layout).
+ *
+ * @param editor The pane's editor element [paint] just filled.
+ */
+internal fun carryHoverAcrossRepaint(editor: HTMLElement) {
+    installHoverTracking()
+    clearHoverCarry()
+    if (pointerX < 0 || pointerY < 0) return
+    var el = document.elementFromPoint(pointerX, pointerY) as? HTMLElement ?: return
+    if (!editor.contains(el)) return
+    while (el !== editor) {
+        el.classList.add(HOVER_CARRY_CLASS)
+        el = el.parentElement as? HTMLElement ?: break
+    }
+    hoverCarried = true
+}
+
+/**
  * DOM event a fold control dispatches (bubbling) right before it folds or
  * unfolds, so `MainScreen` animates only user folds — never the fold state
  * a document gets on load.
@@ -1664,7 +1738,8 @@ fun ensureStyles() {
             color: var(--t-text-dim, #9a9a9a);
             line-height: 1;
         }
-        .lunarbor-block-delete:hover {
+        .lunarbor-block-delete:hover,
+        .lunarbor-block-delete.lunarbor-hover {
             color: var(--t-text, #e6e6e6);
             background: var(--t-border, rgba(255, 255, 255, 0.10));
         }
@@ -1684,7 +1759,8 @@ fun ensureStyles() {
             user-select: none;
             color: var(--t-text-dim, #9a9a9a);
         }
-        .lunarbor-block-fold:hover {
+        .lunarbor-block-fold:hover,
+        .lunarbor-block-fold.lunarbor-hover {
             color: var(--t-text, #e6e6e6);
             background: var(--t-border, rgba(255, 255, 255, 0.10));
         }
@@ -1715,6 +1791,7 @@ fun ensureStyles() {
             text-decoration: underline;
         }
         .lunarbor-block-first:hover .lunarbor-block-delete,
+        .lunarbor-block-first.lunarbor-hover .lunarbor-block-delete,
         .lunarbor-block-hover .lunarbor-block-delete,
         .lunarbor-block-active .lunarbor-block-delete {
             display: flex;
@@ -1775,13 +1852,16 @@ fun ensureStyles() {
            hover-only controls (fold −/+, a block's ×) hidden and their
            dots still, so the drop line is the only thing that moves. */
         body.lunarbor-dragging [data-row]:hover > .lunarbor-chevron,
-        body.lunarbor-dragging .lunarbor-chevron:hover {
+        body.lunarbor-dragging [data-row].lunarbor-hover > .lunarbor-chevron,
+        body.lunarbor-dragging .lunarbor-chevron:hover,
+        body.lunarbor-dragging .lunarbor-chevron.lunarbor-hover {
             opacity: 0;
         }
         body.lunarbor-dragging .lunarbor-block-first:not(.lunarbor-block-active) .lunarbor-block-delete {
             display: none;
         }
-        body.lunarbor-dragging .lunarbor-bullet-prefix:hover .lunarbor-bullet {
+        body.lunarbor-dragging .lunarbor-bullet-prefix:hover .lunarbor-bullet,
+        body.lunarbor-dragging .lunarbor-bullet-prefix.lunarbor-hover .lunarbor-bullet {
             transform: none;
             box-shadow: none;
         }
@@ -1806,7 +1886,8 @@ fun ensureStyles() {
             transform-origin: center;
             transition: transform 120ms ease-out, box-shadow 120ms ease-out;
         }
-        .lunarbor-bullet-prefix:hover .lunarbor-bullet {
+        .lunarbor-bullet-prefix:hover .lunarbor-bullet,
+        .lunarbor-bullet-prefix.lunarbor-hover .lunarbor-bullet {
             transform: scale(1.15);
             box-shadow: 0 0 0 5px var(--t-border, rgba(255, 255, 255, 0.10));
         }
@@ -1820,20 +1901,32 @@ fun ensureStyles() {
             cursor: default;
         }
         .lunarbor-bullet-plain:hover .lunarbor-bullet,
+        .lunarbor-bullet-plain.lunarbor-hover .lunarbor-bullet,
         .lunarbor-bullet-plain:active .lunarbor-bullet {
             transform: none;
             box-shadow: none;
         }
         /* Expand / collapse control: hidden until the row is hovered,
-           like Dynalist. */
+           like Dynalist. `.lunarbor-hover` stands in for `:hover` right
+           after a repaint (carryHoverAcrossRepaint), so it never blinks. */
         .lunarbor-chevron {
             opacity: 0;
             transition: color 120ms ease-out, opacity 120ms ease-out;
         }
-        [data-row]:hover > .lunarbor-chevron {
+        [data-row]:hover > .lunarbor-chevron,
+        [data-row].lunarbor-hover > .lunarbor-chevron {
             opacity: 0.85;
         }
-        .lunarbor-chevron:hover {
+        /* The repaint has already styled the new elements unhovered
+           (the scroll restore forces a style pass), so a carried hover
+           must not fade in from there. */
+        [data-row].lunarbor-hover > .lunarbor-chevron,
+        .lunarbor-chevron.lunarbor-hover .lunarbor-chevron-hit,
+        .lunarbor-bullet-prefix.lunarbor-hover .lunarbor-bullet {
+            transition: none;
+        }
+        .lunarbor-chevron:hover,
+        .lunarbor-chevron.lunarbor-hover {
             color: var(--t-text, #e6e6e6);
             opacity: 1;
         }
@@ -1866,7 +1959,8 @@ fun ensureStyles() {
             border-radius: 4px;
             transition: background 120ms ease-out;
         }
-        .lunarbor-chevron:hover .lunarbor-chevron-hit {
+        .lunarbor-chevron:hover .lunarbor-chevron-hit,
+        .lunarbor-chevron.lunarbor-hover .lunarbor-chevron-hit {
             background: var(--t-border, rgba(255, 255, 255, 0.10));
         }
         .lunarbor-chevron:active .lunarbor-chevron-hit {

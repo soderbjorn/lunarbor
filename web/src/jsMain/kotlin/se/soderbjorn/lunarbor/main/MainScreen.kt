@@ -1700,6 +1700,8 @@ class MainScreen(
             beginDragFromBullet(row, ev)
         })
         scroller.scrollTop = savedScrollTop
+        // The hovered row's −/+ and dot stay put instead of blinking (LBR-17).
+        carryHoverAcrossRepaint(editor)
 
         if (!state.isLoaded) return
         // Map model selection back to DOM. Selection-aware: if anchor is
