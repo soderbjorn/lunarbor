@@ -7,7 +7,9 @@
  * [DocumentRegistry] + [NoteRepository] on [InMemoryFileSystem]: reuse of
  * an existing `Journal` / year / week, newest-first insertion, and the
  * pending rows that leave nothing behind — on screen or on disk — when
- * the day is left untouched.
+ * the day is left untouched. "Previous day" / "Next day" (LBR-20):
+ * recognising a day, stepping over gaps, weeks and years, today as the
+ * step after the latest day, and days the privacy mode hides.
  */
 
 package se.soderbjorn.lunarbor.main
@@ -321,5 +323,172 @@ class DailyNotesTest {
         runCurrent()
         assertEquals(year, p.stateFlow.value.zoomedLineId)
         assertTrue(p.lines.none { "Week 41" in it })
+    }
+
+    // ------------------------------------------- Previous day / Next day (LBR-20)
+
+    private fun day(y: Int, m: Int, d: Int) =
+        CalendarDate(y, m, d).let { DailyNotes.JournalDay(it, DailyNotes.titlePath(it)) }
+
+    @Test
+    fun a_day_is_recognised_by_its_title_and_place() {
+        assertEquals(today, DailyNotes.dateOfDayTitle("2026-10-05 Monday"))
+        assertEquals(today, DailyNotes.dateOfDayTitle("**2026-10-05 monday** #work"))
+        assertNull(DailyNotes.dateOfDayTitle("2026-10-05 Tuesday")) // wrong weekday
+        assertNull(DailyNotes.dateOfDayTitle("2026-02-30 Monday"))
+        assertNull(DailyNotes.dateOfDayTitle("2026-10-05"))
+        assertNull(DailyNotes.dateOfDayTitle("Meeting 2026-10-05 Monday"))
+        assertTrue(DailyNotes.isWeekTitle("Week 01"))
+        assertTrue(DailyNotes.isWeekTitle("week 7"))
+        assertTrue(!DailyNotes.isWeekTitle("Week 54"))
+        assertTrue(DailyNotes.isYearTitle("2026"))
+        assertTrue(!DailyNotes.isYearTitle("Year 2026"))
+
+        assertEquals(today, DailyNotes.dayOfTitlePath(listOf("Journal", "2026", "Week 41", "2026-10-05 Monday")))
+        assertEquals(today, DailyNotes.dayOfTitlePath(listOf("journal", "2026", "Week 41", "2026-10-05 Monday", "Meeting")))
+        assertNull(DailyNotes.dayOfTitlePath(listOf("Journal", "2026", "Week 41")))
+        assertNull(DailyNotes.dayOfTitlePath(listOf("Work", "2026", "Week 41", "2026-10-05 Monday")))
+        assertNull(DailyNotes.dayOfTitlePath(listOf("Journal", "2026", "2026-10-05 Monday", "x")))
+    }
+
+    @Test
+    fun steps_skip_gaps_and_stop_at_the_ends() {
+        val days = listOf(day(2025, 12, 19), day(2025, 12, 29), day(2026, 1, 5), day(2026, 1, 9))
+        val from = CalendarDate(2026, 1, 5)
+        assertEquals(DailyNotes.DayStep.ToDay(day(2025, 12, 29)), DailyNotes.stepFrom(days, from, false, today))
+        assertEquals(DailyNotes.DayStep.ToDay(day(2026, 1, 9)), DailyNotes.stepFrom(days, from, true, today))
+        assertNull(DailyNotes.stepFrom(days, CalendarDate(2025, 12, 19), false, today))
+        // Next from the latest day before today: today.
+        assertEquals(DailyNotes.DayStep.ToToday, DailyNotes.stepFrom(days, CalendarDate(2026, 1, 9), true, today))
+        // Next from today with nothing later: nothing.
+        assertNull(DailyNotes.stepFrom(days + day(2026, 10, 5), today, true, today))
+        // A planned future day after today: today comes first, then the future day.
+        val future = days + day(2026, 10, 20)
+        assertEquals(DailyNotes.DayStep.ToToday, DailyNotes.stepFrom(future, CalendarDate(2026, 1, 9), true, today))
+        assertEquals(DailyNotes.DayStep.ToDay(day(2026, 10, 20)), DailyNotes.stepFrom(future, today, true, today))
+    }
+
+    /** The title of the item the pane is zoomed into. */
+    private val PaneBackingViewModel.zoomedTitle: String?
+        get() {
+            val s = stateFlow.value
+            val row = s.documentState?.lineIds?.indexOf(s.zoomedLineId ?: return null) ?: return null
+            return s.lines.getOrNull(row)?.trim()?.removePrefix("* ")
+        }
+
+    @Test
+    fun previous_and_next_day_skip_gaps_across_weeks_and_years() = runTest {
+        seed("_node.md", "- Journal [↳](<Journal/_node.md>)\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n- 2025 [↳](<2025/_node.md>)\n")
+        seed("Journal/2026/_node.md", "- Week 02 [↳](<Week 02/_node.md>)\n- Week 01 [↳](<Week 01/_node.md>)\n")
+        seed(
+            "Journal/2026/Week 02/_node.md",
+            "- 2026-01-09 Friday [↳](<2026-01-09 Friday/_node.md>)\n- 2026-01-05 Monday\n",
+        )
+        seed("Journal/2026/Week 02/2026-01-09 Friday/_node.md", "- notes\n")
+        seed("Journal/2026/Week 01/_node.md", "- 2025-12-29 Monday\n")
+        seed("Journal/2025/_node.md", "- Week 51 [↳](<Week 51/_node.md>)\n")
+        seed("Journal/2025/Week 51/_node.md", "- 2025-12-19 Friday\n")
+        val registry = registry()
+        // Inside a day: on its own folder's outline.
+        val p = pane(registry, "Journal/2026/Week 02/2026-01-09 Friday/_node.md")
+        assertEquals(CalendarDate(2026, 1, 9), p.journalDayOf())
+
+        // Gap within a week (Tue–Thu missing).
+        assertEquals(TodayOutcome.OPENED, p.navigateToAdjacentDay(forward = false, today))
+        runCurrent()
+        assertEquals("_node.md", p.stateFlow.value.activeFileRel)
+        assertEquals("2026-01-05 Monday", p.zoomedTitle)
+        // Across a week boundary.
+        assertEquals(TodayOutcome.OPENED, p.navigateToAdjacentDay(forward = false, today))
+        runCurrent()
+        assertEquals("2025-12-29 Monday", p.zoomedTitle)
+        // Across a year boundary (and a whole missing week).
+        assertEquals(TodayOutcome.OPENED, p.navigateToAdjacentDay(forward = false, today))
+        runCurrent()
+        assertEquals("2025-12-19 Friday", p.zoomedTitle)
+        // No previous day: nothing happens.
+        assertEquals(TodayOutcome.NO_DAY, p.navigateToAdjacentDay(forward = false, today))
+        runCurrent()
+        assertEquals("2025-12-19 Friday", p.zoomedTitle)
+        // And forward again, across the year.
+        assertEquals(TodayOutcome.OPENED, p.navigateToAdjacentDay(forward = true, today))
+        runCurrent()
+        assertEquals("2025-12-29 Monday", p.zoomedTitle)
+
+        // History: Back walks the days, then back to the day's folder.
+        p.zoomBack()
+        runCurrent()
+        assertEquals("2025-12-19 Friday", p.zoomedTitle)
+
+        // Untouched days got only throwaway placeholders: nothing written.
+        p.zoomOut()
+        runCurrent()
+        settle(registry)
+        assertEquals("- 2025-12-29 Monday\n", disk("Journal/2026/Week 01/_node.md")?.substringAfterLast("---\n"))
+        assertEquals("- 2025-12-19 Friday\n", disk("Journal/2025/Week 51/_node.md")?.substringAfterLast("---\n"))
+    }
+
+    @Test
+    fun next_day_from_the_latest_day_goes_to_today() = runTest {
+        seed("_node.md", "- Journal [↳](<Journal/_node.md>)\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n")
+        seed("Journal/2026/_node.md", "- Week 40 [↳](<Week 40/_node.md>)\n")
+        seed("Journal/2026/Week 40/_node.md", "- 2026-10-02 Friday [↳](<2026-10-02 Friday/_node.md>)\n")
+        seed("Journal/2026/Week 40/2026-10-02 Friday/_node.md", "- done\n")
+        val registry = registry()
+        val p = pane(registry, "Journal/2026/Week 40/2026-10-02 Friday/_node.md")
+
+        assertEquals(TodayOutcome.OPENED, p.navigateToAdjacentDay(forward = true, today))
+        runCurrent()
+        assertEquals("2026-10-05 Monday", p.zoomedTitle)
+        assertNotNull(p.stateFlow.value.pendingRowsGroup) // prepared like Today
+        assertEquals(today, p.journalDayOf())
+        // Today is the latest: nothing after it.
+        assertEquals(TodayOutcome.NO_DAY, p.navigateToAdjacentDay(forward = true, today))
+        // Previous from the untouched today goes back to Friday; today is dropped.
+        assertEquals(TodayOutcome.OPENED, p.navigateToAdjacentDay(forward = false, today))
+        runCurrent()
+        assertEquals("2026-10-02 Friday", p.zoomedTitle)
+        assertTrue(p.lines.none { "Week 41" in it })
+        settle(registry)
+        assertNull(disk("Journal/2026/Week 41/_node.md"))
+    }
+
+    @Test
+    fun hidden_days_and_weeks_are_skipped() = runTest {
+        seed("_node.md", "- Journal [↳](<Journal/_node.md>)\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n")
+        seed(
+            "Journal/2026/_node.md",
+            "- Week 41 [↳](<Week 41/_node.md>)\n- Week 40 #private [↳](<Week 40/_node.md>)\n- Week 39 [↳](<Week 39/_node.md>)\n",
+        )
+        seed("Journal/2026/Week 41/_node.md", "- 2026-10-05 Monday [↳](<2026-10-05 Monday/_node.md>)\n")
+        seed("Journal/2026/Week 41/2026-10-05 Monday/_node.md", "- x\n")
+        seed("Journal/2026/Week 40/_node.md", "- 2026-10-02 Friday\n")
+        seed("Journal/2026/Week 39/_node.md", "- 2026-09-25 Friday #private\n- 2026-09-24 Thursday\n")
+        val registry = registry()
+        val mode = PrivacyMode("m1", "Colleagues", listOf("private"))
+        registry.setPrivacyModes(listOf(mode))
+        registry.setPrivacyMode(mode.id)
+        val p = pane(registry, "Journal/2026/Week 41/2026-10-05 Monday/_node.md")
+        runCurrent()
+
+        assertEquals(TodayOutcome.OPENED, p.navigateToAdjacentDay(forward = false, today))
+        runCurrent()
+        assertEquals("2026-09-24 Thursday", p.zoomedTitle)
+        assertEquals(TodayOutcome.NO_DAY, p.navigateToAdjacentDay(forward = false, today))
+    }
+
+    @Test
+    fun not_on_a_day_nothing_happens() = runTest {
+        seed("_node.md", "- Journal [↳](<Journal/_node.md>)\n- A\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n")
+        seed("Journal/2026/_node.md", "- Week 41\n")
+        val registry = registry()
+        val p = pane(registry)
+        assertNull(p.journalDayOf())
+        assertEquals(TodayOutcome.NO_DAY, p.navigateToAdjacentDay(forward = true, today))
+        assertNull(p.stateFlow.value.zoomedLineId)
     }
 }

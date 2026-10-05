@@ -295,6 +295,13 @@ class MainViewModel(
     /** See `PaneBackingViewModel.navigateToToday`. */
     suspend fun navigateToToday(today: CalendarDate) = paneBackingViewModel.navigateToToday(today)
 
+    /** See `PaneBackingViewModel.navigateToAdjacentDay`. */
+    suspend fun navigateToAdjacentDay(forward: Boolean, today: CalendarDate) =
+        paneBackingViewModel.navigateToAdjacentDay(forward, today)
+
+    /** See `PaneBackingViewModel.journalDayOf`. */
+    fun journalDayOf(state: PaneBackingViewModel.State) = paneBackingViewModel.journalDayOf(state)
+
     /** See `PaneBackingViewModel.canNavigateUp`. */
     fun canNavigateUp(state: PaneBackingViewModel.State) = paneBackingViewModel.canNavigateUp(state)
 

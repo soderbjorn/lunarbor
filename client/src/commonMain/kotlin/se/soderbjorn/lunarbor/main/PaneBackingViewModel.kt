@@ -78,6 +78,7 @@ import se.soderbjorn.lunarbor.data.LineStyle
 import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.LinkTarget
 import se.soderbjorn.lunarbor.data.NoteRepository
+import se.soderbjorn.lunarbor.data.NodeLine
 import se.soderbjorn.lunarbor.data.PathMove
 import se.soderbjorn.lunarbor.data.PrivacyFilter
 import se.soderbjorn.lunarbor.data.SubtreeCodec
@@ -3825,9 +3826,12 @@ class PaneBackingViewModel(
 
     // ------------------------------------------------------------ daily notes
 
-    /** What [navigateToToday] did, for the view to react to. */
+    /**
+     * What [navigateToToday] or [navigateToAdjacentDay] did, for the view
+     * to react to.
+     */
     enum class TodayOutcome {
-        /** The pane went to today's day item (found or prepared). */
+        /** The pane went to the day item (found or prepared). */
         OPENED,
 
         /** The pane was on today already; nothing changed. */
@@ -3841,6 +3845,12 @@ class PaneBackingViewModel(
 
         /** The pane is still loading, or the root outline could not be opened. */
         UNAVAILABLE,
+
+        /**
+         * [navigateToAdjacentDay] only: the pane is not on a journal day, or
+         * there is no earlier (later) day to go to. Nothing changed.
+         */
+        NO_DAY,
     }
 
     /**
@@ -3882,10 +3892,25 @@ class PaneBackingViewModel(
      *   from the platform layer; a parameter so tests can pass any date.
      * @return What happened; [TodayOutcome.HIDDEN] asks the view for a notice.
      */
-    suspend fun navigateToToday(today: CalendarDate): TodayOutcome {
+    suspend fun navigateToToday(today: CalendarDate): TodayOutcome =
+        openJournalPath(DailyNotes.titlePath(today), prepare = true)
+
+    /**
+     * Takes the pane to the journal item named by [titles] (outermost
+     * first, `Journal` › year › week › day) in the root outline — the
+     * steps of [navigateToToday], which is this with today's path and
+     * [prepare] on. "Previous day" / "Next day" ([navigateToAdjacentDay])
+     * pass the path of a day that exists, with [prepare] off.
+     *
+     * @param titles The item titles from the root down.
+     * @param prepare Whether missing path items are prepared as pending
+     *   rows. When off, a path item that is not found ends the call with
+     *   [TodayOutcome.UNAVAILABLE]; an existing day without children still
+     *   gets its throwaway placeholder child, as a leaf zoom does.
+     */
+    private suspend fun openJournalPath(titles: List<String>, prepare: Boolean): TodayOutcome {
         val s0 = _stateFlow.value
         if (!s0.isLoaded && !s0.isFileView) return TodayOutcome.UNAVAILABLE
-        val titles = DailyNotes.titlePath(today)
         if (isOnTitlePath(s0, titles)) return TodayOutcome.ALREADY_THERE
         if (isTodayHidden(titles)) return TodayOutcome.HIDDEN
         val switched = s0.activeFileRel != rootFileName
@@ -3927,6 +3952,7 @@ class PaneBackingViewModel(
         val docState = doc.stateFlow.value
         val parentRow = parentId?.let { docState.lineIds.indexOf(it) } ?: -1
         val missing = titles.drop(level)
+        if (!prepare && missing.isNotEmpty()) return TodayOutcome.UNAVAILABLE
         val needsRows = missing.isNotEmpty() ||
             DailyNotes.childItemRows(docState.lines, parentRow).isEmpty()
         var dayId = if (missing.isEmpty()) parentId else null
@@ -4044,6 +4070,112 @@ class PaneBackingViewModel(
         } finally {
             registry.release(rootFileName)
         }
+    }
+
+    /**
+     * The journal day this pane is on, or anywhere inside (LBR-20): its
+     * location's titles from the root down — the active file's folders
+     * (decoded names), then the zoom path in that file — read by
+     * [DailyNotes.dayOfTitlePath]. Covers the day zoomed into in the root
+     * outline or any outline above it, the day's own folder, and anything
+     * below it (a child zoomed into, a note or image in its folder).
+     * `null` elsewhere, and while nothing is loaded.
+     *
+     * Called by the web `AppShell` to offer "Previous day" / "Next day"
+     * only on a day, and by [navigateToAdjacentDay].
+     *
+     * @param state The pane state to read; defaults to the latest.
+     */
+    fun journalDayOf(state: State = _stateFlow.value): CalendarDate? {
+        if (!state.isLoaded && !state.isFileView) return null
+        val file = state.activeFileRel
+        val dir = if (NoteRepository.isOutlineFile(file)) NoteRepository.folderOfOutline(file) else file.substringBeforeLast('/', "")
+        val titles = dir.split('/').filter { it.isNotEmpty() }.mapTo(ArrayList()) { FolderName.decode(it) }
+        val zoomed = state.zoomedLineId
+        if (zoomed != null && !state.isFileView && !state.isMarkdownMode) {
+            val row = state.documentState?.lineIds?.indexOf(zoomed) ?: -1
+            titles += titlePathOfRow(state.lines, row)
+        }
+        return DailyNotes.dayOfTitlePath(titles)
+    }
+
+    /**
+     * "Previous day" / "Next day" (LBR-20): from the journal day the pane
+     * is on ([journalDayOf]) to the nearest existing day before or after
+     * it ([DailyNotes.stepFrom] over [journalDays]) — gaps, weeks and
+     * years skipped, days the privacy mode hides left out — through the
+     * Today command's path ([openJournalPath]), so history, morph, page
+     * memory and the throwaway placeholder of an empty day all work the
+     * same. "Next day" reaching today goes through [navigateToToday]
+     * itself (prepared when missing).
+     *
+     * Called by the web `AppShell` for the two palette commands (through
+     * `MainViewModel.navigateToAdjacentDay`).
+     *
+     * @param forward `true` for "Next day", `false` for "Previous day".
+     * @param today The user's local date, from the platform layer.
+     * @return [TodayOutcome.NO_DAY] when the pane is not on a day or there
+     *   is nowhere to go; otherwise what the navigation did.
+     */
+    suspend fun navigateToAdjacentDay(forward: Boolean, today: CalendarDate): TodayOutcome {
+        val from = journalDayOf() ?: return TodayOutcome.NO_DAY
+        return when (val step = DailyNotes.stepFrom(journalDays(), from, forward, today)) {
+            null -> TodayOutcome.NO_DAY
+            DailyNotes.DayStep.ToToday -> navigateToToday(today)
+            is DailyNotes.DayStep.ToDay -> openJournalPath(step.day.titlePath, prepare = false)
+        }
+    }
+
+    /**
+     * Every day that exists in the journal, read from disk after saving
+     * open documents ([DocumentRegistry.flushAll]; rows the Today command
+     * prepared and nobody typed in are not saved, so they do not count):
+     * the root's first item named `Journal` ([DailyNotes.matchesTitle]),
+     * its year items ([DailyNotes.isYearTitle]), their `Week NN` items
+     * ([DailyNotes.isWeekTitle]) and their day items
+     * ([DailyNotes.dateOfDayTitle]). An item the pane's privacy mode hides
+     * — a hiding tag in its title, or its folder hidden
+     * ([DocumentRegistry.isPathHidden]) — is left out with everything
+     * under it. One day per date: the first found.
+     *
+     * Called by [navigateToAdjacentDay].
+     */
+    private suspend fun journalDays(): List<DailyNotes.JournalDay> {
+        registry.flushAll()
+        val filter = _stateFlow.value.privacy
+        fun hidden(title: String, folder: String?): Boolean = filter.isActive &&
+            (filter.hides(TextIndex.tagKeysOfRow("* $title")) || (folder != null && registry.isPathHidden(folder)))
+        fun join(parent: String, child: String) = if (parent.isEmpty()) child else "$parent/$child"
+
+        val journal = registry.nodeItemsOf("").firstOrNull {
+            (it is NodeLine.Leaf && DailyNotes.matchesTitle(it.title, DailyNotes.JOURNAL_TITLE)) ||
+                (it is NodeLine.Folder && DailyNotes.matchesTitle(it.title, DailyNotes.JOURNAL_TITLE))
+        } as? NodeLine.Folder ?: return emptyList()
+        if (hidden(journal.title, journal.folder)) return emptyList()
+        val out = LinkedHashMap<Long, DailyNotes.JournalDay>()
+        for (year in registry.nodeItemsOf(journal.folder)) {
+            if (year !is NodeLine.Folder || !DailyNotes.isYearTitle(year.title)) continue
+            val yearFolder = join(journal.folder, year.folder)
+            if (hidden(year.title, yearFolder)) continue
+            for (week in registry.nodeItemsOf(yearFolder)) {
+                if (week !is NodeLine.Folder || !DailyNotes.isWeekTitle(week.title)) continue
+                val weekFolder = join(yearFolder, week.folder)
+                if (hidden(week.title, weekFolder)) continue
+                for (day in registry.nodeItemsOf(weekFolder)) {
+                    val (title, folder) = when (day) {
+                        is NodeLine.Leaf -> day.title to null
+                        is NodeLine.Folder -> day.title to join(weekFolder, day.folder)
+                        else -> continue
+                    }
+                    val date = DailyNotes.dateOfDayTitle(title) ?: continue
+                    if (hidden(title, folder)) continue
+                    out.getOrPut(date.epochDay) {
+                        DailyNotes.JournalDay(date, listOf(journal.title, year.title, week.title, title))
+                    }
+                }
+            }
+        }
+        return out.values.toList()
     }
 
     /** Switches this pane to [fileRel], pushing file history, and waits for it to load. */

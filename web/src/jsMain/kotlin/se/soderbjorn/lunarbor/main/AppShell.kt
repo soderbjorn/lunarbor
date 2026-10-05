@@ -775,6 +775,25 @@ class AppShell(
     }
 
     /**
+     * "Previous day" / "Next day" (LBR-20): takes the focused pane to the
+     * nearest existing journal day before or after the one it is on —
+     * "Next day" reaching today opens today as the Today command does —
+     * via [MainViewModel.navigateToAdjacentDay], then focuses its editor.
+     * Nowhere to go changes nothing, silently.
+     *
+     * @param forward `true` for "Next day".
+     */
+    private fun goToAdjacentDay(forward: Boolean) {
+        val paneId = focusedPaneId() ?: return
+        val vm = paneViewModels[paneId] ?: return
+        scope.launch {
+            if (vm.navigateToAdjacentDay(forward, localToday()) == PaneBackingViewModel.TodayOutcome.OPENED) {
+                paneEditors[paneId]?.focusEditor()
+            }
+        }
+    }
+
+    /**
      * Tells 3D mode the layout changed, on the next frame — after the
      * toolkit has rebuilt its panes — and once per frame however many
      * notifications arrive.
@@ -1129,6 +1148,12 @@ class AppShell(
         )
         // Daily notes (LBR-19): today's journal item, prepared if missing.
         out += CommandPalette.Command(id = "today", title = "Today", run = { goToToday() })
+        // LBR-20: offered only on a journal day (or inside one); palette
+        // only, no hotkeys (decided in the ticket).
+        if (focusedPaneViewModel()?.let { it.journalDayOf(it.currentBackingState) } != null) {
+            out += CommandPalette.Command(id = "previous-day", title = "Previous day", run = { goToAdjacentDay(forward = false) })
+            out += CommandPalette.Command(id = "next-day", title = "Next day", run = { goToAdjacentDay(forward = true) })
+        }
         out += CommandPalette.Command(
             id = "navigate-to",
             title = "Navigate to",

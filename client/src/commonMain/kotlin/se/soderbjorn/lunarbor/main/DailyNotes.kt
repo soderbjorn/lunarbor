@@ -20,6 +20,10 @@
  * Every function takes the date as a parameter, so "today" (the user's
  * local date) is decided by the platform layer and the rules are testable.
  *
+ * "Previous day" / "Next day" (LBR-20) recognise a day by its place and
+ * title ([dayOfTitlePath], [dateOfDayTitle]) and step between the days
+ * that exist ([stepFrom]).
+ *
  * commonMain only — no DOM or platform imports.
  */
 
@@ -121,6 +125,8 @@ data class IsoWeek(val weekYear: Int, val week: Int)
  * ### Callers
  * - [PaneBackingViewModel.navigateToToday] — titles of today's path, the
  *   matching of existing items and where missing ones go.
+ * - [PaneBackingViewModel.navigateToAdjacentDay] — which day a pane is on
+ *   and which day comes before or after it.
  * - Tests (`DailyNotesTest`).
  */
 object DailyNotes {
@@ -219,6 +225,98 @@ object DailyNotes {
             DocumentLayout.indentOf(lines[at - 1]) == 0
         ) at--
         return at
+    }
+
+    // ------------------------------------------------- recognising a day (LBR-20)
+
+    private val DAY_TITLE = Regex("""^(\d{4})-(\d{2})-(\d{2}) ([A-Za-z]+)$""")
+    private val YEAR_TITLE = Regex("""^\d{4}$""")
+    private val WEEK_TITLE = Regex("""^week (\d{1,2})$""", RegexOption.IGNORE_CASE)
+
+    /**
+     * The date a day item titled [title] stands for, or `null` when the
+     * title is not `YYYY-MM-DD Weekday` ([dayTitle]'s shape): a real
+     * date, with its own weekday (any case). Compared on the name text
+     * ([FolderName.nameTextOf]), so inline Markdown and `#tags` on the
+     * day do not stop it from counting.
+     */
+    fun dateOfDayTitle(title: String): CalendarDate? {
+        val m = DAY_TITLE.matchEntire(FolderName.nameTextOf(title).trim()) ?: return null
+        val (y, mo, d, weekday) = m.destructured
+        val month = mo.toInt()
+        val day = d.toInt()
+        if (month !in 1..12 || day !in 1..CalendarDate.daysInMonth(y.toInt(), month)) return null
+        val date = CalendarDate(y.toInt(), month, day)
+        return date.takeIf { WEEKDAYS[it.isoDayOfWeek - 1].equals(weekday, ignoreCase = true) }
+    }
+
+    /** `true` when [title] names a year item: four digits (name text, as [dateOfDayTitle]). */
+    fun isYearTitle(title: String): Boolean = YEAR_TITLE.matches(FolderName.nameTextOf(title).trim())
+
+    /** `true` when [title] names a week item: `Week 1` … `Week 53` (`Week 01` as written; any case). */
+    fun isWeekTitle(title: String): Boolean {
+        val m = WEEK_TITLE.matchEntire(FolderName.nameTextOf(title).trim()) ?: return false
+        return m.groupValues[1].toInt() in 1..53
+    }
+
+    /**
+     * The day a pane is on, from its location's titles from the root down
+     * ([titles]: the folder names, then the zoom path): `Journal` › a
+     * year › a `Week NN` › a day title ([dateOfDayTitle]), and anything
+     * under the day (the pane is "inside" it). `null` anywhere else.
+     *
+     * Called by `PaneBackingViewModel.journalDayOf`.
+     */
+    fun dayOfTitlePath(titles: List<String>): CalendarDate? {
+        if (titles.size < 4) return null
+        if (!matchesTitle(titles[0], JOURNAL_TITLE) || !isYearTitle(titles[1]) || !isWeekTitle(titles[2])) return null
+        return dateOfDayTitle(titles[3])
+    }
+
+    /**
+     * A day item that exists in the journal.
+     *
+     * @property date The date its title names.
+     * @property titlePath Its item titles from the root down, as written
+     *   (`Journal`, year, week, day) — where it actually is, so a day filed
+     *   under an unexpected week is still found.
+     */
+    data class JournalDay(val date: CalendarDate, val titlePath: List<String>)
+
+    /** Where "Previous day" / "Next day" go ([stepFrom]). */
+    sealed class DayStep {
+        /** To the existing [day]. */
+        data class ToDay(val day: JournalDay) : DayStep()
+
+        /** To today, through the Today command (prepared if missing). */
+        object ToToday : DayStep()
+    }
+
+    /**
+     * Where "Previous day" ([forward] `false`) or "Next day" ([forward]
+     * `true`) goes from the day [from]: the nearest day in [days] before
+     * or after it, skipping gaps of any length (weeks and years included).
+     * Going forward, today counts as a day even when it does not exist yet
+     * — the Today command prepares it — whenever it lies after [from] and
+     * no existing day comes before it; so "Next day" from the latest day,
+     * when that is before today, goes to today. `null` when there is
+     * nowhere to go.
+     *
+     * @param days The journal's existing, visible days, any order.
+     * @param today The user's local date.
+     */
+    fun stepFrom(days: Collection<JournalDay>, from: CalendarDate, forward: Boolean, today: CalendarDate): DayStep? {
+        val key = from.epochDay
+        if (!forward) {
+            return days.filter { it.date.epochDay < key }.maxByOrNull { it.date.epochDay }?.let { DayStep.ToDay(it) }
+        }
+        val next = days.filter { it.date.epochDay > key }.minByOrNull { it.date.epochDay }
+        val t = today.epochDay
+        return when {
+            next != null && next.date.epochDay <= t -> DayStep.ToDay(next)
+            t > key -> DayStep.ToToday
+            else -> next?.let { DayStep.ToDay(it) }
+        }
     }
 
     /**
