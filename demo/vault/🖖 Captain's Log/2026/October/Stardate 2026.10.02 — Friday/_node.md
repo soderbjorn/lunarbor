@@ -1,5 +1,5 @@
 - Standup: told the team the iOS build is "basically green". It was the color of the CI badge, not the build. #work
-- Finally got the Gotek working in Denise. She booted Workbench 1.3 and I may have cried a little. See [Amiga corner](lunarbor:/🕹️%20Retro%20Lab/Amiga%20500%20%2522Denise%2522) #amiga
+- Finally got the Gotek working in Denise. She booted Workbench 1.3 and I may have cried a little. See [Amiga corner](../../../../🕹️%20Retro%20Lab/Amiga%20500%20%2522Denise%2522/_node.md) #amiga
 - Spot knocked a 1541 floppy drive off the desk. It still works. **Commodore built those like starships.**
 - Pick up thermal paste for the breadbin's VIC-II heat sink #todo #c64
 - Buy cat food — the good one, not the one Spot "forgets" to eat #todo

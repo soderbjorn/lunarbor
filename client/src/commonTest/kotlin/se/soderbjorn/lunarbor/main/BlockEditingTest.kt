@@ -489,7 +489,7 @@ class BlockEditingTest {
         assertEquals("- A\n- Plan [↳](<Plan/_node.md>)\n", read("_node.md"))
         assertEquals("> Body\n> * item\n", read("Plan/_node.md"))
         assertEquals(null, read("Plan.md"))
-        assertEquals("see [p](lunarbor:/Plan)\n", read("Links.md"))
+        assertEquals("see [p](./Plan/_node.md)\n", read("Links.md"))
     }
 
     @Test

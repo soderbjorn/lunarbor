@@ -41,13 +41,14 @@ class LinkPreviewTest {
     private fun PaneBackingViewModel.id(row: Int) = stateFlow.value.documentState!!.lineIds[row]
 
     @Test
-    fun only_a_bullet_with_exactly_one_tf_link_can_preview() {
-        assertEquals("Work/Secret", linkPreviewPathOf("  * [Secret](lunarbor:/Work/Secret)"))
-        assertEquals("Work", linkPreviewPathOf("* See [work](lunarbor:/Work) first"))
-        assertNull(linkPreviewPathOf("* [a](lunarbor:/A) and [b](lunarbor:/B)"))
-        assertNull(linkPreviewPathOf("* [site](https://example.com)"))
-        assertNull(linkPreviewPathOf("* plain"))
-        assertNull(linkPreviewPathOf(BlockLayout.firstLine(0, "[a](lunarbor:/A)")))
+    fun only_a_bullet_with_exactly_one_link_into_the_vault_can_mirror() {
+        assertEquals("Work/Secret", linkPreviewPathOf("  * [Secret](Work/Secret/_node.md)", ""))
+        assertEquals("Work/Secret", linkPreviewPathOf("  * [Secret](../Secret/_node.md)", "Work/Plans"))
+        assertEquals("Work", linkPreviewPathOf("* See [work](lunarbor:/Work) first", ""))
+        assertNull(linkPreviewPathOf("* [a](A/_node.md) and [b](B/_node.md)", ""))
+        assertNull(linkPreviewPathOf("* [site](https://example.com)", ""))
+        assertNull(linkPreviewPathOf("* plain", ""))
+        assertNull(linkPreviewPathOf(BlockLayout.firstLine(0, "[a](A/_node.md)"), ""))
     }
 
     @Test

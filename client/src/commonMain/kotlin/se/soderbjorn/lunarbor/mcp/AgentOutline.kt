@@ -31,6 +31,7 @@
 
 package se.soderbjorn.lunarbor.mcp
 
+import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.SubtreeCodec
 import se.soderbjorn.lunarbor.data.LunarborLink
 import se.soderbjorn.lunarbor.main.BlockLayout
@@ -207,7 +208,8 @@ object AgentOutline {
     /**
      * A path an agent gave → vault-relative form: no leading or trailing
      * slash, `""` for the vault root. Accepts `/Recipes/Soups`,
-     * `Recipes/Soups` and `lunarbor:/…` links (percent-decoded).
+     * `Recipes/Soups`, `Recipes/Soups/_node.md` (a node's outline names
+     *   the node) and `lunarbor:/…` links (percent-decoded).
      *
      * @throws ParseException for a malformed `lunarbor:` link, a `..` segment
      *   (nothing outside the vault can be named) or a dot segment (the
@@ -217,6 +219,7 @@ object AgentOutline {
         val t = path.trim()
         val raw = if (LunarborLink.isLunarborLink(t)) LunarborLink.parse(t) ?: throw ParseException("Not a valid lunarbor: link: $t") else t
         val segments = raw.split('/').filter { it.isNotEmpty() && it != "." }
+            .let { if (it.lastOrNull() == NoteRepository.OUTLINE_FILE_NAME) it.dropLast(1) else it }
         if (segments.any { it == ".." }) throw ParseException("Paths cannot contain \"..\": $t")
         // Dot folders and files (the trash, .DS_Store, …) are not content.
         if (segments.any { it.startsWith(".") }) throw ParseException("Hidden files and folders (such as the trash) cannot be used: $t")

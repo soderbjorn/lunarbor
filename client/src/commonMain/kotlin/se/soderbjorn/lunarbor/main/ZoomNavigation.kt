@@ -437,11 +437,9 @@ internal class ZoomNavigation(
 
     /**
      * `true` when a childless bullet [line] zooms into a read-only page
-     * ([PaneBackingViewModel.ZoomInfo.isReadOnly]): a search node, or a
-     * link bullet whose page is the linked node's preview.
+     * ([PaneBackingViewModel.ZoomInfo.isReadOnly]): a search node.
      */
-    private fun isReadOnlyLeaf(line: String): Boolean =
-        SearchNode.queryOf(line) != null || linkPreviewPathOf(line) != null
+    private fun isReadOnlyLeaf(line: String): Boolean = SearchNode.queryOf(line) != null
 
     private fun popValid(
         stack: List<LineId?>,

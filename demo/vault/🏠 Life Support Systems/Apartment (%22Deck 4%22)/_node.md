@@ -1,4 +1,4 @@
 - Dishwasher (aka the warp core) makes a new noise #todo
 - Hang the framed Amiga Boing poster #todo
 - Build a shelf for the floppy disk collection (all 400 of them)
-- Live ship status: [Ship status](lunarbor:/Ship%20status.html) — open it, it's alive
+- Live ship status: [Ship status](../../Ship%20status.html) — open it, it's alive

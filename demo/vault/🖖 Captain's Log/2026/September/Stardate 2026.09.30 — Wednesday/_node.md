@@ -1,2 +1,2 @@
-- Sprint 41 retro. Theme: "Why does Gradle take longer than the sprint?" [Retro notes](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Meetings/Sprint%2041%20retro)
+- Sprint 41 retro. Theme: "Why does Gradle take longer than the sprint?" [Retro notes](../../../../🍕%20Work%253A%20Warp%20Factor%20Pizza/Meetings/Sprint%2041%20retro/_node.md)
 - Watched *The Inner Light* again. Played the flute melody on the C64 SID. Neighbours did not applaud. #trek #c64

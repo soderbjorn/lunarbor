@@ -9,14 +9,15 @@ Storage model (see NoteRepository.kt):
   - `- text` is a leaf bullet; a folder-backed bullet ends in a child link,
     `- title [↳](<folder/_node.md>)`; a block is a blockquote (`> ` lines);
   - the vault root is the root node: `<vault>/_node.md`;
-  - links are `lunarbor:/` vault paths (LunarborLink.kt); `Starred.md` at the vault
-    root holds `* [Label](lunarbor:/...)` bookmarks.
+  - links are relative Markdown links from the line's folder, a node named by its
+    `_node.md` (LunarborLink.kt); `Starred.md` at the vault root holds
+    `* [Label](path/_node.md)` bookmarks.
 
 Generates:
   - a root outline with leaves, folder-backed bullets and a block;
   - a `Projects` tree nested seven levels deep (for expand/zoom testing);
   - attachments (a `.md` note, an image, a text file) inside node folders;
-  - `lunarbor:` links to a folder, a note and an image, plus a Starred entry;
+  - links to a node, a note and an image, plus Starred entries;
   - a folder with no outline file (a node with no bullets yet);
   - an encoded folder name (`Q3%2FQ4 plan` for the title `Q3/Q4 plan`).
 
@@ -77,7 +78,7 @@ def seed(vault: Path, wipe: bool) -> None:
         child("Trip to **Lisbon**", "Trip to Lisbon"),
         child("Q3/Q4 plan", "Q3%2FQ4 plan"),
         "- Buy oat milk",
-        "- See [soups](lunarbor:/Recipes/Soups) and the [shopping notes](lunarbor:/Recipes/Shopping%20notes.md)",
+        "- See [soups](Recipes/Soups/_node.md) and the [shopping notes](Recipes/Shopping%20notes.md)",
         "> **Blocks** hold free Markdown between the bullets:",
         ">",
         "> * a list inside a block is just a list",
@@ -122,7 +123,7 @@ def seed(vault: Path, wipe: bool) -> None:
         "- Flights",
         "- Hotel",
         "> **Packing**: passport, charger, adapter",
-        "- Photo: [granola](lunarbor:/Recipes/granola.png)",
+        "- Photo: [granola](../Recipes/granola.png)",
     ])
 
     # Encoded folder name.
@@ -136,9 +137,9 @@ def seed(vault: Path, wipe: bool) -> None:
     inbox.mkdir(parents=True, exist_ok=True)
     (inbox / "Loose note.md").write_text("A loose note.\n", encoding="utf-8")
 
-    # Starred bookmarks: the same lunarbor: paths links use.
+    # Starred bookmarks: links like any other, relative to the vault root.
     (vault / "Starred.md").write_text(
-        "* [Recipes](lunarbor:/Recipes)\n* [Trip to Lisbon](lunarbor:/Trip%20to%20Lisbon)\n", encoding="utf-8")
+        "* [Recipes](./Recipes/_node.md)\n* [Trip to Lisbon](./Trip%20to%20Lisbon/_node.md)\n", encoding="utf-8")
 
     print("Done.")
 

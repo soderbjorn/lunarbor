@@ -10,6 +10,7 @@ import se.soderbjorn.lunarbor.demo.isDemoMode
 import se.soderbjorn.lunarbor.demo.loadDemoVault
 import se.soderbjorn.lunarbor.di.createJsAppGraph
 import se.soderbjorn.lunarbor.main.AppShell
+import se.soderbjorn.lunarbor.main.runFormatMigrations
 import se.soderbjorn.lunarbor.main.installBackupScheduler
 import se.soderbjorn.lunarbor.main.installMcpBridge
 import se.soderbjorn.lunarbor.mcp.McpServer
@@ -60,6 +61,9 @@ fun main() {
 private suspend fun start() {
     val app = document.getElementById("app") as HTMLElement
     val graph = createJsAppGraph()
+    // Vault format migrations first: nothing may read the vault before
+    // they finish, so the registry is not touched until then.
+    runFormatMigrations(graph.noteRepository, graph.persister)
     setLunarborVaultRoot(graph.documentRegistry.rootDirectory)
     val shell = AppShell(
         scope = graph.coroutineScope,

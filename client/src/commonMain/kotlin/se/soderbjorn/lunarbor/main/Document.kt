@@ -46,9 +46,17 @@
  * ### Links follow renames and moves
  * After each save the document reports, through `onAfterSave`, every
  * folder the save renamed, moved or trashed and every image it moved
- * ([PathMove]s). `DocumentRegistry` then rewrites the `lunarbor:` links that
- * point at or through the old paths — in closed files on disk, and in open
+ * ([PathMove]s). `DocumentRegistry` then rewrites the links that point at
+ * or through the old paths — in closed files on disk, and in open
  * documents through [rewriteLinks] (TRF-8).
+ *
+ * Links are written relative to the folder their row is stored in
+ * ([LunarborLink]). [linkBases] remembers, per row, the folder its text's
+ * links are relative to ([linkBaseOf]); after each save, a row now stored
+ * in another folder — indented, dragged, its folder renamed — gets its
+ * links rewritten relative to where it is ([rebaseLinksAfterSave]), and
+ * links written the old ways (`lunarbor:/…`, `/…`, e.g. pasted) become
+ * relative.
  *
  * ### Changes made outside the app
  * When a coding agent or another program edits the file, or the outline
@@ -290,6 +298,14 @@ class Document(
      * with where the row is stored now; see the file header.
      */
     private val imageHomes: MutableMap<LineId, ImageHome> = mutableMapOf()
+
+    /**
+     * Row → the folder its links are written relative to, by the row's text
+     * (the newest last, at most [LINK_BASES_PER_ROW]): keyed by text so an
+     * undo that brings back a row's earlier text also brings back the base
+     * that text was written for. See [linkBaseOf].
+     */
+    private val linkBases: MutableMap<LineId, LinkedHashMap<String, String>> = mutableMapOf()
 
     /** Rows of the last cut, by offset, that had an [ImageHome]; handed on by [adoptCut]. */
     private var lastCutImageHomes: Map<Int, ImageHome> = emptyMap()
@@ -647,9 +663,14 @@ class Document(
             LunarborLink.remap(target, moves)?.let { mirrorRefs[id] = it }
         }
         var changed = false
-        val newLines = state.lines.map { line ->
-            val rewritten = LunarborLink.rewriteText(line, moves)
-            if (rewritten != null) { changed = true; rewritten } else line
+        val newLines = state.lines.mapIndexed { row, line ->
+            val base = linkBaseOf(row)
+            val rewritten = LunarborLink.rebaseText(line, base, base, moves)
+            if (rewritten != null) {
+                changed = true
+                noteLinkBase(state.lineIds[row], rewritten, base)
+                rewritten
+            } else line
         }
         if (changed) _stateFlow.value = state.copy(lines = newLines)
         return changed
@@ -693,6 +714,9 @@ class Document(
         for ((id, ref) in promotedSubtrees) {
             if (id in trashedIds || id in state.unloadedRefIds) continue
             out += ref.fileRel
+        }
+        for ((id, target) in mirrorRefs) {
+            if (id !in state.unloadedRefIds) out += NoteRepository.outlineFileOf(target)
         }
         return out
     }
@@ -828,6 +852,97 @@ class Document(
         val state = _stateFlow.value
         if (row !in state.lines.indices) return folderRel
         return folderOfHome(ImageHome(storageAnchorOf(state.lines, state.lineIds, row))) ?: folderRel
+    }
+
+    /**
+     * The folder the links in row [row]'s text are written relative to: the
+     * one recorded for its text (or, edited since, for its last recorded
+     * text), else the folder it is stored in now ([storageFolderOf]). A note
+     * (Markdown mode) is always its own folder.
+     *
+     * Called by `PaneBackingViewModel` to resolve, write and copy the row's
+     * links, and by the mirror scan.
+     */
+    fun linkBaseOf(row: Int): String {
+        if (!bulletsOnly) return folderRel
+        val state = _stateFlow.value
+        val id = state.lineIds.getOrNull(row) ?: return folderRel
+        val byText = linkBases[id]
+        return byText?.get(state.lines[row]) ?: byText?.values?.lastOrNull() ?: storageFolderOf(row)
+    }
+
+    /** Records that [text] of row [id] is written relative to [base] (see [linkBases]). */
+    private fun noteLinkBase(id: LineId, text: String, base: String) {
+        if (!bulletsOnly) return
+        val byText = linkBases.getOrPut(id) { LinkedHashMap() }
+        byText.remove(text)
+        byText[text] = base
+        while (byText.size > LINK_BASES_PER_ROW) byText.remove(byText.keys.first())
+    }
+
+    /**
+     * Records, for every row holding a link that has no base yet, the
+     * folder it is stored in now — before any later edit can move it. Runs
+     * on every emission ([scanMirrors]) and after loads.
+     */
+    private fun recordMissingLinkBases() {
+        if (!bulletsOnly) return
+        val state = _stateFlow.value
+        for ((row, line) in state.lines.withIndex()) {
+            val id = state.lineIds[row]
+            if (id in linkBases || "](" !in line) continue
+            noteLinkBase(id, line, folderOfHome(ImageHome(storageAnchorOf(state.lines, state.lineIds, row))) ?: folderRel)
+        }
+    }
+
+    /**
+     * After a save of [saved]: rewrites the links of every row now stored
+     * in another folder than its text was written for ([linkBaseOf]), or
+     * pointing at something [moves] moved, and turns links written the old
+     * ways (`lunarbor:/…`, `/…`) into relative ones ([LunarborLink.rebaseText];
+     * whether an old-style target is a folder is read from the disk). A row
+     * edited since the save is left for the next one. The edits make the
+     * document dirty, so they save like any edit. Caller holds [saveLock].
+     */
+    private suspend fun rebaseLinksAfterSave(saved: State, moves: List<PathMove>) {
+        val current = _stateFlow.value
+        val rowOf = HashMap<LineId, Int>(current.lineIds.size)
+        for ((i, id) in current.lineIds.withIndex()) rowOf[id] = i
+        val legacy = HashSet<String>()
+        class Pending(val row: Int, val id: LineId, val text: String, val oldBase: String, val newBase: String)
+        val pending = ArrayList<Pending>()
+        for ((savedRow, id) in saved.lineIds.withIndex()) {
+            val text = saved.lines[savedRow]
+            if ("](" !in text) continue
+            val row = rowOf[id] ?: continue
+            if (current.lines[row] != text) continue
+            val newBase = if (bulletsOnly) storageFolderOf(row) else folderRel
+            val byText = linkBases[id]
+            val oldBase = byText?.get(text) ?: byText?.values?.lastOrNull() ?: newBase
+            val links = LunarborLink.findLinks(text, oldBase)
+            if (links.isEmpty()) continue
+            links.filterTo(ArrayList()) { !it.isRelative }.mapTo(legacy) { it.pathRel }
+            pending += Pending(row, id, text, oldBase, newBase)
+        }
+        if (pending.isEmpty()) return
+        val kinds = if (legacy.isEmpty()) emptyMap() else repository.kindsOf(legacy)
+        val isFolder: (String) -> Boolean = { path ->
+            kinds[path]?.let { it == se.soderbjorn.lunarbor.data.VaultEntryKind.FOLDER } ?: LunarborLink.looksLikeFolder(path)
+        }
+        val lines = current.lines.toMutableList()
+        var changed = false
+        for (p in pending) {
+            val out = LunarborLink.rebaseText(p.text, p.oldBase, p.newBase, moves, isFolder)
+            noteLinkBase(p.id, out ?: p.text, p.newBase)
+            if (out != null) {
+                lines[p.row] = out
+                changed = true
+            }
+        }
+        if (changed) _stateFlow.value = _stateFlow.value.let { s ->
+            // Only rows untouched since `current` was read get the new text.
+            if (s.lines === current.lines) s.copy(lines = lines) else s
+        }
     }
 
     /**
@@ -1008,11 +1123,12 @@ class Document(
     private fun scanMirrors() {
         val state = _stateFlow.value
         if (!bulletsOnly || !state.isLoaded) return
+        recordMissingLinkBases()
         val want = HashMap<LineId, String>()
         val stale = ArrayList<LineId>()
         for ((row, id) in state.lineIds.withIndex()) {
             if (id in promotedSubtrees) continue
-            val path = linkPreviewPathOf(state.lines[row])
+            val path = linkPreviewPathOf(state.lines[row], linkBaseOf(row))
             val known = mirrorRefs[id]
             if (known != null && id !in state.unloadedRefIds) {
                 if (path != known || mirrorTargetOk[known] == false) stale += id
@@ -1216,6 +1332,7 @@ class Document(
             unloadedRefIds = current.unloadedRefIds - lineId + nested,
         )
         recordMissingImageHomes()
+        recordMissingLinkBases()
         return true
     }
 
@@ -1269,6 +1386,7 @@ class Document(
         trashedIds.clear()
         mirrorRefs.clear()
         mirrorOwner.clear()
+        linkBases.clear()
         baseBodies.clear()
         loaded.body?.let { baseBodies[folderRel] = it }
         val unloaded = HashSet<LineId>()
@@ -1288,6 +1406,7 @@ class Document(
         )
         imageHomes.clear()
         recordMissingImageHomes()
+        recordMissingLinkBases()
     }
 
     /**
@@ -1366,6 +1485,8 @@ class Document(
         val mirrorAt = MutableList<String?>(lines.size) { null }
         // Row → the mirror row it was spliced in under, at any depth.
         val ownerAt = MutableList<Int?>(lines.size) { null }
+        // Row → the folder it is stored in: what its links are relative to.
+        val baseAt = MutableList(lines.size) { folderRel }
         val bodies = HashMap<String, String>()
         loaded.body?.let { bodies[folderRel] = it }
         val spliced = HashSet<String>()
@@ -1373,7 +1494,7 @@ class Document(
         var row = 0
         while (row < lines.size) {
             val ref = refs[row]
-            val mirrored = if (ref == null) linkPreviewPathOf(lines[row])?.takeIf { it in expandedMirrors } else null
+            val mirrored = if (ref == null) linkPreviewPathOf(lines[row], baseAt[row])?.takeIf { it in expandedMirrors } else null
             val folder = ref?.folderRel?.takeIf { it in expandedFolders } ?: mirrored
             val indent = if (folder != null && folder !in spliced) DocumentLayout.itemColumn(lines, row) else -1
             if (folder != null && indent >= 0) {
@@ -1390,6 +1511,7 @@ class Document(
                 // Rows inserted before a later owner row shift it; owners are
                 // rows at or above `row`, so they never move.
                 ownerAt.addAll(at, List(sub.lines.size) { owner })
+                baseAt.addAll(at, List(sub.lines.size) { folder })
                 expanded[row] = true
             }
             row++
@@ -1414,11 +1536,13 @@ class Document(
         expansionRefcounts.clear()
         mirrorRefs.clear()
         mirrorOwner.clear()
+        linkBases.clear()
         baseBodies.clear()
         baseBodies.putAll(bodies)
         val unloaded = HashSet<LineId>()
         for (i in lines.indices) {
             ownerAt[i]?.let { mirrorOwner[ids[i]] = ids[it] }
+            if ("](" in lines[i]) noteLinkBase(ids[i], lines[i], baseAt[i])
             mirrorAt[i]?.let { target ->
                 mirrorRefs[ids[i]] = target
                 expandedMirrors[target]?.takeIf { it > 0 }?.let { expansionRefcounts[ids[i]] = it }
@@ -1579,6 +1703,7 @@ class Document(
         // save leaves the live set different, so the document stays dirty.
         lastSavedUnloaded = state.unloadedRefIds.filterTo(HashSet()) { it in promotedSubtrees }
         recomputeDirty()
+        rebaseLinksAfterSave(state, moves.filter { !it.touchesTrash })
         val movedImages = followImagesAfterSave(state)
         moves += movedImages
         try { onAfterSave(moves, result.written) } catch (e: Throwable) {
@@ -1662,6 +1787,9 @@ class Document(
     private fun allocateId(): LineId = LineId(nextIdValue++)
 
     companion object {
+        /** How many texts per row [linkBases] remembers a base for (undo reaches back that far). */
+        private const val LINK_BASES_PER_ROW: Int = 4
+
         /** Above this many cell comparisons [matchIds] skips the diff of the changed middle. */
         private const val MAX_DIFF_CELLS: Long = 4_000_000L
 

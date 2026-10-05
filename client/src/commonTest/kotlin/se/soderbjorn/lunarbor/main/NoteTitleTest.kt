@@ -193,7 +193,7 @@ class NoteTitleTest {
         assertEquals("New.md", outline.s.activeFileRel)
         assertEquals("# New\nbody", read("New.md")?.trimEnd())
         // The link in the (not open) root outline was rewritten on disk.
-        assertTrue(read("_node.md")!!.contains("lunarbor:/New.md"), read("_node.md"))
+        assertTrue(read("_node.md")!!.contains("[note](New.md)"), read("_node.md"))
         assertEquals("New.md", registry.renamedTo("Old.md"))
         // Back to the outline, forward again: the history holds the new name.
         outline.zoomBack()
@@ -236,7 +236,7 @@ class NoteTitleTest {
         runCurrent()
         assertEquals("pic.jpg.png", p.s.activeFileRel)
         registry.flushAll()
-        assertTrue(read("_node.md")!!.contains("lunarbor:/pic.jpg.png"), read("_node.md"))
+        assertTrue(read("_node.md")!!.contains("[shot](pic.jpg.png)"), read("_node.md"))
     }
 
     @Test

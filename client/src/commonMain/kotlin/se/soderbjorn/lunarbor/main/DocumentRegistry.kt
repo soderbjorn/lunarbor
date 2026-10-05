@@ -695,19 +695,23 @@ class DocumentRegistry(
      * the folder back.
      */
     suspend fun applyPathMoves(moves: List<PathMove>) {
+        val live = moves.filter { !it.touchesTrash }
+        // Notes carried along by a move: their relative links now start from
+        // somewhere else (read before the index re-keys them).
+        val carried = if (live.isEmpty()) emptyMap() else vaultIndex.filesMovedBy(live)
         vaultIndex.moveKeys(moves)
         textIndex.moveKeys(moves)
         foldMemory.applyMoves(moves)
-        val live = moves.filter { !it.touchesTrash }
         if (live.isEmpty()) return
         val held = HashSet<String>()
         for (doc in openDocuments()) {
             held += doc.heldFiles()
             doc.rewriteLinks(live)
         }
-        for (file in vaultIndex.filesLinkingInto(live)) {
+        val oldPathOf = carried.entries.associate { (from, to) -> to to from }
+        for (file in vaultIndex.filesLinkingInto(live) + oldPathOf.keys) {
             if (file in held) continue
-            repository.rewriteLinksInFile(file, live)
+            repository.rewriteLinksInFile(file, live, oldPathOf[file] ?: file)
         }
     }
 

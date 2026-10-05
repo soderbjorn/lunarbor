@@ -3318,14 +3318,38 @@ class PaneBackingViewModel(
     // ----------------------------------------------------------------- links
 
     /**
-     * Inserts a link to [target] at the cursor: `[label](lunarbor:/…)`, labelled
-     * with [label] or, when that is blank, the target's title. See
-     * [insertMarkdownLink]. Called by the Insert Link / "Insert Mirror…"
-     * modal once the user picks a target.
+     * Inserts a link to [target] at the cursor, labelled with [label] or,
+     * when that is blank, the target's title: a relative Markdown link
+     * from the caret row's folder ([linkBaseOf]), a node named by its
+     * `_node.md` ([LunarborLink.relative]). See [insertMarkdownLink].
+     * Called by the Insert Link / "Insert Mirror…" modal once the user
+     * picks a target.
      */
     fun insertLinkTo(target: LinkTarget, label: String = "") {
-        insertMarkdownLink(label.ifBlank { target.title }, LunarborLink.format(target.pathRel))
+        val base = linkBaseOf(_stateFlow.value.cursorRow)
+        val dest = LunarborLink.relative(target.pathRel, target.kind == VaultEntryKind.FOLDER, base)
+        insertMarkdownLink(label.ifBlank { target.title }, dest)
     }
+
+    /**
+     * The folder the links in row [row] are written relative to
+     * ([Document.linkBaseOf]); the open file's folder outside an outline.
+     * Called to write a link into the row (Insert Link, the Edit link
+     * dialog) and to read one.
+     */
+    fun linkBaseOf(row: Int): String =
+        document?.linkBaseOf(row) ?: LunarborLink.baseOfFile(_stateFlow.value.activeFileRel)
+
+    /**
+     * What a link [url] written in row [row] points at, as the app passes
+     * links around: `lunarbor:/<path>` for a place in the vault (read
+     * relative to the row's folder, [LunarborLink.resolve]), else [url]
+     * unchanged (a web link, `mailto:`, …). Called by the web paint loop
+     * for every link it draws, so clicks, hover cards and broken-link
+     * marks all see the vault path.
+     */
+    fun linkHrefOf(row: Int, url: String): String =
+        LunarborLink.resolve(url, linkBaseOf(row))?.let { LunarborLink.format(it) } ?: url
 
     /**
      * The link at [row] / [col] ([LinkSource.at]), or `null`. Called by the

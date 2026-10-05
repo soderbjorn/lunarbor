@@ -41,14 +41,15 @@ data class LinkPreviewItem(val title: String, val pathRel: String?, val tagKeys:
 data class LinkPreview(val pathRel: String, val items: List<LinkPreviewItem>)
 
 /**
- * The link target a bullet [line] would preview: the path of its only
- * `lunarbor:` link, or `null` when the line is not a bullet or holds no link or
- * more than one. Whether the target is a node with bullets is decided
- * later, from what the registry reads there.
+ * The node a bullet [line] would mirror: the path of its only link into
+ * the vault ([LunarborLink.findLinks], read against [baseFolder], the
+ * folder the line is stored in), or `null` when the line is not a bullet
+ * or holds no such link or more than one. Whether the target is a node is
+ * decided later (`Document`'s `mirrorCheck`).
  */
-internal fun linkPreviewPathOf(line: String): String? {
+internal fun linkPreviewPathOf(line: String, baseFolder: String): String? {
     if (DocumentLayout.bulletAsteriskColumn(line) < 0) return null
-    val links = LunarborLink.findLinks(line)
+    val links = LunarborLink.findLinks(line, baseFolder)
     return links.singleOrNull()?.pathRel
 }
 

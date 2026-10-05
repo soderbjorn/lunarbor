@@ -304,7 +304,7 @@ internal class StarredModal(
         val out = ArrayList<BookmarkEntry>(state.lines.size)
         for (line in state.lines) {
             val link = SubtreeCodec.parseAnyLinkBullet(line) ?: continue
-            val path = LunarborLink.parse(link.url) ?: continue
+            val path = LunarborLink.resolve(link.url, "") ?: continue
             // Starred places the privacy mode hides are not listed.
             if (parentVm?.isPathHidden(path) == true) continue
             val label = link.bulletText.substring(link.indent + 2)
@@ -448,7 +448,7 @@ internal class StarredModal(
             return
         }
         val active = state.lines.any { line ->
-            SubtreeCodec.parseAnyLinkBullet(line)?.let { LunarborLink.parse(it.url) } == location
+            SubtreeCodec.parseAnyLinkBullet(line)?.let { LunarborLink.resolve(it.url, "") } == location
         }
         applyAddStarBtnState(btn, active = active)
     }

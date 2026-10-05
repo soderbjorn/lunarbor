@@ -1,2 +1,2 @@
-- Under the bullets of every node you'll find the **files in its folder**: Markdown notes, images, drawings, anything. Scroll to the bottom of [Slice](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Slice%20—%20the%20app) to see some.
+- Under the bullets of every node you'll find the **files in its folder**: Markdown notes, images, drawings, anything. Scroll to the bottom of [Slice](../../🍕%20Work%253A%20Warp%20Factor%20Pizza/Slice%20—%20the%20app/_node.md) to see some.
 - A `.md` file opens right here as an editable note. `⌘P` → "New Markdown file" makes one.

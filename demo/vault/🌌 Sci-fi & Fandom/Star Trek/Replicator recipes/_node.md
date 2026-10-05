@@ -1,3 +1,3 @@
 - Tea, Earl Grey, hot — 3 min steep, 95 °C. Not boiling. The captain is very specific.
 - Raktajino — double espresso, cardamom, a spoon of cocoa. Klingon-approved.
-- Plomeek soup — see [Recipes](lunarbor:/🏠%20Life%20Support%20Systems/Recipes)
+- Plomeek soup — see [Recipes](../../../🏠%20Life%20Support%20Systems/Recipes/_node.md)

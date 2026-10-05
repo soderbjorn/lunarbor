@@ -2,4 +2,4 @@
 - ![Slice architecture|560](KMP architecture.excalidraw)
 - Shared code: domain, data, networking (Ktor), storage (SQLDelight), and view models. #kmp
 - UI stays native: **Jetpack Compose** on Android, **SwiftUI** on iOS. #android #ios
-- Decisions live as ADRs in this folder — scroll down to the files. Start with [ADR-001](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Slice%20—%20the%20app/Architecture/ADR-001%20Use%20Kotlin%20Multiplatform.md).
+- Decisions live as ADRs in this folder — scroll down to the files. Start with [ADR-001](ADR-001%20Use%20Kotlin%20Multiplatform.md).

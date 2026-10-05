@@ -1,5 +1,5 @@
 - **Bold**, *italic*, ~~strikethrough~~, `inline code`, and [links to the web](https://en.wikipedia.org/wiki/Commodore_64). Bare URLs work too: https://en.wikipedia.org/wiki/Amiga_500
 - Tags are colored pills — #retro, #trek, #someday — and the color always matches the name.
-- Link to any node: [my Amiga corner](lunarbor:/🕹️%20Retro%20Lab/Amiga%20500%20%2522Denise%2522). **Shift-click** a link to open it in a *new window*.
+- Link to any node: [my Amiga corner](../../🕹️%20Retro%20Lab/Amiga%20500%20%2522Denise%2522/_node.md). **Shift-click** a link to open it in a *new window*.
 - Wiki links resolve by title: say hi to [[Spot]].
 - > Quotes look like this. Headings are just `# ` at the start of a bullet.
