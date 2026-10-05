@@ -188,4 +188,92 @@ class MirrorTest {
         runCurrent()
         assertEquals("* Tomato soup", soups.lines[0])
     }
+
+    @Test
+    fun zooming_into_a_node_its_open_mirror_holds_shows_and_keeps_its_items() = runTest {
+        seed("_node.md", "- [Recipes](./Recipes/_node.md)\n- Recipes [↳](<Recipes/_node.md>)\n")
+        seed("Recipes/_node.md", "- Pasta\n- Soups [↳](<Soups/_node.md>)\n")
+        seed("Recipes/Soups/_node.md", "- Tomato\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        val p = pane(registry)
+        // The mirror is open first and holds the folder.
+        p.toggleCollapse(p.id(0))
+        runCurrent()
+        assertEquals("  * Pasta", p.lines[1])
+        // Zooming into the real bullet shows its items, no empty placeholder.
+        p.zoomInto(p.lines.indexOf("* Recipes"))
+        runCurrent()
+        assertNull(p.lines.firstOrNull { it.trim() == "*" }, p.lines.toString())
+        // The mirror lets go of the node; its own bullet shows the items.
+        assertEquals(listOf("* [Recipes](./Recipes/_node.md)", "* Recipes", "  * Pasta", "  * Soups"), p.lines)
+        // Saving the page never empties the node on disk.
+        p.moveTo(2, p.lines[2].length)
+        p.insertText("!")
+        registry.flushAll()
+        runCurrent()
+        assertEquals("- Pasta!\n- Soups [↳](<Soups/_node.md>)\n", disk("Recipes/_node.md"))
+        assertEquals("- Tomato\n", disk("Recipes/Soups/_node.md"))
+    }
+
+    @Test
+    fun a_folded_mirror_lets_its_node_unfold_in_place_after_saves() = runTest {
+        seed("_node.md", "- [Recipes](./Recipes/_node.md)\n- Recipes [↳](<Recipes/_node.md>)\n")
+        seed("Recipes/_node.md", "- Pasta\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        val p = pane(registry)
+        val mirror = p.id(0)
+        val real = p.id(1)
+        p.toggleCollapse(mirror)
+        runCurrent()
+        p.toggleCollapse(mirror)
+        runCurrent()
+        p.moveTo(0, p.lines[0].length)
+        p.insertText(" !")
+        registry.flushAll()
+        runCurrent()
+        p.toggleCollapse(real)
+        runCurrent()
+        assertEquals(listOf("* [Recipes](./Recipes/_node.md) !", "* Recipes", "  * Pasta"), p.lines)
+        p.moveTo(0, p.lines[0].length)
+        p.insertText("?")
+        registry.flushAll()
+        runCurrent()
+        assertEquals("- Pasta\n", disk("Recipes/_node.md"))
+    }
+
+    @Test
+    fun editing_a_page_with_a_folded_mirror_never_empties_its_node() = runTest {
+        seed("_node.md", "- Groceries\n- [Recipes](./Recipes/_node.md)\n")
+        seed("Recipes/_node.md", "- Pasta\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        val p = pane(registry)
+        for (ch in listOf("!", "?", ".")) {
+            p.moveTo(0, p.lines[0].length)
+            p.insertText(ch)
+            registry.flushAll()
+            runCurrent()
+        }
+        assertEquals("- Pasta\n", disk("Recipes/_node.md"))
+        // Unfolding it still shows the node's items.
+        p.toggleCollapse(p.id(1))
+        runCurrent()
+        assertEquals(listOf("* Groceries!?.", "* [Recipes](./Recipes/_node.md)", "  * Pasta"), p.lines)
+    }
+
+    @Test
+    fun an_open_mirror_keeps_saving_its_edits() = runTest {
+        seed("_node.md", "- Groceries\n- [Recipes](./Recipes/_node.md)\n")
+        seed("Recipes/_node.md", "- Pasta\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        val p = pane(registry)
+        p.toggleCollapse(p.id(1))
+        runCurrent()
+        for (ch in listOf("1", "2")) {
+            p.moveTo(2, p.lines[2].length)
+            p.insertText(ch)
+            registry.flushAll()
+            runCurrent()
+        }
+        assertEquals("- Pasta12\n", disk("Recipes/_node.md"))
+    }
 }

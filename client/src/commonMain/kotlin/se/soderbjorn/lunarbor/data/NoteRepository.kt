@@ -751,7 +751,11 @@ class NoteRepository(
                         val mirrored = mirrorByRow[item.row]
                         if (mirrored != null && item is ComposedItem.Bullet) {
                             out += NodeLine.Leaf(item.title)
-                            if (item.row in unloadedRows) {
+                            // A mirror whose node this document never loaded
+                            // ([baseBodies] has no entry) knows nothing of its
+                            // items: like a folded one, it may only add rows,
+                            // never rewrite (or empty) the node's outline.
+                            if (item.row in unloadedRows || mirrored !in baseBodies) {
                                 if (item.children.isNotEmpty()) {
                                     appends += mirrored to planChildren(item.children, mirrored, mirrored, mayAdopt = false)
                                 }

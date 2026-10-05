@@ -1286,18 +1286,48 @@ class Document(
      * row vanished mid-load or its folder is already loaded elsewhere in
      * this document ([loadedFolders]) — a mirror of a node open on the
      * page, or of the page itself, stays folded.
+     *
+     * The node's own folder-backed bullet wins over a mirror: when an open
+     * mirror holds the folder ([openMirrorHolding]), the mirror is saved
+     * and folded first, so the bullet never shows as childless.
      */
     private suspend fun spliceInUnderLock(lineId: LineId): Boolean {
         val folder = refFolderOf(lineId) ?: return false
+        if (lineId !in _stateFlow.value.unloadedRefIds) return true
+        if (folder in loadedFolders()) {
+            val mirror = openMirrorHolding(lineId, folder) ?: return false
+            expansionRefcounts.remove(mirror)
+            saveLock.withLock {
+                saveIfDirtyUnderLock()
+                spliceOutNow(mirror)
+            }
+            if (folder in loadedFolders()) return false
+        }
         val state = _stateFlow.value
         if (lineId !in state.unloadedRefIds) return true
         val row = state.lineIds.indexOf(lineId)
         if (row < 0) return false
         val parentIndent = DocumentLayout.itemColumn(state.lines, row)
         if (parentIndent < 0) return false
-        if (folder in loadedFolders(state)) return false
         val loaded = repository.loadSubtree(folder, parentIndent)
         return spliceLoaded(lineId, loaded)
+    }
+
+    /**
+     * The open mirror whose rows hold [folder] — the mirror itself, or the
+     * mirror a folder-backed row spliced in under it belongs to
+     * ([mirrorOwner]) — when [lineId] is the node's own folder-backed
+     * bullet (not a mirror, nor a row inside one); otherwise `null`.
+     */
+    private fun openMirrorHolding(lineId: LineId, folder: String): LineId? {
+        if (lineId !in promotedSubtrees || lineId in mirrorOwner) return null
+        val state = _stateFlow.value
+        for (id in state.lineIds) {
+            if (id == lineId || id in state.unloadedRefIds || id in trashedIds) continue
+            if (refFolderOf(id) != folder) continue
+            return if (id in mirrorRefs) id else mirrorOwner[id]
+        }
+        return null
     }
 
     /**
@@ -1691,9 +1721,11 @@ class Document(
             }
         }
         spliceAdoptedItems(state, result)
-        // Rows demoted by this save can no longer be "unloaded".
+        // Rows demoted by this save can no longer be "unloaded". Folded
+        // mirrors stay folded: dropping one here would make it read as an
+        // open mirror with no items, and the next save would empty its node.
         val after = _stateFlow.value
-        val prunedUnloaded = after.unloadedRefIds.filterTo(HashSet()) { it in promotedSubtrees }
+        val prunedUnloaded = after.unloadedRefIds.filterTo(HashSet()) { it in promotedSubtrees || it in mirrorRefs }
         if (prunedUnloaded.size != after.unloadedRefIds.size) {
             _stateFlow.value = after.copy(unloadedRefIds = prunedUnloaded)
         }

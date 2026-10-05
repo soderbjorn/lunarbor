@@ -129,10 +129,15 @@ internal class ZoomNavigation(
                     pendingLeafZoomChild = null,
                 )
             }
-        } else if (endInclusive < ownLast + 1 && isReadOnlyLeaf(docState.lines[resolvedRow])) {
+        } else if (endInclusive < ownLast + 1 &&
+            (isReadOnlyLeaf(docState.lines[resolvedRow]) ||
+                (document.isPromotedRef(id) && id in docState.unloadedRefIds))
+        ) {
             // A childless search node or link bullet: its results or the
             // linked node's preview are the page, which is read-only, so no
-            // placeholder child to type in.
+            // placeholder child to type in. Nor for a folder-backed row whose
+            // items could not be loaded here: it is not a leaf, and a
+            // placeholder would be saved as its only child.
             patch {
                 pushHistory(markUnfolded(it, id), previousZoom).copy(
                     zoomedLineId = id,
