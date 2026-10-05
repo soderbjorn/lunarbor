@@ -523,6 +523,12 @@ class AppShell(
                 rootContainer = root,
                 title = "Lunarbor",
                 persister = persister,
+                // What Lunarbor's own CSS paints when the user has picked
+                // nothing (`var(--dt-font-mono, 'JetBrains Mono', …)`,
+                // `var(--dt-font-prop-size, 17px)`), so Appearance → Fonts
+                // names the code font and text size actually on screen.
+                defaultMonoFontFamily = { "jetbrainsMono" },
+                defaultProseFontSizePx = { 17 },
                 paneContent = { paneId ->
                     val container = document.createElement("div") as HTMLElement
                     // The toolkit's `.dt-pane-content` is a flex column;
