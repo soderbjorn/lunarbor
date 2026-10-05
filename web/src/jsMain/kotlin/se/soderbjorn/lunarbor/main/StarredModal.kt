@@ -21,8 +21,10 @@
  *    - `ArrowUp` / `ArrowDown` — move highlight.
  *    - `Enter` — open the highlighted bookmark in the parent pane.
  *    - `Escape` — close.
- *    - `Cmd+D` / `Ctrl+D` — toggle the parent pane's current location
- *      in/out of the starred list (same as the Add button).
+ *    - `Cmd+S` / `Ctrl+S` — toggle the parent pane's current location
+ *      in/out of the starred list (same as the Add button). The same
+ *      chord opens the modal ([AppShell.installStarredShortcut]), so
+ *      Cmd+S twice stars the current place. (Cmd+D belongs to Today.)
  * 4. Mouse: row click → open; row hover → highlight; Add button → toggle.
  *
  * Opening an entry follows its link in the parent pane
@@ -137,6 +139,19 @@ internal class StarredModal(
         refreshParentLocation()
     }
 
+    /** `true` while the modal is on screen. */
+    val isOpen: Boolean get() = backdropEl != null
+
+    /**
+     * Cmd+S while the modal is open: stars or un-stars the parent pane's
+     * current location, as the Add / Remove button does. Called by
+     * [AppShell.installStarredShortcut], whose capture-phase listener
+     * sees Cmd+S before this modal's own key handler.
+     */
+    fun toggleStarredFromShortcut() {
+        handleToggleStarred()
+    }
+
     /** Re-reads [parentLocation] and repaints the Add / Remove button. */
     private fun refreshParentLocation() {
         val vm = activePaneVmProvider() ?: return
@@ -215,7 +230,7 @@ internal class StarredModal(
         val addBtn = document.createElement("button") as HTMLElement
         addBtn.className = "lunarbor-starred-add"
         addBtn.setAttribute("type", "button")
-        addBtn.title = "Add the active pane's current location to your starred list (⌘D)"
+        addBtn.title = "Add the active pane's current location to your starred list (⌘S)"
         val iconSpan = document.createElement("span") as HTMLElement
         iconSpan.className = "lunarbor-starred-add-icon"
         iconSpan.innerHTML = AppShell.ICON_STAR
@@ -338,7 +353,7 @@ internal class StarredModal(
             val empty = document.createElement("div") as HTMLElement
             empty.className = "lunarbor-palette-empty"
             empty.textContent =
-                "No bookmarks yet. Press ⌘D inside this dialog (or click ★ in any pane) to add one."
+                "No bookmarks yet. Press ⌘S again inside this dialog (or click ★ in any pane) to add one."
             list.appendChild(empty)
             return
         }
@@ -460,11 +475,11 @@ internal class StarredModal(
         addStarBtnIsActive = active
         if (active) {
             btn.classList.add("is-active")
-            btn.title = "Remove the active pane's current location from your starred list (⌘D)"
+            btn.title = "Remove the active pane's current location from your starred list (⌘S)"
             addStarBtnLabelEl?.textContent = "Remove from starred"
         } else {
             btn.classList.remove("is-active")
-            btn.title = "Add the active pane's current location to your starred list (⌘D)"
+            btn.title = "Add the active pane's current location to your starred list (⌘S)"
             addStarBtnLabelEl?.textContent = "Add to starred"
         }
     }
@@ -496,16 +511,10 @@ internal class StarredModal(
     private fun attachDocumentKeyHandler() {
         val handler: (Event) -> Unit = lambda@ { e ->
             val ke = e as? KeyboardEvent ?: return@lambda
-            // Cmd/Ctrl+D toggles starred for the parent pane's current
-            // target — same effect as clicking the Add button. Honoured
-            // before the fall-through arrow/Enter handling so the
-            // shortcut works regardless of which row is highlighted.
-            if ((ke.metaKey || ke.ctrlKey) && ke.key.equals("d", ignoreCase = true)) {
-                ke.preventDefault()
-                ke.stopPropagation()
-                handleToggleStarred()
-                return@lambda
-            }
+            // Cmd/Ctrl+S (star / un-star) is not handled here: AppShell's
+            // capture-phase Cmd+S listener sees it first and calls
+            // [toggleStarredFromShortcut]. Handling it here as well would
+            // toggle twice on one key press.
             when (ke.key) {
                 "Escape" -> {
                     ke.preventDefault()

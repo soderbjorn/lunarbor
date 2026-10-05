@@ -201,7 +201,7 @@ class AppShell(
      * is created on the fly via [resolveOrCreateFocusedPaneVm] so the
      * navigation always lands somewhere visible.
      */
-    private val topbarStarredModal: StarredModal by lazy {
+    private val topbarStarredModalLazy: Lazy<StarredModal> = lazy {
         StarredModal(
             parentScope = scope,
             activePaneVmProvider = { resolveOrCreateFocusedPaneVm() },
@@ -209,6 +209,9 @@ class AppShell(
             fileSystem = fileSystem,
         )
     }
+
+    /** See [topbarStarredModalLazy]; created on first use. */
+    private val topbarStarredModal: StarredModal by topbarStarredModalLazy
 
     /**
      * Per-pane [MainViewModel] handles, keyed by leaf pane id. Maintained
@@ -770,13 +773,15 @@ class AppShell(
 
     /**
      * Registers the Today command's configurable hotkey ([TODAY_ACTION]):
-     * ⌃⌘T (Ctrl-Alt-T off the Mac) — Cmd-T is the browser's and the
-     * toolkit's "new tab" convention, and no other binding uses ⌃⌘T.
-     * Listed (and rebindable) in the Keyboard Shortcuts sidebar.
+     * ⌘D (Ctrl-D off the Mac) — "D" for day. Nothing else in the app or
+     * the toolkit binds it (the Starred modal's star toggle is ⌘S); in a
+     * plain browser tab the browser's bookmark shortcut may win, which
+     * only matters for the website demo. Listed (and rebindable) in the
+     * Keyboard Shortcuts sidebar.
      */
     private fun installTodayShortcut() {
         val isMac = se.soderbjorn.lunula.web.hotkey.isMacPlatform()
-        val chord = se.soderbjorn.lunula.web.hotkey.Hotkey(key = "t", ctrl = true, meta = isMac, alt = !isMac)
+        val chord = se.soderbjorn.lunula.web.hotkey.Hotkey(key = "d", meta = isMac, ctrl = !isMac)
         se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
             se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(TODAY_ACTION, "Today", listOf(chord)),
         ) { goToToday() }
@@ -1058,7 +1063,9 @@ class AppShell(
 
     /**
      * Document-level Cmd/Ctrl+S listener that opens the Starred
-     * (bookmarks) modal for the focused pane. Capture phase so the
+     * (bookmarks) modal for the focused pane — or, when that modal is
+     * already open, stars / un-stars the pane's current place
+     * ([StarredModal.toggleStarredFromShortcut]). Capture phase so the
      * browser's default save dialog is suppressed before any other
      * handler sees the keystroke. The pane lookup uses [focusedPaneId]
      * which falls back to the first pane in the active tab on a
@@ -1075,6 +1082,15 @@ class AppShell(
             if (!isCmdS) return@lambda
             ke.preventDefault()
             ke.stopPropagation()
+            // A second Cmd+S inside an open Starred modal (the pane's or
+            // the top bar's) stars / un-stars the current place instead
+            // of reopening it.
+            val open = starredModals.values.firstOrNull { it.isOpen }
+                ?: topbarStarredModalLazy.takeIf { it.isInitialized() }?.value?.takeIf { it.isOpen }
+            if (open != null) {
+                open.toggleStarredFromShortcut()
+                return@lambda
+            }
             val paneId = focusedPaneId() ?: return@lambda
             openStarredModal(paneId)
         }
@@ -3333,7 +3349,7 @@ class AppShell(
         /** Hotkey action id: 3D mode's focused-window / all-windows switch ([installSpaceShortcuts]). */
         internal const val SPACE_SPLIT_ACTION: String = "lunarbor.space.split"
 
-        /** Hotkey action id: the Today command, ⌃⌘T ([installTodayShortcut]). */
+        /** Hotkey action id: the Today command, ⌘D ([installTodayShortcut]). */
         internal const val TODAY_ACTION: String = "lunarbor.today"
 
         /** Hotkey action id: 3D mode's next shape — Pages, Crown, Cone, Galaxy (⌃⌘2). */

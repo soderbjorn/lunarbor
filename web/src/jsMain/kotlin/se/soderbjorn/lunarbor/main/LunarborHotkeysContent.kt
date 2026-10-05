@@ -202,7 +202,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                         iconSvg = ICON_NAVIGATE,
                     ),
                     HotkeyEntry(
-                        label = "Open Starred",
+                        label = "Open Starred (press again to star this place)",
                         chord = listOf(cmd, "S"),
                         iconSvg = ICON_STARRED,
                     ),
@@ -217,7 +217,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
     )
 }
 
-/** Row label of the ⌃⌘T action ([AppShell.TODAY_ACTION]). */
+/** Row label of the ⌘D action ([AppShell.TODAY_ACTION]). */
 private const val TODAY_LABEL: String = "Today (open or prepare today's journal day)"
 
 /** Row label of the ⌃⌘3 action ([AppShell.SPACE_TOGGLE_ACTION]). */
