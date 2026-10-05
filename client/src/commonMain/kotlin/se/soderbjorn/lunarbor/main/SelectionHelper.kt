@@ -422,7 +422,6 @@ internal fun zoomInfoOf(
         titleText = titleText,
         style = prefix.style,
         isSearchNode = !isBlock && SearchNode.queryOf(rawTitle) != null,
-        isLinkNode = !isBlock && end <= DocumentLayout.itemLastRow(lines, row) && linkPreviewPathOf(lines[row]) != null,
     )
 }
 

@@ -403,16 +403,8 @@ class MainViewModel(
     /** See `PaneBackingViewModel.activeLineStyle`. */
     fun activeLineStyle(): LineStyle? = paneBackingViewModel.activeLineStyle()
 
-    /** See `PaneBackingViewModel.linkPreviewOf`. */
-    fun linkPreviewOf(state: PaneBackingViewModel.State, row: Int) =
-        paneBackingViewModel.linkPreviewOf(state, row)
-
-    /** See `PaneBackingViewModel.zoomLinkPreviewOf`. */
-    fun zoomLinkPreviewOf(state: PaneBackingViewModel.State) =
-        paneBackingViewModel.zoomLinkPreviewOf(state)
-
-    /** See `PaneBackingViewModel.toggleLinkPreview`. */
-    fun toggleLinkPreview(lineId: LineId) = paneBackingViewModel.toggleLinkPreview(lineId)
+    /** See `PaneBackingViewModel.isMirror`. */
+    fun isMirror(lineId: LineId): Boolean = paneBackingViewModel.isMirror(lineId)
 
     /** See `PaneBackingViewModel.codeBlockState`. */
     fun codeBlockState(): Boolean? = paneBackingViewModel.codeBlockState()

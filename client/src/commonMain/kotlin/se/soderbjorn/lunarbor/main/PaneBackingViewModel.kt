@@ -160,7 +160,8 @@ class PaneBackingViewModel(
      *   match). Mirrored so a name that starts or stops resolving
      *   repaints the pane; read through [wikiLinkHref].
      * @property linkPreviews Mirror of [DocumentRegistry.linkPreviewsFlow]:
-     *   linked node folder → its bullets. Read through [linkPreviewOf].
+     *   node folder → its bullets, so a listing that arrives repaints the
+     *   3D view's pages ([spacePageOf]).
      * @property searchNodeResults Mirror of
      *   [DocumentRegistry.searchNodeResultsFlow]: each search node's
      *   results, refreshed a few seconds after the vault changes. Read
@@ -200,8 +201,6 @@ class PaneBackingViewModel(
      *   ([ZoomNavigation.refoldLeftBehind]), so zooming into a folded
      *   bullet and going back leaves it folded. Toggling an item's fold by
      *   hand drops it from the set.
-     * @property expandedLinkIds Leaf link bullets whose linked node's
-     *   preview this pane shows open ([toggleLinkPreview]).
      * @property expandedBlockIds Large blocks ([BlockLayout.isLarge]) this
      *   pane shows whole, by their first row's id; every other large block
      *   shows only its first rows ([toggleBlockExpanded], [visibleRowsIn]).
@@ -276,7 +275,6 @@ class PaneBackingViewModel(
         val collapsedIds: Set<LineId> = emptySet(),
         val expandedRefIdsLocal: Set<LineId> = emptySet(),
         val zoomUnfoldedIds: Set<LineId> = emptySet(),
-        val expandedLinkIds: Set<LineId> = emptySet(),
         val expandedBlockIds: Set<LineId> = emptySet(),
         val pendingLeafZoomChild: LineId? = null,
         internal val seenLineIds: Set<LineId> = emptySet(),
@@ -492,9 +490,6 @@ class PaneBackingViewModel(
      * @property isSearchNode `true` when the zoomed bullet is a search node
      *   ([SearchNode]): the page lists its results and is read-only
      *   ([State.isReadOnlyPage]).
-     * @property isLinkNode `true` when the zoomed bullet is a leaf whose
-     *   one link points at a node ([linkPreviewPathOf]): the page shows that
-     *   node's preview and is read-only.
      */
     data class ZoomInfo(
         val zoomRow: Int,
@@ -504,10 +499,9 @@ class PaneBackingViewModel(
         val titleText: String,
         val style: LineStyle? = null,
         val isSearchNode: Boolean = false,
-        val isLinkNode: Boolean = false,
     ) {
         /** `true` when the page is read-only ([State.isReadOnlyPage]). */
-        val isReadOnly: Boolean get() = isSearchNode || isLinkNode
+        val isReadOnly: Boolean get() = isSearchNode
 
         /** `true` when the zoom target has at least one descendant bullet. */
         val hasVisibleRows: Boolean get() = startRow <= endRowInclusive
@@ -939,7 +933,6 @@ class PaneBackingViewModel(
             collapsedIds = emptySet(),
             expandedRefIdsLocal = emptySet(),
             zoomUnfoldedIds = emptySet(),
-            expandedLinkIds = emptySet(),
             expandedBlockIds = emptySet(),
             pendingLeafZoomChild = null,
             seenLineIds = emptySet(),
@@ -1055,32 +1048,6 @@ class PaneBackingViewModel(
     fun isPromotedRef(lineId: LineId): Boolean = document?.isPromotedRef(lineId) == true
 
     /**
-     * The linked-node preview the bullet at [row] can show, or `null`:
-     * only a leaf bullet of an outline (no children, not folder-backed)
-     * with exactly one `lunarbor:` link ([linkPreviewPathOf]) whose target is a
-     * node with bullets. While the target is unread, starts reading it
-     * ([DocumentRegistry.requestLinkPreview]) and answers `null`; the
-     * result arrives as a new [State.linkPreviews], which repaints.
-     *
-     * Called by the web paint loop for every bullet row, to decide whether
-     * it gets an expand control and, when open, what to draw under it.
-     */
-    fun linkPreviewOf(state: State, row: Int): LinkPreview? {
-        if (state.isMarkdownMode) return null
-        val docState = state.documentState ?: return null
-        val line = docState.lines.getOrNull(row) ?: return null
-        val path = linkPreviewPathOf(line) ?: return null
-        if (state.privacy.isActive && registry.isPathHidden(path)) return null
-        val id = docState.lineIds.getOrNull(row) ?: return null
-        if (isPromotedRef(id)) return null
-        if (DocumentLayout.hasChildren(docState.lines, row, DocumentLayout.bulletAsteriskColumn(line))) return null
-        val all = state.linkPreviews[path] ?: registry.requestLinkPreview(path) ?: return null
-        // Bullets the privacy mode hides are left out of the preview.
-        val items = if (state.privacy.isActive) all.filterNot { previewItemHidden(path, it, state.privacy) } else all
-        return if (items.isEmpty()) null else LinkPreview(path, items)
-    }
-
-    /**
      * `true` when the privacy [filter] hides the preview item [item] of the
      * linked node [nodeFolder]: it carries a hidden tag, or its folder is
      * hidden.
@@ -1089,29 +1056,11 @@ class PaneBackingViewModel(
         filter.hides(item.tagKeys) || item.pathRel?.let { registry.isPathHidden(it, filter) } == true
 
     /**
-     * The preview heading the page when the pane is zoomed into a link
-     * bullet ([ZoomInfo.isLinkNode]), or `null`.
-     *
-     * Called by the web paint loop, which draws it as the page's body.
+     * `true` when [lineId] is a mirror ([Document.isMirror]): a link bullet
+     * that folds open onto another node's own, editable items. Called by
+     * the web paint loop to mark its dot.
      */
-    fun zoomLinkPreviewOf(state: State): LinkPreview? {
-        val zoom = zoomInfoOf(state)?.takeIf { it.isLinkNode } ?: return null
-        return linkPreviewOf(state, zoom.zoomRow)
-    }
-
-    /**
-     * Opens or closes the preview of the node the link bullet [lineId]
-     * points at (see [linkPreviewOf]). Pane state only — nothing in the
-     * document changes.
-     *
-     * Called by the web view's expand / collapse control on such a bullet.
-     */
-    fun toggleLinkPreview(lineId: LineId) {
-        patch {
-            val open = it.expandedLinkIds
-            it.copy(expandedLinkIds = if (lineId in open) open - lineId else open + lineId)
-        }
-    }
+    fun isMirror(lineId: LineId): Boolean = document?.isMirror(lineId) == true
 
     /**
      * What a search node at [row] shows ([SearchNode]).
@@ -4211,7 +4160,7 @@ class PaneBackingViewModel(
             block()
             return
         }
-        // A search or link page is read-only (State.isReadOnlyPage).
+        // A search node's page is read-only (State.isReadOnlyPage).
         if (_stateFlow.value.isReadOnlyPage) return
         val before = snapshotNow()
         recordingDepth++

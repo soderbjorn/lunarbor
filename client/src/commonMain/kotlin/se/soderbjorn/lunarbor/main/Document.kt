@@ -57,6 +57,27 @@
  * folders are loaded again and rows keep their ids where they still
  * match ([matchIds]), so zoom and folds hold.
  *
+ * ### Mirrors
+ * A leaf bullet whose text holds exactly one `lunarbor:` link to a node
+ * ([linkPreviewPathOf], checked by `mirrorCheck`) is a mirror: it folds
+ * like a folder-backed bullet ([isPromotedRef]), and expanding it splices
+ * in that node's own items, editable. A save writes them to the node's
+ * outline ([NoteRepository.save]'s `mirrorByRow`) and writes the mirror row
+ * back as the link it is; the node is never renamed, moved or trashed by
+ * a mirror, and deleting the mirror with its rows deletes only the link
+ * (rows spliced in under it are [mirrorOwner]ed and never trashed with
+ * it). A folder is loaded at most once per document: a mirror of a node
+ * already open on the page, or of the page itself, stays folded.
+ *
+ * ### Nodes open in several places
+ * The same node can be loaded in several documents (a folder expanded on
+ * Home and opened in another window, a mirror). Each document remembers
+ * the outline it last loaded or saved for every node it holds
+ * ([baseBodies]); a save writes only the nodes whose items it changed, so
+ * a stale copy never overwrites another document's edit, and
+ * `DocumentRegistry` reloads the other documents holding a node after a
+ * save wrote it ([holdsAnyNode]).
+ *
  * ### Markdown mode
  * A document that is not a `_node.md` outline ([bulletsOnly] `false`,
  * e.g. a `.md` note) is plain text: no folder-backed rows, saved exactly
@@ -108,8 +129,13 @@ import se.soderbjorn.lunarbor.data.LunarborLink
  *   keeps typing; a save is forced this long after the first unsaved edit.
  * @param onAfterSave Hook fired after every save with the folders and
  *   files that save renamed, moved or trashed (empty for a pure content
- *   save). Used by [DocumentRegistry] to refresh the shared vault-listings
- *   cache and to rewrite links to the moved paths.
+ *   save) and the node folders whose outline it wrote. Used by
+ *   [DocumentRegistry] to refresh the shared vault-listings cache, to
+ *   rewrite links to the moved paths and to reload other documents holding
+ *   the written nodes.
+ * @param mirrorCheck Whether a link target is a node a mirror may show (it
+ *   exists as a node and the app's privacy mode does not hide it). Without
+ *   it no row is a mirror.
  */
 class Document(
     private val repository: NoteRepository,
@@ -117,7 +143,8 @@ class Document(
     fileRel: String,
     private val saveDebounceMillis: Long = DEFAULT_SAVE_DEBOUNCE_MILLIS,
     private val maxSaveDelayMillis: Long = DEFAULT_MAX_SAVE_DELAY_MILLIS,
-    private val onAfterSave: suspend (moves: List<PathMove>) -> Unit = {},
+    private val onAfterSave: suspend (moves: List<PathMove>, written: Set<String>) -> Unit = { _, _ -> },
+    private val mirrorCheck: suspend (String) -> Boolean = { false },
 ) {
     /** See the class doc's `fileRel`. Reassigned only by [renameTo]. */
     var fileRel: String = fileRel
@@ -286,9 +313,37 @@ class Document(
      */
     private val expansionRefcounts: MutableMap<LineId, Int> = mutableMapOf()
 
+    /**
+     * Mirror rows → the folder of the node each shows. A folded mirror is
+     * in [State.unloadedRefIds], like a folded folder-backed row. Kept up
+     * to date with the text by [scanMirrors]; an expanded mirror keeps its
+     * node until it folds, even while its link is being edited.
+     */
+    private val mirrorRefs: MutableMap<LineId, String> = mutableMapOf()
+
+    /**
+     * Folder-backed rows spliced in under a mirror (at any depth) → that
+     * mirror row. Deleting the mirror deletes the link only: these rows'
+     * folders belong to the mirrored node and are never trashed with it.
+     */
+    private val mirrorOwner: MutableMap<LineId, LineId> = mutableMapOf()
+
+    /** Link target → whether a mirror may show it ([mirrorCheck]); absent until checked. */
+    private val mirrorTargetOk: MutableMap<String, Boolean> = mutableMapOf()
+
+    /** Link targets with a [mirrorCheck] under way. */
+    private val mirrorChecksRunning: MutableSet<String> = mutableSetOf()
+
+    /**
+     * Node folder → the outline body this document last loaded or saved
+     * for it — its base ([NoteRepository.save] `baseBodies`).
+     */
+    private val baseBodies: MutableMap<String, String> = mutableMapOf()
+
     private var loadJob: Job? = null
     private var autoSaveJob: Job? = null
     private var dirtyWatchJob: Job? = null
+    private var mirrorScanJob: Job? = null
 
     /**
      * Schedules the initial disk read and starts the autosave loop on
@@ -300,6 +355,7 @@ class Document(
         loadJob = scope.launch { loadFromDisk() }
         autoSaveJob = scope.launch { runAutoSaveLoop() }
         dirtyWatchJob = scope.launch { _stateFlow.collect { recomputeDirty() } }
+        mirrorScanJob = scope.launch { _stateFlow.collect { scanMirrors() } }
     }
 
     /**
@@ -313,6 +369,8 @@ class Document(
         loadJob = null
         dirtyWatchJob?.cancelAndJoin()
         dirtyWatchJob = null
+        mirrorScanJob?.cancelAndJoin()
+        mirrorScanJob = null
         saveLock.withLock { saveIfDirtyUnderLock() }
         _dirtyFlow.value = false
     }
@@ -585,6 +643,9 @@ class Document(
     fun rewriteLinks(moves: List<PathMove>): Boolean {
         val state = _stateFlow.value
         if (!state.isLoaded || moves.isEmpty()) return false
+        for ((id, target) in mirrorRefs.toList()) {
+            LunarborLink.remap(target, moves)?.let { mirrorRefs[id] = it }
+        }
         var changed = false
         val newLines = state.lines.map { line ->
             val rewritten = LunarborLink.rewriteText(line, moves)
@@ -798,7 +859,7 @@ class Document(
             val col = DocumentLayout.itemColumn(lines, r)
             if (col in 0 until lookingFor) {
                 val id = ids.getOrNull(r)
-                if (id != null && id in promotedSubtrees && id !in trashedIds) return id
+                if (id != null && (id in promotedSubtrees || id in mirrorRefs) && id !in trashedIds) return id
                 lookingFor = col
             }
             r--
@@ -809,7 +870,7 @@ class Document(
     /** Folder of [home], or `null` when its anchor bullet no longer has one. */
     private fun folderOfHome(home: ImageHome): String? {
         val anchor = home.anchor ?: return folderRel
-        return promotedSubtrees[anchor]?.folderRel
+        return refFolderOf(anchor)
     }
 
     /**
@@ -887,10 +948,149 @@ class Document(
     // ------------------------------------------------------------- expansion
 
     /**
-     * `true` when [lineId] is a folder-backed bullet (the view shows a
-     * chevron for it even when no children are spliced in).
+     * `true` when [lineId] has children on demand: a folder-backed bullet
+     * or a mirror ([isMirror]). The view shows a fold control for it even
+     * when no children are spliced in, and panes fold it through
+     * [acquireExpansion] / [releaseExpansion].
      */
-    fun isPromotedRef(lineId: LineId): Boolean = lineId in promotedSubtrees
+    fun isPromotedRef(lineId: LineId): Boolean = lineId in promotedSubtrees || lineId in mirrorRefs
+
+    /**
+     * `true` when [lineId] is a mirror: a link bullet showing another
+     * node's items (see the class doc). Called by the view to mark its dot.
+     */
+    fun isMirror(lineId: LineId): Boolean = lineId in mirrorRefs
+
+    /** The folder whose items [lineId] holds: a folder-backed row's own, or a mirror's node. */
+    private fun refFolderOf(lineId: LineId): String? = promotedSubtrees[lineId]?.folderRel ?: mirrorRefs[lineId]
+
+    /**
+     * Every node folder whose items are in [State.lines]: the document's
+     * own (an outline's) and each expanded folder-backed row's or mirror's.
+     * A folder appears here at most once ([spliceInUnderLock]).
+     *
+     * @param state The state to read.
+     */
+    private fun loadedFolders(state: State = _stateFlow.value): Set<String> {
+        val out = HashSet<String>()
+        if (bulletsOnly) out += folderRel
+        for (id in state.lineIds) {
+            if (id in state.unloadedRefIds || id in trashedIds) continue
+            refFolderOf(id)?.let { out += it }
+        }
+        return out
+    }
+
+    /**
+     * `true` when this document holds the items of any of [folders], or of
+     * a node inside one of them. Called by `DocumentRegistry` after another
+     * document's save wrote or moved those folders, to reload this one.
+     */
+    fun holdsAnyNode(folders: Collection<String>): Boolean {
+        if (folders.isEmpty() || !_stateFlow.value.isLoaded) return false
+        val held = loadedFolders()
+        return folders.any { f -> held.any { it == f || f.isEmpty() || it.startsWith("$f/") } }
+    }
+
+    /**
+     * Brings [mirrorRefs] in step with the text: a leaf bullet whose only
+     * link points at a node [mirrorCheck] accepts becomes a folded mirror
+     * (in [State.unloadedRefIds]); one whose link changed or went stops
+     * being one. A row with rows already under it never turns into a
+     * mirror, so pasted rows are not taken for the node's. An expanded
+     * mirror whose link no longer names its node, or whose node may no
+     * longer be shown, is folded ([collapseMirror]) — after a save, so its
+     * edits reach the node first. Unchecked targets are checked in the
+     * background, and the scan runs again with the answer.
+     *
+     * Runs on every emission of the state (started by [start]).
+     */
+    private fun scanMirrors() {
+        val state = _stateFlow.value
+        if (!bulletsOnly || !state.isLoaded) return
+        val want = HashMap<LineId, String>()
+        val stale = ArrayList<LineId>()
+        for ((row, id) in state.lineIds.withIndex()) {
+            if (id in promotedSubtrees) continue
+            val path = linkPreviewPathOf(state.lines[row])
+            val known = mirrorRefs[id]
+            if (known != null && id !in state.unloadedRefIds) {
+                if (path != known || mirrorTargetOk[known] == false) stale += id
+                continue
+            }
+            if (path == null) continue
+            val ok = mirrorTargetOk[path]
+            if (ok == null) {
+                checkMirrorTarget(path)
+                if (known != null) want[id] = known
+                continue
+            }
+            if (!ok) continue
+            if (known == null) {
+                val col = DocumentLayout.itemColumn(state.lines, row)
+                if (col < 0 || DocumentLayout.subtreeEnd(state.lines, row, col) > row) continue
+            }
+            want[id] = path
+        }
+        val folded = mirrorRefs.keys.filterTo(HashSet()) { it in state.unloadedRefIds }
+        val gone = folded - want.keys
+        val added = want.keys - folded
+        for (id in gone) mirrorRefs.remove(id)
+        mirrorRefs.putAll(want)
+        if (gone.isNotEmpty() || added.isNotEmpty()) {
+            lastSavedUnloaded = lastSavedUnloaded - gone + added
+            _stateFlow.value = state.copy(unloadedRefIds = state.unloadedRefIds - gone + added)
+        }
+        for (id in stale) scope.launch { collapseMirror(id) }
+    }
+
+    /** Asks [mirrorCheck] about [path] in the background, then scans again. */
+    private fun checkMirrorTarget(path: String) {
+        if (!mirrorChecksRunning.add(path)) return
+        scope.launch {
+            val ok = try { mirrorCheck(path) } catch (e: Throwable) { false }
+            mirrorChecksRunning.remove(path)
+            mirrorTargetOk[path] = ok
+            scanMirrors()
+        }
+    }
+
+    /**
+     * Asks again whether every link target seen so far may be mirrored —
+     * after a privacy mode change, or nodes created or removed. Old answers
+     * hold until the new ones arrive. Called by `DocumentRegistry`.
+     */
+    fun recheckMirrorTargets() {
+        for (path in mirrorTargetOk.keys.toList()) {
+            if (!mirrorChecksRunning.add(path)) continue
+            scope.launch {
+                val ok = try { mirrorCheck(path) } catch (e: Throwable) { false }
+                mirrorChecksRunning.remove(path)
+                if (mirrorTargetOk.put(path, ok) != ok) scanMirrors()
+            }
+        }
+    }
+
+    /**
+     * Folds the expanded mirror [lineId] for every pane and lets the scan
+     * decide again what it is: saves first, so its edits reach the node it
+     * showed, then splices its rows out ([spliceOutNow]).
+     */
+    private suspend fun collapseMirror(lineId: LineId) {
+        expansionLock.withLock {
+            if (lineId !in mirrorRefs || lineId in _stateFlow.value.unloadedRefIds) return@withLock
+            expansionRefcounts.remove(lineId)
+            saveLock.withLock {
+                saveIfDirtyUnderLock()
+                spliceOutNow(lineId)
+            }
+            mirrorRefs.remove(lineId)
+            val s = _stateFlow.value
+            lastSavedUnloaded = lastSavedUnloaded - lineId
+            _stateFlow.value = s.copy(unloadedRefIds = s.unloadedRefIds - lineId)
+        }
+        scanMirrors()
+    }
 
     /**
      * Vault-relative folder backing the bullet [lineId], or `null` when
@@ -898,9 +1098,10 @@ class Document(
      * this session reports its path under `.trash/`.
      *
      * Called by `PaneBackingViewModel` to find the folder whose contents
-     * list a zoomed pane shows, and the folder behind a count badge.
+     * list a zoomed pane shows, and the folder behind a count badge. For a
+     * mirror, the folder of the node it shows.
      */
-    fun folderOf(lineId: LineId): String? = promotedSubtrees[lineId]?.folderRel
+    fun folderOf(lineId: LineId): String? = refFolderOf(lineId)
 
     /**
      * Folder-backed rows of the current [State.lines], keyed by row, with
@@ -929,7 +1130,7 @@ class Document(
      */
     suspend fun acquireExpansion(lineId: LineId) {
         expansionLock.withLock {
-            if (lineId !in promotedSubtrees) return@withLock
+            if (!isPromotedRef(lineId)) return@withLock
             val current = expansionRefcounts[lineId] ?: 0
             if (current > 0) {
                 expansionRefcounts[lineId] = current + 1
@@ -966,17 +1167,20 @@ class Document(
      * Loads and splices in [lineId]'s children. Caller holds
      * [expansionLock]. Returns `true` when the children are now in
      * [State.lines] (including when they already were), `false` when the
-     * row vanished mid-load.
+     * row vanished mid-load or its folder is already loaded elsewhere in
+     * this document ([loadedFolders]) — a mirror of a node open on the
+     * page, or of the page itself, stays folded.
      */
     private suspend fun spliceInUnderLock(lineId: LineId): Boolean {
-        val ref = promotedSubtrees[lineId] ?: return false
+        val folder = refFolderOf(lineId) ?: return false
         val state = _stateFlow.value
         if (lineId !in state.unloadedRefIds) return true
         val row = state.lineIds.indexOf(lineId)
         if (row < 0) return false
         val parentIndent = DocumentLayout.itemColumn(state.lines, row)
         if (parentIndent < 0) return false
-        val loaded = repository.loadSubtree(ref.folderRel, parentIndent)
+        if (folder in loadedFolders(state)) return false
+        val loaded = repository.loadSubtree(folder, parentIndent)
         return spliceLoaded(lineId, loaded)
     }
 
@@ -998,11 +1202,14 @@ class Document(
         mergedLines.addAll(at, childLines)
         mergedIds.addAll(at, newIds)
         val nested = HashSet<LineId>()
+        val owner = if (lineId in mirrorRefs) lineId else mirrorOwner[lineId]
         for ((localRow, nestedRef) in loaded.promotedByRow) {
             val id = newIds.getOrNull(localRow) ?: continue
             promotedSubtrees[id] = nestedRef
             nested += id
+            if (owner != null) mirrorOwner[id] = owner
         }
+        refFolderOf(lineId)?.let { folder -> loaded.body?.let { baseBodies[folder] = it } }
         _stateFlow.value = current.copy(
             lines = mergedLines,
             lineIds = mergedIds,
@@ -1019,7 +1226,7 @@ class Document(
      */
     private fun spliceOutNow(lineId: LineId) {
         val state = _stateFlow.value
-        if (lineId !in promotedSubtrees || lineId in state.unloadedRefIds) return
+        if (!isPromotedRef(lineId) || lineId in state.unloadedRefIds) return
         val row = state.lineIds.indexOf(lineId)
         if (row < 0) return
         val endInclusive = SubtreeCodec.composedSubtreeEnd(state.lines, row)
@@ -1032,6 +1239,8 @@ class Document(
         for (id in droppedIds) {
             promotedSubtrees.remove(id)
             expansionRefcounts.remove(id)
+            mirrorRefs.remove(id)
+            mirrorOwner.remove(id)
         }
         repeat(endInclusive - ownLast) {
             newLines.removeAt(ownLast + 1)
@@ -1058,6 +1267,10 @@ class Document(
         val ids = List(lines.size) { allocateId() }
         promotedSubtrees.clear()
         trashedIds.clear()
+        mirrorRefs.clear()
+        mirrorOwner.clear()
+        baseBodies.clear()
+        loaded.body?.let { baseBodies[folderRel] = it }
         val unloaded = HashSet<LineId>()
         for ((row, ref) in loaded.promotedByRow) {
             val id = ids.getOrNull(row) ?: continue
@@ -1094,6 +1307,11 @@ class Document(
             if (id !in live || id in trashedIds) continue
             watched += ref.folderRel
             watched += NoteRepository.outlineFileOf(ref.folderRel)
+        }
+        for ((id, target) in mirrorRefs) {
+            if (id !in live || id in _stateFlow.value.unloadedRefIds) continue
+            watched += target
+            watched += NoteRepository.outlineFileOf(target)
         }
         return pathsRel.any { it in watched }
     }
@@ -1132,6 +1350,12 @@ class Document(
         val expandedFolders = oldFolderOf.filterKeys { it !in old.unloadedRefIds }.values.toHashSet()
         val refcountByFolder = HashMap<String, Int>()
         for ((id, count) in expansionRefcounts) oldFolderOf[id]?.let { refcountByFolder[it] = count }
+        // Expanded mirrors, by the node they show.
+        val oldIds = old.lineIds.toHashSet()
+        val expandedMirrors = HashMap<String, Int>()
+        for ((id, target) in mirrorRefs) {
+            if (id in oldIds && id !in old.unloadedRefIds) expandedMirrors[target] = expansionRefcounts[id] ?: 0
+        }
 
         // Load the file, then splice every previously expanded folder back
         // in; rows spliced in are visited later, so nested ones follow.
@@ -1139,16 +1363,33 @@ class Document(
         val lines = loaded.lines.ifEmpty { listOf(emptyLine) }.toMutableList()
         val refs = MutableList<PromotedRef?>(lines.size) { loaded.promotedByRow[it] }
         val expanded = MutableList(lines.size) { false }
+        val mirrorAt = MutableList<String?>(lines.size) { null }
+        // Row → the mirror row it was spliced in under, at any depth.
+        val ownerAt = MutableList<Int?>(lines.size) { null }
+        val bodies = HashMap<String, String>()
+        loaded.body?.let { bodies[folderRel] = it }
+        val spliced = HashSet<String>()
+        if (bulletsOnly) spliced += folderRel
         var row = 0
         while (row < lines.size) {
             val ref = refs[row]
-            val indent = if (ref != null && ref.folderRel in expandedFolders) DocumentLayout.itemColumn(lines, row) else -1
-            if (ref != null && indent >= 0) {
-                val sub = repository.loadSubtree(ref.folderRel, indent)
+            val mirrored = if (ref == null) linkPreviewPathOf(lines[row])?.takeIf { it in expandedMirrors } else null
+            val folder = ref?.folderRel?.takeIf { it in expandedFolders } ?: mirrored
+            val indent = if (folder != null && folder !in spliced) DocumentLayout.itemColumn(lines, row) else -1
+            if (folder != null && indent >= 0) {
+                spliced += folder
+                if (mirrored != null) mirrorAt[row] = mirrored
+                val sub = repository.loadSubtree(folder, indent)
+                sub.body?.let { bodies[folder] = it }
                 val at = DocumentLayout.itemLastRow(lines, row) + 1
+                val owner = if (mirrored != null) row else ownerAt[row]
                 lines.addAll(at, sub.lines)
                 refs.addAll(at, List(sub.lines.size) { sub.promotedByRow[it] })
                 expanded.addAll(at, List(sub.lines.size) { false })
+                mirrorAt.addAll(at, List(sub.lines.size) { null })
+                // Rows inserted before a later owner row shift it; owners are
+                // rows at or above `row`, so they never move.
+                ownerAt.addAll(at, List(sub.lines.size) { owner })
                 expanded[row] = true
             }
             row++
@@ -1171,8 +1412,17 @@ class Document(
         promotedSubtrees.clear()
         trashedIds.clear()
         expansionRefcounts.clear()
+        mirrorRefs.clear()
+        mirrorOwner.clear()
+        baseBodies.clear()
+        baseBodies.putAll(bodies)
         val unloaded = HashSet<LineId>()
         for (i in lines.indices) {
+            ownerAt[i]?.let { mirrorOwner[ids[i]] = ids[it] }
+            mirrorAt[i]?.let { target ->
+                mirrorRefs[ids[i]] = target
+                expandedMirrors[target]?.takeIf { it > 0 }?.let { expansionRefcounts[ids[i]] = it }
+            }
             val ref = refs[i] ?: continue
             promotedSubtrees[ids[i]] = ref
             if (!expanded[i]) unloaded += ids[i]
@@ -1247,17 +1497,28 @@ class Document(
         val state = _stateFlow.value
         val text = currentText(state)
         val rowToRef = HashMap<Int, PromotedRef>(promotedSubtrees.size)
+        val mirrorByRow = HashMap<Int, String>()
         val unloadedRows = HashSet<Int>()
         val liveIds = HashSet<LineId>(state.lineIds.size)
         for ((idx, id) in state.lineIds.withIndex()) {
             liveIds += id
-            val ref = promotedSubtrees[id] ?: continue
-            rowToRef[idx] = ref
+            val ref = promotedSubtrees[id]
+            val mirrored = mirrorRefs[id]
+            if (ref == null && mirrored == null) continue
+            if (ref != null) rowToRef[idx] = ref else mirrorByRow[idx] = mirrored!!
             if (id in state.unloadedRefIds) unloadedRows += idx
         }
-        val dead = promotedSubtrees.filterKeys { it !in liveIds && it !in trashedIds }
+        // A deleted mirror takes only its link along: the rows spliced in
+        // under it belong to the node it showed and stay where they are.
+        val dead = promotedSubtrees.filterKeys { id ->
+            id !in liveIds && id !in trashedIds && mirrorOwner[id].let { it == null || it in liveIds }
+        }
         val result = try {
-            repository.save(fileRel, state.lines, rowToRef, unloadedRows, dead.values) { active ->
+            repository.save(
+                fileRel, state.lines, rowToRef, unloadedRows, dead.values,
+                mirrorByRow = mirrorByRow,
+                baseBodies = baseBodies.toMap(),
+            ) { active ->
                 _stateFlow.value = _stateFlow.value.copy(isRestructuring = active)
             }
         } finally {
@@ -1273,6 +1534,11 @@ class Document(
             if (old.folderRel != now.folderRel && old.folderRel.isNotEmpty()) moves += PathMove(old.folderRel, now.folderRel)
         }
         moves += result.trashMoves
+        baseBodies.clear()
+        baseBodies.putAll(result.bodies)
+        for ((id, target) in mirrorRefs.toList()) {
+            LunarborLink.remap(target, moves)?.let { mirrorRefs[id] = it }
+        }
         for ((idx, id) in state.lineIds.withIndex()) {
             val newRef = result.promotedByRow[idx]
             if (newRef != null) {
@@ -1315,7 +1581,7 @@ class Document(
         recomputeDirty()
         val movedImages = followImagesAfterSave(state)
         moves += movedImages
-        try { onAfterSave(moves) } catch (e: Throwable) {
+        try { onAfterSave(moves, result.written) } catch (e: Throwable) {
             println("[autosave] after-save hook failed for $fileRel: $e")
         }
         return movedImages.isNotEmpty()
@@ -1364,21 +1630,28 @@ class Document(
      * mistake those rows for the whole subtree. Caller holds [saveLock].
      */
     private suspend fun materializeUnloadedWithChildren() {
+        // Folded rows whose folder is loaded elsewhere in the document stay
+        // folded; the save appends their rows to the outline instead.
+        val skipped = HashSet<LineId>()
         while (true) {
             val state = _stateFlow.value
             val target = state.unloadedRefIds.firstOrNull { id ->
                 val row = state.lineIds.indexOf(id)
-                row >= 0 && SubtreeCodec.composedSubtreeEnd(state.lines, row) >
+                id !in skipped && row >= 0 && SubtreeCodec.composedSubtreeEnd(state.lines, row) >
                     DocumentLayout.itemLastRow(state.lines, row)
             } ?: return
-            val ref = promotedSubtrees[target]
+            val folder = refFolderOf(target)
             val row = state.lineIds.indexOf(target)
             val indent = DocumentLayout.itemColumn(state.lines, row)
-            if (ref == null || indent < 0) {
+            if (folder == null || indent < 0) {
                 _stateFlow.value = state.copy(unloadedRefIds = state.unloadedRefIds - target)
                 continue
             }
-            val loaded = repository.loadSubtree(ref.folderRel, indent)
+            if (folder in loadedFolders(state)) {
+                skipped += target
+                continue
+            }
+            val loaded = repository.loadSubtree(folder, indent)
             if (!spliceLoaded(target, loaded)) {
                 val s = _stateFlow.value
                 _stateFlow.value = s.copy(unloadedRefIds = s.unloadedRefIds - target)

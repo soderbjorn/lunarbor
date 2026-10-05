@@ -168,9 +168,6 @@ fun paint(
         if (zoomId != null && searchView != null) {
             editor.appendChild(buildSearchNodeResults(searchView, zoom.zoomRow, viewModel, style, isPage = true))
         }
-        // Zoomed into a link bullet: the linked node's bullets, as its
-        // preview shows them in the parent.
-        viewModel.zoomLinkPreviewOf(state)?.let { editor.appendChild(buildLinkPreview(it, viewModel, style, isPage = true)) }
     }
     if (endRowInclusive < startRow) return
 
@@ -350,26 +347,17 @@ private fun buildRowElement(
                 rowDiv.appendChild(chevron)
             }
         }
-        // A leaf whose one link points at a node folds like a parent: open,
-        // it previews that node's bullets under it.
-        val linkPreview = if (rowId != null && outline) viewModel.linkPreviewOf(state, absoluteRow) else null
-        val linkPreviewOpen = linkPreview != null && rowId in state.expandedLinkIds
-        if (linkPreview != null && rowId != null) {
-            // Closed, it wears the folded ring like any parent hiding children.
-            if (!linkPreviewOpen) rowDiv.classList.add("lunarbor-row-folded")
-            val chevron = buildChevron(!linkPreviewOpen) { viewModel.toggleLinkPreview(rowId) }
-            chevron.style.left = "${depth * style.indentStepPx - 22}px"
-            // The row grows by the preview; keep the control on the text line.
-            chevron.style.height = "${style.lineHeightPx}px"
-            rowDiv.appendChild(chevron)
-        }
+        // A mirror folds open onto another node's items; its dot says so.
+        val mirror = rowId != null && outline && viewModel.isMirror(rowId)
+        if (mirror) rowDiv.classList.add("lunarbor-row-mirror")
 
-        rowDiv.appendChild(buildBulletPrefix(absoluteRow, if (outline) onBulletMouseDown else null, interactive = outline))
+        val bulletPrefix = buildBulletPrefix(absoluteRow, if (outline) onBulletMouseDown else null, interactive = outline)
+        if (mirror) bulletPrefix.title = "Mirror: editing here edits the node it shows"
+        rowDiv.appendChild(bulletPrefix)
         rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2), imageResolver, wikiResolver))
         if (rowId != null && outline) buildFolderBadge(absoluteRow, rowId, state, viewModel)?.let(rowDiv::appendChild)
         // A search node's match count, on its line after the magnifier.
         if (searchView != null && rowId != null) rowDiv.appendChild(buildSearchNodeCount(searchView, rowId, viewModel))
-        if (linkPreview != null && linkPreviewOpen) rowDiv.appendChild(buildLinkPreview(linkPreview, viewModel, style))
         // A search node lists its live results under its text (unless folded).
         if (searchView != null && rowId != null && !searchView.folded) {
             rowDiv.appendChild(buildSearchNodeResults(searchView, absoluteRow, viewModel, style))
@@ -1286,75 +1274,6 @@ private fun firstLineHeightCss(text: String, style: EditorStyle): String {
 }
 
 /**
- * The open preview of a link bullet's node: its bullets, one level
- * deeper than the link, greyed and not editable. A folder-backed item
- * wears the folded ring. Clicking an item opens it — its own folder, or
- * for a leaf the linked node — through [MainViewModel.navigateToLink];
- * a Shift- / ⌘-click or a right-click opens it in a new window
- * ([MainViewModel.openLinkInNewWindow], [OpenGesture]).
- *
- * Called by [buildRowElement], which appends it inside the link bullet's
- * row, under the text; `contenteditable="false"` keeps it out of caret
- * placement and selection mapping.
- *
- * @param preview The linked node and its bullets.
- * @param isPage `true` when the pane is zoomed into the link bullet: the
- *   preview heads the page, flush left (drawn by [paint]).
- */
-private fun buildLinkPreview(
-    preview: LinkPreview,
-    viewModel: MainViewModel,
-    style: EditorStyle,
-    isPage: Boolean = false,
-): HTMLElement {
-    val box = document.createElement("div") as HTMLElement
-    box.className = "lunarbor-link-preview"
-    box.setAttribute("contenteditable", "false")
-    // The row hangs its first line; the preview sits one level in from
-    // the link's text, like children do.
-    if (!isPage) box.style.setProperty("margin-left", "calc(${style.indentStepPx}px - $BLOCK_DOT_SLOT)")
-    for (item in preview.items) {
-        val row = document.createElement("div") as HTMLElement
-        row.className = "lunarbor-link-preview-item"
-        row.style.setProperty("line-height", "${style.lineHeightPx}px")
-        row.title = "Open " + ("/" + (item.pathRel ?: preview.pathRel))
-        val dot = document.createElement("span") as HTMLElement
-        dot.className = "lunarbor-link-preview-dot" + if (item.pathRel != null) " is-node" else ""
-        row.appendChild(dot)
-        val label = document.createElement("span") as HTMLElement
-        label.textContent = item.title.ifEmpty { "Untitled" }
-        row.appendChild(label)
-        row.addEventListener("mousedown", { ev ->
-            // Keep the press away from the editor's caret placement.
-            ev.preventDefault()
-            ev.stopPropagation()
-        })
-        val href = LunarborLink.format(item.pathRel ?: preview.pathRel)
-        row.addEventListener("click", { ev ->
-            ev.preventDefault()
-            ev.stopPropagation()
-            // Same rule as a link ([OpenGesture]); the Mac's Ctrl-click
-            // is left to its `contextmenu`.
-            val inNewWindow = viewModel.openLinkInNewWindow
-            when (openGestureOf(ev as MouseEvent)) {
-                OpenGesture.HERE -> viewModel.navigateToLink(href)
-                OpenGesture.NEW_WINDOW ->
-                    if (inNewWindow != null) inNewWindow(href) else viewModel.navigateToLink(href)
-                OpenGesture.CONTEXT_MENU, OpenGesture.NONE -> {}
-            }
-        })
-        row.addEventListener("contextmenu", { ev ->
-            val open = viewModel.openLinkInNewWindow ?: return@addEventListener
-            ev.preventDefault()
-            ev.stopPropagation()
-            open(href)
-        })
-        box.appendChild(row)
-    }
-    return box
-}
-
-/**
  * The live result list of a search node ([MainViewModel.searchNodeOf]),
  * read-only, under the node's text one level in: one row per matching
  * line (the count is on the node's line, [buildSearchNodeCount]) — its text with the query's terms marked and,
@@ -1504,8 +1423,7 @@ internal fun isolatedText(text: String): HTMLElement {
  * one, shown only while the row is hovered (Dynalist-style — a folded
  * parent is otherwise marked by the ring around its dot,
  * `.lunarbor-row-folded`). Clicking runs [onToggle] — normally
- * [MainViewModel.toggleCollapse]; on a link bullet it opens or closes the
- * linked node's preview ([MainViewModel.toggleLinkPreview]). Marked
+ * [MainViewModel.toggleCollapse]. Marked
  * `contenteditable="false"` so it never participates in caret placement.
  * Dispatches [FOLD_EVENT] before [onToggle], so the pane animates.
  *
@@ -1935,6 +1853,16 @@ fun ensureStyles() {
         .lunarbor-row-folded > .lunarbor-bullet-prefix .lunarbor-bullet {
             box-shadow: 0 0 0 4px var(--t-border, rgba(127, 127, 127, 0.35));
         }
+        /* A mirror's dot is a ring in the accent colour: its items live in
+           another node. Folded, the usual ring sits around it, tinted. */
+        .lunarbor-row-mirror > .lunarbor-bullet-prefix .lunarbor-bullet {
+            background: transparent;
+            box-shadow: inset 0 0 0 2px var(--t-accent, #5ab0ff);
+        }
+        .lunarbor-row-mirror.lunarbor-row-folded > .lunarbor-bullet-prefix .lunarbor-bullet {
+            box-shadow: inset 0 0 0 2px var(--t-accent, #5ab0ff),
+                0 0 0 4px color-mix(in srgb, var(--t-accent, #5ab0ff) 30%, transparent);
+        }
         /* Bullet rows carry a negative text-indent for the hanging
            indent; nothing inside a row may inherit it. */
         [data-row] * {
@@ -2240,34 +2168,6 @@ fun ensureStyles() {
         .lunarbor-search-node-more.is-clickable:hover {
             color: var(--t-text, #e6e6e6);
             text-decoration: underline;
-        }
-        .lunarbor-link-preview {
-            text-indent: 0;
-            color: var(--t-text-muted, #8a8a8a);
-            user-select: none;
-            -webkit-user-select: none;
-        }
-        .lunarbor-link-preview-item {
-            display: flex;
-            align-items: center;
-            cursor: pointer;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        .lunarbor-link-preview-item:hover {
-            color: var(--t-text, #e6e6e6);
-        }
-        .lunarbor-link-preview-dot {
-            flex: 0 0 auto;
-            width: 5px;
-            height: 5px;
-            border-radius: 50%;
-            background: currentColor;
-            margin: 0 12px 0 4px;
-        }
-        .lunarbor-link-preview-dot.is-node {
-            box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 22%, transparent);
         }
         .lunarbor-md-link {
             color: var(--t-accent, #5ab0ff);

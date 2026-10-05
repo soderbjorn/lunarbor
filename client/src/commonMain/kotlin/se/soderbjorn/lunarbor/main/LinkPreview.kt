@@ -1,17 +1,12 @@
 /*
  * LinkPreview.kt (commonMain)
  * ---------------------------
- * Read-only previews of linked nodes. A leaf bullet whose text holds
- * exactly one `lunarbor:` link to a node folder can be expanded like a parent:
- * under it the pane shows that node's own bullets — greyed, not editable,
- * each one a way to open it. The linked bullets stay where they live; the
- * preview is a look, not a mirror.
- *
- * This file holds the pure rules: which lines can preview
- * ([linkPreviewPathOf]) and what a preview lists ([linkPreviewItemsOf]).
- * The node's lines are read and cached by `DocumentRegistry`
- * (`requestLinkPreview`); whether a bullet's preview is open is pane
- * state (`PaneBackingViewModel.State.expandedLinkIds`).
+ * Link bullets to nodes. A leaf bullet whose text holds exactly one
+ * `lunarbor:` link to a node is a mirror (`Document`, see its class doc):
+ * it folds open onto that node's own, editable items. This file holds
+ * the pure rules: which lines can mirror ([linkPreviewPathOf]) and what a
+ * node's listing holds ([linkPreviewItemsOf]) — read and cached by
+ * `DocumentRegistry` (`requestLinkPreview`) for 3D mode's pages and maps.
  *
  * commonMain only — pure functions, no state.
  */

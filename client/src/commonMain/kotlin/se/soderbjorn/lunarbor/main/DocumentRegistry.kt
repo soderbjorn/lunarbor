@@ -222,6 +222,42 @@ class DocumentRegistry(
     private fun openDocuments(): List<Document> = slots.values.map { it.document }
 
     /**
+     * Brings every other open document holding one of [folders] — node
+     * folders the save of [savedFileRel] wrote or moved — in step with the
+     * disk: it saves its own edits first (a save never overwrites a node it
+     * did not change, see `NoteRepository.save`'s `baseBodies`), then reloads
+     * ([Document.reloadFromDisk]). This is what keeps a node shown in two
+     * places — expanded on one page and open in another window, or shown
+     * by a mirror — the same everywhere. In the background, since the
+     * caller is inside a save.
+     *
+     * Called from every document's `onAfterSave` hook.
+     */
+    private fun refreshOtherHolders(savedFileRel: String, folders: Collection<String>) {
+        if (folders.isEmpty()) return
+        val others = openDocuments().filter { it.fileRel != savedFileRel && it.holdsAnyNode(folders) }
+        if (others.isEmpty()) return
+        scope.launch {
+            for (doc in others) {
+                doc.flush()
+                doc.reloadFromDisk()
+            }
+        }
+    }
+
+    /**
+     * `true` when a mirror may show the node at [folderRel]: it is a node
+     * (its outline file exists), not in the trash or another dot folder,
+     * and not hidden by the app's privacy mode. A [Document]'s
+     * `mirrorCheck`.
+     */
+    private suspend fun mayMirror(folderRel: String): Boolean {
+        if (folderRel.split('/').any { it.startsWith(".") }) return false
+        if (isPathHidden(folderRel)) return false
+        return repository.fileExists(NoteRepository.outlineFileOf(folderRel))
+    }
+
+    /**
      * Serializes acquire / release across panes so the refcount, slot
      * map, and any in-flight shutdown stay consistent. Acquire / release
      * are infrequent (only on pane create/navigate/close), so a single
@@ -409,10 +445,12 @@ class DocumentRegistry(
             fileRel = fileRel,
             saveDebounceMillis = saveDebounceMillis,
             maxSaveDelayMillis = maxSaveDelayMillis,
-            onAfterSave = { moves ->
+            onAfterSave = { moves, written ->
                 if (moves.isNotEmpty()) applyPathMoves(moves)
+                refreshOtherHolders(fileRel, written + moves.map { it.from })
                 refreshVaultListings()
             },
+            mirrorCheck = ::mayMirror,
         )
         // Mirror the document's dirty flag into the aggregate unsaved
         // set for as long as the slot lives. StateFlow.update is a CAS
@@ -1178,6 +1216,7 @@ class DocumentRegistry(
      * previewed ([linkPreviewsFlow]).
      */
     suspend fun refreshVaultListings() {
+        for (doc in openDocuments()) doc.recheckMirrorTargets()
         vaultIndex.invalidateTargets()
         refreshLinkStatuses()
         refreshLinkPreviews()
@@ -1280,6 +1319,7 @@ class DocumentRegistry(
             textIndex.ensureBuilt()
         }
         applyPrivacy(_privacy.value.modes, mode?.id)
+        for (doc in openDocuments()) doc.recheckMirrorTargets()
     }
 
     /**

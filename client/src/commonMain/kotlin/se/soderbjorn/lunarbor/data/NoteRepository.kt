@@ -195,10 +195,16 @@ class NoteRepository(
      *   file `listOf("")`.
      * @property promotedByRow Row in [lines] → the backing folder of each
      *   folder-backed bullet on that row.
+     * @property body The outline this load read, as [save] would write it
+     *   ([SubtreeCodec.formatNodeFile] of its items; `""` for a missing
+     *   outline), or `null` for a file that is not an outline. `Document`
+     *   keeps it as the node's base: a save leaves a node whose items still
+     *   equal its base alone (see [save]'s `baseBodies`).
      */
     data class Loaded(
         val lines: List<String>,
         val promotedByRow: Map<Int, PromotedRef>,
+        val body: String? = null,
     )
 
     /**
@@ -221,6 +227,11 @@ class NoteRepository(
      *   listed, for every row that adopted an existing folder in this save
      *   and found bullets there. They were written after the row's own
      *   children; `Document` splices them in the same place.
+     * @property bodies Folder (where it is after this save) → the outline
+     *   body this save planned for it, for every node whose items the
+     *   document holds — written or left alone. `Document`'s new bases.
+     * @property written Folders whose outline this save wrote (after
+     *   moves). `DocumentRegistry` refreshes other documents holding them.
      */
     data class SaveResult(
         val promotedByRow: Map<Int, PromotedRef>,
@@ -228,6 +239,8 @@ class NoteRepository(
         val keptInPlace: Set<String> = emptySet(),
         val trashMoves: List<PathMove> = emptyList(),
         val adoptedItems: Map<Int, List<NodeLine>> = emptyMap(),
+        val bodies: Map<String, String> = emptyMap(),
+        val written: Set<String> = emptySet(),
     )
 
     // ------------------------------------------------------------------ load
@@ -265,7 +278,7 @@ class NoteRepository(
             return Loaded(text.split("\n"), emptyMap())
         }
         val node = composeNode(folderOfOutline(fileRel), text ?: "", indent = 0)
-        return if (node.lines.isEmpty()) Loaded(listOf(EMPTY_OUTLINE_LINE), emptyMap()) else node
+        return if (node.lines.isEmpty()) Loaded(listOf(EMPTY_OUTLINE_LINE), emptyMap(), node.body) else node
     }
 
     /**
@@ -281,7 +294,7 @@ class NoteRepository(
     suspend fun loadSubtree(folderRel: String, parentIndent: Int): Loaded {
         val text = fileSystem.readFileIfExists(abs(outlineFileOf(folderRel)))
         observe(outlineFileOf(folderRel), text)
-        if (text == null) return Loaded(emptyList(), emptyMap())
+        if (text == null) return Loaded(emptyList(), emptyMap(), body = "")
         return composeNode(folderRel, text, parentIndent + TAB_SIZE)
     }
 
@@ -294,8 +307,10 @@ class NoteRepository(
      * the next save writes it back as `* title` (or a plain block). Its
      * title is never lost.
      */
-    private suspend fun composeNode(folderRel: String, text: String, indent: Int): Loaded =
-        composeItems(folderRel, SubtreeCodec.parseNodeFile(text), indent)
+    private suspend fun composeNode(folderRel: String, text: String, indent: Int): Loaded {
+        val items = SubtreeCodec.parseNodeFile(text)
+        return composeItems(folderRel, items, indent).copy(body = SubtreeCodec.formatNodeFile(items))
+    }
 
     /**
      * [adoptedItems] (a row's [SaveResult.adoptedItems]) composed for
@@ -379,6 +394,16 @@ class NoteRepository(
      *   bullet are appended to its outline rather than dropped.
      * @param deadRefs Folders of folder-backed bullets deleted from [lines] since the
      *   last save; moved to the trash.
+     * @param mirrorByRow Rows that are mirrors — a link bullet showing the
+     *   node at the given folder ([NoteRepository] never moves, renames,
+     *   demotes or trashes it): the row is written as the leaf it is, and
+     *   its children, when loaded (not in [unloadedRows]), are that node's
+     *   items and are written to its outline, as any node's are.
+     * @param baseBodies Folder (where it is before this save) → the
+     *   outline body the document last loaded or saved for it. A node whose
+     *   planned body still equals its base is not written, even when the
+     *   disk differs: another document saved it since, and this one has
+     *   nothing to add. Without a base (a new node) the body is written.
      * @param onPhaseChange Called with `true` before a save that changes
      *   the folder structure and `false` once it is done. Pure content
      *   saves do not call it.
@@ -389,6 +414,8 @@ class NoteRepository(
         promotedByRow: Map<Int, PromotedRef>,
         unloadedRows: Set<Int> = emptySet(),
         deadRefs: Collection<PromotedRef> = emptyList(),
+        mirrorByRow: Map<Int, String> = emptyMap(),
+        baseBodies: Map<String, String> = emptyMap(),
         onPhaseChange: (Boolean) -> Unit = {},
     ): SaveResult {
         fileSystem.ensureDirectory(rootDirectory)
@@ -435,7 +462,7 @@ class NoteRepository(
             }
 
             // Phase 2: plan.
-            val plan = Planner(lines, current, unloadedRows)
+            val plan = Planner(lines, current, unloadedRows, mirrorByRow, baseBodies)
             plan.planRoot(docFolder)
             if (plan.moves.isNotEmpty() || plan.demotions.isNotEmpty() || plan.promotions > 0) openPhase()
 
@@ -453,7 +480,15 @@ class NoteRepository(
             val stamp = NodeFrontMatter.stampOf(nowMillis())
             val written = HashSet<String>()
             val retitled = ArrayList<String>()
-            for ((folder, text) in plan.writes) {
+            val bodies = HashMap<String, String>()
+            for (w in plan.writes) {
+                // A mirrored node never moves here, but its folder may sit
+                // inside one this save moved.
+                val folder = if (w.isMirror) postMovePath(w.desired, plan.moves) else w.desired
+                bodies[folder] = w.text
+                if (w.current != null && baseBodies[w.current] == w.text) continue
+                if (w.isMirror && !pathExists(folder)) continue
+                val text = w.text
                 val path = abs(outlineFileOf(folder))
                 val onDisk = fileSystem.readFileIfExists(path)
                 // An empty node never creates its outline file.
@@ -471,11 +506,12 @@ class NoteRepository(
                 fileSystem.deleteFile(abs(outlineFileOf(folder)))
                 observe(outlineFileOf(folder), null)
             }
-            for ((folder, extra) in plan.appends) {
+            for ((target, extra) in plan.appends) {
+                val folder = postMovePath(target, plan.moves)
                 val path = abs(outlineFileOf(folder))
                 val existing = fileSystem.readFileIfExists(path)
                 val merged = SubtreeCodec.formatNodeFile(SubtreeCodec.parseNodeFile(existing ?: "") + extra)
-                writeOutlineFile(outlineFileOf(folder), merged, existing, stamp)
+                if (writeOutlineFile(outlineFileOf(folder), merged, existing, stamp)) written += folder
             }
             return SaveResult(
                 promotedByRow = plan.assigned.mapValues { (_, folder) -> PromotedRef(folder) },
@@ -483,6 +519,8 @@ class NoteRepository(
                 keptInPlace = trash.kept,
                 trashMoves = trash.moves,
                 adoptedItems = plan.adoptedItems,
+                bodies = bodies,
+                written = written,
             )
         } finally {
             if (phaseOpen) onPhaseChange(false)
@@ -499,12 +537,28 @@ class NoteRepository(
      * @param lines The composed outline.
      * @param current Row → current folder of every known folder-backed row.
      * @param unloadedRows Rows whose children are not in [lines].
+     * @param mirrorByRow Mirror rows → the folder of the node they show
+     *   (see [save]).
+     * @param baseBodies See [save]: what the document last saw of each node.
      */
     private inner class Planner(
         private val lines: List<String>,
         private val current: Map<Int, String>,
         private val unloadedRows: Set<Int>,
+        private val mirrorByRow: Map<Int, String>,
+        private val baseBodies: Map<String, String>,
     ) {
+        /**
+         * One outline to write.
+         *
+         * @property desired Where the node's folder ends up.
+         * @property text The outline body.
+         * @property current Where the folder is before this save (`null`
+         *   for a new one): the key of its base body.
+         * @property isMirror `true` for a node written through a mirror.
+         */
+        inner class Write(val desired: String, val text: String, val current: String?, val isMirror: Boolean = false)
+
         /** Row → desired folder of every bullet that ends up folder-backed. */
         val assigned = HashMap<Int, String>()
 
@@ -514,11 +568,23 @@ class NoteRepository(
         /** Current paths of folders whose bullet lost its last child. */
         val demotions = ArrayList<String>()
 
-        /** Desired folder → full outline text, for every node whose children are known. */
-        val writes = ArrayList<Pair<String, String>>()
+        /** Every node whose children are known, with its full outline text. */
+        val writes = ArrayList<Write>()
 
         /** Desired folders that stay (they still hold files) but have no bullets. */
         val clearedOutlines = ArrayList<String>()
+
+        /**
+         * `true` when the document saw the node at [folder] empty but its
+         * outline on disk now lists items: another document added them
+         * since. The node is kept as it is on disk — not demoted, not
+         * cleared — since this document has nothing to say about it.
+         */
+        private suspend fun filledElsewhere(folder: String): Boolean {
+            if (baseBodies[folder] != "") return false
+            val text = fileSystem.readFileIfExists(abs(outlineFileOf(folder))) ?: return false
+            return SubtreeCodec.parseNodeFile(text).isNotEmpty()
+        }
 
         /** Desired folder → rows to append to an unloaded node's outline. */
         val appends = ArrayList<Pair<String, List<NodeLine>>>()
@@ -538,8 +604,8 @@ class NoteRepository(
          */
         val priorNames = HashMap<String, String>()
 
-        /** Every folder currently known to belong to a live bullet. */
-        private val trackedFolders: Set<String> = current.values.toHashSet()
+        /** Every folder currently known to belong to a live bullet or a mirror. */
+        private val trackedFolders: Set<String> = current.values.toHashSet() + mirrorByRow.values
 
         private val listingCache = HashMap<String, List<VaultDirectoryEntry>>()
 
@@ -565,7 +631,7 @@ class NoteRepository(
         /** Plans the document's root node, which lives at [docFolder]. */
         suspend fun planRoot(docFolder: String) {
             val rootLines = planChildren(SubtreeCodec.parseComposed(lines), docFolder, docFolder)
-            writes += docFolder to SubtreeCodec.formatNodeFile(rootLines)
+            writes += Write(docFolder, SubtreeCodec.formatNodeFile(rootLines), docFolder)
         }
 
         /**
@@ -593,7 +659,8 @@ class NoteRepository(
             val trimmed = trimTrailingEmpty(kids)
             // Bullets and blocks alike can have children, so either can be
             // folder-backed; "bullet" below means either.
-            val bullets = trimmed.filterIsInstance<ComposedItem.Node>()
+            // A mirror row is a leaf here, whatever it shows below it.
+            val bullets = trimmed.filterIsInstance<ComposedItem.Node>().filter { it.row !in mirrorByRow }
 
             // Where each bullet's folder is now, if it has one.
             val curOf = HashMap<Int, String?>()
@@ -634,6 +701,7 @@ class NoteRepository(
                     // unless it has gone missing — then there is nothing to keep.
                     existing != null && b.row in unloadedRows -> true
                     hasContent(b.children) -> true
+                    existing != null && filledElsewhere(existing) -> true
                     b.row in adopted -> true
                     // No child bullets: the bullet stands for the folder's
                     // files only while its title names the folder. Retitled,
@@ -680,6 +748,19 @@ class NoteRepository(
             for (item in trimmed) {
                 when (item) {
                     is ComposedItem.Node -> {
+                        val mirrored = mirrorByRow[item.row]
+                        if (mirrored != null && item is ComposedItem.Bullet) {
+                            out += NodeLine.Leaf(item.title)
+                            if (item.row in unloadedRows) {
+                                if (item.children.isNotEmpty()) {
+                                    appends += mirrored to planChildren(item.children, mirrored, mirrored, mayAdopt = false)
+                                }
+                            } else {
+                                val childLines = planChildren(item.children, mirrored, mirrored)
+                                writes += Write(mirrored, SubtreeCodec.formatNodeFile(childLines), mirrored, isMirror = true)
+                            }
+                            continue
+                        }
                         if (item.row !in backed) {
                             out += when (item) {
                                 is ComposedItem.Bullet -> NodeLine.Leaf(item.title)
@@ -727,8 +808,11 @@ class NoteRepository(
                             adoptedItems[item.row] = onDisk
                             childLines = childLines + onDisk
                         }
-                        if (childLines.isEmpty()) clearedOutlines += target
-                        else writes += target to SubtreeCodec.formatNodeFile(childLines)
+                        if (childLines.isEmpty()) {
+                            if (existing == null || !filledElsewhere(existing)) clearedOutlines += target
+                        } else {
+                            writes += Write(target, SubtreeCodec.formatNodeFile(childLines), existing)
+                        }
                     }
                     is ComposedItem.Text -> out += NodeLine.Text(item.text)
                 }
