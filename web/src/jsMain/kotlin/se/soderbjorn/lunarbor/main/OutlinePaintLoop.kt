@@ -1051,13 +1051,24 @@ internal fun inlineRunCssClasses(
  * derived from its name, case-insensitively, so `#Work` and `#work` match
  * and a tag looks the same everywhere.
  *
- * Called for tag runs by the paint loop and the page title.
+ * The name's hash is spread round the wheel by the golden ratio
+ * (Fibonacci hashing): a plain `hash % 360` put names that differ only in
+ * their last character (`#p1`, `#p2`) one degree apart, so they looked
+ * the same; this way such neighbours land ~137° apart. Hues are not
+ * unique — two unrelated tags can still come out close.
+ *
+ * Called for tag runs by the paint loop and the page title, and for the
+ * privacy dialog's tag chips.
  */
 internal fun tagHue(tag: String): Int {
     var h = 0
     for (c in tag.removePrefix("#").lowercase()) h = (h * 31 + c.code) and 0x7fffffff
-    return h % 360
+    val turn = (h * GOLDEN_RATIO_FRACTION) % 1.0
+    return (turn * 360).toInt() % 360
 }
+
+/** The golden ratio's fractional part, (√5 − 1) / 2: [tagHue]'s spread. */
+private const val GOLDEN_RATIO_FRACTION = 0.6180339887498949
 
 /**
  * Absolute path to the vault root, set once at app boot by `Main.kt`
