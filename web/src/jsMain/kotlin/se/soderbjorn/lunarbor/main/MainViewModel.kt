@@ -292,6 +292,9 @@ class MainViewModel(
     /** See `PaneBackingViewModel.navigateHome`. */
     fun navigateHome() = paneBackingViewModel.navigateHome()
 
+    /** See `PaneBackingViewModel.navigateToToday`. */
+    suspend fun navigateToToday(today: CalendarDate) = paneBackingViewModel.navigateToToday(today)
+
     /** See `PaneBackingViewModel.canNavigateUp`. */
     fun canNavigateUp(state: PaneBackingViewModel.State) = paneBackingViewModel.canNavigateUp(state)
 

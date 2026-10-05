@@ -11,7 +11,7 @@
  * miss subtleties (which chord is "user-facing" vs "plumbing", which
  * Tab/Shift-Tab pair to bundle as one row, etc.).
  *
- * Rows in [lunarborConfigurableHotkeys] (3D mode's two actions) show the
+ * Rows in [lunarborConfigurableHotkeys] (Today and 3D mode's actions) show the
  * chords currently bound and can be rebound from the sidebar.
  *
  * Mirrors the chord set wired in [MainScreen.handleKey],
@@ -81,6 +81,11 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                         label = "Clear zoom (back to root; in 3D mode: leave 3D)",
                         chord = listOf("Esc"),
                         iconSvg = ICON_ESC,
+                    ),
+                    HotkeyEntry(
+                        label = TODAY_LABEL,
+                        chord = effectiveChordLabel(AppShell.TODAY_ACTION),
+                        iconSvg = ICON_NAVIGATE,
                     ),
                     HotkeyEntry(
                         label = "Back through zoom history",
@@ -208,6 +213,9 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
     )
 }
 
+/** Row label of the ⌃⌘T action ([AppShell.TODAY_ACTION]). */
+private const val TODAY_LABEL: String = "Today (open or prepare today's journal day)"
+
 /** Row label of the ⌃⌘3 action ([AppShell.SPACE_TOGGLE_ACTION]). */
 private const val SPACE_TOGGLE_LABEL: String = "Toggle 3D mode"
 
@@ -224,6 +232,7 @@ private const val SPACE_SPLIT_LABEL: String = "3D mode: the focused window, or a
  * rows open the toolkit's binding editor.
  */
 internal val lunarborConfigurableHotkeys: Map<String, String> = mapOf(
+    TODAY_LABEL to AppShell.TODAY_ACTION,
     SPACE_TOGGLE_LABEL to AppShell.SPACE_TOGGLE_ACTION,
     SPACE_SPLIT_LABEL to AppShell.SPACE_SPLIT_ACTION,
 )

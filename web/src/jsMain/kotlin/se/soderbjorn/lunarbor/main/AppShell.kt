@@ -457,6 +457,7 @@ class AppShell(
         installChromeSelectionTracker()
         installHotkeysShortcut()
         installSpaceShortcuts()
+        installTodayShortcut()
         installNavigateToShortcut()
         installSearchShortcuts()
         installStarredShortcut()
@@ -734,6 +735,43 @@ class AppShell(
         se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
             se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(SPACE_SHAPE_ACTION, "3D mode: next shape", listOf(chord("2"))),
         ) { spaceMode.nextShape() }
+    }
+
+    /**
+     * Registers the Today command's configurable hotkey ([TODAY_ACTION]):
+     * ⌃⌘T (Ctrl-Alt-T off the Mac) — Cmd-T is the browser's and the
+     * toolkit's "new tab" convention, and no other binding uses ⌃⌘T.
+     * Listed (and rebindable) in the Keyboard Shortcuts sidebar.
+     */
+    private fun installTodayShortcut() {
+        val isMac = se.soderbjorn.lunula.web.hotkey.isMacPlatform()
+        val chord = se.soderbjorn.lunula.web.hotkey.Hotkey(key = "t", ctrl = true, meta = isMac, alt = !isMac)
+        se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
+            se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(TODAY_ACTION, "Today", listOf(chord)),
+        ) { goToToday() }
+    }
+
+    /**
+     * The Today command (palette "Today", [TODAY_ACTION]): takes the
+     * focused pane to today's journal item — the user's local date — via
+     * [MainViewModel.navigateToToday], then focuses its editor. When the
+     * privacy mode hides the journal, nothing moves and a short notice
+     * says so, without naming the mode or the tags.
+     */
+    private fun goToToday() {
+        val paneId = focusedPaneId() ?: return
+        val vm = paneViewModels[paneId] ?: return
+        scope.launch {
+            when (vm.navigateToToday(localToday())) {
+                PaneBackingViewModel.TodayOutcome.HIDDEN -> showConfirmDialog(
+                    title = "Today can't be opened",
+                    message = "The journal isn't shown in the current view.",
+                    cancelLabel = "Close",
+                )
+                PaneBackingViewModel.TodayOutcome.OPENED -> paneEditors[paneId]?.focusEditor()
+                else -> Unit
+            }
+        }
     }
 
     /**
@@ -1089,6 +1127,8 @@ class AppShell(
                 if (paneId != null) openInsertLinkModal(paneId, placeholder = "Mirror a node…")
             },
         )
+        // Daily notes (LBR-19): today's journal item, prepared if missing.
+        out += CommandPalette.Command(id = "today", title = "Today", run = { goToToday() })
         out += CommandPalette.Command(
             id = "navigate-to",
             title = "Navigate to",
@@ -3178,6 +3218,9 @@ class AppShell(
         /** Hotkey action id: 3D mode's focused-window / all-windows switch ([installSpaceShortcuts]). */
         internal const val SPACE_SPLIT_ACTION: String = "lunarbor.space.split"
 
+        /** Hotkey action id: the Today command, ⌃⌘T ([installTodayShortcut]). */
+        internal const val TODAY_ACTION: String = "lunarbor.today"
+
         /** Hotkey action id: 3D mode's next shape — Pages, Crown, Cone, Galaxy (⌃⌘2). */
         internal const val SPACE_SHAPE_ACTION: String = "lunarbor.space.shape"
 
@@ -3273,4 +3316,13 @@ private fun pickMarkdownFileText(onPicked: (String) -> Unit) {
     input.addEventListener("cancel", { _: Event -> input.remove() })
     document.body?.appendChild(input as Node)
     input.click()
+}
+
+/**
+ * Today's date on the user's clock (local time, not UTC), for the Today
+ * command ([AppShell] `goToToday`).
+ */
+internal fun localToday(): CalendarDate {
+    val now: dynamic = js("new Date()")
+    return CalendarDate(now.getFullYear() as Int, (now.getMonth() as Int) + 1, now.getDate() as Int)
 }

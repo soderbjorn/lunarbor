@@ -86,6 +86,29 @@
  * `DocumentRegistry` reloads the other documents holding a node after a
  * save wrote it ([holdsAnyNode]).
  *
+ * ### Pending rows
+ * Rows a navigation prepares for the user to type into — the
+ * `Journal › year › week › day` path the Today command
+ * (`PaneBackingViewModel.navigateToToday`) adds, with its empty
+ * placeholder child — are *pending* until somebody edits them
+ * ([insertPendingRows], [PendingRows]). Pending rows are ordinary rows of
+ * [State.lines] for every pane, but a save never sees them: [savedView]
+ * leaves them out, so a prepared-but-untouched day never reaches the disk —
+ * no folders made, no `_node.md` written, no stamps. They are grouped: one
+ * group per preparation, shared by every pane that holds it
+ * ([holdPendingRows] / [releasePendingRows], refcounted). A group ends one
+ * of two ways:
+ *  - **committed** ([commitPendingRows]) on the first edit that touches
+ *    one of its rows (the pane calls it from its edit recorder), or when a
+ *    non-pending row ends up nested under one of them ([settlePendingRows],
+ *    run before every dirty check and save) — from then on they save like
+ *    any row;
+ *  - **dropped** when its last holder releases it untouched: every row
+ *    still pending is removed from [State.lines]. Undo snapshots taken
+ *    while they existed never bring them back ([replaceContent]).
+ * A later group may extend an earlier one ([extendPendingRows]) when it
+ * nests under its rows, so one pane never holds two groups.
+ *
  * ### Markdown mode
  * A document that is not a `_node.md` outline ([bulletsOnly] `false`,
  * e.g. a `.md` note) is plain text: no folder-backed rows, saved exactly
@@ -356,6 +379,30 @@ class Document(
      */
     private val baseBodies: MutableMap<String, String> = mutableMapOf()
 
+    /**
+     * One group of pending rows (see the class doc's "Pending rows").
+     *
+     * @property ids The group's rows still pending (and present or not —
+     *   rows deleted by an edit are skipped when the group is dropped).
+     * @property holders How many panes hold the group; it is dropped when
+     *   this reaches zero while still pending.
+     */
+    private class PendingGroup(val ids: MutableSet<LineId>, var holders: Int)
+
+    /** Pending groups by id; empty almost always. */
+    private val pendingGroups: MutableMap<Long, PendingGroup> = LinkedHashMap()
+
+    /** Every pending row, across [pendingGroups], for the save filter. */
+    private val pendingIds: MutableSet<LineId> = HashSet()
+
+    /**
+     * Rows of dropped pending groups: an undo snapshot taken while they
+     * existed must not restore them ([replaceContent]).
+     */
+    private val droppedPendingIds: MutableSet<LineId> = HashSet()
+
+    private var nextPendingGroup: Long = 1L
+
     private var loadJob: Job? = null
     private var autoSaveJob: Job? = null
     private var dirtyWatchJob: Job? = null
@@ -427,10 +474,210 @@ class Document(
      * folder-backed rows differs from the last save.
      */
     private fun isDirty(state: State): Boolean =
-        state.isLoaded && (currentText(state) != lastSavedText || state.unloadedRefIds != lastSavedUnloaded)
+        state.isLoaded && (currentText(savedView(state)) != lastSavedText || state.unloadedRefIds != lastSavedUnloaded)
 
     private fun recomputeDirty() {
+        settlePendingRows()
         _dirtyFlow.value = isDirty(_stateFlow.value)
+    }
+
+    // ---------------------------------------------------------- pending rows
+
+    /**
+     * Handle on one group of pending rows (see the class doc).
+     *
+     * @property groupId Pass to [holdPendingRows], [releasePendingRows],
+     *   [commitPendingRows] and [extendPendingRows].
+     * @property ids The rows inserted by the call that returned this, in
+     *   order (for [extendPendingRows], only the new ones).
+     */
+    data class PendingRows(val groupId: Long, val ids: List<LineId>)
+
+    /**
+     * Inserts [contents] as new rows at [row] (as [insertLine] would, one
+     * after another) and makes them one new group of pending rows, held
+     * once — by the caller. They show at once in every pane but are never
+     * saved until committed.
+     *
+     * Called by `PaneBackingViewModel.navigateToToday`. LBR-21 (daily
+     * template) adds its template rows the same way.
+     *
+     * @param row Insertion index in the current lines (`lines.size`
+     *   appends).
+     * @param contents Full lines, indent and marker included; not empty.
+     * @return The group, or `null` when the document has not loaded.
+     */
+    fun insertPendingRows(row: Int, contents: List<String>): PendingRows? {
+        if (!_stateFlow.value.isLoaded || contents.isEmpty()) return null
+        val ids = insertRowsAt(row, contents)
+        val groupId = nextPendingGroup++
+        pendingGroups[groupId] = PendingGroup(ids.toMutableSet(), holders = 1)
+        pendingIds += ids
+        recomputeDirty()
+        return PendingRows(groupId, ids)
+    }
+
+    /**
+     * Inserts [contents] at [row] as more rows of the existing pending
+     * group [groupId] — used when the new rows nest under that group's
+     * rows, so dropping it can never strand them. The caller must also
+     * [holdPendingRows] the group if it does not hold it yet.
+     *
+     * @return The new rows, or `null` when the group is gone (committed or
+     *   dropped) or the document has not loaded.
+     */
+    fun extendPendingRows(groupId: Long, row: Int, contents: List<String>): PendingRows? {
+        val group = pendingGroups[groupId] ?: return null
+        if (!_stateFlow.value.isLoaded || contents.isEmpty()) return null
+        val ids = insertRowsAt(row, contents)
+        group.ids += ids
+        pendingIds += ids
+        recomputeDirty()
+        return PendingRows(groupId, ids)
+    }
+
+    /** Inserts [contents] at [row] with fresh ids in one emission; returns the ids. */
+    private fun insertRowsAt(row: Int, contents: List<String>): List<LineId> {
+        val state = _stateFlow.value
+        val at = row.coerceIn(0, state.lines.size)
+        val ids = List(contents.size) { allocateId() }
+        _stateFlow.value = state.copy(
+            lines = state.lines.toMutableList().apply { addAll(at, contents) },
+            lineIds = state.lineIds.toMutableList().apply { addAll(at, ids) },
+        )
+        return ids
+    }
+
+    /** The pending group [id] belongs to, or `null` when the row is not pending. */
+    fun pendingGroupOf(id: LineId): Long? =
+        if (id !in pendingIds) null else pendingGroups.entries.firstOrNull { id in it.value.ids }?.key
+
+    /** `true` while the pending group [groupId] is neither committed nor dropped. */
+    fun isPendingGroup(groupId: Long): Boolean = groupId in pendingGroups
+
+    /** `true` when [id] is a pending row (never saved yet). */
+    fun isPending(id: LineId): Boolean = id in pendingIds
+
+    /**
+     * One more pane holds the pending group [groupId] — another pane that
+     * navigated to the same prepared day. Every hold MUST be paired with
+     * one [releasePendingRows].
+     *
+     * @return `false` when the group is gone (committed or dropped).
+     */
+    fun holdPendingRows(groupId: Long): Boolean {
+        val group = pendingGroups[groupId] ?: return false
+        group.holders++
+        return true
+    }
+
+    /**
+     * One pane lets go of the pending group [groupId] (it navigated away
+     * or closed). When nobody holds it any more and it is still pending,
+     * its rows are removed from the document, bottom up — the untouched
+     * preparation leaves nothing behind. No-op for a committed or dropped
+     * group.
+     *
+     * @return `true` when this release removed rows.
+     */
+    fun releasePendingRows(groupId: Long): Boolean {
+        settlePendingRows()
+        val group = pendingGroups[groupId] ?: return false
+        group.holders--
+        if (group.holders > 0) return false
+        pendingGroups.remove(groupId)
+        pendingIds -= group.ids
+        droppedPendingIds += group.ids
+        val state = _stateFlow.value
+        val drop = group.ids
+        if (state.lineIds.none { it in drop }) return false
+        val lines = ArrayList<String>(state.lines.size)
+        val ids = ArrayList<LineId>(state.lineIds.size)
+        for (i in state.lines.indices) {
+            if (state.lineIds[i] in drop) continue
+            lines += state.lines[i]
+            ids += state.lineIds[i]
+        }
+        if (lines.isEmpty()) {
+            lines += emptyLine
+            ids += allocateId()
+        }
+        _stateFlow.value = state.copy(lines = lines, lineIds = ids)
+        return true
+    }
+
+    /**
+     * Makes the pending group [groupId] ordinary rows: the next save
+     * writes them (making the folders the save rules call for). No-op for
+     * a group that is gone.
+     *
+     * Called by `PaneBackingViewModel` when an edit touches one of the
+     * group's rows ([commitPendingRowsAmong]) and by [settlePendingRows].
+     */
+    fun commitPendingRows(groupId: Long) {
+        val group = pendingGroups.remove(groupId) ?: return
+        pendingIds -= group.ids
+        recomputeDirty()
+    }
+
+    /**
+     * Commits every pending group with a row among [ids]. Called by the
+     * pane's edit recorder with the rows the edit's caret and selection
+     * covered, so typing into a prepared row keeps the whole preparation.
+     *
+     * @return `true` when a group was committed.
+     */
+    fun commitPendingRowsAmong(ids: Collection<LineId>): Boolean {
+        if (pendingIds.isEmpty()) return false
+        val groups = pendingGroups.filterValues { g -> ids.any { it in g.ids } }.keys.toList()
+        for (g in groups) commitPendingRows(g)
+        return groups.isNotEmpty()
+    }
+
+    /**
+     * Commits every pending group with a row that has a non-pending row
+     * nested under it (dragged, pasted or indented there by any pane):
+     * leaving the pending rows out of a save would re-parent that row.
+     * Run before every dirty check and save, and before a release.
+     */
+    private fun settlePendingRows() {
+        if (pendingIds.isEmpty()) return
+        val state = _stateFlow.value
+        val lines = state.lines
+        for (row in lines.indices) {
+            val id = state.lineIds[row]
+            if (id !in pendingIds) continue
+            val col = DocumentLayout.itemColumn(lines, row)
+            if (col < 0) continue
+            val end = DocumentLayout.subtreeEnd(lines, row, col)
+            if ((row + 1..end).any { state.lineIds[it] !in pendingIds }) {
+                pendingGroupOf(id)?.let { g ->
+                    val group = pendingGroups.remove(g) ?: return@let
+                    pendingIds -= group.ids
+                }
+            }
+        }
+    }
+
+    /**
+     * [state] as a save sees it: without the pending rows. The same object
+     * when nothing is pending.
+     */
+    private fun savedView(state: State): State {
+        if (pendingIds.isEmpty() || state.lineIds.none { it in pendingIds }) return state
+        val lines = ArrayList<String>(state.lines.size)
+        val ids = ArrayList<LineId>(state.lineIds.size)
+        for (i in state.lines.indices) {
+            if (state.lineIds[i] in pendingIds) continue
+            lines += state.lines[i]
+            ids += state.lineIds[i]
+        }
+        if (lines.isEmpty()) {
+            // Only pending rows: the file is as empty as before.
+            lines += emptyLine
+            ids += LineId(-1L)
+        }
+        return state.copy(lines = lines, lineIds = ids)
     }
 
     // ------------------------------------------------------------ primitives
@@ -597,6 +844,8 @@ class Document(
      * `PaneBackingViewModel.sortChildrenByName` (a reorder of the same
      * rows and ids). Restoring an id
      * whose folder was trashed brings the folder back on the next save.
+     * Rows of a dropped pending group ([releasePendingRows]) in the
+     * snapshot are left out.
      *
      * No-op when the document has not yet loaded.
      */
@@ -607,6 +856,19 @@ class Document(
     ) {
         val state = _stateFlow.value
         if (!state.isLoaded) return
+        // A snapshot from while a dropped pending group was on screen does
+        // not bring its rows back.
+        if (droppedPendingIds.isNotEmpty() && lineIds.any { it in droppedPendingIds }) {
+            val keep = lineIds.indices.filter { lineIds[it] !in droppedPendingIds }
+            if (keep.isNotEmpty()) {
+                _stateFlow.value = state.copy(
+                    lines = keep.map { lines[it] },
+                    lineIds = keep.map { lineIds[it] },
+                    unloadedRefIds = unloadedRefIds,
+                )
+                return
+            }
+        }
         _stateFlow.value = state.copy(
             lines = lines,
             lineIds = lineIds,
@@ -1556,6 +1818,11 @@ class Document(
         val saved = lines.joinToString("\n") == lastSavedText && folders == lastSavedFolders
         if (shown || saved) return
 
+        // The disk replaces the content: prepared rows that were never
+        // saved are gone with it.
+        droppedPendingIds += pendingIds
+        pendingIds.clear()
+        pendingGroups.clear()
         val oldKeys = old.lineIds.mapIndexed { i, id -> oldFolderOf[id]?.let { "F:$it" } ?: "T:${old.lines[i]}" }
         val newKeys = List(lines.size) { i -> refs[i]?.let { "F:${it.folderRel}" } ?: "T:${lines[i]}" }
         val matched = matchIds(oldKeys, newKeys)
@@ -1648,7 +1915,9 @@ class Document(
      */
     private suspend fun runOneSave(): Boolean {
         materializeUnloadedWithChildren()
-        val state = _stateFlow.value
+        settlePendingRows()
+        // Pending rows (see the class doc) are never saved.
+        val state = savedView(_stateFlow.value)
         val text = currentText(state)
         val rowToRef = HashMap<Int, PromotedRef>(promotedSubtrees.size)
         val mirrorByRow = HashMap<Int, String>()

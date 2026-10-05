@@ -46,8 +46,10 @@ import se.soderbjorn.lunarbor.main.PaneBackingViewModel.Companion.TAB_SIZE
  * @param cleanupEmptyPlaceholder Called at the top of every zoom-changing
  *   intent. If [PaneBackingViewModel.State.pendingLeafZoomChild] points
  *   at a still-empty placeholder bullet, the row is removed from the
- *   document. Implements the "go back without writing anything → don't
- *   leave the placeholder behind" rule.
+ *   document, and the pane lets go of the pending rows it holds
+ *   ([PaneBackingViewModel.State.pendingRowsGroup]). Implements the "go
+ *   back without writing anything → don't leave the placeholder behind"
+ *   rule.
  */
 internal class ZoomNavigation(
     private val documentProvider: () -> Document,
@@ -203,6 +205,11 @@ internal class ZoomNavigation(
         if (!s.isLoaded) return
         val previousZoom = s.zoomedLineId
         cleanupEmptyPlaceholder()
+        zoomOutAfterCleanup(previousZoom)
+    }
+
+    /** The root view, with [previousZoom] pushed onto the zoom history. */
+    private fun zoomOutAfterCleanup(previousZoom: LineId?) {
         patch {
             pushHistory(it, previousZoom).copy(
                 zoomedLineId = null,
@@ -222,7 +229,10 @@ internal class ZoomNavigation(
      * Unlike [zoomInto], this does not insert a placeholder child or move
      * the caret — the caller already has a valid zoom target chosen from
      * the existing tree (an ancestor of the current zoom), so the visible
-     * subtree under it is non-empty by construction.
+     * subtree under it is non-empty by construction. When the cleanup hook
+     * removes the target (an untouched item the Today command prepared,
+     * dropped with the pane's pending rows), the nearest surviving item
+     * above it is the target instead, or the root view.
      *
      * @param lineId target bullet id, or null to clear the zoom.
      */
@@ -234,7 +244,40 @@ internal class ZoomNavigation(
             return
         }
         val previousZoom = s.zoomedLineId
+        // The cleanup may remove the target itself — a breadcrumb up to a
+        // week the Today command prepared and nobody typed in: land on the
+        // nearest item above it that survives instead.
+        val candidates = listOf(lineId) + ancestorIdsOf(lineId)
         cleanupEmptyPlaceholder()
+        val ids = document.stateFlow.value.lineIds
+        val target = candidates.firstOrNull { it in ids }
+        if (target == null) {
+            zoomOutAfterCleanup(previousZoom)
+            return
+        }
+        patch {
+            pushHistory(markUnfolded(it, target), previousZoom).copy(
+                zoomedLineId = target,
+                anchorRow = null,
+                anchorCol = null,
+                collapsedIds = it.collapsedIds - target,
+                pendingLeafZoomChild = null,
+            )
+        }
+    }
+
+    /**
+     * Zooms to [lineId] with zoom history, like [zoomTo], but without the
+     * cleanup hook: the caller has just prepared the rows it lands on
+     * (pending rows, [Document.insertPendingRows]) and released the
+     * pane's earlier ones itself. Called by
+     * `PaneBackingViewModel.navigateToToday`.
+     *
+     * @param previousZoom The zoom the pane had before the caller's own
+     *   cleanup, pushed onto the history so Back returns there.
+     */
+    fun zoomToPrepared(lineId: LineId, previousZoom: LineId?) {
+        if (!stateProvider().isLoaded) return
         patch {
             pushHistory(markUnfolded(it, lineId), previousZoom).copy(
                 zoomedLineId = lineId,
@@ -355,6 +398,29 @@ internal class ZoomNavigation(
         document.insertLine(childRow, childPrefix)
         val newDocState = document.stateFlow.value
         return if (childRow in newDocState.lineIds.indices) newDocState.lineIds[childRow] else null
+    }
+
+    /**
+     * Ids of the items above [lineId], nearest first; empty when it is
+     * gone or top-level.
+     */
+    private fun ancestorIdsOf(lineId: LineId): List<LineId> {
+        val docState = document.stateFlow.value
+        val lines = docState.lines
+        val row = docState.lineIds.indexOf(lineId)
+        if (row < 0) return emptyList()
+        var lookingFor = DocumentLayout.itemColumn(lines, row)
+        val out = ArrayList<LineId>()
+        var r = row - 1
+        while (r >= 0 && lookingFor > 0) {
+            val col = DocumentLayout.itemColumn(lines, r)
+            if (col in 0 until lookingFor) {
+                out += docState.lineIds[r]
+                lookingFor = col
+            }
+            r--
+        }
+        return out
     }
 
     fun zoomInfo(state: PaneBackingViewModel.State): PaneBackingViewModel.ZoomInfo? =

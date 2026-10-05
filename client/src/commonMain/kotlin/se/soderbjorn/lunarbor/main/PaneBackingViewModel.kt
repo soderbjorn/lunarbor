@@ -217,6 +217,20 @@ class PaneBackingViewModel(
      *   leaves a stray empty bullet behind. [NoteRepository.save] also
      *   strips any trailing empty bullet that survives in memory before
      *   it reaches disk.
+     * @property pendingRowsGroup When non-null, the group of pending rows
+     *   ([Document.insertPendingRows]) this pane holds: the
+     *   `Journal › year › week › day` items and the empty placeholder the
+     *   Today command ([navigateToToday]) prepared and nobody has typed in
+     *   yet. Those rows are on screen in every pane but never saved. The
+     *   first edit that touches one of them commits the whole group (they
+     *   save like any row from then on — [recordEdit]); a zoom change, file
+     *   switch or closing the pane lets go of it
+     *   ([cleanupEmptyPlaceholderIfAny] → [Document.releasePendingRows]),
+     *   and once no pane holds it the rows still pending are removed — so
+     *   an untouched day leaves nothing behind, on screen or on disk.
+     *   Unlike [pendingLeafZoomChild] (a row that *is* saved, stripped
+     *   later as a trailing empty bullet), the group lives in the shared
+     *   [Document], so two panes on the same prepared day share it.
      * @property seenLineIds Internal: the set of [LineId]s the
      *   default-collapse pass has already processed.
      * @property pendingInlineStyles Inline styles armed via Cmd-B / etc
@@ -277,6 +291,7 @@ class PaneBackingViewModel(
         val zoomUnfoldedIds: Set<LineId> = emptySet(),
         val expandedBlockIds: Set<LineId> = emptySet(),
         val pendingLeafZoomChild: LineId? = null,
+        val pendingRowsGroup: Long? = null,
         internal val seenLineIds: Set<LineId> = emptySet(),
         val pendingInlineStyles: Set<InlineStyle> = emptySet(),
         val searchQuery: String? = null,
@@ -935,6 +950,7 @@ class PaneBackingViewModel(
             zoomUnfoldedIds = emptySet(),
             expandedBlockIds = emptySet(),
             pendingLeafZoomChild = null,
+            pendingRowsGroup = null,
             seenLineIds = emptySet(),
             pendingInlineStyles = emptySet(),
             searchQuery = null,
@@ -1583,8 +1599,13 @@ class PaneBackingViewModel(
      *
      * Safe to call when no placeholder is pending — it's a no-op in
      * that case.
+     *
+     * First lets go of the pending rows the pane holds
+     * ([releasePendingRowsIfAny]), so every way of leaving a page also
+     * leaves an untouched Today preparation.
      */
     private fun cleanupEmptyPlaceholderIfAny() {
+        releasePendingRowsIfAny()
         val s = _stateFlow.value
         val pending = s.pendingLeafZoomChild ?: return
         val docState = s.documentState
@@ -1616,6 +1637,37 @@ class PaneBackingViewModel(
         val prevLineLen = docState.lines[row - 1].length
         doc.delete(row - 1, prevLineLen, row, line.length)
         patch { it.copy(pendingLeafZoomChild = null) }
+    }
+
+    /**
+     * Lets go of [State.pendingRowsGroup], if any: the document removes
+     * the group's rows once no pane holds it and nobody typed in them
+     * ([Document.releasePendingRows]). The caret keeps pointing at the
+     * same text: rows below the removed ones move up with it.
+     *
+     * Called by [cleanupEmptyPlaceholderIfAny], i.e. on every zoom change,
+     * file switch and pane close.
+     */
+    private fun releasePendingRowsIfAny() {
+        val s = _stateFlow.value
+        val group = s.pendingRowsGroup ?: return
+        val doc = document
+        if (doc == null) {
+            patch { it.copy(pendingRowsGroup = null) }
+            return
+        }
+        val caretId = s.documentState?.lineIds?.getOrNull(s.cursorRow)
+        doc.releasePendingRows(group)
+        patch {
+            val ids = it.documentState?.lineIds ?: return@patch it.copy(pendingRowsGroup = null)
+            val row = caretId?.let { id -> ids.indexOf(id) }?.takeIf { r -> r >= 0 }
+            it.copy(
+                pendingRowsGroup = null,
+                cursorRow = row ?: it.cursorRow.coerceAtMost(ids.lastIndex),
+                anchorRow = null,
+                anchorCol = null,
+            )
+        }
     }
 
     /** See [TextEditingViewModel.insertChar]. */
@@ -3771,6 +3823,229 @@ class PaneBackingViewModel(
         }
     }
 
+    // ------------------------------------------------------------ daily notes
+
+    /** What [navigateToToday] did, for the view to react to. */
+    enum class TodayOutcome {
+        /** The pane went to today's day item (found or prepared). */
+        OPENED,
+
+        /** The pane was on today already; nothing changed. */
+        ALREADY_THERE,
+
+        /**
+         * The app's privacy mode hides `Journal` or a part of today's path:
+         * nothing was revealed or created. The view shows a short notice.
+         */
+        HIDDEN,
+
+        /** The pane is still loading, or the root outline could not be opened. */
+        UNAVAILABLE,
+    }
+
+    /**
+     * The Today command (LBR-19): takes the pane to today's journal item,
+     * `Journal › <ISO week year> › Week <NN> › <YYYY-MM-DD Weekday>` in the
+     * root outline ([DailyNotes.titlePath]), preparing what is missing.
+     *
+     * 1. Already there (zoomed into the day in the root outline, or on the
+     *    day's own folder) → [TodayOutcome.ALREADY_THERE].
+     * 2. A privacy mode hiding `Journal` or a part of the path →
+     *    [TodayOutcome.HIDDEN] before the pane moves ([isTodayHidden]), and
+     *    checked again row by row on the way down.
+     * 3. Opens the root outline when the pane is elsewhere (file history,
+     *    like following a link — works from notes and file views too), or
+     *    lets go of the page's own throwaway rows first.
+     * 4. Walks down the path, reusing existing items ([DailyNotes.findChild];
+     *    `Journal` by name, case-insensitive) and unfolding each for this
+     *    pane ([expandForPane], which loads a folder-backed item's children).
+     * 5. Inserts the missing items, newest first — a new year first under
+     *    `Journal`, a week first under its year, the day first under its
+     *    week; a new `Journal` last at the root — plus an empty placeholder
+     *    child under the day, as **pending rows**
+     *    ([Document.insertPendingRows]): on screen, never saved until the
+     *    first edit touches them ([commitTouchedPendingRows]), removed when
+     *    the pane leaves untouched ([releasePendingRowsIfAny]). An existing
+     *    day without children gets only the pending placeholder. Pending
+     *    rows another pane prepared for the same day are joined
+     *    ([Document.holdPendingRows]) or extended, never duplicated.
+     * 6. Zooms into the day — with zoom history when the pane was on the
+     *    root outline already, as the entry point of the file switch
+     *    otherwise — so Back returns, the view morphs, and page memory
+     *    applies; the caret goes to the day's first child unless the page
+     *    remembered a caret inside it.
+     *
+     * Called by the web `AppShell` for the "Today" palette command and its
+     * hotkey (through `MainViewModel.navigateToToday`).
+     *
+     * @param today The user's local date ("today" on their clock, not UTC),
+     *   from the platform layer; a parameter so tests can pass any date.
+     * @return What happened; [TodayOutcome.HIDDEN] asks the view for a notice.
+     */
+    suspend fun navigateToToday(today: CalendarDate): TodayOutcome {
+        val s0 = _stateFlow.value
+        if (!s0.isLoaded && !s0.isFileView) return TodayOutcome.UNAVAILABLE
+        val titles = DailyNotes.titlePath(today)
+        if (isOnTitlePath(s0, titles)) return TodayOutcome.ALREADY_THERE
+        if (isTodayHidden(titles)) return TodayOutcome.HIDDEN
+        val switched = s0.activeFileRel != rootFileName
+        val previousZoom = s0.zoomedLineId
+        if (switched) {
+            openFileWithHistory(rootFileName)
+        } else {
+            // Leave the page's own throwaway rows (an earlier day's
+            // untouched preparation) before reading the rows.
+            cleanupEmptyPlaceholderIfAny()
+        }
+        val doc = document ?: return TodayOutcome.UNAVAILABLE
+        doc.stateFlow.first { it.isLoaded }
+        if (_stateFlow.value.activeFileRel != rootFileName || document !== doc) return TodayOutcome.UNAVAILABLE
+
+        // Walk down the existing part of the path.
+        val chain = ArrayList<LineId>()
+        var parentId: LineId? = null
+        var level = 0
+        while (level < titles.size) {
+            val docState = doc.stateFlow.value
+            val parentRow = parentId?.let { docState.lineIds.indexOf(it) } ?: -1
+            if (parentId != null && parentRow < 0) return TodayOutcome.UNAVAILABLE
+            val row = DailyNotes.findChild(docState.lines, parentRow, titles[level])
+            if (row < 0) break
+            if (PrivacyLayout.isHidden(PrivacyLayout.hiddenRows(docState.lines, _stateFlow.value.privacy), row)) {
+                return TodayOutcome.HIDDEN
+            }
+            val id = docState.lineIds[row]
+            holdPendingGroupOf(doc, id)
+            expandForPane(doc, id)
+            if (document !== doc) return TodayOutcome.UNAVAILABLE
+            chain += id
+            parentId = id
+            level++
+        }
+
+        // Prepare what is missing (or only the day's placeholder child).
+        val docState = doc.stateFlow.value
+        val parentRow = parentId?.let { docState.lineIds.indexOf(it) } ?: -1
+        val missing = titles.drop(level)
+        val needsRows = missing.isNotEmpty() ||
+            DailyNotes.childItemRows(docState.lines, parentRow).isEmpty()
+        var dayId = if (missing.isEmpty()) parentId else null
+        if (needsRows) {
+            val (at, indent) = if (parentRow < 0) {
+                val top = DailyNotes.childItemRows(docState.lines, -1).firstOrNull()
+                DailyNotes.lastTopLevelRow(docState.lines) to (top?.let { DocumentLayout.itemColumn(docState.lines, it) } ?: 0)
+            } else {
+                DailyNotes.firstChildRow(docState.lines, parentRow) to
+                    DocumentLayout.itemColumn(docState.lines, parentRow) + TAB_SIZE
+            }
+            val contents = DailyNotes.preparedRows(missing, indent)
+            val heldGroup = _stateFlow.value.pendingRowsGroup
+            val parentGroup = parentId?.let { doc.pendingGroupOf(it) }
+            val prepared = if (parentGroup != null && parentGroup == heldGroup) {
+                doc.extendPendingRows(parentGroup, at, contents)
+            } else {
+                doc.insertPendingRows(at, contents)?.also { pr -> patch { it.copy(pendingRowsGroup = pr.groupId) } }
+            } ?: return TodayOutcome.UNAVAILABLE
+            if (missing.isNotEmpty()) dayId = prepared.ids[missing.size - 1]
+            chain += prepared.ids.dropLast(1)
+            patch { it.copy(seenLineIds = it.seenLineIds + prepared.ids.last()) }
+        }
+        val target = dayId ?: return TodayOutcome.UNAVAILABLE
+        // Every item on the way is open for the zoom. One the pane had
+        // folded — or not seen yet, which the default-collapse pass would
+        // fold — folds again once the pane zooms away (if it is kept),
+        // like any item a zoom opened ([ZoomNavigation.refoldLeftBehind]).
+        patch { st ->
+            val refold = chain.filter { it in st.collapsedIds || it !in st.seenLineIds }
+            st.copy(
+                collapsedIds = st.collapsedIds - chain.toSet(),
+                seenLineIds = st.seenLineIds + chain,
+                zoomUnfoldedIds = st.zoomUnfoldedIds + refold,
+            )
+        }
+
+        // Zoom into the day.
+        if (switched) {
+            // Entry point into the file: no zoom history, so Back returns
+            // to where the pane was (as following a link does).
+            patch { it.copy(zoomedLineId = target, collapsedIds = it.collapsedIds - target) }
+        } else {
+            zoomNavigation.zoomToPrepared(target, previousZoom)
+        }
+        val after = _stateFlow.value
+        val lines = after.lines
+        val dayRow = after.documentState?.lineIds?.indexOf(target) ?: -1
+        if (dayRow < 0) return TodayOutcome.UNAVAILABLE
+        val firstChild = DailyNotes.firstChildRow(lines, dayRow)
+        val end = DocumentLayout.subtreeEnd(lines, dayRow, DocumentLayout.itemColumn(lines, dayRow))
+        if (needsRows || after.cursorRow !in firstChild..end) {
+            after.documentState?.lineIds?.getOrNull(firstChild)?.let { placeCursorOn(it) }
+        }
+        return TodayOutcome.OPENED
+    }
+
+    /**
+     * When [id] is a pending row of a group this pane does not hold yet
+     * (another pane prepared today and nobody typed in it), holds that
+     * group too, so it stays while this pane is on it. A pane holds at
+     * most one group: one it held before is let go of first.
+     */
+    private fun holdPendingGroupOf(doc: Document, id: LineId) {
+        val group = doc.pendingGroupOf(id) ?: return
+        val held = _stateFlow.value.pendingRowsGroup
+        if (held == group) return
+        if (held != null) doc.releasePendingRows(held)
+        if (doc.holdPendingRows(group)) patch { it.copy(pendingRowsGroup = group) }
+    }
+
+    /**
+     * `true` when [state] is on the item named by [titles] (outermost
+     * first): zoomed into it in the root outline, or on its folder
+     * ([currentNodeFolder]) — by name text, case-insensitive
+     * ([DailyNotes.matchesTitle]). Used by [navigateToToday].
+     */
+    private fun isOnTitlePath(state: State, titles: List<String>): Boolean {
+        fun matches(path: List<String>) =
+            path.size == titles.size && path.indices.all { DailyNotes.matchesTitle(path[it], titles[it]) }
+        if (!state.isLoaded || state.isMarkdownMode) return false
+        val zoomed = state.zoomedLineId
+        if (state.activeFileRel == rootFileName && zoomed != null) {
+            val row = state.documentState?.lineIds?.indexOf(zoomed) ?: -1
+            if (row >= 0 && matches(titlePathOfRow(state.lines, row))) return true
+        }
+        val folder = currentNodeFolder(state) ?: return false
+        return folder.isNotEmpty() && matches(folder.split('/').map { FolderName.decode(it) })
+    }
+
+    /**
+     * `true` when the app's privacy mode hides a part of today's path
+     * [titles]: the root's `Journal` item carries a hiding tag, or one of
+     * the path's folders (as the save rules would name them,
+     * [FolderName.forTitle]) is hidden ([DocumentRegistry.isPathHidden]).
+     * Reads the root outline through the registry without moving the pane,
+     * so a refusal leaves the pane where it was. `false` with no mode on.
+     */
+    private suspend fun isTodayHidden(titles: List<String>): Boolean {
+        val filter = _stateFlow.value.privacy
+        if (!filter.isActive) return false
+        val root = registry.acquire(rootFileName)
+        try {
+            val docState = root.stateFlow.first { it.isLoaded }
+            val row = DailyNotes.findChild(docState.lines, -1, titles.first())
+            if (row < 0) return false
+            if (PrivacyLayout.isHidden(PrivacyLayout.hiddenRows(docState.lines, filter), row)) return true
+            var folder = root.folderOf(docState.lineIds[row]) ?: return false
+            if (registry.isPathHidden(folder)) return true
+            for (title in titles.drop(1)) {
+                folder = "$folder/${FolderName.forTitle(title)}"
+                if (registry.isPathHidden(folder)) return true
+            }
+            return false
+        } finally {
+            registry.release(rootFileName)
+        }
+    }
+
     /** Switches this pane to [fileRel], pushing file history, and waits for it to load. */
     private suspend fun openFileWithHistory(fileRel: String) {
         if (_stateFlow.value.activeFileRel == fileRel) return
@@ -4203,6 +4478,26 @@ class PaneBackingViewModel(
         }
         pushUndoFrame(UndoFrame(before, after, kind, nowMs()))
         redoStack.clear()
+        commitTouchedPendingRows(before)
+    }
+
+    /**
+     * After an edit that changed something: commits the pending rows
+     * ([Document.commitPendingRowsAmong]) among the rows the edit's caret
+     * and selection covered ([before]) — typing into today's placeholder,
+     * or into a prepared item's title in any pane, keeps the whole
+     * preparation, which then saves like any row. Clears
+     * [State.pendingRowsGroup] when this pane's group was the one
+     * committed. Called by [recordEdit].
+     */
+    private fun commitTouchedPendingRows(before: Snapshot) {
+        val doc = document ?: return
+        val from = minOf(before.cursorRow, before.anchorRow ?: before.cursorRow)
+        val to = maxOf(before.cursorRow, before.anchorRow ?: before.cursorRow)
+        val touched = (from..to).mapNotNull { before.lineIds.getOrNull(it) }
+        if (!doc.commitPendingRowsAmong(touched)) return
+        val group = _stateFlow.value.pendingRowsGroup ?: return
+        if (!doc.isPendingGroup(group)) patch { it.copy(pendingRowsGroup = null) }
     }
 
     /**
