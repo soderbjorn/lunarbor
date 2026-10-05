@@ -322,13 +322,25 @@ object DailyNotes {
     /**
      * The rows to insert for the missing path items [titles] (outermost
      * first), each nested under the one before, the first at [indent],
-     * followed by an empty placeholder bullet under the last — the line
-     * the caret lands on, as in a leaf zoom.
+     * followed by the new day's children under the last: the daily
+     * template's rows ([templateRows], LBR-21) when there are any, else an
+     * empty placeholder bullet — the line the caret lands on, as in a leaf
+     * zoom.
+     *
+     * @param templateRows The template's rows with its own items at column
+     *   0 ([DocumentRegistry.dailyTemplateRows]), indented here under the
+     *   last title; `null` or empty for the placeholder. Ignored when
+     *   [titles] is empty (an existing item gets only the placeholder).
      */
-    fun preparedRows(titles: List<String>, indent: Int): List<String> {
-        val out = ArrayList<String>(titles.size + 1)
+    fun preparedRows(titles: List<String>, indent: Int, templateRows: List<String>? = null): List<String> {
+        val out = ArrayList<String>(titles.size + 1 + (templateRows?.size ?: 0))
         for ((i, title) in titles.withIndex()) out += " ".repeat(indent + i * PaneBackingViewModel.TAB_SIZE) + "* " + title
-        out += " ".repeat(indent + titles.size * PaneBackingViewModel.TAB_SIZE) + "* "
+        val childPad = " ".repeat(indent + titles.size * PaneBackingViewModel.TAB_SIZE)
+        if (titles.isNotEmpty() && !templateRows.isNullOrEmpty()) {
+            for (row in templateRows) out += childPad + row
+        } else {
+            out += "$childPad* "
+        }
         return out
     }
 }

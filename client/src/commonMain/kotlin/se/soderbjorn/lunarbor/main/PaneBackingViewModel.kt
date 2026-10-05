@@ -220,10 +220,11 @@ class PaneBackingViewModel(
      *   it reaches disk.
      * @property pendingRowsGroup When non-null, the group of pending rows
      *   ([Document.insertPendingRows]) this pane holds: the
-     *   `Journal › year › week › day` items and the empty placeholder the
-     *   Today command ([navigateToToday]) prepared and nobody has typed in
-     *   yet. Those rows are on screen in every pane but never saved. The
-     *   first edit that touches one of them commits the whole group (they
+     *   `Journal › year › week › day` items and the empty placeholder — or
+     *   the daily template's copied rows (LBR-21) — the Today command
+     *   ([navigateToToday]) prepared and nobody has edited yet. Those
+     *   rows are on screen in every pane but never saved. The first edit
+     *   that changes one of them commits the whole group (they
      *   save like any row from then on — [recordEdit]); a zoom change, file
      *   switch or closing the pane lets go of it
      *   ([cleanupEmptyPlaceholderIfAny] → [Document.releasePendingRows]),
@@ -232,6 +233,9 @@ class PaneBackingViewModel(
      *   Unlike [pendingLeafZoomChild] (a row that *is* saved, stripped
      *   later as a trailing empty bullet), the group lives in the shared
      *   [Document], so two panes on the same prepared day share it.
+     * @property dailyTemplateFolder Mirror of [DocumentRegistry.dailyTemplate]:
+     *   the vault folder of the node new journal days copy (LBR-21), or
+     *   `null` for none. Read through [isDailyTemplatePage].
      * @property seenLineIds Internal: the set of [LineId]s the
      *   default-collapse pass has already processed.
      * @property pendingInlineStyles Inline styles armed via Cmd-B / etc
@@ -293,6 +297,7 @@ class PaneBackingViewModel(
         val expandedBlockIds: Set<LineId> = emptySet(),
         val pendingLeafZoomChild: LineId? = null,
         val pendingRowsGroup: Long? = null,
+        val dailyTemplateFolder: String? = null,
         internal val seenLineIds: Set<LineId> = emptySet(),
         val pendingInlineStyles: Set<InlineStyle> = emptySet(),
         val searchQuery: String? = null,
@@ -640,6 +645,11 @@ class PaneBackingViewModel(
         scope.launch {
             registry.linkPreviewsFlow.collect { previews ->
                 _stateFlow.value = _stateFlow.value.copy(linkPreviews = previews)
+            }
+        }
+        scope.launch {
+            registry.dailyTemplate.folderFlow.collect { folder ->
+                _stateFlow.value = _stateFlow.value.copy(dailyTemplateFolder = folder)
             }
         }
         scope.launch {
@@ -3875,8 +3885,11 @@ class PaneBackingViewModel(
      *    child under the day, as **pending rows**
      *    ([Document.insertPendingRows]): on screen, never saved until the
      *    first edit touches them ([commitTouchedPendingRows]), removed when
-     *    the pane leaves untouched ([releasePendingRowsIfAny]). An existing
-     *    day without children gets only the pending placeholder. Pending
+     *    the pane leaves untouched ([releasePendingRowsIfAny]). A new day's
+     *    children are a copy of the daily template's items when one is set
+     *    (LBR-21, [dailyTemplateRowsFor]) instead of the placeholder —
+     *    pending in the same group, so the copy is a throwaway too. An
+     *    existing day without children gets only the pending placeholder. Pending
      *    rows another pane prepared for the same day are joined
      *    ([Document.holdPendingRows]) or extended, never duplicated.
      * 6. Zooms into the day — with zoom history when the pane was on the
@@ -3949,10 +3962,15 @@ class PaneBackingViewModel(
         }
 
         // Prepare what is missing (or only the day's placeholder child).
-        val docState = doc.stateFlow.value
-        val parentRow = parentId?.let { docState.lineIds.indexOf(it) } ?: -1
         val missing = titles.drop(level)
         if (!prepare && missing.isNotEmpty()) return TodayOutcome.UNAVAILABLE
+        // A day that does not exist yet starts as a copy of the daily
+        // template's items (LBR-21), pending like the rest.
+        val templateRows = if (missing.isEmpty()) null else dailyTemplateRowsFor(doc, chain, missing)
+        if (document !== doc) return TodayOutcome.UNAVAILABLE
+        val docState = doc.stateFlow.value
+        val parentRow = parentId?.let { docState.lineIds.indexOf(it) } ?: -1
+        if (parentId != null && parentRow < 0) return TodayOutcome.UNAVAILABLE
         val needsRows = missing.isNotEmpty() ||
             DailyNotes.childItemRows(docState.lines, parentRow).isEmpty()
         var dayId = if (missing.isEmpty()) parentId else null
@@ -3964,7 +3982,7 @@ class PaneBackingViewModel(
                 DailyNotes.firstChildRow(docState.lines, parentRow) to
                     DocumentLayout.itemColumn(docState.lines, parentRow) + TAB_SIZE
             }
-            val contents = DailyNotes.preparedRows(missing, indent)
+            val contents = DailyNotes.preparedRows(missing, indent, templateRows)
             val heldGroup = _stateFlow.value.pendingRowsGroup
             val parentGroup = parentId?.let { doc.pendingGroupOf(it) }
             val prepared = if (parentGroup != null && parentGroup == heldGroup) {
@@ -3973,8 +3991,12 @@ class PaneBackingViewModel(
                 doc.insertPendingRows(at, contents)?.also { pr -> patch { it.copy(pendingRowsGroup = pr.groupId) } }
             } ?: return TodayOutcome.UNAVAILABLE
             if (missing.isNotEmpty()) dayId = prepared.ids[missing.size - 1]
-            chain += prepared.ids.dropLast(1)
-            patch { it.copy(seenLineIds = it.seenLineIds + prepared.ids.last()) }
+            // The path items open for the zoom; the day's children — the
+            // placeholder, or the template's rows — start open too (seen,
+            // so the default-collapse pass leaves them be).
+            val pathCount = if (missing.isEmpty()) 0 else missing.size
+            chain += prepared.ids.take(pathCount)
+            patch { it.copy(seenLineIds = it.seenLineIds + prepared.ids.drop(pathCount)) }
         }
         val target = dayId ?: return TodayOutcome.UNAVAILABLE
         // Every item on the way is open for the zoom. One the pane had
@@ -4008,6 +4030,90 @@ class PaneBackingViewModel(
             after.documentState?.lineIds?.getOrNull(firstChild)?.let { placeCursorOn(it) }
         }
         return TodayOutcome.OPENED
+    }
+
+    /**
+     * `true` when [state]'s page is the daily template (LBR-21): its node
+     * folder ([currentNodeFolder] — the zoomed item's, or the open
+     * outline's) is [State.dailyTemplateFolder]. The web view then shows a
+     * "Daily template" label by the page title, and the palette offers
+     * "Stop using as daily template".
+     */
+    fun isDailyTemplatePage(state: State = _stateFlow.value): Boolean {
+        val template = state.dailyTemplateFolder ?: return false
+        if (!state.isLoaded || state.isMarkdownMode || state.isFileView) return false
+        return currentNodeFolder(state) == template
+    }
+
+    /**
+     * `true` when [state]'s page can become the daily template (LBR-21):
+     * a node page other than the root — the zoomed item's folder or an
+     * open outline's folder ([currentNodeFolder]) — that is not the
+     * template already. A zoomed leaf (no folder yet), a note or a file
+     * view cannot.
+     *
+     * Called by the web `AppShell` to offer "Use as daily template".
+     */
+    fun canUseAsDailyTemplate(state: State = _stateFlow.value): Boolean {
+        if (!state.isLoaded || state.isMarkdownMode || state.isFileView) return false
+        val folder = currentNodeFolder(state) ?: return false
+        return folder.isNotEmpty() && folder != state.dailyTemplateFolder
+    }
+
+    /**
+     * "Use as daily template" ([use] `true`): makes this page's node
+     * ([currentNodeFolder]) the daily template, replacing any earlier one.
+     * "Stop using as daily template" ([use] `false`, on the template's
+     * page): no template from now on. Days that exist are never changed;
+     * only days prepared from now on start as a copy
+     * ([DocumentRegistry.dailyTemplateRows]).
+     *
+     * Called by the web `AppShell` for the two palette commands (through
+     * `MainViewModel.setDailyTemplate`). No-op when the page cannot be the
+     * template ([canUseAsDailyTemplate]) or is not it.
+     */
+    fun setDailyTemplate(use: Boolean) {
+        val s = _stateFlow.value
+        if (use) {
+            if (!canUseAsDailyTemplate(s)) return
+            registry.dailyTemplate.set(currentNodeFolder(s))
+        } else if (isDailyTemplatePage(s)) {
+            registry.dailyTemplate.set(null)
+        }
+    }
+
+    /**
+     * The daily template's rows for a day [openJournalPath] is about to
+     * prepare ([DocumentRegistry.dailyTemplateRows]; LBR-21), or `null`
+     * for none — no template set, gone, hidden by the pane's privacy mode,
+     * or holding the day itself.
+     *
+     * @param chain The existing path items found, outermost first (one per
+     *   leading entry of the path's titles).
+     * @param missing The titles still to prepare, the day last.
+     */
+    private suspend fun dailyTemplateRowsFor(doc: Document, chain: List<LineId>, missing: List<String>): List<String>? {
+        if (registry.dailyTemplate.folder == null) return null
+        // The day's folder as the save will name it: the deepest existing
+        // item's folder, then the encoded titles below it.
+        var base = ""
+        var named = 0
+        for ((i, id) in chain.withIndex()) {
+            doc.folderOf(id)?.let {
+                base = it
+                named = i + 1
+            }
+        }
+        val below = (chain.indices.drop(named).map { i -> titleOfItem(doc, chain[i]) } + missing).map { FolderName.forTitle(it) }
+        val dayFolder = (listOf(base).filter { it.isNotEmpty() } + below).joinToString("/")
+        return registry.dailyTemplateRows(dayFolder, _stateFlow.value.privacy)
+    }
+
+    /** The title of the item [id] in [doc] ([SubtreeCodec.itemTitleOf]), or `""` when it is gone. */
+    private fun titleOfItem(doc: Document, id: LineId): String {
+        val st = doc.stateFlow.value
+        val row = st.lineIds.indexOf(id)
+        return if (row < 0) "" else SubtreeCodec.itemTitleOf(st.lines, row)
     }
 
     /**
@@ -4610,24 +4716,23 @@ class PaneBackingViewModel(
         }
         pushUndoFrame(UndoFrame(before, after, kind, nowMs()))
         redoStack.clear()
-        commitTouchedPendingRows(before)
+        commitTouchedPendingRows(before, after)
     }
 
     /**
-     * After an edit that changed something: commits the pending rows
-     * ([Document.commitPendingRowsAmong]) among the rows the edit's caret
-     * and selection covered ([before]) — typing into today's placeholder,
-     * or into a prepared item's title in any pane, keeps the whole
-     * preparation, which then saves like any row. Clears
-     * [State.pendingRowsGroup] when this pane's group was the one
-     * committed. Called by [recordEdit].
+     * After an edit that changed something: commits the pending rows the
+     * edit itself changed ([Document.commitPendingRowsEditedBetween],
+     * comparing [before] with [after]) — typing into today's placeholder
+     * or a copied template row, indenting, deleting or dragging one, in
+     * any pane, keeps the whole preparation, which then saves like any
+     * row. An edit of rows outside the preparation (another day's line
+     * ticked off from a search-node result, LBR-22) keeps it a throwaway,
+     * even with the caret on it. Clears [State.pendingRowsGroup] when
+     * this pane's group was the one committed. Called by [recordEdit].
      */
-    private fun commitTouchedPendingRows(before: Snapshot) {
+    private fun commitTouchedPendingRows(before: Snapshot, after: Snapshot) {
         val doc = document ?: return
-        val from = minOf(before.cursorRow, before.anchorRow ?: before.cursorRow)
-        val to = maxOf(before.cursorRow, before.anchorRow ?: before.cursorRow)
-        val touched = (from..to).mapNotNull { before.lineIds.getOrNull(it) }
-        if (!doc.commitPendingRowsAmong(touched)) return
+        if (!doc.commitPendingRowsEditedBetween(before.lines, before.lineIds, after.lines, after.lineIds)) return
         val group = _stateFlow.value.pendingRowsGroup ?: return
         if (!doc.isPendingGroup(group)) patch { it.copy(pendingRowsGroup = null) }
     }

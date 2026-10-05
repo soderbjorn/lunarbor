@@ -2055,6 +2055,7 @@ class MainScreen(
                 val fileName = NoteRepository.displayNameOf(fileRel).ifBlank { "Untitled" }
                 applyTitleStyleClass(title, null)
                 title.textContent = fileName
+                appendDailyTemplateLabel(title, backing)
                 return
             }
         }
@@ -2078,6 +2079,23 @@ class MainScreen(
                 title.appendChild(count)
             }
         }
+        if (backing != null) appendDailyTemplateLabel(title, backing)
+    }
+
+    /**
+     * Appends the "Daily template" pill to the page [title] when the page
+     * is the daily template ([MainViewModel.isDailyTemplatePage], LBR-21):
+     * chrome, not content — not editable, not selectable, never saved.
+     * Called by [updateTitle] after it has filled the title.
+     */
+    private fun appendDailyTemplateLabel(title: HTMLElement, backing: PaneBackingViewModel.State) {
+        if (!viewModel.isDailyTemplatePage(backing)) return
+        val label = document.createElement("span") as HTMLElement
+        label.className = "lunarbor-title-daily-template"
+        label.setAttribute("contenteditable", "false")
+        label.title = "New journal days start as a copy of this page's items"
+        label.textContent = "Daily template"
+        title.appendChild(label)
     }
 
     /**

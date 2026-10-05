@@ -392,6 +392,35 @@ class AppShell(
     }
 
     /**
+     * Seeds [DocumentRegistry.dailyTemplate] (LBR-21) from the persister
+     * (key [DAILY_TEMPLATE_KEY]: `{ "<vault root dir>": "<template folder>" }`,
+     * per vault like [PRIVACY_MODE_KEY]) and writes it back whenever it
+     * changes — the palette's "Use as daily template" / "Stop using as
+     * daily template", or a move, rename or trashing of the template node.
+     * A setting with no settings UI. Called once at boot, before the first
+     * pane renders.
+     */
+    private suspend fun loadDailyTemplate() {
+        val template = documentRegistry.dailyTemplate
+        val vault = documentRegistry.rootDirectory
+        suspend fun readAll(): dynamic = try {
+            persister.read(DAILY_TEMPLATE_KEY)?.let { JSON.parse<dynamic>(it) }
+        } catch (_: Throwable) {
+            null
+        }
+        val stored: dynamic = readAll()
+        template.load(if (stored == null) null else stored[vault] as? String)
+        template.onChanged = {
+            scope.launch {
+                val all: dynamic = readAll() ?: js("({})")
+                val folder = template.folder
+                if (folder == null) js("delete all[vault]") else all[vault] = folder
+                persister.write(DAILY_TEMPLATE_KEY, JSON.stringify(all))
+            }
+        }
+    }
+
+    /**
      * Reads the vault's privacy modes and puts the app back in the mode it
      * was left in for this vault (persister key [PRIVACY_MODE_KEY]; a mode
      * that no longer exists falls back to "No privacy"), then writes the
@@ -655,6 +684,7 @@ class AppShell(
             // [ensurePaneViewModel] opens each at its stored location.
             paneLocations.load { documentRegistry.fileExists(it) }
             loadFoldMemory()
+            loadDailyTemplate()
             // Before any pane shows: the privacy mode decides what can.
             loadPrivacyMode()
             tabSource.notify(layoutState)
@@ -1153,6 +1183,24 @@ class AppShell(
         if (focusedPaneViewModel()?.let { it.journalDayOf(it.currentBackingState) } != null) {
             out += CommandPalette.Command(id = "previous-day", title = "Previous day", run = { goToAdjacentDay(forward = false) })
             out += CommandPalette.Command(id = "next-day", title = "Next day", run = { goToAdjacentDay(forward = true) })
+        }
+        // LBR-21: the daily template — any node page; "Stop using…" on the
+        // template's own page instead.
+        focusedPaneViewModel()?.let { vm ->
+            val st = vm.currentBackingState
+            if (vm.isDailyTemplatePage(st)) {
+                out += CommandPalette.Command(
+                    id = "stop-daily-template",
+                    title = "Stop using as daily template",
+                    run = { vm.setDailyTemplate(false) },
+                )
+            } else if (vm.canUseAsDailyTemplate(st)) {
+                out += CommandPalette.Command(
+                    id = "use-daily-template",
+                    title = "Use as daily template",
+                    run = { vm.setDailyTemplate(true) },
+                )
+            }
         }
         out += CommandPalette.Command(
             id = "navigate-to",
@@ -3217,6 +3265,12 @@ class AppShell(
          * `{ "<vault root dir>": "<mode id>" }` ([loadPrivacyMode]).
          */
         private const val PRIVACY_MODE_KEY: String = "lunarborPrivacyMode"
+
+        /**
+         * Persister key of the daily template's node folder, per vault:
+         * `{ "<vault root dir>": "<folder>" }` ([loadDailyTemplate], LBR-21).
+         */
+        private const val DAILY_TEMPLATE_KEY: String = "lunarborDailyTemplate"
 
         /** Debounce between a fold change and its write. */
         private const val FOLD_MEMORY_SAVE_DEBOUNCE_MS: Long = 500

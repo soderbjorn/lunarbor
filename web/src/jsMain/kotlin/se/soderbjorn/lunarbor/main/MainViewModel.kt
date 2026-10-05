@@ -302,6 +302,15 @@ class MainViewModel(
     /** See `PaneBackingViewModel.journalDayOf`. */
     fun journalDayOf(state: PaneBackingViewModel.State) = paneBackingViewModel.journalDayOf(state)
 
+    /** See `PaneBackingViewModel.isDailyTemplatePage`. */
+    fun isDailyTemplatePage(state: PaneBackingViewModel.State) = paneBackingViewModel.isDailyTemplatePage(state)
+
+    /** See `PaneBackingViewModel.canUseAsDailyTemplate`. */
+    fun canUseAsDailyTemplate(state: PaneBackingViewModel.State) = paneBackingViewModel.canUseAsDailyTemplate(state)
+
+    /** See `PaneBackingViewModel.setDailyTemplate`. */
+    fun setDailyTemplate(use: Boolean) = paneBackingViewModel.setDailyTemplate(use)
+
     /** See `PaneBackingViewModel.canNavigateUp`. */
     fun canNavigateUp(state: PaneBackingViewModel.State) = paneBackingViewModel.canNavigateUp(state)
 

@@ -2125,6 +2125,27 @@ fun ensureStyles() {
             user-select: none;
             -webkit-user-select: none;
         }
+        /* "Daily template" (LBR-21): a small pill after the template
+           page's title — chrome, so it never takes the title's size. */
+        .lunarbor-title-daily-template {
+            display: inline-block;
+            margin-left: 12px;
+            padding: 1px 8px;
+            border-radius: 999px;
+            color: var(--t-accent, #6aa5ff);
+            background: color-mix(in srgb, var(--t-accent, #6aa5ff) 14%, transparent);
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--t-accent, #6aa5ff) 40%, transparent);
+            font-size: 12px;
+            font-weight: 500;
+            line-height: 18px;
+            letter-spacing: 0.02em;
+            font-style: normal;
+            text-decoration: none;
+            vertical-align: middle;
+            white-space: nowrap;
+            user-select: none;
+            -webkit-user-select: none;
+        }
         /* The count on the node's line, after the magnifier. */
         .lunarbor-search-node-count {
             margin-left: 8px;

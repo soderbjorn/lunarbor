@@ -120,4 +120,41 @@ object ImagePaths {
         sb.append(line, last, line.length)
         return sb.toString().takeIf { it != line }
     }
+
+    /**
+     * [line] with every image embed whose `src` is relative to the folder
+     * it is stored in ([baseFolder]) written vault-rooted instead
+     * ([vaultRooted]), so it shows the same image from any folder.
+     * External and already vault-rooted sources are left as written.
+     *
+     * Called by `DocumentRegistry.dailyTemplateRows`, which copies a
+     * template's rows into another folder.
+     *
+     * @return The new line, or [line] itself when nothing changed.
+     */
+    fun rootedEmbeds(line: String, baseFolder: String): String {
+        if ("![" !in line) return line
+        val runs = InlineMarkdownTokenizer.tokenize(line).runs.filter {
+            val src = it.imageSrc
+            src != null && it.imageSourceLen != null && !src.startsWith("/") && resolve(baseFolder, src) != null
+        }
+        if (runs.isEmpty()) return line
+        val sb = StringBuilder()
+        var last = 0
+        for (run in runs) {
+            val start = run.modelStart
+            val end = start + run.imageSourceLen!!
+            val source = line.substring(start, end)
+            val open = source.lastIndexOf("](")
+            if (open < 0) continue
+            val dest = vaultRooted(resolve(baseFolder, run.imageSrc!!)!!)
+            sb.append(line, last, start)
+                .append(source, 0, open + 2)
+                .append(SubtreeCodec.formatLinkUrlForLabel(dest))
+                .append(')')
+            last = end
+        }
+        sb.append(line, last, line.length)
+        return sb.toString()
+    }
 }

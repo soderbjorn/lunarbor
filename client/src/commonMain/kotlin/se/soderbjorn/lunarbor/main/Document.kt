@@ -98,8 +98,9 @@
  * group per preparation, shared by every pane that holds it
  * ([holdPendingRows] / [releasePendingRows], refcounted). A group ends one
  * of two ways:
- *  - **committed** ([commitPendingRows]) on the first edit that touches
- *    one of its rows (the pane calls it from its edit recorder), or when a
+ *  - **committed** ([commitPendingRows]) on the first edit that changes
+ *    one of its rows ([commitPendingRowsEditedBetween], called from the
+ *    pane's edit recorder — edits of other rows never count), or when a
  *    non-pending row ends up nested under one of them ([settlePendingRows],
  *    run before every dirty check and save) — from then on they save like
  *    any row;
@@ -621,9 +622,9 @@ class Document(
     }
 
     /**
-     * Commits every pending group with a row among [ids]. Called by the
-     * pane's edit recorder with the rows the edit's caret and selection
-     * covered, so typing into a prepared row keeps the whole preparation.
+     * Commits every pending group with a row among [ids]. Called by
+     * [commitPendingRowsEditedBetween] with the pending rows an edit
+     * changed, so typing into a prepared row keeps the whole preparation.
      *
      * @return `true` when a group was committed.
      */
@@ -632,6 +633,74 @@ class Document(
         val groups = pendingGroups.filterValues { g -> ids.any { it in g.ids } }.keys.toList()
         for (g in groups) commitPendingRows(g)
         return groups.isNotEmpty()
+    }
+
+    /**
+     * Commits every pending group one of whose rows an edit changed, going
+     * from the rows [beforeLines] / [beforeIds] to [afterLines] /
+     * [afterIds]: a pending row whose text changed (typing, indent,
+     * Toggle done, …), that was deleted, that now sits under another item,
+     * or whose order among the pending rows changed (a drag). Rows the edit
+     * added under a pending row commit it through [settlePendingRows].
+     *
+     * Only the day's own rows count: an edit elsewhere in the same document
+     * — Toggle done on a search-node result (LBR-22) rewriting the line
+     * where the task is stored, typing on another page — leaves the
+     * preparation a throwaway, wherever the caret was.
+     *
+     * Called by `PaneBackingViewModel.commitTouchedPendingRows` after every
+     * recorded edit (LBR-19's prepared path, LBR-21's template rows).
+     *
+     * @return `true` when a group was committed.
+     */
+    fun commitPendingRowsEditedBetween(
+        beforeLines: List<String>,
+        beforeIds: List<LineId>,
+        afterLines: List<String>,
+        afterIds: List<LineId>,
+    ): Boolean {
+        if (pendingIds.isEmpty()) return false
+        val before = pendingShapeOf(beforeLines, beforeIds)
+        val after = pendingShapeOf(afterLines, afterIds)
+        if (before.isEmpty()) return false
+        val touched = HashSet<LineId>()
+        for ((id, shape) in before) {
+            val now = after[id]
+            if (now == null || now.text != shape.text || now.parent != shape.parent) touched += id
+        }
+        // A pending row moved among the others (same text and parent, new place).
+        val orderBefore = before.keys.filter { it in after }
+        val orderAfter = after.keys.filter { it in before }
+        for (i in orderBefore.indices) if (orderBefore[i] != orderAfter.getOrNull(i)) touched += orderBefore[i]
+        if (touched.isEmpty()) return false
+        return commitPendingRowsAmong(touched)
+    }
+
+    /** A pending row's text and the item it sits under, for [commitPendingRowsEditedBetween]. */
+    private data class PendingShape(val text: String, val parent: LineId?)
+
+    /**
+     * Every pending row of [lines] / [ids], in order, with its text and the
+     * id of the item it belongs to (the nearest item above with a smaller
+     * column; for a block's continuation rows, the block).
+     */
+    private fun pendingShapeOf(lines: List<String>, ids: List<LineId>): LinkedHashMap<LineId, PendingShape> {
+        val out = LinkedHashMap<LineId, PendingShape>()
+        val stack = ArrayList<Pair<Int, LineId>>() // (item column, id), innermost last
+        for (row in lines.indices) {
+            val id = ids.getOrNull(row) ?: break
+            val col = DocumentLayout.itemColumn(lines, row)
+            val parent: LineId?
+            if (col >= 0) {
+                while (stack.isNotEmpty() && stack.last().first >= col) stack.removeAt(stack.lastIndex)
+                parent = stack.lastOrNull()?.second
+                stack += col to id
+            } else {
+                parent = stack.lastOrNull()?.second
+            }
+            if (id in pendingIds) out[id] = PendingShape(lines[row], parent)
+        }
+        return out
     }
 
     /**

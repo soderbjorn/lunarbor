@@ -45,6 +45,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import se.soderbjorn.lunarbor.data.ImagePaths
+import se.soderbjorn.lunarbor.data.LunarborLink
 import se.soderbjorn.lunarbor.data.NodeFrontMatter
 import se.soderbjorn.lunarbor.data.NodeLine
 import se.soderbjorn.lunarbor.data.NoteRepository
@@ -126,6 +128,14 @@ class DocumentRegistry(
      * page comes back with the same folds. Persisted by platform glue.
      */
     val foldMemory: FoldMemory = FoldMemory()
+
+    /**
+     * Which node is the daily template (LBR-21, [DailyTemplate]): new
+     * journal days start as a copy of its items ([dailyTemplateRows]).
+     * Kept current through folder moves ([applyPathMoves]); persisted by
+     * platform glue.
+     */
+    val dailyTemplate: DailyTemplate = DailyTemplate()
 
     /**
      * App-scoped full-text index behind the pane search: every line of
@@ -702,6 +712,7 @@ class DocumentRegistry(
         vaultIndex.moveKeys(moves)
         textIndex.moveKeys(moves)
         foldMemory.applyMoves(moves)
+        dailyTemplate.applyMoves(moves)
         if (live.isEmpty()) return
         val held = HashSet<String>()
         for (doc in openDocuments()) {
@@ -997,6 +1008,75 @@ class DocumentRegistry(
         val rel = repository.createMarkdownFile(dirRel)
         refreshVaultListing(dirRel)
         return rel
+    }
+
+    // ------------------------------------------------- daily template (LBR-21)
+
+    /**
+     * The rows a new journal day starts with: a copy of the daily
+     * template's ([dailyTemplate]) own items with their whole subtrees —
+     * bullets, blocks, search nodes, nested children, folder-backed
+     * children read from their folders — as `Document` lines (block
+     * markers included), in order, the template's own items at column 0;
+     * the caller indents them under the day.
+     *
+     * - Open documents are saved first ([flushAll]), so the copy has the
+     *   template's latest edits.
+     * - Links into the vault and images are written vault-rooted
+     *   (`/…`, [LunarborLink.rootedText], [ImagePaths.rootedEmbeds]), as a
+     *   copy does: each row's relative paths only hold in the template's
+     *   folders, and the day's first save rewrites links relative to where
+     *   they landed. Images are not copied; the day shows the template's.
+     * - What [filter] hides is left out: no template at all when the
+     *   template node itself is hidden ([isPathHidden]), and every hidden
+     *   item inside it with its subtree ([PrivacyLayout.hiddenRows]).
+     * - At most [TEMPLATE_MAX_ROWS] rows.
+     *
+     * Called by `PaneBackingViewModel.navigateToToday` (through its
+     * journal-path preparation) when it prepares a day that does not exist.
+     *
+     * @param dayFolder The vault folder the day's items will be stored in
+     *   (as the save rules would name it). No template applies when that
+     *   lies inside the template, which would copy the journal into itself.
+     * @param filter The privacy mode to apply (the app's by default).
+     * @return The rows, or `null` when there is no usable template: none
+     *   set, its outline gone (moved or deleted outside the app), hidden,
+     *   holding the day, or without visible items.
+     */
+    suspend fun dailyTemplateRows(dayFolder: String? = null, filter: PrivacyFilter = privacyFilter): List<String>? {
+        val folder = dailyTemplate.folder ?: return null
+        if (dayFolder != null && (dayFolder == folder || dayFolder.startsWith("$folder/"))) return null
+        flushAll()
+        if (!repository.fileExists(NoteRepository.outlineFileOf(folder))) return null
+        if (isPathHidden(folder, filter)) return null
+        val out = ArrayList<String>()
+        appendTemplateRows(folder, -PaneBackingViewModel.TAB_SIZE, filter, out)
+        return out.takeIf { rows -> rows.any { it.isNotBlank() } }
+    }
+
+    /**
+     * Appends the items of the node folder [folder] composed under a parent
+     * at column [parentIndent], each folder-backed item followed by its own
+     * items (recursively), to [out]. Rows [filter] hides are skipped with
+     * their subtrees. See [dailyTemplateRows].
+     */
+    private suspend fun appendTemplateRows(folder: String, parentIndent: Int, filter: PrivacyFilter, out: MutableList<String>) {
+        val loaded = repository.loadSubtree(folder, parentIndent)
+        val lines = loaded.lines
+        val hidden = PrivacyLayout.hiddenRows(lines, filter)
+        // A folder-backed item's children go after its own last row (a
+        // block's last content row).
+        val childrenAfter = HashMap<Int, Pair<String, Int>>()
+        for ((row, ref) in loaded.promotedByRow) {
+            childrenAfter[DocumentLayout.itemLastRow(lines, row)] = ref.folderRel to DocumentLayout.itemColumn(lines, row)
+        }
+        for (row in lines.indices) {
+            if (out.size >= TEMPLATE_MAX_ROWS) return
+            if (PrivacyLayout.isHidden(hidden, row)) continue
+            out += ImagePaths.rootedEmbeds(LunarborLink.rootedText(lines[row], folder), folder)
+            val (child, col) = childrenAfter[row] ?: continue
+            appendTemplateRows(child, col, filter, out)
+        }
     }
 
     // ------------------------------------------------------- agents (MCP)
@@ -1386,5 +1466,8 @@ class DocumentRegistry(
 
         /** Most results kept for a search node (it lists them a page at a time). */
         const val SEARCH_NODE_MAX_HITS: Int = 2_000
+
+        /** Most rows a daily template copies into a new day ([dailyTemplateRows]). */
+        const val TEMPLATE_MAX_ROWS: Int = 2_000
     }
 }
