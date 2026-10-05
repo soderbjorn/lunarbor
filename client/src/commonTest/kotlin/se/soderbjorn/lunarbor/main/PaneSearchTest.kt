@@ -66,30 +66,28 @@ class PaneSearchTest {
     }
 
     @Test
-    fun sort_tag_orders_hits_by_their_first_other_tag_and_reverse_turns_it_round() {
+    fun sort_lists_tags_in_order_and_reverse_turns_it_round() {
         val idx = index(
-            "_node.md" to "- Tidy desk #todo\n- Write docs #todo #gamma\n- Fix login #beta #todo\n" +
-                "- Draft spec #todo #alpha #zeta\n- Item 10 #todo #p10\n- Item 2 #todo #P2\n- Also beta #todo #beta\n",
+            "_node.md" to "- Tidy desk #todo\n- Write docs #todo #P3\n- Fix login #work #p2 #todo\n" +
+                "- Ship it #todo #p1\n- Both #todo #p3 #p1\n- Also p2 #todo #p2\n- Plan #project #todo\n",
         )
         fun sorted(query: String, max: Int = 300): List<String> {
             val parsed = SearchQuery.parse(query)
             return idx.search(TextScope.Tree(""), parsed.expr, max, parsed.reversed, tagSort = parsed.tagSort).hits.map { it.text }
         }
-        // The first tag the query does not search for; natural order, case
-        // ignored; ties in reading order; lines without one last.
+        // Listed order; a line with several by the earliest listed; other
+        // tags and case don't matter; ties in reading order; the rest last.
         assertEquals(
             listOf(
-                "Draft spec #todo #alpha #zeta", "Fix login #beta #todo", "Also beta #todo #beta",
-                "Write docs #todo #gamma", "Item 2 #todo #P2", "Item 10 #todo #p10", "Tidy desk #todo",
+                "Ship it #todo #p1", "Both #todo #p3 #p1", "Fix login #work #p2 #todo", "Also p2 #todo #p2",
+                "Write docs #todo #P3", "Tidy desk #todo", "Plan #project #todo",
             ),
-            sorted("#todo sort:tag"),
+            sorted("#todo sort:#p1,#p2,#p3"),
         )
         // Reversed: the sorted list turned round; max cuts after sorting.
-        assertEquals(listOf("Tidy desk #todo", "Item 10 #todo #p10"), sorted("#todo sort:tag order:reverse", max = 2))
-        assertEquals(listOf("Draft spec #todo #alpha #zeta", "Fix login #beta #todo"), sorted("#todo sort:tag", max = 2))
-        // A tag prefix in the query skips every tag it matches.
-        assertEquals("Draft spec #todo #alpha #zeta", sorted("#todo #a* sort:tag").single())
-        assertEquals(1, idx.search(TextScope.Tree(""), q("#todo #a*"), tagSort = SearchQuery.parse("#todo #a* sort:tag").tagSort).total)
+        assertEquals(listOf("Plan #project #todo", "Tidy desk #todo"), sorted("#todo sort:#p1,#p2,#p3 order:reverse", max = 2))
+        assertEquals(listOf("Ship it #todo #p1", "Both #todo #p3 #p1"), sorted("#todo sort:p1,p2,p3", max = 2))
+        assertEquals(7, idx.search(TextScope.Tree(""), q("#todo"), max = 2, tagSort = SearchQuery.parse("sort:#p1").tagSort).total)
     }
 
     @Test

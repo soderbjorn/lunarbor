@@ -48,7 +48,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import se.soderbjorn.lunarbor.main.BlockLayout
 import se.soderbjorn.lunarbor.main.DocumentLayout
-import se.soderbjorn.lunarbor.main.FolderContents
 import se.soderbjorn.lunarbor.platform.toNfc
 
 /**
@@ -295,7 +294,7 @@ class TextIndex(
      *   head turned round).
      * @param max Most hits returned; [TextSearchResult.total] counts all.
      * @param filter The privacy mode applied ([PrivacyFilter.NONE]: none).
-     * @param tagSort `sort:tag`'s order ([SearchQuery.TagSort]), applied to
+     * @param tagSort `sort:#a,#b,…`'s order ([SearchQuery.TagSort]), applied to
      *   all hits before [reversed] and [max]; `null` keeps reading order.
      */
     fun search(
@@ -308,8 +307,8 @@ class TextIndex(
     ): TextSearchResult {
         if (expr == null) return TextSearchResult(emptyList(), 0)
         val hits = ArrayList<TextHit>()
-        // Under `sort:tag` every hit is kept, with its key, and cut after sorting.
-        val keyed = ArrayList<Pair<String?, TextHit>>()
+        // Under `sort:` every hit is kept, with its rank, and cut after sorting.
+        val keyed = ArrayList<Pair<Int?, TextHit>>()
         var total = 0
         val inherited = HashMap<String, Set<String>>()
         val inheritedDone = HashMap<String, Boolean>()
@@ -330,7 +329,7 @@ class TextIndex(
                 val hit = expr.matches(line.key, tags, line.done || aboveDone)
                 if (hit) {
                     total++
-                    if (tagSort != null) keyed += tagSort.keyOf(line.tags) to line.hit(file, aboveDone)
+                    if (tagSort != null) keyed += tagSort.rankOf(line.tags) to line.hit(file, aboveDone)
                     else if (reversed || hits.size < max) hits += line.hit(file, aboveDone)
                 }
                 ownedPath?.let { onOwned(it, hit) }
@@ -355,17 +354,8 @@ class TextIndex(
             walk(scope.folderRel)
         }
         if (tagSort != null) {
-            // Stable: equal keys keep reading order; lines without a key last.
-            keyed.sortWith { a, b ->
-                val ka = a.first
-                val kb = b.first
-                when {
-                    ka == kb -> 0
-                    ka == null -> 1
-                    kb == null -> -1
-                    else -> FolderContents.naturalCompare(ka, kb)
-                }
-            }
+            // Stable: equal ranks keep reading order; lines without one last.
+            keyed.sortBy { it.first ?: Int.MAX_VALUE }
             keyed.mapTo(hits) { it.second }
         }
         return TextSearchResult(if (reversed) hits.asReversed().take(max) else hits.take(max), total)

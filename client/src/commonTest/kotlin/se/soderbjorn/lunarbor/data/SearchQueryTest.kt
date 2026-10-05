@@ -90,17 +90,19 @@ class SearchQueryTest {
     }
 
     @Test
-    fun sort_tag_skips_the_querys_own_tags() {
-        val q = SearchQuery.parse("#todo (#work OR #home*) -#done sort:tag")
+    fun sort_takes_a_list_of_tags() {
+        val q = SearchQuery.parse("#todo sort:#P1,#p2,p3 is:open")
         val sort = q.tagSort!!
-        assertEquals("beta", sort.keyOf(listOf("#todo", "#Beta", "#alpha")))
-        assertEquals("alpha", sort.keyOf(listOf("#work", "#homeoffice", "#alpha")))
-        // A NOT term is no search tag: it is a key like any other.
-        assertEquals("done", sort.keyOf(listOf("#todo", "#done")))
-        assertEquals(null, sort.keyOf(listOf("#todo")))
-        // Not a search term, and off unless asked for.
-        assertEquals(listOf("#todo", "#work", "#home"), q.highlightTerms())
+        assertEquals(listOf("p1", "p2", "p3"), sort.order)
+        assertEquals(0, sort.rankOf(listOf("#todo", "#p3", "#p1")))
+        assertEquals(2, sort.rankOf(listOf("#P3")))
+        assertEquals(null, sort.rankOf(listOf("#todo", "#project")))
+        // Not a search term: the rest of the query is unchanged.
+        assertEquals(listOf("#todo"), q.highlightTerms())
+        assertTrue(q.expr!!.matches("x", setOf("todo"), done = false))
+        // Off unless asked for, and `sort:none` turns it off again.
         assertEquals(null, SearchQuery.parse("#todo").tagSort)
-        assertEquals(null, SearchQuery.parse("#todo sort:tag sort:none").tagSort)
+        assertEquals(null, SearchQuery.parse("#todo sort:#p1 sort:none").tagSort)
+        assertEquals(null, SearchQuery.parse("#todo sort:").tagSort)
     }
 }

@@ -160,7 +160,7 @@ class DocumentRegistry(
      *
      * @param filter The privacy mode to apply: by default the app's
      *   ([privacyFilter]); an agent connection passes its own scope's.
-     * @param tagSort The query's `sort:tag` order ([SearchQuery.tagSort]), or `null`.
+     * @param tagSort The query's `sort:#a,#b,…` order ([SearchQuery.tagSort]), or `null`.
      */
     suspend fun searchText(
         scope: TextScope,
