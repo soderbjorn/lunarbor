@@ -236,7 +236,7 @@ class MainViewModel(
     var openSearchHitInNewWindow: ((se.soderbjorn.lunarbor.data.TextHit) -> Unit)? = null
 
     /**
-     * Platform glue: opens a `lunarbor:` link's target in a new window.
+     * Platform glue: opens a vault link's target in a new window.
      * Set by `MainScreen` (from `AppShell`) so the paint loop's link
      * preview items can answer a Shift- / ⌘-click or a right-click
      * (`OpenGesture`); `null` until then.

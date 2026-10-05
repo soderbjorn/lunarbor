@@ -681,7 +681,7 @@ internal class PageSpaceView(
 
     /**
      * Zooms the window to an item shown in a preview: in place when its
-     * row is in the open outline, else through its folder (a `lunarbor:`
+     * row is in the open outline, else through its folder (a vault
      * link, which expands bullets on the way or opens the node's outline).
      */
     private fun goTo(lineId: LineId?, folderRel: String?) {
@@ -690,7 +690,7 @@ internal class PageSpaceView(
         val row = lineId?.let { ids?.indexOf(it) }?.takeIf { it >= 0 }
         when {
             row != null -> vm.zoomInto(row)
-            folderRel != null -> vm.navigateToLink(LunarborLink.format(folderRel))
+            folderRel != null -> vm.navigateToLink(LunarborLink.rooted(folderRel))
         }
     }
 

@@ -239,7 +239,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           drawn).</li>
           <li><b>Branches</b> — thin lines from each body to its parent.</li>
           <li><b>Link arcs</b> — brighter curves between two bodies when a note in one links to the other
-          with a Lunarbor link (<code>lunarbor:/…</code>). Links to a note or file count for the node that
+          with a link into the vault. Links to a note or file count for the node that
           holds it.</li>
           <li><b>Rings</b> — a ring around a body means it is <b>folded</b> on the map: its children are
           tucked inside it. Its label shows how many (e.g. <code>Recipes · 12</code>).</li>
@@ -346,7 +346,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         <p><b>Use it for:</b> “what is related to this?” — finding notes that belong together, and spotting
         orphans.</p>
         <p><b>Good to know:</b> the layout is still deterministic — the same links give the same galaxy.
-        Only <code>lunarbor:</code> links pull; <code>[[wiki]]</code> links are not drawn on the map yet. On
+        Only links into the vault pull; <code>[[wiki]]</code> links are not drawn on the map yet. On
         a large vault the galaxy takes a moment to settle after the graph changes.</p>
         """,
     ),

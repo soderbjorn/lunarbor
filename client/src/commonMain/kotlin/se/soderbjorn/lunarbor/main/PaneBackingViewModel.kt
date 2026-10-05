@@ -34,12 +34,12 @@
  * as written ([Document.bulletsOnly] is `false`, so no promotion).
  *
  * ### Links (TRF-8)
- * Links are `lunarbor:` paths to folders and files ([LunarborLink]). Clicking one
+ * Links are vault paths to folders and files ([LunarborLink]). Clicking one
  * ([navigateToLink]) zooms to a folder — into its bullet when it is a
  * node's folder — or opens a file as the folder contents list would. The
  * link search runs over the whole vault ([VaultIndex.search]); a link
  * whose target is gone is reported by [isLinkBroken] for the view to
- * strike through. Starred entries are the same `lunarbor:` paths
+ * strike through. Starred entries are the same vault paths
  * ([currentLocationPath], [toggleStarred]).
  *
  * ### Privacy modes (LBR-10)
@@ -720,7 +720,7 @@ class PaneBackingViewModel(
     }
 
     /**
-     * The lines linking to this pane's page ([backlinksTarget]) — `lunarbor:`
+     * The lines linking to this pane's page ([backlinksTarget]) — vault
      * links and `[[wiki]]` links resolving to it, none from inside the page
      * or hidden by the privacy mode — or `null` while they are being found
      * ([DocumentRegistry.requestBacklinks]; the result arrives as a new
@@ -3342,14 +3342,14 @@ class PaneBackingViewModel(
 
     /**
      * What a link [url] written in row [row] points at, as the app passes
-     * links around: `lunarbor:/<path>` for a place in the vault (read
+     * links around: `/<path>` for a place in the vault (read
      * relative to the row's folder, [LunarborLink.resolve]), else [url]
      * unchanged (a web link, `mailto:`, …). Called by the web paint loop
      * for every link it draws, so clicks, hover cards and broken-link
      * marks all see the vault path.
      */
     fun linkHrefOf(row: Int, url: String): String =
-        LunarborLink.resolve(url, linkBaseOf(row))?.let { LunarborLink.format(it) } ?: url
+        LunarborLink.resolve(url, linkBaseOf(row))?.let { LunarborLink.rooted(it) } ?: url
 
     /**
      * The link at [row] / [col] ([LinkSource.at]), or `null`. Called by the
@@ -3372,7 +3372,7 @@ class PaneBackingViewModel(
      * @param row Document row of the link.
      * @param col Any column inside the link's source span.
      * @param text The text the link should show.
-     * @param url Where it should point: any URL, a `lunarbor:/…` path.
+     * @param url Where it should point: any URL, a `/…` path.
      */
     fun updateLinkAt(row: Int, col: Int, text: String, url: String) {
         val link = linkSourceAt(row, col) ?: return
@@ -3425,7 +3425,7 @@ class PaneBackingViewModel(
     }
 
     /**
-     * `true` when [url] is a `lunarbor:` link whose target is known to be
+     * `true` when [url] is a vault link whose target is known to be
      * missing — moved or trashed outside the app, or a node deleted here.
      * While the target's status is unknown, starts a check (see
      * [DocumentRegistry.requestLinkStatus]) and answers `false`; the
@@ -3435,7 +3435,7 @@ class PaneBackingViewModel(
      * any other URL are never broken.
      */
     fun isLinkBroken(state: State, url: String): Boolean {
-        val path = LunarborLink.parse(url) ?: return LunarborLink.isLunarborLink(url)
+        val path = LunarborLink.parseRooted(url) ?: return LunarborLink.isRooted(url)
         // A target the privacy mode hides reads as missing.
         if (state.privacy.isActive && registry.isPathHidden(path)) return true
         state.linkStatus[path]?.let { return !it }
@@ -3443,7 +3443,7 @@ class PaneBackingViewModel(
     }
 
     /**
-     * The `lunarbor:` link a wiki link `[[name]]` stands for — the one vault
+     * The vault link a wiki link `[[name]]` stands for — the one vault
      * target [name] matches ([WikiLink.resolve]) — or `null` when none or
      * several match, in which case the text is drawn plain. While the name
      * is unresolved, starts the resolution (see
@@ -3458,11 +3458,11 @@ class PaneBackingViewModel(
         val key = WikiLink.keyOf(name)
         val path = if (key in state.wikiLinks) state.wikiLinks[key]
         else registry.requestWikiLink(name)?.getOrNull()
-        return path?.let { LunarborLink.format(it) }
+        return path?.let { LunarborLink.rooted(it) }
     }
 
     /**
-     * Where this pane is, as the `lunarbor:` path a Starred entry stores (TRF-8):
+     * Where this pane is, as the vault path a Starred entry stores (TRF-8):
      *
      * - An image or a `.md` note: the file itself.
      * - Zoomed into a folder-backed bullet: its folder.
@@ -3511,7 +3511,7 @@ class PaneBackingViewModel(
 
     /**
      * Stars or un-stars this pane's [currentLocationPath]: adds a
-     * `* [label](lunarbor:/…)` entry to `Starred.md` when [starred] is `false`,
+     * `* [label](…)` entry to `Starred.md` when [starred] is `false`,
      * removes every entry for the location when it is `true`. Goes through
      * the registry so the link index sees the change.
      *
@@ -3723,7 +3723,7 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Follows the `lunarbor:` link [url] (TRF-8):
+     * Follows the vault link [url] (TRF-8):
      *
      * - **A folder** zooms there ([zoomToFolder]).
      * - **A `.md` note or an image** opens in this pane, with file history,
@@ -3740,7 +3740,7 @@ class PaneBackingViewModel(
      * Navigate-to hit is picked, and for the new pane a shift-click opens.
      */
     fun navigateToLink(url: String, onComplete: () -> Unit = {}, openExternally: (String) -> Unit = {}) {
-        val path = LunarborLink.parse(url)
+        val path = LunarborLink.parseRooted(url)
         if (path == null) {
             onComplete()
             return

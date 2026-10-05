@@ -34,12 +34,12 @@
  * references by bare file name follow it ([moveAttachments]). Image
  * paths are resolved per [ImagePaths].
  *
- * Links (TRF-8) are `lunarbor:` paths ([LunarborLink]). The repository lists what
+ * Links (TRF-8) are vault paths ([LunarborLink]). The repository lists what
  * links may point at ([listLinkTargets]), says what is at a path
  * ([kindOf]), rewrites links in a file on disk after renames and moves
  * ([rewriteLinksInFile]) and reports every note text it reads or writes
  * to [noteTextObserver], which keeps `VaultIndex`'s link index current.
- * Starred entries are `* [Label](lunarbor:/…)` bullets in [STARRED_FILE_NAME].
+ * Starred entries are `* [Label](…)` bullets in [STARRED_FILE_NAME].
  *
  * Pure parsing/formatting lives in [SubtreeCodec]; folder naming in
  * [FolderName].
@@ -1229,7 +1229,7 @@ class NoteRepository(
 
     /**
      * The raw JSON text of the drawing [fileRel], or `null` when it does
-     * not exist. Drawings hold no `lunarbor:` links, so nothing is observed.
+     * not exist. Drawings hold no vault links, so nothing is observed.
      */
     suspend fun readDrawingText(fileRel: String): String? = fileSystem.readFileIfExists(abs(fileRel))
 
@@ -1470,7 +1470,7 @@ class NoteRepository(
     // --------------------------------------------------------------- starred
 
     /**
-     * Appends one bookmark bullet, `* [title](lunarbor:/…)`, to
+     * Appends one bookmark bullet, `* [title](…)`, to
      * [STARRED_FILE_NAME], creating the file when missing. Starred entries
      * are ordinary links (TRF-8; relative to the vault root, where the file
      * is), so a save that renames or moves the target rewrites them too.
@@ -1628,7 +1628,7 @@ class NoteRepository(
     }
 
     /**
-     * Every file that can hold `lunarbor:` links, vault-relative: all node
+     * Every file that can hold vault links, vault-relative: all node
      * outlines (the root's `_node.md` included) and all `.md` notes,
      * outside dot-folders. Used to build `VaultIndex`'s link index.
      */
@@ -2161,7 +2161,7 @@ class NoteRepository(
          * [OUTLINE_FILE_NAME]) rather than user content: it is left out of
          * the folder contents list ([listVaultLevel]) and of link /
          * Navigate to search ([listLinkTargets]). Starred and the outlines
-         * stay in the link index so their `lunarbor:` links are still
+         * stay in the link index so their vault links are still
          * rewritten on moves.
          *
          * @param fileRel Vault-relative file path.

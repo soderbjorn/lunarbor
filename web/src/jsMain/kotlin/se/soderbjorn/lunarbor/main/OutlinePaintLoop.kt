@@ -24,7 +24,7 @@
  * in (`MainViewModel.resolveImageSrc`, rules in `ImagePaths`), so a
  * pasted image's bare file name finds the file in the node's folder.
  *
- * A `lunarbor:` link whose target no longer exists (`MainViewModel.isLinkBroken`,
+ * A vault link whose target no longer exists (`MainViewModel.isLinkBroken`,
  * TRF-8) is drawn struck through with a "not found" tooltip
  * ([markBrokenLinks]); the text is left exactly as it is.
  *
@@ -385,7 +385,7 @@ private fun buildRowElement(
 }
 
 /**
- * Marks every `lunarbor:` link span under [root] whose target is missing
+ * Marks every vault link span under [root] whose target is missing
  * ([MainViewModel.isLinkBroken]) with the `lunarbor-md-link-broken` class
  * (struck through) and a "Not found" tooltip naming the path. Links whose
  * status is still being checked are drawn normally; the check's result
@@ -398,12 +398,12 @@ internal fun markBrokenLinks(root: HTMLElement, state: PaneBackingViewModel.Stat
     for (i in 0 until spans.length) {
         val span = spans.item(i) as? HTMLElement ?: continue
         val href = span.getAttribute("data-href") ?: continue
-        if (!LunarborLink.isLunarborLink(href)) continue
+        if (!LunarborLink.isRooted(href)) continue
         if (viewModel.isLinkBroken(state, href)) {
             span.classList.add("lunarbor-md-link-broken")
-            span.title = "Not found: " + (LunarborLink.parse(href)?.let { "/$it" } ?: href)
+            span.title = "Not found: " + (LunarborLink.parseRooted(href)?.let { "/$it" } ?: href)
         } else {
-            span.title = LunarborLink.parse(href)?.let { "/$it" } ?: href
+            span.title = LunarborLink.parseRooted(href)?.let { "/$it" } ?: href
         }
     }
 }
@@ -820,13 +820,13 @@ private fun buildCodeTextRegion(rowDiv: HTMLElement, editable: String): HTMLElem
  *   file it shows, or `null` for an external URL — normally
  *   `MainViewModel.resolveImageSrc` for this row.
  * @param wikiResolver Maps a wiki link's name ([StyledRun.wikiName]) to
- *   the `lunarbor:` link it stands for, or `null` to draw it as plain text —
+ *   the vault link it stands for, or `null` to draw it as plain text —
  *   normally `MainViewModel.wikiLinkHref` for the pane's state. A
  *   resolved wiki link gets the same link class and `data-href` as a
- *   `[label](lunarbor:…)` link, so clicking and broken-link marking treat it
+ *   `[label](…)` link, so clicking and broken-link marking treat it
  *   alike.
  * @param linkResolver Maps a link's destination as written to the href the
- *   app uses — `lunarbor:/<path>` for a place in the vault, read relative to
+ *   app uses — `/<path>` for a place in the vault, read relative to
  *   the row's folder — normally `MainViewModel.linkHrefOf` for this row.
  */
 private fun buildStyledTextRegion(
@@ -970,7 +970,7 @@ private fun buildStyledTextRegion(
  *
  * @param wrapper The row's text wrapper to append the spans to.
  * @param run The wiki link run ([StyledRun.wikiName] set).
- * @param href The `lunarbor:` link the name resolves to.
+ * @param href The vault link the name resolves to.
  * @param lineMarkerLen Length of the hidden line-level prefix, added to
  *   every source offset (they are relative to the editable text).
  */
@@ -2192,7 +2192,7 @@ fun ensureStyles() {
             text-underline-offset: 2px;
             cursor: pointer;
         }
-        /* A `lunarbor:` link whose target is gone (TRF-8): struck through and
+        /* A vault link whose target is gone (TRF-8): struck through and
            muted; the tooltip says "Not found". */
         .lunarbor-md-link.lunarbor-md-link-broken {
             color: var(--t-text-muted, #8a8a8a);

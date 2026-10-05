@@ -4,7 +4,7 @@
  * The vault as 3D mode's map shapes (LBR-11: Crown, Cone, Galaxy) see it:
  * one body per node folder — the root and every folder-backed item — with
  * its parent, children in outline order, how many leaf bullets it holds
- * (drawn as dust) and the `lunarbor:` links between bodies.
+ * (drawn as dust) and the vault links between bodies.
  *
  * Built by [VaultGraphBuilder] from the registry's cached node listings
  * (`DocumentRegistry.requestLinkPreview`, one per folder, read from disk)
@@ -57,7 +57,7 @@ data class GraphNode(
  * The map's graph.
  *
  * @property nodes Every body by folder, in breadth-first order (root first).
- * @property links Undirected `lunarbor:` link edges between bodies (each pair
+ * @property links Undirected vault link edges between bodies (each pair
  *   once, never a body to itself), from [VaultGraphBuilder.linkEdges].
  * @property truncated `true` when [VaultGraphBuilder.MAX_NODES] cut the walk short.
  */
@@ -160,7 +160,7 @@ object VaultGraphBuilder {
 
     /**
      * The link edges among [graph]'s bodies: for every note file and every
-     * `lunarbor:` target it links to (the link index, file → targets), an
+     * link target it links to (the link index, file → targets), an
      * edge from the file's body to the target's body ([VaultGraph.anchorOf]).
      * A link whose file or target the privacy mode hides ([isHidden]) is
      * left out, as are links within one body.

@@ -68,7 +68,7 @@ class McpToolsTest {
     @Test
     fun paths_are_normalized_and_cannot_leave_the_vault() {
         assertEquals("Recipes/Soups", AgentOutline.normalizePath("/Recipes/Soups/"))
-        assertEquals("A b", AgentOutline.normalizePath("lunarbor:/A%20b"))
+        assertEquals("A b", AgentOutline.normalizePath("/A b"))
         assertEquals("", AgentOutline.normalizePath("/"))
         assertFailsWith<AgentOutline.ParseException> { AgentOutline.normalizePath("/../etc") }
         assertFailsWith<AgentOutline.ParseException> { AgentOutline.normalizePath("/.trash/x") }
@@ -225,7 +225,7 @@ class McpToolsTest {
         assertTrue("* Work  <!-- /Work -->" in rootText && "* Milk" in rootText, rootText)
         assertFalse("Secret" in rootText || "Health" in rootText || "Plan.md" in rootText, rootText)
         assertTrue("/Open.md" in rootText, rootText)
-        for (hidden in listOf("/Health", "lunarbor:/Health", "/Plan.md", "/_privacy.config")) {
+        for (hidden in listOf("/Health", "Health/_node.md", "/Plan.md", "/_privacy.config")) {
             val r = call("read", "path" to hidden)
             assertTrue(r.isError && "Nothing at" in r.text, "$hidden: ${r.text}")
         }

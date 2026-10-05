@@ -303,7 +303,7 @@ class DocumentRegistry(
     private val _linkStatus: MutableStateFlow<Map<String, Boolean>> = MutableStateFlow(emptyMap())
 
     /**
-     * Link target path → whether something exists there, for every `lunarbor:`
+     * Link target path → whether something exists there, for every vault
      * target a view has asked about ([requestLinkStatus]). Views draw a
      * link whose entry is `false` struck through with a "not found"
      * tooltip; the link text itself is never touched. Re-checked by
@@ -348,7 +348,7 @@ class DocumentRegistry(
     private val _backlinks: MutableStateFlow<Map<String, List<se.soderbjorn.lunarbor.data.TextHit>>> = MutableStateFlow(emptyMap())
 
     /**
-     * Page path → the lines linking to it ([TextIndex.backlinks]: `lunarbor:`
+     * Page path → the lines linking to it ([TextIndex.backlinks]: vault
      * links and resolving `[[wiki]]` links, not from inside the page, less
      * what the app's privacy mode hides), for every page a pane has shown
      * the "Linked from" section of ([requestBacklinks]). Recomputed by
@@ -682,7 +682,7 @@ class DocumentRegistry(
      * save's [moves]:
      *
      *  1. Carries the link index's keys along with moved folders.
-     *  2. Rewrites the `lunarbor:` links in every open document's lines
+     *  2. Rewrites the vault links in every open document's lines
      *     ([Document.rewriteLinks]); those edits save with the document.
      *  3. Rewrites, on disk, every other file the link index says links at
      *     or through a moved path ([NoteRepository.rewriteLinksInFile]) —
@@ -789,7 +789,7 @@ class DocumentRegistry(
     }
 
     /**
-     * Every note file's `lunarbor:` link targets ([VaultIndex.allLinks]),
+     * Every note file's vault link targets ([VaultIndex.allLinks]),
      * open documents saved first. Unfiltered: the caller drops what the
      * privacy mode hides ([isPathHidden]). Read by 3D mode's map shapes
      * (web `MapView`) to draw links between bodies.

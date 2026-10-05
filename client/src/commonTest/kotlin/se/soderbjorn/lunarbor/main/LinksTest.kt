@@ -232,9 +232,9 @@ class LinksTest {
         assertTrue(dirExists("Recipes/Soups"))
         assertNull(read("Recipes/Soups/_node.md"))
         assertEquals("- Photo: [granola](../Recipes/Soups/granola.jpg)\n", read("Notes/_node.md"))
-        assertFalse(p.isLinkBroken(p.stateFlow.value, "lunarbor:/Recipes/Soups/granola.jpg"))
+        assertFalse(p.isLinkBroken(p.stateFlow.value, "/Recipes/Soups/granola.jpg"))
         runCurrent()
-        assertFalse(p.isLinkBroken(p.stateFlow.value, "lunarbor:/Recipes/Soups/granola.jpg"))
+        assertFalse(p.isLinkBroken(p.stateFlow.value, "/Recipes/Soups/granola.jpg"))
         registry.release("Recipes/_node.md")
     }
 
@@ -244,7 +244,7 @@ class LinksTest {
     fun a_link_whose_target_moved_in_finder_shows_as_broken_and_stays() = runTest {
         seedRecipes()
         val p = pane()
-        val href = "lunarbor:/Recipes/Soups"
+        val href = "/Recipes/Soups"
         assertFalse(p.isLinkBroken(p.stateFlow.value, href))
         runCurrent()
         assertEquals(true, p.stateFlow.value.linkStatus["Recipes/Soups"])
@@ -263,9 +263,9 @@ class LinksTest {
         assertEquals("_node.md", p.stateFlow.value.activeFileRel)
         flush(p)
         assertTrue(read("_node.md")!!.contains("[soups](Recipes/Soups/_node.md)"))
-        p.isLinkBroken(p.stateFlow.value, "lunarbor:/nowhere/at%20all")
+        p.isLinkBroken(p.stateFlow.value, "/nowhere/at%20all")
         runCurrent()
-        assertTrue(p.isLinkBroken(p.stateFlow.value, "lunarbor:/nowhere/at%20all"))
+        assertTrue(p.isLinkBroken(p.stateFlow.value, "/nowhere/at%20all"))
         assertFalse(p.isLinkBroken(p.stateFlow.value, "https://example.com"))
     }
 
@@ -335,7 +335,7 @@ class LinksTest {
         p.insertLinkTo(hit)
         assertEquals("  * Meeting notes with [Doctor](../Private/Health/Doctor/_node.md)", p.lines[meeting])
 
-        p.navigateToLink("lunarbor:/Private/Health/Doctor")
+        p.navigateToLink("/Private/Health/Doctor")
         runCurrent()
         val s = p.stateFlow.value
         assertEquals("_node.md", s.activeFileRel)
@@ -356,7 +356,7 @@ class LinksTest {
         seed("Private/_node.md", "- Health\n- Doctor [↳](<Doctor/_node.md>)\n")
         seed("Private/Doctor/_node.md", "- Call\n")
         val p = pane("Work/_node.md")
-        p.navigateToLink("lunarbor:/Private/Doctor")
+        p.navigateToLink("/Private/Doctor")
         runCurrent()
         val s = p.stateFlow.value
         assertEquals("Private/_node.md", s.activeFileRel)
@@ -373,20 +373,20 @@ class LinksTest {
         fs.writeBinary("$root/Foreign/scan.pdf", byteArrayOf(1))
         val p = pane()
 
-        p.navigateToLink("lunarbor:/Foreign")
+        p.navigateToLink("/Foreign")
         runCurrent()
         assertEquals("Foreign/_node.md", p.stateFlow.value.activeFileRel)
 
-        p.navigateToLink("lunarbor:/Foreign/readme.md")
+        p.navigateToLink("/Foreign/readme.md")
         runCurrent()
         assertEquals("Foreign/readme.md", p.stateFlow.value.activeFileRel)
 
-        p.navigateToLink(LunarborLink.format("Foreign/photo.png"))
+        p.navigateToLink(LunarborLink.rooted("Foreign/photo.png"))
         runCurrent()
         assertTrue(p.stateFlow.value.isImageView)
 
         val external = ArrayList<String>()
-        p.navigateToLink("lunarbor:/Foreign/scan.pdf", openExternally = { external += it })
+        p.navigateToLink("/Foreign/scan.pdf", openExternally = { external += it })
         runCurrent()
         assertEquals(listOf("Foreign/scan.pdf"), external)
         assertEquals("Foreign/photo.png", p.stateFlow.value.activeFileRel)
@@ -400,7 +400,7 @@ class LinksTest {
         seed("Recipes/_node.md", "- Soups [↳](<Soups/_node.md>)\n")
         seed("Recipes/Soups/_node.md", "- Tomato\n")
         val p = pane()
-        p.navigateToLink("lunarbor:/Recipes/Soups")
+        p.navigateToLink("/Recipes/Soups")
         runCurrent()
         assertEquals("Recipes/Soups", p.currentLocationPath())
         p.toggleStarred(starred = false)

@@ -13,9 +13,9 @@
  * 1. Reads `Starred.md` through a *private* document-VM trio rooted at
  *    `Starred.md`. Rebuilt on every open so a fresh disk snapshot is
  *    shown.
- * 2. Renders each `* [Label](lunarbor:/…)` bullet as a row in the palette-list
- *    shape (title + path). Entries are the same `lunarbor:` paths as links
- *    (TRF-8), so a save that renames or moves the target rewrites them;
+ * 2. Renders each `* [Label](Recipes/_node.md)` bullet as a row in the
+ *    palette-list shape (title + path). Entries are relative links from the
+ *    vault root, resolved to `/…` for the pane VM, so a save that renames or moves the target rewrites them;
  *    an entry whose target is gone shows "not found".
  * 3. Supports keyboard navigation:
  *    - `ArrowUp` / `ArrowDown` — move highlight.
@@ -111,7 +111,7 @@ internal class StarredModal(
     private var highlightedIndex: Int = 0
 
     /**
-     * The parent pane's location as a `lunarbor:` path
+     * The parent pane's location as a vault path
      * (`MainViewModel.currentLocationPath`), read when the modal opens and
      * after each toggle; `null` until known. Drives the Add / Remove
      * button.
@@ -292,7 +292,7 @@ internal class StarredModal(
 
     /**
      * The bookmark rows of the loaded `Starred.md`: every
-     * `* [Label](lunarbor:/…)` bullet, with whether its target is missing
+     * `* [Label](…)` link bullet, with whether its target is missing
      * (asked through the parent pane, whose registry checks the disk).
      * Other lines are ignored.
      */
@@ -308,12 +308,15 @@ internal class StarredModal(
             // Starred places the privacy mode hides are not listed.
             if (parentVm?.isPathHidden(path) == true) continue
             val label = link.bulletText.substring(link.indent + 2)
-            val broken = parentVm != null && parentState != null && parentVm.isLinkBroken(parentState, link.url)
+            // Entries are written relative to the vault root; the pane VM
+            // takes links in their in-app `/…` form.
+            val href = LunarborLink.rooted(path)
+            val broken = parentVm != null && parentState != null && parentVm.isLinkBroken(parentState, href)
             out.add(
                 BookmarkEntry(
                     label = label.ifBlank { if (path.isEmpty()) NoteRepository.ROOT_DISPLAY_NAME else path.substringAfterLast('/') },
                     path = path,
-                    rawHref = link.url,
+                    href = href,
                     broken = broken,
                 ),
             )
@@ -325,10 +328,10 @@ internal class StarredModal(
         val list = listEl ?: return
         // Preserve highlight if it still maps to a bookmark with the
         // same href; otherwise reset to the top.
-        val priorHref = entries.getOrNull(highlightedIndex)?.rawHref
+        val priorHref = entries.getOrNull(highlightedIndex)?.href
         entries = newEntries
         highlightedIndex = if (newEntries.isEmpty()) 0
-        else newEntries.indexOfFirst { it.rawHref == priorHref }.takeIf { it >= 0 } ?: 0
+        else newEntries.indexOfFirst { it.href == priorHref }.takeIf { it >= 0 } ?: 0
 
         while (list.firstChild != null) list.removeChild(list.firstChild!!)
         if (newEntries.isEmpty()) {
@@ -387,7 +390,7 @@ internal class StarredModal(
 
     private fun openHighlighted() {
         val entry = entries.getOrNull(highlightedIndex) ?: return
-        activePaneVmProvider()?.navigateToLink(entry.rawHref)
+        activePaneVmProvider()?.navigateToLink(entry.href)
         closeInternal()
     }
 
@@ -568,13 +571,15 @@ internal class StarredModal(
      *
      * @property label The entry's label.
      * @property path Vault-relative target path.
-     * @property rawHref The entry's `lunarbor:` link, as written.
+     * @property href The entry's target as an in-app `/…` link
+     *   ([LunarborLink.rooted]) — what `navigateToLink` / `isLinkBroken`
+     *   take; the file itself holds a relative link.
      * @property broken `true` when the target is known to be missing.
      */
     private data class BookmarkEntry(
         val label: String,
         val path: String,
-        val rawHref: String,
+        val href: String,
         val broken: Boolean,
     )
 }

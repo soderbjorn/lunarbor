@@ -1,7 +1,7 @@
 /*
  * LunarborLinkTest.kt (commonTest)
  * --------------------------
- * Tests for [LunarborLink], the `lunarbor:` link codec of TRF-8: path encoding on top
+ * Tests for [LunarborLink], the link codec of TRF-8: path encoding on top
  * of the on-disk folder names, parsing, finding links in raw text (inline
  * and inside an outline's escaped `+` titles), and the rewrite applied
  * after renames and moves.
@@ -20,10 +20,10 @@ class LunarborLinkTest {
 
     @Test
     fun formats_the_ticket_examples() {
-        assertEquals("lunarbor:/Recipes/Soups", LunarborLink.format("Recipes/Soups"))
-        assertEquals("lunarbor:/Recipes/granola.jpg", LunarborLink.format("Recipes/granola.jpg"))
-        assertEquals("lunarbor:/Budget%202027.md", LunarborLink.format("Budget 2027.md"))
-        assertEquals("lunarbor:/", LunarborLink.format(""))
+        assertEquals("/Recipes/Soups", LunarborLink.rooted("Recipes/Soups"))
+        assertEquals("/Recipes/granola.jpg", LunarborLink.rooted("Recipes/granola.jpg"))
+        assertEquals("/Budget%202027.md", LunarborLink.rooted("Budget 2027.md"))
+        assertEquals("/", LunarborLink.rooted(""))
     }
 
     @Test
@@ -38,8 +38,8 @@ class LunarborLinkTest {
 
     @Test
     fun encodes_characters_that_break_a_link_destination() {
-        assertEquals("lunarbor:/a%28b%29%5Bc%5D%3Cd%3E%5Ce%23f%3Fg", LunarborLink.format("a(b)[c]<d>\\e#f?g"))
-        assertEquals("lunarbor:/tab%09x", LunarborLink.format("tab\tx"))
+        assertEquals("/a%28b%29%5Bc%5D%3Cd%3E%5Ce%23f%3Fg", LunarborLink.rooted("a(b)[c]<d>\\e#f?g"))
+        assertEquals("/tab%09x", LunarborLink.rooted("tab\tx"))
     }
 
     @Test
@@ -48,21 +48,21 @@ class LunarborLinkTest {
         // encodes that `%` once more.
         val onDisk = FolderName.forTitle("Q3/Q4 plan")
         assertEquals("Q3%2FQ4 plan", onDisk)
-        val link = LunarborLink.format(onDisk)
-        assertEquals("lunarbor:/Q3%252FQ4%20plan", link)
-        assertEquals(onDisk, LunarborLink.parse(link))
+        val link = LunarborLink.rooted(onDisk)
+        assertEquals("/Q3%252FQ4%20plan", link)
+        assertEquals(onDisk, LunarborLink.parseRooted(link))
     }
 
     @Test
     fun non_ascii_names_are_kept_readable() {
-        assertEquals("lunarbor:/Rätter/Smörgås", LunarborLink.format("Rätter/Smörgås"))
-        assertEquals("Rätter/Smörgås", LunarborLink.parse("lunarbor:/R%C3%A4tter/Smörgås"))
+        assertEquals("/Rätter/Smörgås", LunarborLink.rooted("Rätter/Smörgås"))
+        assertEquals("Rätter/Smörgås", LunarborLink.parseRooted("/R%C3%A4tter/Smörgås"))
     }
 
     @Test
     fun round_trips_arbitrary_names() {
         for (name in listOf("a b", "50%25 done", "x (2)", "%", "Ω≈ç √", "emoji 😀 name", "trailing%20")) {
-            assertEquals("Top/$name", LunarborLink.parse(LunarborLink.format("Top/$name")), name)
+            assertEquals("Top/$name", LunarborLink.parseRooted(LunarborLink.rooted("Top/$name")), name)
         }
     }
 
@@ -70,24 +70,24 @@ class LunarborLinkTest {
 
     @Test
     fun parses_folders_files_and_the_root() {
-        assertEquals("Recipes/Soups", LunarborLink.parse("lunarbor:/Recipes/Soups"))
-        assertEquals("Recipes/Soups", LunarborLink.parse("lunarbor:/Recipes/Soups/"))
-        assertEquals("Budget 2027.md", LunarborLink.parse("lunarbor:/Budget%202027.md"))
-        assertEquals("", LunarborLink.parse("lunarbor:/"))
+        assertEquals("Recipes/Soups", LunarborLink.parseRooted("/Recipes/Soups"))
+        assertEquals("Recipes/Soups", LunarborLink.parseRooted("/Recipes/Soups/"))
+        assertEquals("Budget 2027.md", LunarborLink.parseRooted("/Budget%202027.md"))
+        assertEquals("", LunarborLink.parseRooted("/"))
     }
 
     @Test
     fun rejects_other_urls_and_malformed_paths() {
-        assertNull(LunarborLink.parse("https://example.com"))
-        assertNull(LunarborLink.parse("Recipes/Soups"))
-        assertNull(LunarborLink.parse("#Recipes"))
-        assertNull(LunarborLink.parse("lunarbor:Recipes"))
-        assertNull(LunarborLink.parse("lunarbor:/a//b"))
-        assertNull(LunarborLink.parse("lunarbor:/a/../b"))
-        assertNull(LunarborLink.parse("lunarbor:/./a"))
-        assertNull(LunarborLink.parse("lunarbor:/a%2Fb"))
-        assertNull(LunarborLink.parse("lunarbor:/bad%zz"))
-        assertNull(LunarborLink.parse("lunarbor:/bad%2"))
+        assertNull(LunarborLink.parseRooted("https://example.com"))
+        assertNull(LunarborLink.parseRooted("Recipes/Soups"))
+        assertNull(LunarborLink.parseRooted("#Recipes"))
+        assertNull(LunarborLink.parseRooted("//host/Recipes"))
+        // An older vault's link is no in-app href (files still read it, see resolve).
+        assertNull(LunarborLink.parseRooted("lunarbor:/Recipes"))
+        assertNull(LunarborLink.parseRooted("/../b"))
+        assertNull(LunarborLink.parseRooted("/a%2Fb"))
+        assertNull(LunarborLink.parseRooted("/bad%zz"))
+        assertNull(LunarborLink.parseRooted("/bad%2"))
     }
 
     // ------------------------------------------------------ in files

@@ -72,7 +72,7 @@ class RelativeLinksTest {
         saveAll(registry)
         assertEquals("- todo [Pasta](../Recipes/Pasta/_node.md)\n", disk("Notes/_node.md"))
         // Drawn and followed as the vault path.
-        assertEquals("lunarbor:/Recipes/Pasta", p.linkHrefOf(0, "../Recipes/Pasta/_node.md"))
+        assertEquals("/Recipes/Pasta", p.linkHrefOf(0, "../Recipes/Pasta/_node.md"))
     }
 
     @Test
@@ -89,22 +89,22 @@ class RelativeLinksTest {
         p.moveTo(2, 0)
         p.indentLine()
         // Until the save, it still means what it meant.
-        assertEquals("lunarbor:/Recipes/Pasta", p.linkHrefOf(2, "Recipes/Pasta/_node.md"))
+        assertEquals("/Recipes/Pasta", p.linkHrefOf(2, "Recipes/Pasta/_node.md"))
         saveAll(registry)
         assertEquals("  * see [pasta](./Pasta/_node.md)", p.lines[2])
         assertEquals("- Pasta [↳](<Pasta/_node.md>)\n- see [pasta](./Pasta/_node.md)\n", disk("Recipes/_node.md"))
-        assertEquals("lunarbor:/Recipes/Pasta", p.linkHrefOf(2, "./Pasta/_node.md"))
+        assertEquals("/Recipes/Pasta", p.linkHrefOf(2, "./Pasta/_node.md"))
 
         // Undo the indent: the old text comes back, with its old meaning.
         p.undo()
         runCurrent()
         val row = p.lines.indexOfFirst { "see [pasta]" in it }
         val dest = Regex("\\]\\(([^)]*)\\)").find(p.lines[row])!!.groupValues[1]
-        assertEquals("lunarbor:/Recipes/Pasta", p.linkHrefOf(row, dest))
+        assertEquals("/Recipes/Pasta", p.linkHrefOf(row, dest))
         saveAll(registry)
         val again = p.lines.indexOfFirst { "see [pasta]" in it }
         val destAgain = Regex("\\]\\(([^)]*)\\)").find(p.lines[again])!!.groupValues[1]
-        assertEquals("lunarbor:/Recipes/Pasta", p.linkHrefOf(again, destAgain))
+        assertEquals("/Recipes/Pasta", p.linkHrefOf(again, destAgain))
     }
 
     @Test

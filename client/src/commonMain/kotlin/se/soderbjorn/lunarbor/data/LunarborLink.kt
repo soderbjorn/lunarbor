@@ -17,23 +17,24 @@
  * destination is vault-rooted (as an image `src` is): both are still read,
  * and [rebaseText] turns them into relative links.
  *
- * **In the app** a resolved link is a `lunarbor:` path ([format] /
- * [parse]): what the view puts in `data-href`, what Starred, the link
- * search and navigation pass around. It never needs a base.
+ * **In the app** a resolved link is vault-rooted, `/Recipes/Soups`
+ * ([rooted] / [parseRooted]): what the view puts in `data-href`, what
+ * Starred, the link search and navigation pass around. It never needs a
+ * base, and a file may hold it too (it becomes relative on the next save).
  *
  * Either way the path is made of the folder and file names exactly as
  * they are on disk (so already [FolderName]-encoded):
  *
- *     lunarbor:/Recipes/Soups            → folder Recipes/Soups
- *     lunarbor:/Budget%202027.md         → a file
- *     lunarbor:/                         → the vault root
+ *     /Recipes/Soups            → folder Recipes/Soups
+ *     /Budget%202027.md         → a file
+ *     /                         → the vault root
  *
  * On top of the on-disk names, each segment is percent-encoded for the
  * characters that would break an inline Markdown link destination or be
  * ambiguous in a path: whitespace and control characters, `%`, `(`, `)`,
  * `<`, `>`, `[`, `]`, `\`, `#`, `?`. `%` is always encoded so a folder name
  * that itself holds an escape (`Q3%2FQ4 plan`) round-trips
- * (`lunarbor:/Q3%252FQ4%20plan`). Everything else, non-ASCII included, is kept
+ * (`/Q3%252FQ4%20plan`). Everything else, non-ASCII included, is kept
  * verbatim so links stay readable in other Markdown tools. An encoded
  * target therefore never contains a space, bracket, parenthesis or
  * backslash, which is what lets [rewriteText] edit raw file text — outline
@@ -70,7 +71,7 @@ data class PathMove(val from: String, val to: String) {
 }
 
 /**
- * The `lunarbor:` link codec.
+ * The link codec: relative links in files, vault-rooted links in the app.
  *
  * ### Callers
  * - `PaneBackingViewModel` formats links for Insert Link / "Insert Mirror…"
@@ -80,8 +81,8 @@ data class PathMove(val from: String, val to: String) {
  */
 object LunarborLink {
 
-    /** Every Lunarbor link starts with this: scheme plus the root `/`. */
-    const val PREFIX: String = "lunarbor:/"
+    /** How older vaults wrote a link (`lunarbor:/Recipes/Soups`); still read, never written. */
+    private const val LEGACY_PREFIX: String = "lunarbor:/"
 
     /**
      * Characters (besides whitespace and controls) always percent-encoded in
@@ -90,28 +91,28 @@ object LunarborLink {
      */
     private const val ENCODED: String = "%()<>[]\\#?:"
 
-    /** `true` when [url] is a Lunarbor link (whether or not it is well formed). */
-    fun isLunarborLink(url: String): Boolean = url.startsWith(PREFIX)
+    /** `true` when [url] is an older vault's `lunarbor:/…` link. */
+    fun isLegacyLink(url: String): Boolean = url.startsWith(LEGACY_PREFIX)
 
     /**
-     * Parses [url] into the vault-relative path it names.
-     *
-     * @return The path (`""` for `lunarbor:/`, the vault root), or `null` when
-     *   [url] is not a `lunarbor:` link or is malformed: an empty, `.` or `..`
-     *   segment, or a segment that decodes to something containing `/`.
+     * `true` when [href] is vault-rooted (`/…`, not a `//host` URL) — how
+     * the app passes a resolved link around ([rooted]). Whether or not it
+     * is well formed.
      */
-    fun parse(url: String): String? {
-        if (!isLunarborLink(url)) return null
-        val body = url.substring(PREFIX.length).removeSuffix("/")
-        if (body.isEmpty()) return ""
-        val out = ArrayList<String>()
-        for (raw in body.split('/')) {
-            val seg = decodeSegment(raw) ?: return null
-            if (seg.isEmpty() || seg == "." || seg == ".." || '/' in seg) return null
-            out += seg
-        }
-        return out.joinToString("/")
-    }
+    fun isRooted(href: String): Boolean = href.startsWith("/") && !href.startsWith("//")
+
+    /**
+     * Parses the vault-rooted [href] ([rooted]) into the vault-relative
+     * path it names.
+     *
+     * @return The path (`""` for `/`, the vault root), or `null` when
+     *   [href] is not vault-rooted or is malformed (see [resolve]).
+     */
+    fun parseRooted(href: String): String? = if (isRooted(href)) resolve(href, "") else null
+
+    /** The vault path an older vault's `lunarbor:/…` link names, or `null` (see [parseRooted]). */
+    private fun parseLegacy(url: String): String? =
+        if (isLegacyLink(url)) parseRooted(url.substring(LEGACY_PREFIX.length - 1)) else null
 
     /**
      * The vault-relative [pathRel] as a person reads it: `/`, then each
@@ -129,16 +130,19 @@ object LunarborLink {
         "/" + if (pathRel.isEmpty()) "" else pathRel.split('/').joinToString("/") { FolderName.decode(it) }
 
     /**
-     * Formats the vault-relative [pathRel] (on-disk names, `/`-separated;
-     * `""` for the vault root) as a `lunarbor:` link.
+     * The vault-relative [pathRel] (on-disk names, `/`-separated; `""` for
+     * the vault root) as a vault-rooted link, each segment percent-encoded
+     * ([encodeSegment]): `/Recipes/Soups`, `/Budget%202027.md`, `/`. The
+     * form the app passes resolved links around in — `data-href`, Starred,
+     * the link search, navigation — and a valid destination in a file too.
      */
-    fun format(pathRel: String): String {
-        if (pathRel.isEmpty()) return PREFIX
-        return PREFIX + pathRel.split('/').joinToString("/") { encodeSegment(it) }
+    fun rooted(pathRel: String): String {
+        if (pathRel.isEmpty()) return "/"
+        return "/" + pathRel.split('/').joinToString("/") { encodeSegment(it) }
     }
 
     /**
-     * Percent-encodes one on-disk name for use in a `lunarbor:` path: UTF-8
+     * Percent-encodes one on-disk name for use in a link path: UTF-8
      * `%XX` for whitespace, control characters and [ENCODED]; everything
      * else verbatim.
      */
@@ -247,7 +251,7 @@ object LunarborLink {
         var d = dest.trim()
         if (d.length >= 2 && d.startsWith("<") && d.endsWith(">")) d = d.substring(1, d.length - 1).trim()
         if (d.isEmpty()) return null
-        if (isLunarborLink(d)) return parse(d)
+        if (isLegacyLink(d)) return parseLegacy(d)
         if (d.startsWith("#") || d.startsWith("//") || SCHEME.containsMatchIn(d)) return null
         d = d.substringBefore('#').substringBefore('?')
         if (d.isEmpty()) return null
@@ -307,7 +311,7 @@ object LunarborLink {
      * @property end Index just past the destination (past its `>`).
      * @property pathRel The vault-relative path it names.
      * @property dest The destination as written (without `<>`).
-     * @property isRelative `false` for a `lunarbor:/…` or `/…` destination.
+     * @property isRelative `false` for a `/…` (or an older `lunarbor:/…`) destination.
      * @property namesOutline `true` when it names a node by its `_node.md`.
      */
     data class Occurrence(
@@ -342,7 +346,7 @@ object LunarborLink {
             if (open >= 0 && !(open > 0 && text[open - 1] == '!') && text.substring(open + 1, i) != CHILD_LINK_LABEL) {
                 val path = resolve(dest, baseFolder)
                 if (path != null) {
-                    val relative = !isLunarborLink(dest) && !dest.startsWith("/")
+                    val relative = !isLegacyLink(dest) && !dest.startsWith("/")
                     val outline = dest.substringBefore('#').substringBefore('?').let { it == OUTLINE || it.endsWith("/$OUTLINE") }
                     out += Occurrence(destStart, destEnd, path, dest, relative, outline)
                 }

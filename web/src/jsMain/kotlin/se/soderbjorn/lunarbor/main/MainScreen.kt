@@ -55,10 +55,10 @@ class MainScreen(
     private val viewModel: MainViewModel,
     private val scope: CoroutineScope,
     /**
-     * Opens a `lunarbor:` link (or resolved wiki link) in a new window
+     * Opens a vault link (or resolved wiki link) in a new window
      * instead of navigating this pane: a Shift- or ⌘-press on it (Ctrl
      * off the Mac) or a right-click / the Mac's Ctrl-click
-     * ([OpenGesture]). Receives the link's `href` (a `lunarbor:/…` URL);
+     * ([OpenGesture]). Receives the link's `href` (a `/…` path);
      * the host adds the pane. `null` falls back to in-pane navigation.
      */
     private val onOpenLinkInNewPane: ((href: String) -> Unit)? = null,
@@ -736,7 +736,7 @@ class MainScreen(
             if (handleImageMouseDown(me)) return@addEventListener
             maybeBeginGutterDrag(editor, me)
         })
-        // Right-click opens in a new window: a `lunarbor:` link (or a resolved
+        // Right-click opens in a new window: a vault link (or a resolved
         // wiki link) its target, a bullet's dot its item. Anywhere else the
         // usual context menu shows.
         editor.addEventListener("contextmenu", { event ->
@@ -1505,7 +1505,7 @@ class MainScreen(
     }
 
     /**
-     * If [ev] hit a span carrying a Lunarbor `lunarbor:` link (`data-href`,
+     * If [ev] hit a span carrying a vault link (`data-href`,
      * also set on a resolved wiki link), acts on it by [OpenGesture] and
      * suppresses the default contenteditable caret placement:
      * - plain press → the pane's [MainViewModel.navigateToLink];
@@ -1527,7 +1527,7 @@ class MainScreen(
         if (gesture == OpenGesture.NONE) return false
         val target = ev.target as? Node ?: return false
         val href = ancestorHref(target) ?: return false
-        if (!LunarborLink.isLunarborLink(href)) return false
+        if (!LunarborLink.isRooted(href)) return false
         ev.preventDefault()
         ev.stopPropagation()
         val inNewPane = onOpenLinkInNewPane
@@ -1544,7 +1544,7 @@ class MainScreen(
 
     /**
      * Right-click (or the Mac's Ctrl-click, which fires `contextmenu`) on
-     * a `lunarbor:` link or a bullet's dot: opens the link's target, or
+     * a vault link or a bullet's dot: opens the link's target, or
      * the dot's item, in a new window (through the host's
      * [onOpenLinkInNewPane] / [onOpenLocationInNewPane]). Returns `true`
      * when it did, so the context menu is suppressed.
@@ -1552,7 +1552,7 @@ class MainScreen(
     private fun handleOpenInNewPaneContextMenu(ev: MouseEvent): Boolean {
         val target = ev.target as? Element ?: return false
         val href = ancestorHref(target)
-        if (href != null && LunarborLink.isLunarborLink(href)) {
+        if (href != null && LunarborLink.isRooted(href)) {
             val open = onOpenLinkInNewPane ?: return false
             open(href)
             return true

@@ -9,7 +9,7 @@
  * leaf bullet or an empty folder). The commands differ only in:
  *
  *  - the placeholder text shown in the input,
- *  - what to do when the user picks a hit (insert a `lunarbor:` link at the
+ *  - what to do when the user picks a hit (insert a vault link at the
  *    cursor, vs navigate this pane to the target),
  *  - for Navigate to only, recency (LBR-16): an empty query lists nodes by
  *    their `updated` stamp, newest first (`VaultIndex.recentNodes`), and
@@ -315,7 +315,7 @@ internal class LinkSearchModal private constructor(
     companion object {
         /**
          * "Insert Link" / "Insert Mirror…" flavour: at pick time, insert a
-         * `[label](lunarbor:/…)` link at the cursor via
+         * `[label](…)` link at the cursor via
          * `MainViewModel.insertLinkTo`. If the user had an editor
          * selection at open time, that text becomes the link's label;
          * otherwise the hit's title is used.
@@ -341,7 +341,7 @@ internal class LinkSearchModal private constructor(
         )
 
         /**
-         * "Navigate to" flavour: at pick time, follow the hit's `lunarbor:` link
+         * "Navigate to" flavour: at pick time, follow the hit's vault link
          * through `MainViewModel.navigateToLink`, so the zoom / open
          * semantics match a real link click. Lists recently changed nodes
          * first (LBR-16): an empty query shows them newest first, and they
@@ -361,7 +361,7 @@ internal class LinkSearchModal private constructor(
             activePaneVmProvider = activePaneVmProvider,
             placeholder = "Navigate to a node or file…",
             action = Action { vm, hit, _ ->
-                vm.navigateToLink(LunarborLink.format(hit.pathRel), onComplete = onAfterPick)
+                vm.navigateToLink(LunarborLink.rooted(hit.pathRel), onComplete = onAfterPick)
             },
             byRecency = true,
         )

@@ -13,7 +13,7 @@
  *     The list is cached and dropped by [invalidateTargets] after saves
  *     and whenever the registry refreshes its listings.
  *
- *  2. **The link index** — which note files contain `lunarbor:` links to which
+ *  2. **The link index** — which note files contain vault links to which
  *     paths. Built by one scan of the vault the first time it is needed
  *     ([ensureLinkIndex]), then kept current as files load and save: the
  *     repository reports every note file text it reads or writes
@@ -45,7 +45,7 @@ import kotlinx.coroutines.sync.withLock
  * One folder or file a link can point at.
  *
  * @property pathRel Vault-relative path (on-disk names); `""` is the
- *   vault root. The link is `LunarborLink.format(pathRel)`.
+ *   vault root. The link is `LunarborLink.rooted(pathRel)`.
  * @property title What the search list shows and matches: the bullet's
  *   plain-text title for a node folder, the decoded name for another
  *   folder, the basename (minus `.md` for notes) for a file.
@@ -183,7 +183,7 @@ class VaultIndex(
     private val indexMutex = Mutex()
     private var indexBuilt = false
 
-    /** Note file → the `lunarbor:` target paths its text links to (files without links are absent). */
+    /** Note file → the link target paths its text links to (files without links are absent). */
     private val linksByFile: MutableMap<String, Set<String>> = HashMap()
 
     /**

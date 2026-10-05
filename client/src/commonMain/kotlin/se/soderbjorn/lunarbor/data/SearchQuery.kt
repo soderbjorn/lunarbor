@@ -20,7 +20,7 @@
  *   tag on a parent counts for its children), `#tag*` a tag prefix.
  * - `in:` (top level, anywhere in the query) replaces the default tree;
  *   `in:/` is the whole vault. Its path is on-disk folder names, like a
- *   `lunarbor:` link's (percent-encoding accepted); quote it to use spaces.
+ *   vault link's (percent-encoding accepted); quote it to use spaces.
  * - `order:reverse` (top level, anywhere) lists the results in reverse
  *   order — the deepest, last files first; `order:normal` is the default.
  * - Parsing never fails: a half-typed query (an open parenthesis, a
@@ -213,12 +213,12 @@ data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Bo
 
         /**
          * The vault-relative folder an `in:` path names: leading / trailing
-         * slashes dropped, a `lunarbor:` prefix and percent-encoding accepted.
+         * slashes dropped, percent-encoding accepted.
          */
         private fun scopePathOf(raw: String): String {
-            val path = raw.removePrefix("lunarbor:").trim().trim('/')
+            val path = raw.trim().trim('/')
             if (path.isEmpty()) return ""
-            return LunarborLink.parse("lunarbor:/$path") ?: path
+            return LunarborLink.parseRooted("/$path") ?: path
         }
 
         /**

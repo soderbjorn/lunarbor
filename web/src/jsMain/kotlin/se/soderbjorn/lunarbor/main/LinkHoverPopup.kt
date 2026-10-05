@@ -159,7 +159,7 @@ internal class LinkHoverPopup(
         val edit = button("Edit link") {
             openLinkEditDialog(viewModel, scope, row, col, href, focusEditor)
         }
-        edit.title = LunarborLink.parse(href)?.let { path ->
+        edit.title = LunarborLink.parseRooted(href)?.let { path ->
             if (viewModel.isPathHidden(path)) "Not found" else LunarborLink.displayPath(path)
         } ?: href
         popup.appendChild(edit)

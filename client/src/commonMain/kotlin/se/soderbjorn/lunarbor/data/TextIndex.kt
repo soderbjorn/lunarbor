@@ -25,7 +25,7 @@
  * counts for its children). A search node's `{{search: …}}` is not indexed
  * ([SearchNode.stripQuery]).
  *
- * Each line also keeps the `lunarbor:` targets and `[[wiki]]` names it
+ * Each line also keeps the link targets and `[[wiki]]` names it
  * links to, so [backlinks] can list the lines linking to a page (LBR-7).
  *
  * The same tags decide what a privacy mode hides (LBR-10, [PrivacyFilter]):
@@ -133,7 +133,7 @@ class TextIndex(
          * which a privacy mode tests ([PrivacyFilter]). In a note, the line's own.
          */
         val itemTags: Set<String>,
-        /** Targets of the line's `lunarbor:` links ([LunarborLink.linkPathsIn]). */
+        /** Targets of the line's vault links ([LunarborLink.linkPathsIn]). */
         val links: Set<String> = emptySet(),
         /** Target names of the line's `[[wiki]]` links ([WikiLink.namesIn]). */
         val wikiNames: List<String> = emptyList(),
@@ -160,7 +160,7 @@ class TextIndex(
     /**
      * The index read the other way round, for [backlinks]: [byPath] maps a
      * page (a folder, or a file — an outline link counts as its folder) to
-     * the lines with a `lunarbor:` link to it, [byWiki] a wiki name's key
+     * the lines with a vault link to it, [byWiki] a wiki name's key
      * ([WikiLink.keyOf]) to the lines naming it. Dot folders are left out.
      */
     private class LinkRefs(val byPath: Map<String, List<LineRef>>, val byWiki: Map<String, List<LineRef>>)
@@ -450,7 +450,7 @@ class TextIndex(
 
     /**
      * The lines linking to the page at [target] — a folder (a node's, or any
-     * other) or a file — as hits to list and open: lines whose `lunarbor:`
+     * other) or a file — as hits to list and open: lines whose vault
      * link points exactly at [target] (an outline path counts as its
      * folder), or whose `[[wiki]]` link [resolveWiki] resolves to it. Links
      * to things inside [target] do not count, nor do lines inside the page

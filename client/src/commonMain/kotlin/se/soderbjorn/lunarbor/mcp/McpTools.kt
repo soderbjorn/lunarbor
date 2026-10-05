@@ -131,7 +131,7 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
                 "Markdown notes and other text files come back as text, images as images, and other files (PDFs, " +
                 "archives, …) as base64 data, up to 10 MB.",
             inputSchema = schema(
-                "path" to stringProp("Vault path of a node folder or a file, e.g. \"/\", \"/Recipes/Soups\", \"/Recipes/Plan.md\", \"/Recipes/photo.jpg\". lunarbor:/ links work too."),
+                "path" to stringProp("Vault path of a node folder or a file, e.g. \"/\", \"/Recipes/Soups\", \"/Recipes/Plan.md\", \"/Recipes/photo.jpg\"."),
                 "depth" to intProp("How many levels of nested nodes to include (1-5, default 1). Edits only ever match the node's own items (depth 1)."),
                 required = listOf("path"),
             ),

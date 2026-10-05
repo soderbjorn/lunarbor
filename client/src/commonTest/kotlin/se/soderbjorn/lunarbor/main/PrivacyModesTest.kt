@@ -276,7 +276,7 @@ class PrivacyModesTest {
         runCurrent()
         val shown = p.folderContentsOf(p.stateFlow.value, "")!!.map { it.pathRel }
         assertEquals(listOf("open.md"), shown)
-        assertTrue(p.isLinkBroken(p.stateFlow.value, "lunarbor:/Health"))
+        assertTrue(p.isLinkBroken(p.stateFlow.value, "/Health"))
     }
 
     // ------------------------------------------------- the file and dialog

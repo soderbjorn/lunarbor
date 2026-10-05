@@ -2,7 +2,7 @@
  * MapView.kt (jsMain)
  * -------------------
  * 3D mode's map shapes (LBR-11: Crown, Cone, Galaxy): the vault's node
- * tree as bodies in space, with branches to their parents, `lunarbor:`
+ * tree as bodies in space, with branches to their parents, vault
  * links as arcs between them, leaf bullets as dust around their node and
  * the active tab's windows as cards joined by a line to the node each one
  * shows. `SpaceMode` shows it in place of the page views when a map shape
@@ -1066,7 +1066,7 @@ internal class MapView(
             vm.navigateHome()
             arrived()
         } else {
-            vm.navigateToLink(LunarborLink.format(id)) { arrived() }
+            vm.navigateToLink(LunarborLink.rooted(id)) { arrived() }
         }
         renderHud()
         mode.requestFrame()

@@ -2,7 +2,7 @@
  * WikiLink.kt (commonMain)
  * ------------------------
  * Wiki-style links, `[[Name]]` (Obsidian's syntax, common in imported
- * notes). Unlike `lunarbor:` links ([LunarborLink]) they name a target instead of
+ * notes). Unlike vault links ([LunarborLink]) they name a target instead of
  * addressing it by path, so they are resolved against the vault's link
  * targets ([LinkTarget], the same list the link search uses): a name that
  * matches exactly one target acts as a link to it; no match or several

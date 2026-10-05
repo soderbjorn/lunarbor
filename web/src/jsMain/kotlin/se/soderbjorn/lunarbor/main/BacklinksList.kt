@@ -2,7 +2,7 @@
  *
  * The "Linked from" section (LBR-7): under the bullets of the page a pane
  * shows, before its folder contents list, every line elsewhere that links
- * to this page — a `lunarbor:` link to it, or a `[[wiki]]` link resolving
+ * to this page — a vault link to it, or a `[[wiki]]` link resolving
  * to it ("backlinks", as Roam / Obsidian call them). Which lines count is
  * decided in commonMain (`TextIndex.backlinks`, via
  * `PaneBackingViewModel.backlinksOf`).

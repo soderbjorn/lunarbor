@@ -2,7 +2,7 @@
  * LinkPreview.kt (commonMain)
  * ---------------------------
  * Link bullets to nodes. A leaf bullet whose text holds exactly one
- * `lunarbor:` link to a node is a mirror (`Document`, see its class doc):
+ * vault link to a node is a mirror (`Document`, see its class doc):
  * it folds open onto that node's own, editable items. This file holds
  * the pure rules: which lines can mirror ([linkPreviewPathOf]) and what a
  * node's listing holds ([linkPreviewItemsOf]) — read and cached by

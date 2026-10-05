@@ -2690,7 +2690,7 @@ class AppShell(
     /**
      * Opens the Lunarbor internal link [href] in a new pane spawned
      * from [sourcePaneId]. Wired via [MainScreen.onOpenLinkInNewPane]
-     * so a Shift- / ⌘-press or a right-click on a `lunarbor:` link
+     * so a Shift- / ⌘-press or a right-click on a vault link
      * (`OpenGesture`) creates a new pane
      * rooted at the link target, leaving the originating pane
      * untouched. Auto layout (if active) immediately re-tiles to fit
@@ -2770,7 +2770,7 @@ class AppShell(
      * ([se.soderbjorn.lunarbor.mcp.McpTools]): the same mutators the tab
      * strip, "+" menu and pane close buttons use, so an agent's changes
      * persist and repaint like the user's. Paths are vault-relative and
-     * opened as `lunarbor:` links would be ([MainViewModel.navigateToLink]).
+     * opened as vault links would be ([MainViewModel.navigateToLink]).
      *
      * Called once by `Main.kt`, which hands it to the MCP tools.
      */
@@ -2876,12 +2876,12 @@ class AppShell(
     /**
      * Moves the pane [paneId] to the vault path [path] once its first
      * document has loaded: the root through [MainViewModel.navigateHome],
-     * anything else as a `lunarbor:` link click.
+     * anything else as a vault link click.
      */
     private suspend fun showPath(paneId: String, path: String) {
         val vm = paneViewModels[paneId] ?: return
         vm.stateFlow.first { it.backingState?.isLoaded == true || it.backingState?.let { b -> b.isImageView || b.isHtmlView } == true }
-        if (path.isEmpty()) vm.navigateHome() else vm.navigateToLink(se.soderbjorn.lunarbor.data.LunarborLink.format(path))
+        if (path.isEmpty()) vm.navigateHome() else vm.navigateToLink(se.soderbjorn.lunarbor.data.LunarborLink.rooted(path))
     }
 
     /** Bumps [paneId]'s z-index to `max(existing) + 1` so it lands on top. */

@@ -66,7 +66,7 @@
  * match ([matchIds]), so zoom and folds hold.
  *
  * ### Mirrors
- * A leaf bullet whose text holds exactly one `lunarbor:` link to a node
+ * A leaf bullet whose text holds exactly one vault link to a node
  * ([linkPreviewPathOf], checked by `mirrorCheck`) is a mirror: it folds
  * like a folder-backed bullet ([isPromotedRef]), and expanding it splices
  * in that node's own items, editable. A save writes them to the node's
@@ -645,7 +645,7 @@ class Document(
     }
 
     /**
-     * Rewrites every `lunarbor:` link in the document's lines that points at or
+     * Rewrites every vault link in the document's lines that points at or
      * through a path [moves] renamed or moved ([LunarborLink.rewriteText]).
      * Row ids are kept, so fold state, zoom and backing folders are
      * untouched; the change saves like any edit. Links into the trash are

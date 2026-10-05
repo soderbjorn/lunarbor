@@ -3,7 +3,7 @@
  * ---------------------------
  * What a press on something that opens a place means: go there in this
  * pane, open it in a new window, or nothing (yet). One rule for every
- * link-like target a view draws — `lunarbor:` links and resolved wiki
+ * link-like target a view draws — vault links and resolved wiki
  * links (in rows and in the page title), bullet dots, search-node result
  * rows, pane search results, the "Linked from" backlinks list, link
  * preview items — so they all answer the same modifiers the same way

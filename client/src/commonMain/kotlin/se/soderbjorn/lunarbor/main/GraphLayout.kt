@@ -7,7 +7,7 @@
  *    every area gets a slice of the circle sized by how much it holds.
  *  - **Cone** — Robertson's cone trees: each node's children hang in a
  *    ring below it, the ring as wide as its children need.
- *  - **Galaxy** — a force layout seeded from the crown, where `lunarbor:`
+ *  - **Galaxy** — a force layout seeded from the crown, where vault
  *    links pull as well as branches, so linked nodes drift together even
  *    across areas.
  *
