@@ -45,6 +45,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import se.soderbjorn.lunarbor.data.DoneState
 import se.soderbjorn.lunarbor.data.ImagePaths
 import se.soderbjorn.lunarbor.data.LunarborLink
 import se.soderbjorn.lunarbor.data.NodeFrontMatter
@@ -54,6 +55,7 @@ import se.soderbjorn.lunarbor.data.PathMove
 import se.soderbjorn.lunarbor.data.PrivacyConfig
 import se.soderbjorn.lunarbor.data.PrivacyFilter
 import se.soderbjorn.lunarbor.data.PrivacyMode
+import se.soderbjorn.lunarbor.data.TextHit
 import se.soderbjorn.lunarbor.data.TextIndex
 import se.soderbjorn.lunarbor.data.SearchQuery
 import se.soderbjorn.lunarbor.data.SubtreeCodec
@@ -1237,6 +1239,114 @@ class DocumentRegistry(
         }
     }
 
+    /** Serializes [toggleDoneOnHit] / [undoDoneOnHit], so two quick presses never interleave. */
+    private val hitDoneLock = Mutex()
+
+    /**
+     * Toggle done (LBR-24's rule, [DoneState.toggledRow]) on the line a
+     * search result names, where it is stored — from a search node's or
+     * the pane search's result list (LBR-22), without opening it:
+     *
+     *  1. saves every open document, so the hit's file is current;
+     *  2. picks the [Document] to edit: an open one holding the hit's
+     *     item ([Document.rowOfStoredItem] — the file's own, or one with
+     *     its folder expanded or mirrored), preferring one with pending
+     *     rows (a prepared day: its own save keeps them, a reload from
+     *     disk would drop them), then the file's own; else acquires the
+     *     file's document (the same path as [editForAgent]);
+     *  3. rewrites the item's row — a block by its first row; a hit done
+     *     only by inheritance strikes its own title — saves, and releases.
+     *
+     * The edit goes through `Document` primitives, not a pane's undo
+     * stack, so no pane's pending day is committed by it
+     * ([Document.commitPendingRowsEditedBetween] runs only for a pane's own
+     * edits); panes on the edited document see it at once, other holders
+     * of the node reload after the save, the save feeds the text index,
+     * and every search node re-runs at once ([refreshSearchNodesNow]).
+     *
+     * Called by `PaneBackingViewModel.toggleDoneOnHit`.
+     *
+     * @param hit A result with [TextHit.canToggleDone].
+     * @return What changed (for the toast's Undo, [undoDoneOnHit]), or
+     *   `null` when nothing could be toggled (a note line, a code row, the
+     *   line gone, a title with nothing to strike).
+     */
+    suspend fun toggleDoneOnHit(hit: TextHit): HitDoneToggle? = hitDoneLock.withLock {
+        if (!hit.canToggleDone) return@withLock null
+        val change = editHitRow(hit) { raw -> DoneState.toggledRow(raw) } ?: return@withLock null
+        HitDoneToggle(hit, change.first, change.second, DoneState.isDoneRow(change.second))
+    }
+
+    /**
+     * Undoes [toggle] ([toggleDoneOnHit]): puts the row's text back as it
+     * was, when the row still reads as the toggle left it; when it was
+     * edited since, only its done state is set back
+     * ([DoneState.withDoneRow]). Same path as [toggleDoneOnHit].
+     *
+     * Called by `PaneBackingViewModel.undoHitDoneToggle` (the toast's Undo).
+     *
+     * @return `true` when the row was changed back.
+     */
+    suspend fun undoDoneOnHit(toggle: HitDoneToggle): Boolean = hitDoneLock.withLock {
+        editHitRow(toggle.hit) { raw ->
+            if (raw == toggle.after) toggle.before else DoneState.withDoneRow(raw, !toggle.done)
+        } != null
+    }
+
+    /**
+     * Rewrites the row of [hit]'s item with [transform] (see
+     * [toggleDoneOnHit] for which document it goes through) and saves.
+     *
+     * @return The row's text before and after, or `null` when the row was
+     *   not found, is a code row, or [transform] left it unchanged.
+     */
+    private suspend fun editHitRow(hit: TextHit, transform: (String) -> String): Pair<String, String>? {
+        if (!NoteRepository.isOutlineFile(hit.fileRel)) return null
+        flushAll()
+        // The item's own row: a block's first row decides its done state.
+        val find = { doc: Document ->
+            doc.rowOfStoredItem(hit.fileRel, hit.itemIndex, 0)
+        }
+        val open = openDocuments().filter { it.stateFlow.value.isLoaded && find(it) != null }
+        val holder = open.firstOrNull { it.hasPendingRows } ?: open.firstOrNull { it.fileRel == hit.fileRel } ?: open.firstOrNull()
+        val fileRel = holder?.fileRel ?: hit.fileRel
+        val doc = acquire(fileRel)
+        try {
+            doc.stateFlow.first { it.isLoaded }
+            val row = find(doc) ?: return null
+            val lines = doc.stateFlow.value.lines
+            // A code row is never done; a hit on one is not offered.
+            val hitRow = doc.rowOfStoredItem(hit.fileRel, hit.itemIndex, hit.rowOffset) ?: row
+            if (BlockLayout.isCodeLine(lines[hitRow])) return null
+            val before = lines[row]
+            val after = transform(before)
+            if (after == before) return null
+            var head = 0
+            while (head < before.length && head < after.length && before[head] == after[head]) head++
+            var tail = 0
+            while (tail < before.length - head && tail < after.length - head &&
+                before[before.length - 1 - tail] == after[after.length - 1 - tail]
+            ) tail++
+            if (before.length - tail > head) doc.delete(row, head, row, before.length - tail)
+            if (after.length - tail > head) doc.insertText(row, head, after.substring(head, after.length - tail))
+            doc.flush()
+            refreshSearchNodesNow()
+            return before to after
+        } finally {
+            release(fileRel)
+        }
+    }
+
+    /**
+     * Re-runs every requested search node now rather than
+     * [SEARCH_NODE_REFRESH_MS] later, so a result toggled from a list
+     * ([toggleDoneOnHit]) leaves an `is:open` list at once.
+     */
+    private fun refreshSearchNodesNow() {
+        searchNodeRefresh?.cancel()
+        for (key in requestedSearchNodes.toList()) runSearchNode(key)
+    }
+
     /** Serializes [applyExternalChanges] batches. */
     private val externalChangeLock = Mutex()
 
@@ -1471,3 +1581,20 @@ class DocumentRegistry(
         const val TEMPLATE_MAX_ROWS: Int = 2_000
     }
 }
+
+/**
+ * One Toggle done on a search result ([DocumentRegistry.toggleDoneOnHit],
+ * LBR-22), kept for the toast's Undo ([DocumentRegistry.undoDoneOnHit]).
+ *
+ * @property hit The result toggled; finds the row again by item index.
+ * @property before The item row's text before the toggle.
+ * @property after Its text after.
+ * @property done `true` when the toggle made the item done (the toast
+ *   reads "Marked done"), `false` when it made it not done.
+ */
+data class HitDoneToggle(
+    val hit: TextHit,
+    val before: String,
+    val after: String,
+    val done: Boolean,
+)

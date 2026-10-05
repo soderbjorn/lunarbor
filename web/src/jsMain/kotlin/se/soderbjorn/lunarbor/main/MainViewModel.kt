@@ -381,6 +381,15 @@ class MainViewModel(
     /** See `PaneBackingViewModel.toggleDone`. */
     fun toggleDone() = paneBackingViewModel.toggleDone()
 
+    /** See `PaneBackingViewModel.toggleDoneOnHit` (LBR-22: the ✓ on a result row). */
+    fun toggleDoneOnHit(hit: se.soderbjorn.lunarbor.data.TextHit) = paneBackingViewModel.toggleDoneOnHit(hit)
+
+    /** See `PaneBackingViewModel.undoHitDoneToggle` (the toast's Undo). */
+    fun undoHitDoneToggle() = paneBackingViewModel.undoHitDoneToggle()
+
+    /** See `PaneBackingViewModel.dismissHitDoneToast`. */
+    fun dismissHitDoneToast() = paneBackingViewModel.dismissHitDoneToast()
+
     /** See `PaneBackingViewModel.canToggleDone`. */
     fun canToggleDone(state: PaneBackingViewModel.State): Boolean = paneBackingViewModel.canToggleDone(state)
 

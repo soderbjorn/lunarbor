@@ -559,6 +559,60 @@ class Document(
     /** `true` when [id] is a pending row (never saved yet). */
     fun isPending(id: LineId): Boolean = id in pendingIds
 
+    /** `true` while this document holds any pending row (a prepared day, a leaf zoom's placeholder). */
+    val hasPendingRows: Boolean get() = pendingIds.isNotEmpty()
+
+    /**
+     * The row in [State.lines] of an item stored in the outline [fileRel]
+     * — this document's own file, or the outline of a folder spliced into
+     * it (an expanded folder-backed row or mirror) — found the way the
+     * text index numbers it: the [itemIndex]-th item among that outline's
+     * own items (bullets and blocks; pending rows left out, since they are
+     * not on disk yet), then [rowOffset] rows into the item (clamped to
+     * the item's own rows). `null` when the folder's items are not loaded
+     * here or the outline has fewer items.
+     *
+     * Called by `DocumentRegistry.toggleDoneOnHit` (LBR-22) to find a
+     * search hit's line in an open document.
+     *
+     * @param fileRel Vault-relative `_node.md` path of the hit.
+     * @param itemIndex [se.soderbjorn.lunarbor.data.TextHit.itemIndex].
+     * @param rowOffset [se.soderbjorn.lunarbor.data.TextHit.rowOffset].
+     */
+    fun rowOfStoredItem(fileRel: String, itemIndex: Int, rowOffset: Int): Int? {
+        if (!bulletsOnly || !NoteRepository.isOutlineFile(fileRel)) return null
+        val state = _stateFlow.value
+        if (!state.isLoaded) return null
+        val lines = state.lines
+        val folder = NoteRepository.folderOfOutline(fileRel)
+        // The rows of the folder's items: the whole document for its own
+        // folder, else the subtree of the row whose items they are.
+        val range: IntRange
+        val column: Int
+        if (folder == folderRel) {
+            range = lines.indices
+            column = 0
+        } else {
+            val owner = state.lineIds.indices.firstOrNull { r ->
+                val id = state.lineIds[r]
+                id !in state.unloadedRefIds && id !in trashedIds && refFolderOf(id) == folder
+            } ?: return null
+            val ownerCol = DocumentLayout.itemColumn(lines, owner)
+            if (ownerCol < 0) return null
+            range = (DocumentLayout.itemLastRow(lines, owner) + 1)..DocumentLayout.subtreeEnd(lines, owner, ownerCol)
+            // The direct children's column (indents are in characters).
+            column = range.firstOrNull()?.let { DocumentLayout.itemColumn(lines, it) }?.takeIf { it > ownerCol } ?: return null
+        }
+        var item = -1
+        for (r in range) {
+            if (DocumentLayout.itemColumn(lines, r) != column) continue
+            if (state.lineIds.getOrNull(r)?.let { it in pendingIds } == true) continue
+            item++
+            if (item == itemIndex) return minOf(r + rowOffset, DocumentLayout.itemLastRow(lines, r))
+        }
+        return null
+    }
+
     /**
      * One more pane holds the pending group [groupId] — another pane that
      * navigated to the same prepared day. Every hold MUST be paired with

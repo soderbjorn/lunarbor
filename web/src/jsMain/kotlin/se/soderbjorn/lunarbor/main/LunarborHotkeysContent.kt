@@ -105,7 +105,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                     HotkeyEntry(label = "Bold", chord = listOf(cmd, "B"), iconSvg = ICON_BOLD),
                     HotkeyEntry(label = "Italic", chord = listOf(cmd, "I"), iconSvg = ICON_ITALIC),
                     HotkeyEntry(
-                        label = "Toggle done (strike the item's whole title)",
+                        label = "Toggle done (strike the item's whole title; in search results, the highlighted line)",
                         chord = if (isMac) listOf(ctrl, "⏎") else listOf(opt, "⏎"),
                     ),
                     HotkeyEntry(label = "Indent bullet", chord = listOf("Tab"), iconSvg = ICON_INDENT),

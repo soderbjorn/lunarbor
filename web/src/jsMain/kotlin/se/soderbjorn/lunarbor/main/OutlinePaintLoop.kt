@@ -1295,7 +1295,9 @@ private fun firstLineHeightCss(text: String, style: EditorStyle): String {
  * ([DocumentRegistry.SEARCH_NODE_MAX_HITS]). Pressing a row goes there in
  * this pane ([MainViewModel.navigateToSearchHit]); a Shift- / ⌘-press or a
  * right-click opens it in a new window
- * ([MainViewModel.openSearchHitInNewWindow], [OpenGesture]). The node's
+ * ([MainViewModel.openSearchHitInNewWindow], [OpenGesture]); its ✓
+ * circle, on hover, toggles done on the line itself ([buildHitDoneToggle],
+ * [MainViewModel.toggleDoneOnHit], LBR-22). The node's
  * −/+ control folds the whole list (its fold state). Everything acts on
  * mousedown: a repaint between press and release (the editor's selection
  * sync) would replace the element and swallow a click. Not editable and
@@ -1340,6 +1342,14 @@ private fun buildSearchNodeResults(
         where.className = "lunarbor-search-node-where"
         // From the node's tree down: the rest of the path is where the node is.
         where.appendChild(isolatedText(viewModel.searchHitCrumbs(hit, under = view.scopeFolder).joinToString(" › ")))
+        // Toggle done (LBR-22): the ✓ circle before the text, on hover;
+        // never on note lines or code rows. Allowed on a read-only page:
+        // it edits the result's own line, not the page.
+        if (hit.canToggleDone) {
+            row.appendChild(buildHitDoneToggle(hit) { viewModel.toggleDoneOnHit(hit) })
+        } else {
+            row.appendChild((document.createElement("span") as HTMLElement).also { it.className = "lunarbor-hit-done-spacer" })
+        }
         row.appendChild(text)
         row.appendChild(where)
         row.addEventListener("mousedown", { ev ->
@@ -2173,6 +2183,10 @@ fun ensureStyles() {
         }
         .lunarbor-search-node-hit.lunarbor-hit-done {
             opacity: 0.5;
+        }
+        /* Done (LBR-24): struck through, like a done row in the outline. */
+        .lunarbor-search-node-hit.lunarbor-hit-done .lunarbor-search-node-text {
+            text-decoration: line-through;
         }
         .lunarbor-search-node-hit {
             display: flex;

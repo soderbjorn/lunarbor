@@ -1236,7 +1236,21 @@ class AppShell(
         // pane's "Hide done items" view filter — outlines only.
         focusedPaneViewModel()?.let { vm ->
             val st = vm.currentBackingState
-            if (vm.canToggleDone(st)) addStyleCmd("toggle-done", "Toggle done") { it.toggleDone() }
+            // While the pane search lists results, Toggle done acts on the
+            // highlighted one, where it is stored (LBR-22).
+            val screen = focusedPaneId()?.let { paneEditors[it] }
+            val hit = if (st.isSearchActive) screen?.selectedSearchHit else null
+            if (hit != null) {
+                if (hit.canToggleDone) {
+                    out += CommandPalette.Command(
+                        id = "toggle-done",
+                        title = "Toggle done",
+                        run = { screen?.toggleSelectedSearchHitDone() },
+                    )
+                }
+            } else if (vm.canToggleDone(st)) {
+                addStyleCmd("toggle-done", "Toggle done") { it.toggleDone() }
+            }
             if (!st.isMarkdownMode && !st.isFileView) {
                 if (st.hideDone) {
                     addStyleCmd("show-done-items", "Show done items") { it.setHideDone(false) }

@@ -6,7 +6,10 @@
  * that takes the page's place while the field holds a word — one row per
  * matching line with where it lives. Clicking a row (or Enter on the
  * highlighted one) goes to the line in this pane; its link icon (or
- * Cmd-Enter) opens it in a new window.
+ * Cmd-Enter) opens it in a new window. A row's ✓ circle (on hover), ⌃↩
+ * (Alt-Enter off the Mac) and the palette's "Toggle done" toggle done on
+ * the line itself, where it is stored, without going there (LBR-22,
+ * `MainViewModel.toggleDoneOnHit`).
  * The search itself runs in commonMain (`PaneBackingViewModel.setSearchQuery`
  * over the vault's `TextIndex`).
  *
@@ -184,7 +187,14 @@ internal class PaneSearchBar(
                     ke.preventDefault()
                     shownHits?.getOrNull(selected)?.let(::goTo)
                 }
-                ke.key == "Enter" && (ke.metaKey || ke.ctrlKey) && !ke.altKey -> {
+                // Toggle done (LBR-22) on the highlighted result: LBR-24's
+                // ⌃↩ on the Mac, Alt-Enter elsewhere.
+                ke.key == "Enter" && !ke.shiftKey && !ke.metaKey &&
+                    (if (isMacPlatform) ke.ctrlKey && !ke.altKey else ke.altKey && !ke.ctrlKey) -> {
+                    ke.preventDefault()
+                    toggleSelectedDone()
+                }
+                ke.key == "Enter" && (if (isMacPlatform) ke.metaKey else ke.ctrlKey) && !ke.altKey -> {
                     ke.preventDefault()
                     shownHits?.getOrNull(selected)?.let(onOpenHit)
                 }
@@ -200,6 +210,25 @@ internal class PaneSearchBar(
     fun focus() {
         input.focus()
         input.select()
+    }
+
+    /**
+     * The highlighted result while the result list shows, or `null`. Read
+     * by the palette (`AppShell`) to offer "Toggle done" on it (LBR-22).
+     */
+    fun selectedHit(): TextHit? {
+        if (resultsElement.style.display == "none") return null
+        return shownHits?.getOrNull(selected)
+    }
+
+    /**
+     * Toggle done on the highlighted result ([selectedHit],
+     * `MainViewModel.toggleDoneOnHit`), when it can be toggled. Called by
+     * ⌃↩ (Alt-Enter off the Mac) in the field and by the palette.
+     */
+    fun toggleSelectedDone() {
+        val hit = selectedHit()?.takeIf { it.canToggleDone } ?: return
+        viewModel.toggleDoneOnHit(hit)
     }
 
     /** Goes to [hit] in this pane (the search closes) and hands focus to the editor. */
@@ -372,11 +401,20 @@ internal class PaneSearchBar(
         if (active && state.searchHits !== shownHits) paintResults(state)
     }
 
-    /** Rebuilds the result list for [state]; the first row is highlighted. */
+    /** The query [shownHits] answer, so a re-run of it keeps the highlight. */
+    private var shownQuery: String? = null
+
+    /**
+     * Rebuilds the result list for [state]. The first row is highlighted —
+     * or, when the same query ran again (a result toggled done, LBR-22),
+     * the row at the same place, so ⌃↩ can tick off one after another.
+     */
     private fun paintResults(state: PaneBackingViewModel.State) {
         val hits = state.searchHits
+        val keep = if (state.searchQuery == shownQuery) selected else 0
         shownHits = hits
-        selected = 0
+        shownQuery = state.searchQuery
+        selected = keep
         resultsElement.innerHTML = ""
         val terms = SearchQuery.parse(state.searchQuery).highlightTerms()
         for ((i, hit) in hits.withIndex()) {
@@ -406,6 +444,15 @@ internal class PaneSearchBar(
             body.className = "lunarbor-search-hit-body"
             body.appendChild(text)
             body.appendChild(where)
+            // Toggle done (LBR-22) before the text; never on note lines or code rows.
+            if (hit.canToggleDone) {
+                row.appendChild(buildHitDoneToggle(hit) {
+                    select(i)
+                    viewModel.toggleDoneOnHit(hit)
+                })
+            } else {
+                row.appendChild((document.createElement("span") as HTMLElement).also { it.className = "lunarbor-hit-done-spacer" })
+            }
             row.appendChild(body)
             row.appendChild(open)
             row.addEventListener("mousedown", { ev -> ev.preventDefault() })
@@ -440,7 +487,7 @@ internal class PaneSearchBar(
             more.textContent = "Showing the first ${hits.size} of ${state.searchTotal} matches — add a word to narrow them."
             resultsElement.appendChild(more)
         }
-        select(0)
+        select(keep)
     }
 
     /** Highlights result [index] (clamped) and scrolls it into view. */
@@ -639,10 +686,14 @@ internal fun ensureSearchBarStyles() {
         .lunarbor-search-hit.lunarbor-hit-done {
             opacity: 0.5;
         }
+        /* Done (LBR-24): struck through, like a done row in the outline. */
+        .lunarbor-search-hit.lunarbor-hit-done .lunarbor-search-hit-text {
+            text-decoration: line-through;
+        }
         .lunarbor-search-hit {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 8px;
             max-width: 760px;
             padding: 6px 8px;
             border-radius: 6px;

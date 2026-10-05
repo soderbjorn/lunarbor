@@ -66,6 +66,10 @@ import se.soderbjorn.lunarbor.platform.toNfc
  *   title is struck through, or an item above it is done, across files
  *   ([DoneState]). Lets result lists dim done lines and LBR-22's Toggle
  *   done on a hit know which way to toggle.
+ * @property canToggleDone `true` when Toggle done may act on the line from
+ *   a result list (LBR-22, `DocumentRegistry.toggleDoneOnHit`): a line of
+ *   an outline that is not a code row. `false` for `.md` note lines
+ *   (Markdown mode has no done state) and code rows.
  */
 data class TextHit(
     val fileRel: String,
@@ -73,6 +77,7 @@ data class TextHit(
     val rowOffset: Int,
     val text: String,
     val done: Boolean = false,
+    val canToggleDone: Boolean = false,
 )
 
 /**
@@ -154,9 +159,11 @@ class TextIndex(
          * above it count through [Entry.ownedDone] at search time.
          */
         val done: Boolean = false,
+        /** See [TextHit.canToggleDone]: an outline line that is not a code row. */
+        val canToggleDone: Boolean = false,
     ) {
         /** This line as a hit in [file], [aboveDone] telling whether an item in a file above is done. */
-        fun hit(file: String, aboveDone: Boolean) = TextHit(file, itemIndex, rowOffset, text, done || aboveDone)
+        fun hit(file: String, aboveDone: Boolean) = TextHit(file, itemIndex, rowOffset, text, done || aboveDone, canToggleDone)
     }
 
     /**
@@ -651,6 +658,7 @@ class TextIndex(
                             if (code) emptySet() else LunarborLink.linkPathsIn(raw, base),
                             if (code) emptyList() else WikiLink.namesIn(raw),
                             done,
+                            canToggleDone = !code,
                         )
                     }
                 }

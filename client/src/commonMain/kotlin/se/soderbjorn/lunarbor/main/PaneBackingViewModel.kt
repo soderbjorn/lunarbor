@@ -277,6 +277,11 @@ class PaneBackingViewModel(
      *   subtree, like a folded subtree that never shows ([visibleRowsIn]).
      *   Only a view filter: unlike the privacy mode it never refuses an
      *   edit. Pane state, like folds; persisted with the pane's location.
+     * @property hitDoneToast The last Toggle done this pane made on a search
+     *   result (LBR-22, [toggleDoneOnHit]) and the serial of that toggle,
+     *   for the view's "Marked done · Undo" toast: the view shows a toast
+     *   whenever the serial changes, and its Undo calls [undoHitDoneToggle].
+     *   `null` when there is nothing to undo.
      * @property privacyRevision Mirror of [DocumentRegistry.PrivacyView.revision]:
      *   changes whenever what is hidden may have changed, so the view repaints
      *   (folder contents, links) even when [privacy] did not.
@@ -319,6 +324,7 @@ class PaneBackingViewModel(
         val backlinks: Map<String, List<TextHit>> = emptyMap(),
         val backlinksCollapsed: Boolean = false,
         val hideDone: Boolean = false,
+        val hitDoneToast: HitDoneToast? = null,
     ) {
         /**
          * `true` while the search field holds at least one word: the view
@@ -880,6 +886,59 @@ class PaneBackingViewModel(
                 anchorCol = it.anchorRow?.let { ar -> it.anchorCol?.let { ac -> shifted(ar, ac) } },
             )
         }
+    }
+
+    /**
+     * Toggle done on a search result (LBR-22): LBR-24's Toggle done on the
+     * line [hit] names, where it is stored — another file, a folder-backed
+     * item's folder, or this pane's own document — without opening it
+     * ([DocumentRegistry.toggleDoneOnHit]). Allowed on a read-only page (a
+     * zoomed search node): the edit is the result's own line elsewhere,
+     * not the page. Not a pane edit: it never enters this pane's undo
+     * stack and never commits a prepared day; the toast's Undo
+     * ([undoHitDoneToggle]) takes it back instead. Afterwards an open pane
+     * search re-runs its query, so a row leaves an `is:open` list.
+     *
+     * Called by the web view: the ✓ circle on a result row (pane search
+     * and search nodes), and the palette's "Toggle done" / ⌃↩ on the pane
+     * search's highlighted result.
+     *
+     * @return The job doing it; complete once saved and re-searched.
+     */
+    fun toggleDoneOnHit(hit: TextHit): Job = scope.launch {
+        if (!hit.canToggleDone) return@launch
+        val toggle = registry.toggleDoneOnHit(hit) ?: return@launch
+        hitDoneSerial++
+        patch { it.copy(hitDoneToast = HitDoneToast(toggle, hitDoneSerial)) }
+        rerunSearch()
+    }
+
+    /**
+     * Undoes the last Toggle done on a search result ([State.hitDoneToast],
+     * [DocumentRegistry.undoDoneOnHit]) and clears the toast. Called by the
+     * toast's Undo.
+     *
+     * @return The job doing it.
+     */
+    fun undoHitDoneToggle(): Job = scope.launch {
+        val toast = _stateFlow.value.hitDoneToast ?: return@launch
+        patch { it.copy(hitDoneToast = null) }
+        registry.undoDoneOnHit(toast.toggle)
+        rerunSearch()
+    }
+
+    /** Forgets the toast's undo ([State.hitDoneToast]). Called by the view when the toast times out. */
+    fun dismissHitDoneToast() {
+        if (_stateFlow.value.hitDoneToast != null) patch { it.copy(hitDoneToast = null) }
+    }
+
+    /** Serial of the last [toggleDoneOnHit], for [HitDoneToast.serial]. */
+    private var hitDoneSerial = 0
+
+    /** Runs the open pane search's query again ([setSearchQuery]), so its hits follow the index. */
+    private fun rerunSearch() {
+        val s = _stateFlow.value
+        if (s.isSearchActive) s.searchQuery?.let(::setSearchQuery)
     }
 
     /** Folds or unfolds this pane's "Linked from" section. Called by its header. */
@@ -4977,3 +5036,13 @@ class PaneBackingViewModel(
         fun selectionOf(state: State): Selection? = se.soderbjorn.lunarbor.main.selectionOf(state)
     }
 }
+
+/**
+ * The toast a pane shows after a Toggle done on a search result (LBR-22,
+ * [PaneBackingViewModel.State.hitDoneToast]).
+ *
+ * @property toggle What changed, for Undo.
+ * @property serial Grows with every toggle the pane makes, so the view
+ *   shows a fresh toast for each, even one equal to the last.
+ */
+data class HitDoneToast(val toggle: HitDoneToggle, val serial: Int)
