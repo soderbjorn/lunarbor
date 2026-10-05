@@ -178,6 +178,7 @@ private fun ensureHitDoneStyles() {
             border: 1px solid var(--t-border, #4a4a4a);
             background: var(--t-surface, #2a2a2a);
             color: var(--t-text, #e6e6e6);
+            font-family: var(--dt-font-prop, system-ui, sans-serif);
             font-size: 13px;
             box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
             max-width: calc(100vw - 32px);
