@@ -325,6 +325,87 @@ class DailyNotesTest {
         assertTrue(p.lines.none { "Week 41" in it })
     }
 
+    @Test
+    fun navigate_to_from_a_prepared_day_lands_on_the_target() = runTest {
+        seed("_node.md", "- TODO [↳](<TODO/_node.md>)\n")
+        seed("TODO/_node.md", "- Open tasks {{search: #todo in:/}}\n")
+        val registry = registry()
+        val p = pane(registry)
+        p.navigateToToday(today)
+        runCurrent()
+
+        // Navigate to (Cmd-O) a node of the same outline, while the day's
+        // rows are still pending.
+        p.navigateToLink("/TODO")
+        runCurrent()
+        val s = p.stateFlow.value
+        val zoomRow = s.documentState!!.lineIds.indexOf(s.zoomedLineId)
+        assertEquals("* TODO", p.lines.getOrNull(zoomRow))
+        assertTrue(p.lines.none { "Journal" in it })
+    }
+
+    @Test
+    fun navigate_to_from_an_existing_day_lands_on_the_target() = runTest {
+        seed("_node.md", "- TODO [↳](<TODO/_node.md>)\n- Journal [↳](<Journal/_node.md>)\n")
+        seed("TODO/_node.md", "- Open tasks {{search: #todo in:/}}\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n")
+        seed("Journal/2026/_node.md", "- Week 41 [↳](<Week 41/_node.md>)\n")
+        seed("Journal/2026/Week 41/_node.md", "- 2026-10-05 Monday [↳](<2026-10-05 Monday/_node.md>)\n")
+        seed("Journal/2026/Week 41/2026-10-05 Monday/_node.md", "- Wrote things\n")
+        val registry = registry()
+        val p = pane(registry)
+        p.navigateToToday(today)
+        runCurrent()
+
+        p.navigateToLink("/TODO")
+        runCurrent()
+        val s = p.stateFlow.value
+        val zoomRow = s.documentState!!.lineIds.indexOf(s.zoomedLineId)
+        assertEquals("* TODO", p.lines.getOrNull(zoomRow))
+    }
+
+    @Test
+    fun navigate_to_from_a_day_opened_as_its_own_node_lands_on_the_target() = runTest {
+        seed("_node.md", "- Journal [↳](<Journal/_node.md>)\n- TODO [↳](<TODO/_node.md>)\n")
+        seed("TODO/_node.md", "- Open tasks {{search: #todo in:/}}\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n")
+        seed("Journal/2026/_node.md", "- Week 41 [↳](<Week 41/_node.md>)\n")
+        seed("Journal/2026/Week 41/_node.md", "- 2026-10-05 Monday [↳](<2026-10-05 Monday/_node.md>)\n")
+        seed("Journal/2026/Week 41/2026-10-05 Monday/_node.md", "- Wrote things\n")
+        val registry = registry()
+        for (file in listOf("Journal/2026/Week 41/2026-10-05 Monday/_node.md", "Journal/2026/Week 41/_node.md", "Journal/_node.md")) {
+            val p = pane(registry, file)
+            p.navigateToLink("/TODO")
+            runCurrent()
+            val s = p.stateFlow.value
+            val zoomRow = s.documentState!!.lineIds.indexOf(s.zoomedLineId)
+            assertEquals("_node.md", s.activeFileRel, file)
+            assertEquals("* TODO", p.lines.getOrNull(zoomRow), file)
+        }
+    }
+
+    @Test
+    fun navigate_to_from_a_new_day_in_an_existing_week_lands_on_the_target() = runTest {
+        seed("_node.md", "- Privat\n- Journal [↳](<Journal/_node.md>)\n- TODO [↳](<TODO/_node.md>)\n")
+        seed("TODO/_node.md", "- Open tasks {{search: #todo in:/}}\n")
+        seed("Journal/_node.md", "- 2026 [↳](<2026/_node.md>)\n")
+        seed("Journal/2026/_node.md", "- Week 41 [↳](<Week 41/_node.md>)\n")
+        seed("Journal/2026/Week 41/_node.md", "- 2026-10-04 Sunday [↳](<2026-10-04 Sunday/_node.md>)\n")
+        seed("Journal/2026/Week 41/2026-10-04 Sunday/_node.md", "- Wrote things #todo\n")
+        val registry = registry()
+        val p = pane(registry)
+        p.navigateToToday(today)
+        runCurrent()
+        assertNotNull(p.stateFlow.value.pendingRowsGroup)
+
+        p.navigateToLink("/TODO")
+        runCurrent()
+        val s = p.stateFlow.value
+        val zoomRow = s.documentState!!.lineIds.indexOf(s.zoomedLineId)
+        assertEquals("* TODO", p.lines.getOrNull(zoomRow))
+        assertTrue(p.lines.none { "2026-10-05" in it })
+    }
+
     // ------------------------------------------- Previous day / Next day (LBR-20)
 
     private fun day(y: Int, m: Int, d: Int) =

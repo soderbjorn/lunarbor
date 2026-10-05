@@ -3165,7 +3165,7 @@ class PaneBackingViewModel(
             delay(SEARCH_DEBOUNCE_MS)
             if (!registry.textIndex.isBuilt) patch { it.copy(isSearching = true) }
             val reversed = _stateFlow.value.searchReversed || parsed.reversed
-            val result = if (where == null) TextSearchResult(emptyList(), 0) else registry.searchText(where, parsed.expr, reversed)
+            val result = if (where == null) TextSearchResult(emptyList(), 0) else registry.searchText(where, parsed.expr, reversed, tagSort = parsed.tagSort)
             if (_stateFlow.value.searchQuery != query) return@launch
             patch { it.copy(searchHits = result.hits, searchTotal = result.total, isSearching = false) }
         }

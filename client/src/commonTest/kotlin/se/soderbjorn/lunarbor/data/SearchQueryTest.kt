@@ -88,4 +88,19 @@ class SearchQueryTest {
         // Without a done flag a line counts as open.
         assertTrue(m("is:open", "x"))
     }
+
+    @Test
+    fun sort_tag_skips_the_querys_own_tags() {
+        val q = SearchQuery.parse("#todo (#work OR #home*) -#done sort:tag")
+        val sort = q.tagSort!!
+        assertEquals("beta", sort.keyOf(listOf("#todo", "#Beta", "#alpha")))
+        assertEquals("alpha", sort.keyOf(listOf("#work", "#homeoffice", "#alpha")))
+        // A NOT term is no search tag: it is a key like any other.
+        assertEquals("done", sort.keyOf(listOf("#todo", "#done")))
+        assertEquals(null, sort.keyOf(listOf("#todo")))
+        // Not a search term, and off unless asked for.
+        assertEquals(listOf("#todo", "#work", "#home"), q.highlightTerms())
+        assertEquals(null, SearchQuery.parse("#todo").tagSort)
+        assertEquals(null, SearchQuery.parse("#todo sort:tag sort:none").tagSort)
+    }
 }

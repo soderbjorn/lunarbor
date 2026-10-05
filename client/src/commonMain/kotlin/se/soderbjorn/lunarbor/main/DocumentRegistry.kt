@@ -160,6 +160,7 @@ class DocumentRegistry(
      *
      * @param filter The privacy mode to apply: by default the app's
      *   ([privacyFilter]); an agent connection passes its own scope's.
+     * @param tagSort The query's `sort:tag` order ([SearchQuery.tagSort]), or `null`.
      */
     suspend fun searchText(
         scope: TextScope,
@@ -167,10 +168,11 @@ class DocumentRegistry(
         reversed: Boolean = false,
         max: Int = 300,
         filter: PrivacyFilter = privacyFilter,
+        tagSort: SearchQuery.TagSort? = null,
     ): TextSearchResult {
         flushAll()
         textIndex.ensureBuilt()
-        return textIndex.search(scope, expr, max, reversed, filter)
+        return textIndex.search(scope, expr, max, reversed, filter, tagSort)
     }
 
     /**
@@ -215,7 +217,7 @@ class DocumentRegistry(
 
     private fun runSearchNode(key: SearchNodeKey) {
         val query = SearchQuery.parse(key.query)
-        val result = textIndex.search(key.scope, query.expr, SEARCH_NODE_MAX_HITS, query.reversed, privacyFilter)
+        val result = textIndex.search(key.scope, query.expr, SEARCH_NODE_MAX_HITS, query.reversed, privacyFilter, query.tagSort)
         _searchNodeResults.update { it + (key to result) }
     }
 

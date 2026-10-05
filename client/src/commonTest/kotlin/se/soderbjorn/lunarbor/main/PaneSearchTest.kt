@@ -66,6 +66,33 @@ class PaneSearchTest {
     }
 
     @Test
+    fun sort_tag_orders_hits_by_their_first_other_tag_and_reverse_turns_it_round() {
+        val idx = index(
+            "_node.md" to "- Tidy desk #todo\n- Write docs #todo #gamma\n- Fix login #beta #todo\n" +
+                "- Draft spec #todo #alpha #zeta\n- Item 10 #todo #p10\n- Item 2 #todo #P2\n- Also beta #todo #beta\n",
+        )
+        fun sorted(query: String, max: Int = 300): List<String> {
+            val parsed = SearchQuery.parse(query)
+            return idx.search(TextScope.Tree(""), parsed.expr, max, parsed.reversed, tagSort = parsed.tagSort).hits.map { it.text }
+        }
+        // The first tag the query does not search for; natural order, case
+        // ignored; ties in reading order; lines without one last.
+        assertEquals(
+            listOf(
+                "Draft spec #todo #alpha #zeta", "Fix login #beta #todo", "Also beta #todo #beta",
+                "Write docs #todo #gamma", "Item 2 #todo #P2", "Item 10 #todo #p10", "Tidy desk #todo",
+            ),
+            sorted("#todo sort:tag"),
+        )
+        // Reversed: the sorted list turned round; max cuts after sorting.
+        assertEquals(listOf("Tidy desk #todo", "Item 10 #todo #p10"), sorted("#todo sort:tag order:reverse", max = 2))
+        assertEquals(listOf("Draft spec #todo #alpha #zeta", "Fix login #beta #todo"), sorted("#todo sort:tag", max = 2))
+        // A tag prefix in the query skips every tag it matches.
+        assertEquals("Draft spec #todo #alpha #zeta", sorted("#todo #a* sort:tag").single())
+        assertEquals(1, idx.search(TextScope.Tree(""), q("#todo #a*"), tagSort = SearchQuery.parse("#todo #a* sort:tag").tagSort).total)
+    }
+
+    @Test
     fun parent_tags_count_for_their_children_and_a_matching_parent_covers_them() {
         val idx = index(
             "_node.md" to "- Alpha [↳](<Alpha/_node.md>)\n- Beta [↳](<Beta/_node.md>)\n- loose #urgent\n",

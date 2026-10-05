@@ -12,6 +12,7 @@
  *     #proj*                         any tag starting with #proj
  *     in:/Work/Projects #urgent      another tree (vault-rooted path)
  *     #timeline order:reverse        results in reverse order
+ *     #todo sort:tag                 results by their first other tag's name
  *     #todo is:open                  not done (LBR-24); `is:done` the done ones
  *
  * - `AND`, `OR`, `NOT` are operators only in capitals, so the words "and"
@@ -27,6 +28,10 @@
  *   files); `is:open` is `-is:done`. Both combine with everything.
  * - `order:reverse` (top level, anywhere) lists the results in reverse
  *   order — the deepest, last files first; `order:normal` is the default.
+ * - `sort:tag` (top level, anywhere) orders the results by the name of
+ *   each line's first own tag that the query does not search for
+ *   ([TagSort]); lines without one come last, ties keep reading order.
+ *   `order:reverse` reverses the sorted list. `sort:none` is the default.
  * - Parsing never fails: a half-typed query (an open parenthesis, a
  *   trailing `OR`) means what it says so far, so results follow typing.
  *
@@ -45,8 +50,48 @@ import se.soderbjorn.lunarbor.platform.toNfc
  * @property scopePath The `in:` tree, vault-relative (`""`: the whole
  *   vault), or `null` to search the default tree.
  * @property reversed `true` when the query says `order:reverse`.
+ * @property tagSort How `sort:tag` orders the results, or `null` for
+ *   reading order.
  */
-data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Boolean = false) {
+data class SearchQuery(
+    val expr: Expr?,
+    val scopePath: String?,
+    val reversed: Boolean = false,
+    val tagSort: TagSort? = null,
+) {
+
+    /**
+     * `sort:tag`: the sort key of a line is the name of its first own tag
+     * (in the order written) that is none of the query's positive tag
+     * terms — `#todo sort:tag` sorts `Fix #todo #beta` under `beta`.
+     *
+     * @property skipped The query's positive tag terms (`#proj*` skips
+     *   every tag it matches).
+     */
+    data class TagSort(val skipped: List<Expr.Tag>) {
+        /**
+         * The sort key of a line with [tags] (as written, with `#`, in
+         * order): normalized, without `#`; `null` when it has none.
+         */
+        fun keyOf(tags: List<String>): String? = tags.asSequence()
+            .map { normalize(it.removePrefix("#")) }
+            .firstOrNull { t -> skipped.none { if (it.prefix) t.startsWith(it.name) else t == it.name } }
+    }
+
+    /** The tag terms outside any NOT — what `sort:tag` skips. */
+    private fun positiveTags(): List<Expr.Tag> {
+        val out = ArrayList<Expr.Tag>()
+        fun walk(e: Expr) {
+            when (e) {
+                is Expr.Tag -> out += e
+                is Expr.And -> e.parts.forEach(::walk)
+                is Expr.Or -> e.parts.forEach(::walk)
+                else -> Unit
+            }
+        }
+        expr?.let(::walk)
+        return out
+    }
 
     /** `true` when the query has no terms: nothing is searched. */
     val isEmpty: Boolean get() = expr == null
@@ -132,16 +177,19 @@ data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Bo
             val tokens = lex(query.orEmpty())
             var scope: String? = null
             var reversed = false
+            var byTag = false
             val rest = tokens.filter { t ->
                 when (t) {
                     is Token.Scope -> { scope = t.path; false }
                     is Token.Order -> { reversed = t.reversed; false }
+                    is Token.Sort -> { byTag = t.byTag; false }
                     else -> true
                 }
             }
             val parser = Parser(rest)
             val expr = parser.orExpr(nested = false)
-            return SearchQuery(expr, scope, reversed)
+            val query = SearchQuery(expr, scope, reversed)
+            return if (byTag) query.copy(tagSort = TagSort(query.positiveTags())) else query
         }
 
         /** Normalizes text for matching: NFC, lowercase. */
@@ -156,6 +204,7 @@ data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Bo
             data class Term(val expr: Expr) : Token()
             data class Scope(val path: String) : Token()
             data class Order(val reversed: Boolean) : Token()
+            data class Sort(val byTag: Boolean) : Token()
         }
 
         private fun lex(text: String): List<Token> {
@@ -198,6 +247,8 @@ data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Bo
                         out += when (word.lowercase()) {
                             "order:reverse", "order:desc" -> Token.Order(reversed = true)
                             "order:normal", "order:asc" -> Token.Order(reversed = false)
+                            "sort:tag", "sort:tags" -> Token.Sort(byTag = true)
+                            "sort:none" -> Token.Sort(byTag = false)
                             "is:done" -> Token.Term(Expr.Done)
                             "is:open" -> Token.Term(Expr.Not(Expr.Done))
                             else -> null

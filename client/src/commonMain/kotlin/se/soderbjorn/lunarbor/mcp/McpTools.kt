@@ -647,7 +647,7 @@ class McpTools(
         if (parsed.isEmpty) throw Refusal("The query has no words or tags to search for.")
         val scopeRel = (parsed.scopePath ?: path)?.let { checkVisible(AgentOutline.normalizePath(it)) } ?: ""
         val scope = if (scopeRel.endsWith(NoteRepository.NOTE_EXTENSION)) TextScope.File(scopeRel) else TextScope.Tree(scopeRel)
-        val result = registry.searchText(scope, parsed.expr, parsed.reversed, limit, filter)
+        val result = registry.searchText(scope, parsed.expr, parsed.reversed, limit, filter, parsed.tagSort)
         if (result.total == 0) return "No lines match in ${display(scopeRel)}."
         return buildString {
             append(result.total).append(if (result.total == 1) " matching line" else " matching lines")
