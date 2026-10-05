@@ -185,6 +185,77 @@ class PaneSearchTest {
     }
 
     @Test
+    fun back_from_a_search_node_hit_returns_to_the_zoomed_node() = runTest {
+        fs.writeFile("$root/_node.md", "- Journal [↳](<Journal/_node.md>)\n- TODO [↳](<TODO/_node.md>)\n")
+        fs.writeFile("$root/TODO/_node.md", "- Open tasks {{search: #todo in:/}}\n")
+        fs.writeFile("$root/Journal/_node.md", "- Buy milk #todo\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        val p = PaneBackingViewModel(registry, backgroundScope, "_node.md")
+        p.stateFlow.first { it.isLoaded }
+        runCurrent()
+        // TODO unfolded on the root page first, then Navigate to it.
+        p.toggleCollapse(p.stateFlow.value.documentState!!.lineIds[1])
+        settle()
+        p.navigateToLink("/TODO")
+        settle()
+        fun zoomTitle() = p.stateFlow.value.let { s -> s.documentState!!.lines.getOrNull(s.documentState!!.lineIds.indexOf(s.zoomedLineId)) }
+        assertEquals("* TODO", zoomTitle())
+        val nodeRow = p.stateFlow.value.lines.indexOfFirst { "{{search:" in it }
+        p.searchNodeOf(p.stateFlow.value, nodeRow)
+        settle()
+        val hit = p.searchNodeOf(p.stateFlow.value, nodeRow)!!.result!!.hits.single()
+        assertEquals("Buy milk #todo", hit.text)
+
+        p.navigateToSearchHit(hit)
+        settle()
+        assertEquals("Journal/_node.md", p.stateFlow.value.activeFileRel)
+        p.zoomBack()
+        settle()
+        assertEquals("_node.md", p.stateFlow.value.activeFileRel)
+        assertEquals("* TODO", zoomTitle())
+    }
+
+    @Test
+    fun a_node_remembered_open_is_zoomed_into_once_its_children_load() = runTest {
+        // A slow disk and TODO remembered open: the pane holds TODO's
+        // expansion while its children are still loading. Navigate to and
+        // Back must wait for them, not fall back to the root view.
+        fs.writeFile("$root/_node.md", "- Journal [↳](<Journal/_node.md>)\n- TODO [↳](<TODO/_node.md>)\n")
+        fs.writeFile("$root/TODO/_node.md", "- Open tasks {{search: #todo in:/}}\n")
+        fs.writeFile("$root/Journal/_node.md", "- Buy milk #todo\n")
+        val registry = DocumentRegistry(repo, backgroundScope)
+        registry.foldMemory.setExpanded("TODO", true)
+        fs.readDelayMs = 2_000
+        val p = PaneBackingViewModel(registry, backgroundScope, "_node.md")
+        p.stateFlow.first { it.isLoaded }
+        runCurrent()
+        fun zoomTitle() = p.stateFlow.value.let { s -> s.documentState!!.lines.getOrNull(s.documentState!!.lineIds.indexOf(s.zoomedLineId)) }
+
+        // Navigate to (Cmd-O) while TODO's folder is still loading.
+        p.navigateToLink("/TODO")
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals("* TODO", zoomTitle())
+
+        // Enter on a search-node hit in another file, then Back: the root
+        // outline loads again, TODO (still remembered open) loads slowly.
+        val nodeRow = p.stateFlow.value.lines.indexOfFirst { "{{search:" in it }
+        p.searchNodeOf(p.stateFlow.value, nodeRow)
+        advanceTimeBy(30_000)
+        runCurrent()
+        val hit = p.searchNodeOf(p.stateFlow.value, nodeRow)!!.result!!.hits.single()
+        p.navigateToSearchHit(hit)
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals("Journal/_node.md", p.stateFlow.value.activeFileRel)
+        p.zoomBack()
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals("_node.md", p.stateFlow.value.activeFileRel)
+        assertEquals("* TODO", zoomTitle())
+    }
+
+    @Test
     fun the_search_covers_only_the_tree_on_screen() = runTest {
         val (p, _) = pane()
         // Zoomed into Work: its folder and below, never the root's lines.

@@ -63,7 +63,7 @@ internal class ZoomNavigation(
     /** Cap on how many zoom transitions we remember per direction. */
     private val historyCap: Int = 50
 
-    fun zoomInto(row: Int) {
+    fun zoomInto(row: Int, awaitedLoad: Boolean = false) {
         val s = stateProvider()
         if (!s.isLoaded) return
         // Read the freshest doc state directly. The pane mirror in
@@ -111,6 +111,20 @@ internal class ZoomNavigation(
                 val after = document.stateFlow.value
                 val newRow = after.lineIds.indexOf(id)
                 if (newRow >= 0) zoomInto(newRow)
+            }
+            return
+        }
+        // Already open for this pane (a fold remembered open) but its
+        // children are still loading: wait for them, or the zoom would
+        // find no rows and fall back to the root view. Once only — a
+        // folder that never loads takes the "could not be loaded" branch.
+        if (!awaitedLoad && document.isPromotedRef(id) && id in docState.unloadedRefIds) {
+            val doc = document
+            scope.launch {
+                doc.awaitChildrenLoaded(id)
+                if (document !== doc) return@launch
+                val newRow = doc.stateFlow.value.lineIds.indexOf(id)
+                if (newRow >= 0) zoomInto(newRow, awaitedLoad = true)
             }
             return
         }

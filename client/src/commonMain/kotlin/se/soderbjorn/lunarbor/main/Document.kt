@@ -1661,6 +1661,24 @@ class Document(
     }
 
     /**
+     * Waits until the folder-backed row [lineId]'s children are in
+     * [State.lines] — or the row is gone — at most [timeoutMs]. For a pane
+     * that already holds the row's expansion (a fold remembered open,
+     * whose acquire is still loading the folder) and must not zoom into
+     * it before its children arrive: a zoom with no rows falls back to
+     * the root view. Returns at once when nothing is loading.
+     *
+     * Called by `ZoomNavigation.zoomInto` and `PaneBackingViewModel`'s
+     * `expandForPane` / `restoreZoom`.
+     *
+     * @return `true` when the children are in (or the row is gone).
+     */
+    suspend fun awaitChildrenLoaded(lineId: LineId, timeoutMs: Long = EXPANSION_WAIT_MS): Boolean =
+        withTimeoutOrNull(timeoutMs) {
+            _stateFlow.first { lineId !in it.unloadedRefIds || lineId !in it.lineIds }
+        } != null
+
+    /**
      * Records that one more pane wants the folder-backed bullet at
      * [lineId] expanded. On the first acquire, if its children are on
      * disk only, they are loaded and spliced in right after the row.
@@ -2329,3 +2347,10 @@ class Document(
  */
 @kotlin.jvm.JvmInline
 value class LineId(val value: Long)
+
+/**
+ * Longest [Document.awaitChildrenLoaded] waits for a folder's children —
+ * long enough for a slow, cloud-synced disk; past it the zoom goes ahead
+ * as for a folder that could not be loaded.
+ */
+const val EXPANSION_WAIT_MS: Long = 10_000

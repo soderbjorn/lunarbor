@@ -2713,6 +2713,10 @@ class PaneBackingViewModel(
                     )
                 }
                 doc.acquireExpansion(id)
+            } else if (!isLast) {
+                // Held already but maybe still loading (a fold remembered
+                // open): the next level is found among its children.
+                doc.awaitChildrenLoaded(id)
             }
         }
         val id = targetId ?: return
@@ -4559,7 +4563,9 @@ class PaneBackingViewModel(
      * click would: records the pane's expansion intent, loads its
      * children if they are on disk only, and clears its fold. A bullet
      * that was folded is recorded in [State.zoomUnfoldedIds], so it folds
-     * again once the pane zooms away from it.
+     * again once the pane zooms away from it. When the pane holds the
+     * expansion already (a fold remembered open), waits for a load still
+     * under way ([Document.awaitChildrenLoaded]), since callers zoom next.
      */
     private suspend fun expandForPane(doc: Document, id: LineId) {
         val needsExpansion = doc.isPromotedRef(id) && id !in _stateFlow.value.expandedRefIdsLocal
@@ -4572,6 +4578,9 @@ class PaneBackingViewModel(
             )
         }
         if (needsExpansion) doc.acquireExpansion(id)
+        // Held already (a fold remembered open) but maybe still loading:
+        // the caller zooms next, which needs the children in.
+        else doc.awaitChildrenLoaded(id)
     }
 
     /**

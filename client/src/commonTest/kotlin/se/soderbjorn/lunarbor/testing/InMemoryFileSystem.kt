@@ -34,7 +34,16 @@ class InMemoryFileSystem : FileSystem {
 
     override suspend fun ensureDirectory(path: String) = mkdirs(path)
 
-    override suspend fun readFileIfExists(path: String): String? = files[path]
+    /**
+     * How long every text read takes (virtual time under `runTest`): a
+     * slow, cloud-synced disk, for races between a load and what waits on it.
+     */
+    var readDelayMs: Long = 0
+
+    override suspend fun readFileIfExists(path: String): String? {
+        if (readDelayMs > 0) kotlinx.coroutines.delay(readDelayMs)
+        return files[path]
+    }
 
     override suspend fun writeFile(path: String, content: String) {
         check(path !in dirs) { "writeFile onto a directory: $path" }
