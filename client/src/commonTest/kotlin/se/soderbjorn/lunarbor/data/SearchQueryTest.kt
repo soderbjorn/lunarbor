@@ -64,4 +64,28 @@ class SearchQueryTest {
         assertTrue(SearchQuery.parse("#a order:reverse").reversed)
         assertFalse(SearchQuery.parse("#a").reversed)
     }
+
+    @Test
+    fun is_done_and_is_open_test_the_done_flag_and_combine() {
+        fun d(query: String, done: Boolean, vararg tags: String) =
+            SearchQuery.parse(query).expr!!.matches("x", tags.toSet(), done)
+        assertTrue(d("is:done", done = true))
+        assertFalse(d("is:done", done = false))
+        assertTrue(d("is:open", done = false))
+        assertFalse(d("is:open", done = true))
+        assertTrue(d("-is:done", done = false))
+        assertEquals(SearchQuery.parse("is:open").expr, SearchQuery.parse("-is:done").expr)
+        assertTrue(d("#todo -is:done", false, "todo"))
+        assertFalse(d("#todo -is:done", true, "todo"))
+        assertTrue(d("#todo is:done", true, "todo"))
+        assertFalse(d("#todo is:open", false))
+        assertTrue(d("IS:DONE OR #x", true))
+        // The scope and order still come out of the query around them.
+        val q = SearchQuery.parse("#todo is:open in:/Journal order:reverse")
+        assertEquals("Journal", q.scopePath)
+        assertTrue(q.reversed)
+        assertEquals(listOf("#todo"), q.highlightTerms())
+        // Without a done flag a line counts as open.
+        assertTrue(m("is:open", "x"))
+    }
 }

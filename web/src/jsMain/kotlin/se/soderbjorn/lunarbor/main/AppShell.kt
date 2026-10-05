@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.await
 import kotlinx.coroutines.launch
 import kotlinx.browser.window
@@ -1231,6 +1232,19 @@ class AppShell(
         // The page node's direct children by name, each with its subtree.
         addStyleCmd("sort-children-by-name", "Sort children by name") { it.sortChildrenByName() }
         addStyleCmd("sort-children-by-name-reversed", "Sort children by name, reversed") { it.sortChildrenByName(reverse = true) }
+        // Done state (LBR-24): strike / unstrike the caret's items, and the
+        // pane's "Hide done items" view filter — outlines only.
+        focusedPaneViewModel()?.let { vm ->
+            val st = vm.currentBackingState
+            if (vm.canToggleDone(st)) addStyleCmd("toggle-done", "Toggle done") { it.toggleDone() }
+            if (!st.isMarkdownMode && !st.isFileView) {
+                if (st.hideDone) {
+                    addStyleCmd("show-done-items", "Show done items") { it.setHideDone(false) }
+                } else {
+                    addStyleCmd("hide-done-items", "Hide done items") { it.setHideDone(true) }
+                }
+            }
+        }
         // The node the page is (zoom target, or a node's own outline), with
         // everything under it, after asking; the pane goes up a level. On a
         // note, image, drawing or other file, the same command trashes the
@@ -1825,6 +1839,14 @@ class AppShell(
         )
         val paneVm = se.soderbjorn.lunarbor.main.MainViewModel(scope, docView)
         paneViewModels[paneId] = paneVm
+        // "Hide done items" (LBR-24) is pane state, kept with the location.
+        if (initialFileRel == null && paneLocations.isHideDone(paneId)) paneVm.setHideDone(true)
+        scope.launch {
+            paneVm.stateFlow
+                .mapNotNull { it.backingState?.hideDone }
+                .distinctUntilChanged()
+                .collect { on -> if (paneViewModels[paneId] === paneVm) paneLocations.recordHideDone(paneId, on) }
+        }
         // The pane's open search comes back too, once it is where it was
         // (the search filters that page). Until then its search state is
         // not recorded, so the pane's initial "closed" can't erase it.

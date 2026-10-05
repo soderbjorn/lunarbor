@@ -25,6 +25,12 @@
  * counts for its children). A search node's `{{search: …}}` is not indexed
  * ([SearchNode.stripQuery]).
  *
+ * Each line also keeps its done flag (LBR-24, [DoneState]): computed from
+ * the raw line — the normalized key has lost the `~~` — at index time, so
+ * `is:done` costs a search nothing. Like tags, each outline records the
+ * done flag of its folder-backed items, so the lines in their folders
+ * inherit it: a line is done when its item or any item above it is.
+ *
  * Each line also keeps the link targets and `[[wiki]]` names it
  * links to, so [backlinks] can list the lines linking to a page (LBR-7).
  *
@@ -56,12 +62,17 @@ import se.soderbjorn.lunarbor.platform.toNfc
  *   the content row for a line of a block; always `0` in a note.
  * @property text The line as the reader sees it (inline Markdown
  *   collapsed, line-level prefix dropped).
+ * @property done `true` when the line is done (LBR-24): its item's whole
+ *   title is struck through, or an item above it is done, across files
+ *   ([DoneState]). Lets result lists dim done lines and LBR-22's Toggle
+ *   done on a hit know which way to toggle.
  */
 data class TextHit(
     val fileRel: String,
     val itemIndex: Int,
     val rowOffset: Int,
     val text: String,
+    val done: Boolean = false,
 )
 
 /**
@@ -137,7 +148,16 @@ class TextIndex(
         val links: Set<String> = emptySet(),
         /** Target names of the line's `[[wiki]]` links ([WikiLink.namesIn]). */
         val wikiNames: List<String> = emptyList(),
-    )
+        /**
+         * `true` when the line's item is done by its own title, or an item
+         * above it in the same file is ([DoneState]). Items in other files
+         * above it count through [Entry.ownedDone] at search time.
+         */
+        val done: Boolean = false,
+    ) {
+        /** This line as a hit in [file], [aboveDone] telling whether an item in a file above is done. */
+        fun hit(file: String, aboveDone: Boolean) = TextHit(file, itemIndex, rowOffset, text, done || aboveDone)
+    }
 
     /**
      * One indexed file: its lines, and the normalized tags of each of its
@@ -149,6 +169,8 @@ class TextIndex(
         val lines: List<Line>,
         val owned: Map<String, Set<String>>,
         val noteTags: Set<String> = emptySet(),
+        /** Folders (by name) of this outline's folder-backed items that are done (LBR-24). */
+        val ownedDone: Set<String> = emptySet(),
     )
 
     /** [inheritedTags] by folder, for [isPathHidden]; dropped on every change. */
@@ -277,9 +299,11 @@ class TextIndex(
         val hits = ArrayList<TextHit>()
         var total = 0
         val inherited = HashMap<String, Set<String>>()
+        val inheritedDone = HashMap<String, Boolean>()
 
         fun scan(file: String, folder: String, onOwned: (folder: String, hit: Boolean) -> Unit) {
             val above = inheritedTags(folder, inherited)
+            val aboveDone = isDoneAbove(folder, inheritedDone)
             val entry = linesByFile[file] ?: return
             if (filter.hides(above) || filter.hides(entry.noteTags)) return
             for (line in entry.lines) {
@@ -290,10 +314,10 @@ class TextIndex(
                     continue
                 }
                 val tags = if (above.isEmpty()) line.lineTags else line.lineTags + above
-                val hit = expr.matches(line.key, tags)
+                val hit = expr.matches(line.key, tags, line.done || aboveDone)
                 if (hit) {
                     total++
-                    if (reversed || hits.size < max) hits += TextHit(file, line.itemIndex, line.rowOffset, line.text)
+                    if (reversed || hits.size < max) hits += line.hit(file, aboveDone)
                 }
                 ownedPath?.let { onOwned(it, hit) }
             }
@@ -370,6 +394,29 @@ class TextIndex(
         memo[folder] = result
         return result
     }
+
+    /**
+     * `true` when the lines of files in [folder] are done by inheritance:
+     * the item backing [folder] (in its parent's outline) or any item above
+     * it is done ([Entry.ownedDone]). Memoized in [memo] for one search.
+     */
+    private fun isDoneAbove(folder: String, memo: MutableMap<String, Boolean>): Boolean {
+        if (folder.isEmpty()) return false
+        memo[folder]?.let { return it }
+        val parent = folder.substringBeforeLast('/', "")
+        val name = folder.substringAfterLast('/')
+        val own = linesByFile[NoteRepository.outlineFileOf(parent)]?.ownedDone?.contains(name) == true
+        val result = own || isDoneAbove(parent, memo)
+        memo[folder] = result
+        return result
+    }
+
+    /**
+     * `true` when the folder [folderRel] is done by inheritance: the item
+     * backing it, or an item above it, is done (LBR-24). `false` for the
+     * root and for a folder whose parent outline was never indexed.
+     */
+    fun isFolderDone(folderRel: String): Boolean = isDoneAbove(folderRel, HashMap())
 
     /**
      * The tags used in [scope] that start
@@ -475,6 +522,7 @@ class TextIndex(
             for ((key, lines) in refs.byWiki) if (resolveWiki(key) == page) candidates += lines
         }
         val inherited = HashMap<String, Set<String>>()
+        val inheritedDone = HashMap<String, Boolean>()
         return candidates
             .filter { ref ->
                 val file = ref.file
@@ -484,7 +532,7 @@ class TextIndex(
                     !(filter.hides(inheritedTags(folderOfFile(file), inherited)) || filter.hides(linesByFile.getValue(file).noteTags))
             }
             .sortedWith(compareBy<LineRef>({ it.file.lowercase() }, { it.file }, { it.ordinal }))
-            .map { TextHit(it.file, it.line.itemIndex, it.line.rowOffset, it.line.text) }
+            .map { it.line.hit(it.file, isDoneAbove(folderOfFile(it.file), inheritedDone)) }
     }
 
     /**
@@ -572,18 +620,27 @@ class TextIndex(
             val rows = composed.lines
             val out = ArrayList<Line>()
             val owned = HashMap<String, Set<String>>()
+            val ownedDone = HashSet<String>()
             var item = 0
             var row = 0
+            // Rows up to this one are under a done item of this file.
+            var doneThrough = -1
             while (row < rows.size) {
                 val last = DocumentLayout.itemLastRow(rows, row).coerceAtLeast(row)
                 // Only items are numbered and indexed (a stray text line has
                 // no item to open at).
-                val isItem = DocumentLayout.itemColumn(rows, row) >= 0
+                val col = DocumentLayout.itemColumn(rows, row)
+                val isItem = col >= 0
                 if (isItem) {
+                    if (row > doneThrough && DoneState.isDoneRow(rows[row])) {
+                        doneThrough = DocumentLayout.subtreeEnd(rows, row, col)
+                    }
+                    val done = row <= doneThrough
                     val shownRows = (row..last).map { r -> r to shownOf(rows[r]) }
                     val itemTags = shownRows.flatMap { it.second.second }.map(::tagKey).toSet()
                     val folder = composed.folderByRow[row]
                     if (folder != null) owned[folder] = itemTags
+                    if (folder != null && done) ownedDone += folder
                     for ((r, shown) in shownRows) {
                         if (shown.first.isBlank()) continue
                         val raw = rows[r]
@@ -593,13 +650,14 @@ class TextIndex(
                             shown.second.map(::tagKey).toSet(), folder, itemTags,
                             if (code) emptySet() else LunarborLink.linkPathsIn(raw, base),
                             if (code) emptyList() else WikiLink.namesIn(raw),
+                            done,
                         )
                     }
                 }
                 if (isItem) item++
                 row = last + 1
             }
-            return Entry(out, owned)
+            return Entry(out, owned, ownedDone = ownedDone)
         }
 
         /** What one composed outline row shows, and its tags. */
@@ -623,6 +681,7 @@ class TextIndex(
                     Line(
                         SearchQuery.normalize(shown), i, 0, shown, tags, keys, null, keys,
                         LunarborLink.linkPathsIn(raw, base), WikiLink.namesIn(raw),
+                        DoneState.isDoneNoteLine(raw),
                     )
                 }
             }

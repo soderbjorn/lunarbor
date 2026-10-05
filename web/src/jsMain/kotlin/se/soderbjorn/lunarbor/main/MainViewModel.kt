@@ -378,6 +378,18 @@ class MainViewModel(
     /** See `PaneBackingViewModel.sortChildrenByName`. */
     fun sortChildrenByName(reverse: Boolean = false) = paneBackingViewModel.sortChildrenByName(reverse)
 
+    /** See `PaneBackingViewModel.toggleDone`. */
+    fun toggleDone() = paneBackingViewModel.toggleDone()
+
+    /** See `PaneBackingViewModel.canToggleDone`. */
+    fun canToggleDone(state: PaneBackingViewModel.State): Boolean = paneBackingViewModel.canToggleDone(state)
+
+    /** See `PaneBackingViewModel.setHideDone`. */
+    fun setHideDone(on: Boolean) = paneBackingViewModel.setHideDone(on)
+
+    /** See `PaneBackingViewModel.isRowDone`. */
+    fun isRowDone(state: PaneBackingViewModel.State, row: Int): Boolean = paneBackingViewModel.isRowDone(state, row)
+
     /** See `PaneBackingViewModel.isPromotedRef`. */
     fun isPromotedRef(lineId: LineId): Boolean = paneBackingViewModel.isPromotedRef(lineId)
 

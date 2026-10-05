@@ -383,6 +383,8 @@ internal class PaneSearchBar(
             val row = document.createElement("div") as HTMLElement
             row.className = "lunarbor-search-hit"
             row.title = "Go to this line"
+            // A done line (LBR-24) is dimmed, as in the outline.
+            if (hit.done) row.classList.add("lunarbor-hit-done")
             val text = document.createElement("div") as HTMLElement
             text.className = "lunarbor-search-hit-text"
             appendHighlighted(text, hit.text, terms)
@@ -633,6 +635,9 @@ internal fun ensureSearchBarStyles() {
         }
         .lunarbor-search-results {
             padding: 4px 12px 24px 12px;
+        }
+        .lunarbor-search-hit.lunarbor-hit-done {
+            opacity: 0.5;
         }
         .lunarbor-search-hit {
             display: flex;

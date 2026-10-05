@@ -381,6 +381,9 @@ private fun buildRowElement(
     markBrokenLinks(rowDiv, state, viewModel)
     // The caret's row: a search node shows its `{{search: …}}` only here.
     if (absoluteRow == state.cursorRow) rowDiv.classList.add("lunarbor-row-caret")
+    // Done (LBR-24): the item whose title is struck through and everything
+    // under it are dimmed; only the item itself is struck (its Markdown).
+    if (viewModel.isRowDone(state, absoluteRow)) rowDiv.classList.add("lunarbor-row-done")
     return rowDiv
 }
 
@@ -1328,6 +1331,8 @@ private fun buildSearchNodeResults(
         val row = document.createElement("div") as HTMLElement
         row.className = "lunarbor-search-node-hit"
         row.title = "Go to this line"
+        // A done line (LBR-24) is dimmed, as in the outline.
+        if (hit.done) row.classList.add("lunarbor-hit-done")
         val text = document.createElement("span") as HTMLElement
         text.className = "lunarbor-search-node-text"
         appendHighlighted(text, hit.text, terms)
@@ -1872,6 +1877,14 @@ fun ensureStyles() {
             box-shadow: inset 0 0 0 2px var(--t-accent, #5ab0ff),
                 0 0 0 4px color-mix(in srgb, var(--t-accent, #5ab0ff) 30%, transparent);
         }
+        /* A done item (LBR-24) and everything under it: dimmed. Its
+           guide lines dim with it; the fold control keeps full strength
+           on hover. */
+        [data-row].lunarbor-row-done > .lunarbor-text,
+        [data-row].lunarbor-row-done > .lunarbor-bullet-prefix,
+        [data-row].lunarbor-row-done.lunarbor-block-row {
+            opacity: 0.5;
+        }
         /* Bullet rows carry a negative text-indent for the hanging
            indent; nothing inside a row may inherit it. */
         [data-row] * {
@@ -2157,6 +2170,9 @@ fun ensureStyles() {
         }
         .lunarbor-search-node-count:hover {
             color: var(--t-text, #e6e6e6);
+        }
+        .lunarbor-search-node-hit.lunarbor-hit-done {
+            opacity: 0.5;
         }
         .lunarbor-search-node-hit {
             display: flex;

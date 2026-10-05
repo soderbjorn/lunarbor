@@ -75,6 +75,7 @@ import se.soderbjorn.lunarbor.data.ImagePaths
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.InlineStyle
 import se.soderbjorn.lunarbor.data.LineStyle
+import se.soderbjorn.lunarbor.data.DoneState
 import se.soderbjorn.lunarbor.data.FolderName
 import se.soderbjorn.lunarbor.data.LinkTarget
 import se.soderbjorn.lunarbor.data.NoteRepository
@@ -270,6 +271,12 @@ class PaneBackingViewModel(
      * @property backlinksCollapsed `true` when this pane has folded its
      *   "Linked from" section ([toggleBacklinksCollapsed]); pane state, kept
      *   across pages.
+     * @property hideDone `true` while this pane hides done items (LBR-24,
+     *   palette "Hide done items" — [setHideDone]): every done item on the
+     *   page ([DoneLayout.hiddenRows]) is left off the screen with its
+     *   subtree, like a folded subtree that never shows ([visibleRowsIn]).
+     *   Only a view filter: unlike the privacy mode it never refuses an
+     *   edit. Pane state, like folds; persisted with the pane's location.
      * @property privacyRevision Mirror of [DocumentRegistry.PrivacyView.revision]:
      *   changes whenever what is hidden may have changed, so the view repaints
      *   (folder contents, links) even when [privacy] did not.
@@ -311,6 +318,7 @@ class PaneBackingViewModel(
         val privacyRevision: Int = 0,
         val backlinks: Map<String, List<TextHit>> = emptyMap(),
         val backlinksCollapsed: Boolean = false,
+        val hideDone: Boolean = false,
     ) {
         /**
          * `true` while the search field holds at least one word: the view
@@ -710,7 +718,8 @@ class PaneBackingViewModel(
      * in its subtree that are on screen once unfolded, or — a folded
      * folder-backed item, its children on disk only — items in its folder.
      * The app's privacy mode counts: an item whose children are all hidden
-     * has none, so it gets no fold control.
+     * has none, so it gets no fold control; so do done children while the
+     * pane hides them ([State.hideDone]).
      *
      * Called by the web paint loop for every bullet and block item.
      */
@@ -721,11 +730,12 @@ class PaneBackingViewModel(
         if (col < 0) return false
         val id = docState.lineIds.getOrNull(row)
         val foldedRef = id != null && isPromotedRef(id) && id !in state.expandedRefIdsLocal
-        val hidden = hiddenRowsIn(state)
+        val hidden = hiddenOnScreenIn(state)
         if (hidden == null) return foldedRef || DocumentLayout.hasChildren(lines, row, col)
         val end = DocumentLayout.subtreeEnd(lines, row, col)
         if ((DocumentLayout.itemLastRow(lines, row) + 1..end).any { !hidden[it] }) return true
         if (!foldedRef) return false
+        if (!state.privacy.isActive) return true
         val folder = document?.folderOf(id!!) ?: return true
         return registry.textIndex.hasVisibleItems(folder, state.privacy)
     }
@@ -759,6 +769,119 @@ class PaneBackingViewModel(
         return state.backlinks[target] ?: registry.requestBacklinks(target)
     }
 
+    /**
+     * Turns this pane's "Hide done items" on or off ([State.hideDone],
+     * LBR-24). A caret on a row that goes off screen moves to the nearest
+     * visible row above; a page left with nothing on screen gets a
+     * throwaway empty bullet ([ensureVisibleRow]). A no-op in Markdown mode.
+     *
+     * Called by the web palette ("Hide done items" / "Show done items") and
+     * by `AppShell` when it restores a pane's persisted setting.
+     */
+    fun setHideDone(on: Boolean) {
+        val s = _stateFlow.value
+        if (s.hideDone == on) return
+        _stateFlow.value = reconcile(s.copy(hideDone = on))
+        ensureVisibleRow()
+    }
+
+    /**
+     * `true` when the row [row] of [state]'s outline is done (LBR-24): it
+     * belongs to an item whose whole title is struck through, or to
+     * anything under one ([DoneLayout.doneRows]). Always `false` in
+     * Markdown mode. Called by the web paint loop to dim done rows.
+     */
+    fun isRowDone(state: State, row: Int): Boolean {
+        if (state.isMarkdownMode) return false
+        val docState = state.documentState ?: return false
+        return DoneLayout.isMarked(DoneLayout.doneRows(docState.lines), row)
+    }
+
+    /**
+     * `true` when Toggle done ([toggleDone]) can act here: a loaded outline
+     * page that is not read-only. Not in Markdown mode (`.md` notes) or on
+     * file views. Called by the web palette to offer the command.
+     */
+    fun canToggleDone(state: State = _stateFlow.value): Boolean =
+        state.isLoaded && !state.isMarkdownMode && !state.isFileView && !state.isReadOnlyPage
+
+    /**
+     * Toggle done (LBR-24): wraps or unwraps the **whole title** of the
+     * caret's item in `~~` ([DoneState.withDoneRow]; tags and a search
+     * node's query stay outside the markers), or of every item a multi-row
+     * selection touches — a block by its first row. With several items it
+     * marks them all done unless all already are, then it unmarks them all.
+     * An item done only because something above it is done is not done by
+     * its own title, so it is struck on its own (its own title alone; the
+     * parent is left alone). Rows the privacy mode hides and code rows are
+     * skipped.
+     *
+     * One undoable edit, composed from [Document.delete] /
+     * [Document.insertText] per changed row; the caret and the selection
+     * stay on their rows, shifted by the markers added or removed. A no-op
+     * when [canToggleDone] is `false`.
+     *
+     * Called by the web palette ("Toggle done") and the editor's ⌃↩
+     * (Alt-Enter off the Mac).
+     */
+    fun toggleDone() = recordEdit(FrameKind.OTHER) {
+        val s = _stateFlow.value
+        if (!canToggleDone(s)) return@recordEdit
+        val doc = document ?: return@recordEdit
+        val docState = doc.stateFlow.value
+        val lines = docState.lines
+        val sel = selectionOf(s)
+        val first = (sel?.startRow ?: s.cursorRow).coerceIn(0, lines.lastIndex)
+        val last = (sel?.endRow ?: s.cursorRow).coerceIn(first, lines.lastIndex)
+        val hidden = hiddenRowsIn(s.copy(documentState = docState))
+        val itemRows = LinkedHashSet<Int>()
+        for (r in first..last) {
+            val itemRow = BlockLayout.rangeAt(lines, r)?.first ?: r
+            if (DocumentLayout.itemColumn(lines, itemRow) < 0) continue
+            if (PrivacyLayout.isHidden(hidden, itemRow) || BlockLayout.isCodeLine(lines[itemRow])) continue
+            itemRows += itemRow
+        }
+        if (itemRows.isEmpty()) return@recordEdit
+        val done = !itemRows.all { DoneState.isDoneRow(lines[it]) }
+        commitPlaceholderIfAny()
+        // Per changed row: the unchanged head, the old end of the changed
+        // middle and the change in length. A column in the head stays, one
+        // after the middle moves by the change, one inside the middle (the
+        // title) moves by the opening marker added or removed.
+        val shifts = HashMap<Int, Triple<Int, Int, Int>>()
+        for (row in itemRows) {
+            val before = lines[row]
+            val after = DoneState.withDoneRow(before, done)
+            if (after == before) continue
+            var head = 0
+            while (head < before.length && head < after.length && before[head] == after[head]) head++
+            var tail = 0
+            while (tail < before.length - head && tail < after.length - head &&
+                before[before.length - 1 - tail] == after[after.length - 1 - tail]
+            ) tail++
+            doc.delete(row, head, row, before.length - tail)
+            doc.insertText(row, head, after.substring(head, after.length - tail))
+            shifts[row] = Triple(head, before.length - tail, after.length - before.length)
+        }
+        if (shifts.isEmpty()) return@recordEdit
+        fun shifted(row: Int, col: Int): Int {
+            val (head, middleEnd, delta) = shifts[row] ?: return col
+            val newLen = doc.stateFlow.value.lines.getOrNull(row)?.length ?: return col
+            val moved = when {
+                col <= head -> col
+                col >= middleEnd -> col + delta
+                else -> (col + if (done) 2 else -2).coerceIn(head, middleEnd + delta)
+            }
+            return moved.coerceIn(0, newLen)
+        }
+        patch {
+            it.copy(
+                cursorCol = shifted(it.cursorRow, it.cursorCol),
+                anchorCol = it.anchorRow?.let { ar -> it.anchorCol?.let { ac -> shifted(ar, ac) } },
+            )
+        }
+    }
+
     /** Folds or unfolds this pane's "Linked from" section. Called by its header. */
     fun toggleBacklinksCollapsed() {
         _stateFlow.value = _stateFlow.value.copy(backlinksCollapsed = !_stateFlow.value.backlinksCollapsed)
@@ -767,7 +890,7 @@ class PaneBackingViewModel(
     /**
      * Gives the page a row to type in when the app's privacy mode hides
      * every row it has — an outline, or a zoom, whose items all carry a
-     * hidden tag: an empty bullet after them (at the page's top level, so
+     * hidden tag, or (with [State.hideDone]) are all done: an empty bullet after them (at the page's top level, so
      * it is no hidden item's child), with the caret on it. Like a leaf
      * zoom's placeholder ([State.pendingLeafZoomChild]) it goes again when
      * left empty. Not an undoable edit. A no-op when anything is visible.
@@ -776,8 +899,8 @@ class PaneBackingViewModel(
      */
     private fun ensureVisibleRow() {
         val s = _stateFlow.value
-        if (!s.isLoaded || !s.privacy.isActive || s.isMarkdownMode || s.isReadOnlyPage) return
-        val hidden = hiddenRowsIn(s) ?: return
+        if (!s.isLoaded || !(s.privacy.isActive || s.hideDone) || s.isMarkdownMode || s.isReadOnlyPage) return
+        val hidden = hiddenOnScreenIn(s) ?: return
         val doc = document ?: return
         val zoom = zoomInfoOf(s)
         val start = zoom?.startRow ?: s.firstEditableRow

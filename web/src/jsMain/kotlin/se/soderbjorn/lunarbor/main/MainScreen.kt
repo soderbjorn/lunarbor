@@ -1053,6 +1053,19 @@ class MainScreen(
                 return
             }
         }
+        if (event.key == "Enter" && !event.shiftKey && !event.metaKey &&
+            (if (isMacPlatform) event.ctrlKey && !event.altKey else event.altKey && !event.ctrlKey)
+        ) {
+            // Toggle done (LBR-24): ⌃↩ on the Mac (Cmd-Enter and
+            // Shift-Cmd-Enter leave a block, Option-Cmd-Enter zooms),
+            // Alt-Enter elsewhere, where Ctrl stands in for Cmd. Strikes or
+            // unstrikes the whole title of the caret's item, or of every
+            // item the selection touches. Outlines only.
+            event.preventDefault()
+            syncSelectionFromDom(editor)
+            viewModel.toggleDone()
+            return
+        }
         if (event.key == "Enter" && cmd && !event.altKey && event.shiftKey) {
             // Shift-Cmd-Enter in a block: leave it onto a new bullet right
             // above it (Cmd-Enter leaves below).

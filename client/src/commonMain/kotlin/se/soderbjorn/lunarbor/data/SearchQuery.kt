@@ -12,6 +12,7 @@
  *     #proj*                         any tag starting with #proj
  *     in:/Work/Projects #urgent      another tree (vault-rooted path)
  *     #timeline order:reverse        results in reverse order
+ *     #todo is:open                  not done (LBR-24); `is:done` the done ones
  *
  * - `AND`, `OR`, `NOT` are operators only in capitals, so the words "and"
  *   / "or" can still be searched for. NOT binds tightest, then AND, then OR.
@@ -21,6 +22,9 @@
  * - `in:` (top level, anywhere in the query) replaces the default tree;
  *   `in:/` is the whole vault. Its path is on-disk folder names, like a
  *   vault link's (percent-encoding accepted); quote it to use spaces.
+ * - `is:done` matches a done line — its item's whole title struck through,
+ *   or an item above it done ([DoneState]; inherited like a tag, across
+ *   files); `is:open` is `-is:done`. Both combine with everything.
  * - `order:reverse` (top level, anywhere) lists the results in reverse
  *   order — the deepest, last files first; `order:normal` is the default.
  * - Parsing never fails: a half-typed query (an open parenthesis, a
@@ -61,6 +65,7 @@ data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Bo
                 is Expr.And -> e.parts.forEach(::walk)
                 is Expr.Or -> e.parts.forEach(::walk)
                 is Expr.Not -> Unit
+                Expr.Done -> Unit
             }
         }
         expr?.let(::walk)
@@ -75,39 +80,46 @@ data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Bo
         /**
          * `true` when a line with normalized visible [text] and effective
          * [tags] (its own and its ancestors', normalized, without `#`)
-         * meets this condition.
+         * meets this condition. [done] is the line's done flag, its own or
+         * inherited ([DoneState]; computed at index time by `TextIndex`).
          */
-        abstract fun matches(text: String, tags: Set<String>): Boolean
+        abstract fun matches(text: String, tags: Set<String>, done: Boolean = false): Boolean
+
+        /** `is:done`: the line is done (`is:open` is its [Not]). */
+        object Done : Expr() {
+            override fun matches(text: String, tags: Set<String>, done: Boolean) = done
+            override fun toString(): String = "Done"
+        }
 
         /** A word: a substring of the line's text. */
         data class Word(val text: String) : Expr() {
-            override fun matches(text: String, tags: Set<String>) = this.text in text
+            override fun matches(text: String, tags: Set<String>, done: Boolean) = this.text in text
         }
 
         /** A quoted phrase: a substring of the line's text. */
         data class Phrase(val text: String) : Expr() {
-            override fun matches(text: String, tags: Set<String>) = this.text in text
+            override fun matches(text: String, tags: Set<String>, done: Boolean) = this.text in text
         }
 
         /** `#name` (a whole tag) or `#name*` ([prefix]: any tag starting with it). */
         data class Tag(val name: String, val prefix: Boolean) : Expr() {
-            override fun matches(text: String, tags: Set<String>) =
+            override fun matches(text: String, tags: Set<String>, done: Boolean) =
                 if (prefix) tags.any { it.startsWith(name) } else name in tags
         }
 
         /** All of [parts]. */
         data class And(val parts: List<Expr>) : Expr() {
-            override fun matches(text: String, tags: Set<String>) = parts.all { it.matches(text, tags) }
+            override fun matches(text: String, tags: Set<String>, done: Boolean) = parts.all { it.matches(text, tags, done) }
         }
 
         /** Any of [parts]. */
         data class Or(val parts: List<Expr>) : Expr() {
-            override fun matches(text: String, tags: Set<String>) = parts.any { it.matches(text, tags) }
+            override fun matches(text: String, tags: Set<String>, done: Boolean) = parts.any { it.matches(text, tags, done) }
         }
 
         /** Not [part]. */
         data class Not(val part: Expr) : Expr() {
-            override fun matches(text: String, tags: Set<String>) = !part.matches(text, tags)
+            override fun matches(text: String, tags: Set<String>, done: Boolean) = !part.matches(text, tags, done)
         }
     }
 
@@ -186,6 +198,8 @@ data class SearchQuery(val expr: Expr?, val scopePath: String?, val reversed: Bo
                         out += when (word.lowercase()) {
                             "order:reverse", "order:desc" -> Token.Order(reversed = true)
                             "order:normal", "order:asc" -> Token.Order(reversed = false)
+                            "is:done" -> Token.Term(Expr.Done)
+                            "is:open" -> Token.Term(Expr.Not(Expr.Done))
                             else -> null
                         } ?: when (word) {
                             "AND" -> Token.And

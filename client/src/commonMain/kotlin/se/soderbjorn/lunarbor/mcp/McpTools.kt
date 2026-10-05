@@ -141,7 +141,8 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
             name = "search",
             description = "Find lines anywhere in the vault: bullet titles, block lines and note lines. Words and \"phrases\" " +
                 "match parts of a line, #tag a whole tag and #tag* a tag prefix (a tag on a parent counts for everything " +
-                "under it); a space or AND joins, OR alternates, NOT or -word negates, parentheses group. Results are grouped " +
+                "under it); is:done matches done lines (a struck-through title, or under one) and is:open the rest; a space " +
+                "or AND joins, OR alternates, NOT or -word negates, parentheses group. Results are grouped " +
                 "by the node or note they are in, with its path.",
             inputSchema = schema(
                 "query" to stringProp("The search expression, e.g. \"#todo -#done\" or \"budget OR invoice\"."),
@@ -623,7 +624,9 @@ class McpTools(private val registry: DocumentRegistry, private val workspace: Ag
                     lastFile = hit.fileRel
                     append('\n').append(placeOf(hit.fileRel)).append('\n')
                 }
-                append("  - ").append(hit.text).append('\n')
+                append("  - ").append(hit.text)
+                if (hit.done) append(" [done]")
+                append('\n')
             }
         }.trimEnd()
     }
