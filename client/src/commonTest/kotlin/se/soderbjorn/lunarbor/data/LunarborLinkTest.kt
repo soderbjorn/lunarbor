@@ -90,20 +90,56 @@ class LunarborLinkTest {
         assertNull(LunarborLink.parse("lunarbor:/bad%2"))
     }
 
-    // ------------------------------------------------------ finding links
+    // ------------------------------------------------------ in files
 
     @Test
-    fun finds_links_inline_angle_bracketed_and_in_escaped_outline_titles() {
-        val text = "* See [soups](lunarbor:/Recipes/Soups) and ![img](<lunarbor:/Recipes/granola.jpg>)\n" +
-            "+ [Plan \\[in\\](lunarbor:/Budget%202027.md)](Plan)\n" +
-            "* not a link: lunarbor:/Loose and https://x.test/lunarbor:/nope\n"
-        assertEquals(
-            listOf("Recipes/Soups", "Recipes/granola.jpg", "Budget 2027.md"),
-            LunarborLink.findLinks(text).map { it.pathRel },
-        )
+    fun resolves_relative_rooted_and_old_links_against_the_lines_folder() {
+        assertEquals("Recipes/Soups", LunarborLink.resolve("Recipes/Soups/_node.md", ""))
+        assertEquals("Recipes/Pasta", LunarborLink.resolve("../Pasta/_node.md", "Recipes/Soups"))
+        assertEquals("Recipes/Soups", LunarborLink.resolve("_node.md", "Recipes/Soups"))
+        assertEquals("", LunarborLink.resolve("../../_node.md", "Recipes/Soups"))
+        assertEquals("Budget 2027.md", LunarborLink.resolve("../Budget%202027.md#Q1", "Plans"))
+        assertEquals("My notes/a.md", LunarborLink.resolve("<My notes/a.md>", ""))
+        assertEquals("Recipes/Soups", LunarborLink.resolve("/Recipes/Soups", "Anywhere/Else"))
+        assertEquals("Recipes/Soups", LunarborLink.resolve("lunarbor:/Recipes/Soups", "Anywhere"))
+        assertEquals("Work%3A Pizza", LunarborLink.resolve("Work%253A%20Pizza", ""))
+        // External, anchors and escapes from the vault are no places in it.
+        assertNull(LunarborLink.resolve("https://example.com/a", ""))
+        assertNull(LunarborLink.resolve("mailto:a@b.c", ""))
+        assertNull(LunarborLink.resolve("obsidian://open?x", ""))
+        assertNull(LunarborLink.resolve("#heading", ""))
+        assertNull(LunarborLink.resolve("../outside.md", ""))
     }
 
-    // ------------------------------------------------------------- rewrite
+    @Test
+    fun writes_relative_links_a_node_by_its_outline() {
+        assertEquals("Recipes/Soups/_node.md", LunarborLink.relative("Recipes/Soups", true, ""))
+        assertEquals("../Pasta/_node.md", LunarborLink.relative("Recipes/Pasta", true, "Recipes/Soups"))
+        assertEquals("_node.md", LunarborLink.relative("Recipes/Soups", true, "Recipes/Soups"))
+        assertEquals("./Lentil/_node.md", LunarborLink.relative("Recipes/Soups/Lentil", true, "Recipes/Soups"))
+        assertEquals("../../_node.md", LunarborLink.relative("", true, "Recipes/Soups"))
+        assertEquals("../granola.jpg", LunarborLink.relative("Recipes/granola.jpg", false, "Recipes/Soups"))
+        assertEquals("Budget%202027.md", LunarborLink.relative("Budget 2027.md", false, ""))
+        assertEquals("./Recipes/_node.md", LunarborLink.relative("Recipes", true, ""))
+        assertEquals("./Work%253A%20Pizza/_node.md", LunarborLink.relative("Work%3A Pizza", true, ""))
+        // Round trip from any folder.
+        for (base in listOf("", "Recipes", "Recipes/Soups", "Other/Deep/Place")) {
+            for ((path, folder) in listOf("Recipes/Soups" to true, "" to true, "Recipes/granola.jpg" to false)) {
+                assertEquals(path, LunarborLink.resolve(LunarborLink.relative(path, folder, base), base))
+            }
+        }
+    }
+
+    @Test
+    fun finds_links_but_not_images_child_links_or_web_links() {
+        val text = "- See [soups](Recipes/Soups/_node.md) and ![img](Recipes/granola.jpg) [old](lunarbor:/Old)\n" +
+            "- Plans [↳](<Plans/_node.md>)\n" +
+            "> [site](https://x.test) [note](<My notes/a.md> \"title\") [[Wiki]]\n"
+        val links = LunarborLink.findLinks(text, "")
+        assertEquals(listOf("Recipes/Soups", "Old", "My notes/a.md"), links.map { it.pathRel })
+        assertEquals(listOf(true, false, true), links.map { it.isRelative })
+        assertTrue(links[0].namesOutline)
+    }
 
     @Test
     fun remap_follows_the_longest_matching_move() {
@@ -116,31 +152,46 @@ class LunarborLinkTest {
     }
 
     @Test
-    fun rewrites_links_at_and_through_a_renamed_folder() {
-        val text = "* [a](lunarbor:/Recipes/Soups) [b](lunarbor:/Recipes/Soups/granola.jpg) [c](lunarbor:/Recipes/Soupsmore)"
-        val out = LunarborLink.rewriteText(text, listOf(PathMove("Recipes/Soups", "Recipes/Soup stock")))
+    fun rebase_follows_a_renamed_target() {
+        val text = "* [a](Recipes/Soups/_node.md) [b](Recipes/Soups/granola.jpg) [c](Recipes/Soupsmore/_node.md)"
+        val out = LunarborLink.rebaseText(text, "", "", listOf(PathMove("Recipes/Soups", "Recipes/Soup stock")))
+        assertEquals("* [a](Recipes/Soup%20stock/_node.md) [b](Recipes/Soup%20stock/granola.jpg) [c](Recipes/Soupsmore/_node.md)", out)
+    }
+
+    @Test
+    fun rebase_follows_a_line_into_another_folder() {
+        // A row moved from the root into Recipes/Soups.
+        val text = "* see [pasta](Recipes/Pasta/_node.md) and [home](_node.md) and [web](https://x.test)"
         assertEquals(
-            "* [a](lunarbor:/Recipes/Soup%20stock) [b](lunarbor:/Recipes/Soup%20stock/granola.jpg) [c](lunarbor:/Recipes/Soupsmore)",
-            out,
+            "* see [pasta](../Pasta/_node.md) and [home](../../_node.md) and [web](https://x.test)",
+            LunarborLink.rebaseText(text, "", "Recipes/Soups"),
         )
     }
 
     @Test
-    fun rewrite_keeps_outline_structure() {
-        val line = "- See [soups](lunarbor:/Recipes/Soups) [↳](<See soups/_node.md>)"
-        val out = LunarborLink.rewriteText(line, listOf(PathMove("Recipes", "Food")))
-        assertEquals("- See [soups](lunarbor:/Food/Soups) [↳](<See soups/_node.md>)", out)
+    fun rebase_keeps_outline_structure_and_turns_old_links_relative() {
+        val line = "- See [soups](lunarbor:/Recipes/Soups) [x](/Recipes/a.png) [↳](<See soups/_node.md>)"
+        val out = LunarborLink.rebaseText(line, "", "")
+        assertEquals("- See [soups](Recipes/Soups/_node.md) [x](Recipes/a.png) [↳](<See soups/_node.md>)", out)
         val parsed = SubtreeCodec.parseNodeFile(out!!).single() as NodeLine.Folder
-        assertEquals("See [soups](lunarbor:/Food/Soups)", parsed.title)
+        assertEquals("See [soups](Recipes/Soups/_node.md) [x](Recipes/a.png)", parsed.title)
         assertEquals("See soups", parsed.folder)
     }
 
     @Test
-    fun rewrite_ignores_trash_moves_and_reports_no_change() {
-        val text = "* [a](lunarbor:/Recipes/Soups)"
-        assertNull(LunarborLink.rewriteText(text, listOf(PathMove("Recipes/Soups", ".trash/1970 Soups"))))
-        assertNull(LunarborLink.rewriteText(text, listOf(PathMove("Other", "Else"))))
-        assertNull(LunarborLink.rewriteText("no links here", listOf(PathMove("a", "b"))))
+    fun rebase_ignores_trash_moves_and_reports_no_change() {
+        val text = "* [a](Recipes/Soups/_node.md) [b](../x.md)"
+        assertNull(LunarborLink.rebaseText(text, "Notes", "Notes", listOf(PathMove("Recipes/Soups", ".trash/1970 Soups"))))
+        assertNull(LunarborLink.rebaseText(text, "Notes", "Notes", listOf(PathMove("Other", "Else"))))
+        assertNull(LunarborLink.rebaseText("no links here", "", "", listOf(PathMove("a", "b"))))
         assertTrue(PathMove(".trash/x", "Recipes/x").touchesTrash)
+    }
+
+    @Test
+    fun copied_text_is_vault_rooted() {
+        assertEquals(
+            "* [p](/Recipes/Pasta/_node.md) [w](https://x.test)",
+            LunarborLink.rootedText("* [p](../Pasta/_node.md) [w](https://x.test)", "Recipes/Soups"),
+        )
     }
 }

@@ -1468,8 +1468,9 @@ class NoteRepository(
     /**
      * Appends one bookmark bullet, `* [title](lunarbor:/…)`, to
      * [STARRED_FILE_NAME], creating the file when missing. Starred entries
-     * use the same `lunarbor:` paths as links (TRF-8), so a save that renames or
-     * moves the target rewrites them too. Called by the Starred modal.
+     * are ordinary links (TRF-8; relative to the vault root, where the file
+     * is), so a save that renames or moves the target rewrites them too.
+     * Called by the Starred modal.
      *
      * @param title Label shown in the bookmark list.
      * @param targetPathRel Vault-relative folder or file being starred
@@ -1479,7 +1480,9 @@ class NoteRepository(
         fileSystem.ensureDirectory(rootDirectory)
         val absPath = abs(STARRED_FILE_NAME)
         val existing = fileSystem.readFileIfExists(absPath) ?: ""
-        val newBullet = SubtreeCodec.formatPlainLinkBullet(indent = 0, label = title, href = LunarborLink.format(targetPathRel))
+        val isFolder = kindOf(targetPathRel)?.let { it == VaultEntryKind.FOLDER } ?: LunarborLink.looksLikeFolder(targetPathRel)
+        val href = LunarborLink.relative(targetPathRel, isFolder, baseFolder = "")
+        val newBullet = SubtreeCodec.formatPlainLinkBullet(indent = 0, label = title, href = href)
         val nextContent = when {
             existing.isEmpty() -> newBullet + "\n"
             existing.endsWith("\n") -> existing + newBullet + "\n"
@@ -1505,7 +1508,7 @@ class NoteRepository(
     }
 
     /**
-     * Removes every bookmark in [STARRED_FILE_NAME] whose `lunarbor:` target is
+     * Removes every bookmark in [STARRED_FILE_NAME] whose link target is
      * [targetPathRel]; other lines are kept verbatim. Called by the
      * Starred modal's un-star toggle.
      */
@@ -1514,7 +1517,7 @@ class NoteRepository(
         val existing = fileSystem.readFileIfExists(absPath) ?: return
         val kept = existing.split("\n").filter { line ->
             val link = SubtreeCodec.parseAnyLinkBullet(line) ?: return@filter true
-            LunarborLink.parse(link.url) != targetPathRel
+            LunarborLink.resolve(link.url, "") != targetPathRel
         }
         val text = kept.joinToString("\n")
         fileSystem.writeFile(absPath, text)
@@ -1901,19 +1904,27 @@ class NoteRepository(
     }
 
     /**
-     * Rewrites the `lunarbor:` links in the file [fileRel] on disk per [moves]
-     * ([LunarborLink.rewriteText]), for a file no open document holds. Works on
-     * the raw text, so an outline's structure and a note's formatting are
+     * Rewrites the links in the file [fileRel] on disk after [moves]
+     * ([LunarborLink.rebaseText]), for a file no open document holds: links
+     * to a moved target point at its new path, and when the file itself
+     * moved with a folder (it was at [oldFileRel]), every link in it is
+     * rewritten relative to where it is now. Works on the raw text, so an
+     * outline's structure (its child links) and a note's formatting are
      * untouched.
      *
      * Called by `DocumentRegistry` after a save renamed or moved folders
      * or files.
      *
+     * @param fileRel Where the file is now.
+     * @param oldFileRel Where it was before [moves] (the same when it did
+     *   not move).
      * @return `true` when the file was rewritten.
      */
-    suspend fun rewriteLinksInFile(fileRel: String, moves: List<PathMove>): Boolean {
+    suspend fun rewriteLinksInFile(fileRel: String, moves: List<PathMove>, oldFileRel: String = fileRel): Boolean {
         val text = fileSystem.readFileIfExists(abs(fileRel)) ?: return false
-        val rewritten = LunarborLink.rewriteText(text, moves)
+        val rewritten = LunarborLink.rebaseText(
+            text, LunarborLink.baseOfFile(oldFileRel), LunarborLink.baseOfFile(fileRel), moves, isFolderHint(text, oldFileRel),
+        )
         if (rewritten == null) {
             observe(fileRel, text)
             return false
@@ -1922,6 +1933,65 @@ class NoteRepository(
         fileSystem.writeFile(abs(fileRel), rewritten)
         observe(fileRel, rewritten)
         return true
+    }
+
+    /**
+     * What [migrateRelativeLinks] did.
+     *
+     * @property rewrittenFiles Vault-relative paths of every note or outline
+     *   it rewrote.
+     * @property backupFolder Where their originals were kept
+     *   (`.trash/<timestamp> format migration`), or `null` when none was.
+     */
+    data class LinkMigration(val rewrittenFiles: List<String>, val backupFolder: String?)
+
+    /**
+     * One-time vault format migration: links are written as relative
+     * Markdown links ([LunarborLink.relative]: `[soups](Recipes/Soups/_node.md)`
+     * from the root, `../Pasta/_node.md` from inside a node), which other
+     * Markdown tools follow, instead of `lunarbor:/Recipes/Soups`. Rewrites
+     * every `lunarbor:/…` (and vault-rooted `/…`) link in every outline,
+     * note and `Starred.md`, relative to the file's folder, a folder target
+     * named by its `_node.md` ([LunarborLink.rebaseText], kinds read from
+     * the disk). Images, child links and web links are left alone.
+     *
+     * Each file is copied to `.trash/<timestamp> format migration/<path>`
+     * before it is rewritten. Running it again changes nothing.
+     *
+     * Called by the web entry point (`FormatMigrations.kt`) once per vault,
+     * before the registry loads anything.
+     */
+    suspend fun migrateRelativeLinks(): LinkMigration {
+        val backupDir = "$TRASH_DIR/${formatTimestamp(nowMillis())} format migration"
+        val rewritten = ArrayList<String>()
+        for (fileRel in listLinkBearingFiles()) {
+            val text = fileSystem.readFileIfExists(abs(fileRel)) ?: continue
+            if ("](" !in text) continue
+            val base = LunarborLink.baseOfFile(fileRel)
+            val out = LunarborLink.rebaseText(text, base, base, emptyList(), isFolderHint(text, fileRel)) ?: continue
+            val backup = "$backupDir/$fileRel"
+            fileSystem.ensureDirectory(abs(backup.substringBeforeLast('/')))
+            fileSystem.writeFile(abs(backup), text)
+            fileSystem.writeFile(abs(fileRel), out)
+            observe(fileRel, out)
+            rewritten += fileRel
+            println("[migration] relative links: $fileRel")
+        }
+        return LinkMigration(rewritten, backupDir.takeIf { rewritten.isNotEmpty() })
+    }
+
+    /**
+     * Whether each target the old ways of linking (`lunarbor:/…`, `/…`)
+     * name in [text] is a folder, read from the disk now; other targets are
+     * guessed by name ([LunarborLink.looksLikeFolder]). For
+     * [LunarborLink.rebaseText], which writes a node's link as `…/_node.md`.
+     */
+    private suspend fun isFolderHint(text: String, fileRel: String): (String) -> Boolean {
+        val legacy = LunarborLink.findLinks(text, LunarborLink.baseOfFile(fileRel))
+            .filter { !it.isRelative }.map { it.pathRel }.distinct()
+        if (legacy.isEmpty()) return LunarborLink::looksLikeFolder
+        val kinds = kindsOf(legacy)
+        return { path -> kinds[path]?.let { it == VaultEntryKind.FOLDER } ?: LunarborLink.looksLikeFolder(path) }
     }
 
     /**

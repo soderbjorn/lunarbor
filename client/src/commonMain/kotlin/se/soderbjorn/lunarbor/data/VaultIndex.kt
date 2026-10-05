@@ -198,7 +198,7 @@ class VaultIndex(
             val updated = text?.let { NodeFrontMatter.epochMillisOf(SubtreeCodec.splitFrontMatter(it).frontMatter?.updated) }
             if (updated == null) updatedByFolder.remove(folder) else updatedByFolder[folder] = updated
         }
-        val links = if (text == null) emptySet() else LunarborLink.linkPathsIn(text)
+        val links = if (text == null) emptySet() else LunarborLink.linkPathsIn(text, LunarborLink.baseOfFile(fileRel))
         if (links.isEmpty()) linksByFile.remove(fileRel) else linksByFile[fileRel] = links
     }
 
@@ -257,8 +257,25 @@ class VaultIndex(
     }
 
     /**
+     * Note files with links that [moves] carried along — files at or under
+     * a moved path, whose relative links must be rewritten for where they
+     * are now. Keyed by the file's path before the moves, valued by its
+     * path after. Call before [moveKeys]. Builds the index first if needed.
+     */
+    suspend fun filesMovedBy(moves: List<PathMove>): Map<String, String> {
+        if (moves.isEmpty()) return emptyMap()
+        ensureLinkIndex()
+        val out = LinkedHashMap<String, String>()
+        for (file in linksByFile.keys) {
+            val to = LunarborLink.remap(file, moves) ?: continue
+            if (to != file) out[file] = to
+        }
+        return out
+    }
+
+    /**
      * Note files whose links point at or through a path that [moves]
-     * renamed or moved (trash moves excluded — see [LunarborLink.rewriteText]).
+     * renamed or moved (trash moves excluded — see [LunarborLink.rebaseText]).
      * Builds the index first if needed. Keys are the files' current paths.
      */
     suspend fun filesLinkingInto(moves: List<PathMove>): Set<String> {

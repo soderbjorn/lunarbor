@@ -2061,7 +2061,10 @@ class MainScreen(
         applyTitleStyleClass(title, style)
         // Images in a zoomed headline resolve against the zoom row's folder.
         val zoomRow = backing?.takeIf { it.isLoaded }?.let { viewModel.zoomInfo(it)?.zoomRow }
-        renderInlineRuns(title, text, baseRunClass = null) { src ->
+        renderInlineRuns(
+            title, text, baseRunClass = null,
+            linkResolver = { url -> if (zoomRow != null) viewModel.linkHrefOf(zoomRow, url) else url },
+        ) { src ->
             if (zoomRow != null) viewModel.resolveImageSrc(zoomRow, src) else ImagePaths.resolve("", src)
         }
         // A search node's page: its match count after the magnifier, as on
@@ -2091,6 +2094,8 @@ class MainScreen(
      *   editor uses `lunarbor-text-run` so its caret-mapping code can
      *   walk the spans; the headline passes `null` and just gets the
      *   style classes.
+     * @param linkResolver maps a link's destination as written to the
+     *   href the app uses (`MainViewModel.linkHrefOf` for the zoom row).
      * @param imageResolver maps an inline image `src` to its vault file
      *   (see `createImageRunElement`).
      */
@@ -2098,6 +2103,7 @@ class MainScreen(
         parent: HTMLElement,
         text: String,
         baseRunClass: String?,
+        linkResolver: (String) -> String = { it },
         imageResolver: (String) -> String?,
     ) {
         val tokenized = InlineMarkdownTokenizer.tokenize(text)
@@ -2124,7 +2130,7 @@ class MainScreen(
             if (full.isNotEmpty()) span.className = full.joinToString(" ")
             if (run.isTag) span.style.setProperty("--tag-h", tagHue(run.text).toString())
             // Followed on press by the title's link handlers ([wireTitleEditing]).
-            run.linkHref?.let { span.setAttribute("data-href", it) }
+            run.linkHref?.let { span.setAttribute("data-href", linkResolver(it)) }
             span.textContent = run.text
             parent.appendChild(span)
         }

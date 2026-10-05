@@ -94,15 +94,15 @@ class LinksTest {
 
     /** A vault with a node, a file inside it, and links to both from everywhere. */
     private suspend fun seedRecipes() {
-        seed("_node.md", "- Recipes [↳](<Recipes/_node.md>)\n- Notes [↳](<Notes/_node.md>)\n- Root sees [soups](lunarbor:/Recipes/Soups)\n")
+        seed("_node.md", "- Recipes [↳](<Recipes/_node.md>)\n- Notes [↳](<Notes/_node.md>)\n- Root sees [soups](Recipes/Soups/_node.md)\n")
         seed("Recipes/_node.md", "- Soups [↳](<Soups/_node.md>)\n- Cakes\n")
         seed("Recipes/Soups/_node.md", "- Tomato\n")
         fs.writeBinary("$root/Recipes/Soups/granola.jpg", byteArrayOf(1))
-        seed("Notes/_node.md", "- Photo: [granola](lunarbor:/Recipes/Soups/granola.jpg)\n")
-        seed("Notes/Plan.md", "Plan: see [soups](lunarbor:/Recipes/Soups) and [it](<lunarbor:/Recipes/Soups/granola.jpg>).\n")
+        seed("Notes/_node.md", "- Photo: [granola](../Recipes/Soups/granola.jpg)\n")
+        seed("Notes/Plan.md", "Plan: see [soups](../Recipes/Soups/_node.md) and [it](<../Recipes/Soups/granola.jpg>).\n")
         seed(
             NoteRepository.STARRED_FILE_NAME,
-            "* [Soups](lunarbor:/Recipes/Soups)\n* [Granola](lunarbor:/Recipes/Soups/granola.jpg)\n",
+            "* [Soups](Recipes/Soups/_node.md)\n* [Granola](Recipes/Soups/granola.jpg)\n",
         )
     }
 
@@ -119,16 +119,16 @@ class LinksTest {
         assertTrue(dirExists("Recipes/Soup stock"))
         assertFalse(dirExists("Recipes/Soups"))
         assertEquals(
-            "- Recipes [↳](<Recipes/_node.md>)\n- Notes [↳](<Notes/_node.md>)\n- Root sees [soups](lunarbor:/Recipes/Soup%20stock)\n",
+            "- Recipes [↳](<Recipes/_node.md>)\n- Notes [↳](<Notes/_node.md>)\n- Root sees [soups](Recipes/Soup%20stock/_node.md)\n",
             read("_node.md"),
         )
-        assertEquals("- Photo: [granola](lunarbor:/Recipes/Soup%20stock/granola.jpg)\n", read("Notes/_node.md"))
+        assertEquals("- Photo: [granola](../Recipes/Soup%20stock/granola.jpg)\n", read("Notes/_node.md"))
         assertEquals(
-            "Plan: see [soups](lunarbor:/Recipes/Soup%20stock) and [it](<lunarbor:/Recipes/Soup%20stock/granola.jpg>).\n",
+            "Plan: see [soups](../Recipes/Soup%20stock/_node.md) and [it](../Recipes/Soup%20stock/granola.jpg).\n",
             read("Notes/Plan.md"),
         )
         assertEquals(
-            "* [Soups](lunarbor:/Recipes/Soup%20stock)\n* [Granola](lunarbor:/Recipes/Soup%20stock/granola.jpg)\n",
+            "* [Soups](Recipes/Soup%20stock/_node.md)\n* [Granola](Recipes/Soup%20stock/granola.jpg)\n",
             read(NoteRepository.STARRED_FILE_NAME),
         )
         registry.release("Recipes/_node.md")
@@ -143,14 +143,14 @@ class LinksTest {
         flush(p)
 
         assertTrue(dirExists("Food/Soups"))
-        assertTrue(p.lines.contains("* Root sees [soups](lunarbor:/Food/Soups)"), p.lines.toString())
+        assertTrue(p.lines.contains("* Root sees [soups](Food/Soups/_node.md)"), p.lines.toString())
         assertEquals(
-            "- Food [↳](<Food/_node.md>)\n- Notes [↳](<Notes/_node.md>)\n- Root sees [soups](lunarbor:/Food/Soups)\n",
+            "- Food [↳](<Food/_node.md>)\n- Notes [↳](<Notes/_node.md>)\n- Root sees [soups](Food/Soups/_node.md)\n",
             read("_node.md"),
         )
-        assertEquals("- Photo: [granola](lunarbor:/Food/Soups/granola.jpg)\n", read("Notes/_node.md"))
+        assertEquals("- Photo: [granola](../Food/Soups/granola.jpg)\n", read("Notes/_node.md"))
         assertEquals(
-            "* [Soups](lunarbor:/Food/Soups)\n* [Granola](lunarbor:/Food/Soups/granola.jpg)\n",
+            "* [Soups](Food/Soups/_node.md)\n* [Granola](Food/Soups/granola.jpg)\n",
             read(NoteRepository.STARRED_FILE_NAME),
         )
         registry.release("_node.md")
@@ -159,10 +159,10 @@ class LinksTest {
     @Test
     fun moving_a_node_under_another_parent_rewrites_links_in_open_and_closed_files() = runTest {
         seed("_node.md", "- Work [↳](<Work/_node.md>)\n- Private [↳](<Private/_node.md>)\n")
-        seed("Work/_node.md", "- Plan [↳](<Plan/_node.md>)\n- See [plan](lunarbor:/Work/Plan)\n")
+        seed("Work/_node.md", "- Plan [↳](<Plan/_node.md>)\n- See [plan](./Plan/_node.md)\n")
         seed("Work/Plan/_node.md", "- step one\n")
         seed("Private/_node.md", "- Health\n")
-        seed("Elsewhere.md", "[plan](lunarbor:/Work/Plan)\n")
+        seed("Elsewhere.md", "[plan](Work/Plan/_node.md)\n")
         val p = pane()
         val d = doc()
         // Expand Work and Private so the drag happens in one document.
@@ -170,7 +170,7 @@ class LinksTest {
         val privateRow = d.lines().indexOf("* Private")
         d.acquireExpansion(d.id(privateRow))
         assertEquals(
-            listOf("* Work", "  * Plan", "  * See [plan](lunarbor:/Work/Plan)", "* Private", "  * Health"),
+            listOf("* Work", "  * Plan", "  * See [plan](./Plan/_node.md)", "* Private", "  * Health"),
             d.lines(),
         )
         // Drag "Plan" (collapsed) under Private, after Health.
@@ -181,8 +181,8 @@ class LinksTest {
         assertFalse(dirExists("Work/Plan"))
         // The link lives in Work's outline, which the open root document
         // holds in memory: rewritten there and saved with it.
-        assertEquals("- See [plan](lunarbor:/Private/Plan)\n", read("Work/_node.md"))
-        assertEquals("[plan](lunarbor:/Private/Plan)\n", read("Elsewhere.md"))
+        assertEquals("- See [plan](../Private/Plan/_node.md)\n", read("Work/_node.md"))
+        assertEquals("[plan](Private/Plan/_node.md)\n", read("Elsewhere.md"))
         registry.release("_node.md")
     }
 
@@ -191,16 +191,16 @@ class LinksTest {
         // The file holding the link sits inside the folder that moves.
         seed("_node.md", "- A [↳](<A/_node.md>)\n")
         seed("A/_node.md", "- B [↳](<B/_node.md>)\n")
-        seed("A/B/_node.md", "- self [b](lunarbor:/A/B) and [c](lunarbor:/A/C.md)\n")
+        seed("A/B/_node.md", "- self [b](_node.md) and [c](../C.md) and [root](../../_node.md)\n")
         seed("A/C.md", "c")
         val p = pane()
         // Build the link index before the move, so the moved-along key matters.
         registry.vaultIndex.ensureLinkIndex()
-        assertEquals(setOf("A/B", "A/C.md"), registry.vaultIndex.linksIn("A/B/_node.md"))
+        assertEquals(setOf("A/B", "A/C.md", ""), registry.vaultIndex.linksIn("A/B/_node.md"))
         doc().setLine(0, "* Z")
         flush(p)
-        assertEquals("- self [b](lunarbor:/Z/B) and [c](lunarbor:/Z/C.md)\n", read("Z/B/_node.md"))
-        assertEquals(setOf("Z/B", "Z/C.md"), registry.vaultIndex.linksIn("Z/B/_node.md"))
+        assertEquals("- self [b](_node.md) and [c](../C.md) and [root](../../_node.md)\n", read("Z/B/_node.md"))
+        assertEquals(setOf("Z/B", "Z/C.md", ""), registry.vaultIndex.linksIn("Z/B/_node.md"))
         registry.release("_node.md")
     }
 
@@ -215,8 +215,8 @@ class LinksTest {
         d.deleteLine(0)
         flush(p)
         assertFalse(dirExists("Recipes/Soups"))
-        assertTrue(read(NoteRepository.STARRED_FILE_NAME)!!.contains("lunarbor:/Recipes/Soups)"))
-        assertEquals("- Photo: [granola](lunarbor:/Recipes/Soups/granola.jpg)\n", read("Notes/_node.md"))
+        assertTrue(read(NoteRepository.STARRED_FILE_NAME)!!.contains("(Recipes/Soups/_node.md)"))
+        assertEquals("- Photo: [granola](../Recipes/Soups/granola.jpg)\n", read("Notes/_node.md"))
         registry.release("Recipes/_node.md")
     }
 
@@ -231,7 +231,7 @@ class LinksTest {
         // links to it (and to its folder) still resolve, unchanged.
         assertTrue(dirExists("Recipes/Soups"))
         assertNull(read("Recipes/Soups/_node.md"))
-        assertEquals("- Photo: [granola](lunarbor:/Recipes/Soups/granola.jpg)\n", read("Notes/_node.md"))
+        assertEquals("- Photo: [granola](../Recipes/Soups/granola.jpg)\n", read("Notes/_node.md"))
         assertFalse(p.isLinkBroken(p.stateFlow.value, "lunarbor:/Recipes/Soups/granola.jpg"))
         runCurrent()
         assertFalse(p.isLinkBroken(p.stateFlow.value, "lunarbor:/Recipes/Soups/granola.jpg"))
@@ -262,7 +262,7 @@ class LinksTest {
         runCurrent()
         assertEquals("_node.md", p.stateFlow.value.activeFileRel)
         flush(p)
-        assertTrue(read("_node.md")!!.contains("[soups](lunarbor:/Recipes/Soups)"))
+        assertTrue(read("_node.md")!!.contains("[soups](Recipes/Soups/_node.md)"))
         p.isLinkBroken(p.stateFlow.value, "lunarbor:/nowhere/at%20all")
         runCurrent()
         assertTrue(p.isLinkBroken(p.stateFlow.value, "lunarbor:/nowhere/at%20all"))
@@ -333,7 +333,7 @@ class LinksTest {
         val hit = p.vaultIndex.search("doctor").single()
         p.insertText(" with ")
         p.insertLinkTo(hit)
-        assertEquals("  * Meeting notes with [Doctor](lunarbor:/Private/Health/Doctor)", p.lines[meeting])
+        assertEquals("  * Meeting notes with [Doctor](../Private/Health/Doctor/_node.md)", p.lines[meeting])
 
         p.navigateToLink("lunarbor:/Private/Health/Doctor")
         runCurrent()
@@ -404,13 +404,13 @@ class LinksTest {
         runCurrent()
         assertEquals("Recipes/Soups", p.currentLocationPath())
         p.toggleStarred(starred = false)
-        assertEquals("* [Soups](lunarbor:/Recipes/Soups)\n", read(NoteRepository.STARRED_FILE_NAME))
+        assertEquals("* [Soups](Recipes/Soups/_node.md)\n", read(NoteRepository.STARRED_FILE_NAME))
         // The registry saw the write: a rename rewrites the new entry too.
         val d = doc()
         val row = d.lines().indexOf("  * Soups")
         d.setLine(row, "  * Broths")
         flush(p)
-        assertEquals("* [Soups](lunarbor:/Recipes/Broths)\n", read(NoteRepository.STARRED_FILE_NAME))
+        assertEquals("* [Soups](Recipes/Broths/_node.md)\n", read(NoteRepository.STARRED_FILE_NAME))
         p.toggleStarred(starred = true)
         assertEquals("", read(NoteRepository.STARRED_FILE_NAME))
         registry.release("_node.md")

@@ -51,7 +51,7 @@ class MirrorTest {
     private fun PaneBackingViewModel.id(row: Int) = stateFlow.value.documentState!!.lineIds[row]
 
     private suspend fun seedRecipes() {
-        seed("_node.md", "- Groceries\n- [Soups](lunarbor:/Recipes/Soups)\n- Recipes [↳](<Recipes/_node.md>)\n")
+        seed("_node.md", "- Groceries\n- [Soups](Recipes/Soups/_node.md)\n- Recipes [↳](<Recipes/_node.md>)\n")
         seed("Recipes/_node.md", "- Soups [↳](<Soups/_node.md>)\n")
         seed("Recipes/Soups/_node.md", "- Tomato\n- Pea [↳](<Pea/_node.md>)\n")
         seed("Recipes/Soups/Pea/_node.md", "- green\n")
@@ -68,7 +68,7 @@ class MirrorTest {
 
         p.toggleCollapse(p.id(1))
         runCurrent()
-        assertEquals(listOf("* Groceries", "* [Soups](lunarbor:/Recipes/Soups)", "  * Tomato", "  * Pea", "* Recipes"), p.lines)
+        assertEquals(listOf("* Groceries", "* [Soups](Recipes/Soups/_node.md)", "  * Tomato", "  * Pea", "* Recipes"), p.lines)
 
         // Typing in the mirror edits the node itself.
         p.moveTo(2, p.lines[2].length)
@@ -78,7 +78,7 @@ class MirrorTest {
         registry.flushAll()
         assertEquals("- Tomato soup\n- Leek\n- Pea [↳](<Pea/_node.md>)\n", disk("Recipes/Soups/_node.md"))
         // The page keeps the mirror as the link it is.
-        assertEquals("- Groceries\n- [Soups](lunarbor:/Recipes/Soups)\n- Recipes [↳](<Recipes/_node.md>)\n", disk("_node.md"))
+        assertEquals("- Groceries\n- [Soups](Recipes/Soups/_node.md)\n- Recipes [↳](<Recipes/_node.md>)\n", disk("_node.md"))
         assertEquals("- green\n", disk("Recipes/Soups/Pea/_node.md"))
     }
 
@@ -105,24 +105,24 @@ class MirrorTest {
 
     @Test
     fun a_mirror_of_a_node_open_on_the_page_stays_folded() = runTest {
-        seed("_node.md", "- [Recipes](lunarbor:/Recipes)\n- Recipes [↳](<Recipes/_node.md>)\n")
+        seed("_node.md", "- [Recipes](./Recipes/_node.md)\n- Recipes [↳](<Recipes/_node.md>)\n")
         seed("Recipes/_node.md", "- Pasta\n")
         val registry = DocumentRegistry(repo, backgroundScope)
         val p = pane(registry)
         assertTrue(p.isMirror(p.id(0)))
         p.toggleCollapse(p.id(1))
         runCurrent()
-        assertEquals(listOf("* [Recipes](lunarbor:/Recipes)", "* Recipes", "  * Pasta"), p.lines)
+        assertEquals(listOf("* [Recipes](./Recipes/_node.md)", "* Recipes", "  * Pasta"), p.lines)
         p.toggleCollapse(p.id(0))
         runCurrent()
-        assertEquals(listOf("* [Recipes](lunarbor:/Recipes)", "* Recipes", "  * Pasta"), p.lines)
+        assertEquals(listOf("* [Recipes](./Recipes/_node.md)", "* Recipes", "  * Pasta"), p.lines)
         registry.flushAll()
         assertEquals("- Pasta\n", disk("Recipes/_node.md"))
     }
 
     @Test
     fun a_link_to_a_missing_node_or_a_file_is_no_mirror() = runTest {
-        seed("_node.md", "- [gone](lunarbor:/Missing)\n- [note](lunarbor:/Note.md)\n- [a](lunarbor:/A) and [b](lunarbor:/B)\n")
+        seed("_node.md", "- [gone](./Missing/_node.md)\n- [note](Note.md)\n- [a](./A/_node.md) and [b](./B/_node.md)\n")
         seed("Note.md", "text")
         val registry = DocumentRegistry(repo, backgroundScope)
         val p = pane(registry)
@@ -157,7 +157,7 @@ class MirrorTest {
 
     @Test
     fun a_stale_copy_of_an_empty_node_never_empties_it_again() = runTest {
-        seed("_node.md", "- Groceries\n- [Inbox](lunarbor:/Inbox)\n")
+        seed("_node.md", "- Groceries\n- [Inbox](./Inbox/_node.md)\n")
         seed("Inbox/_node.md", "")
         val registry = DocumentRegistry(repo, backgroundScope)
         val home = pane(registry)

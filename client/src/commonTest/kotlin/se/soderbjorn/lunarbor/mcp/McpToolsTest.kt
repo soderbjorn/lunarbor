@@ -340,7 +340,7 @@ class McpToolsTest {
         assertEquals("- Lisbon\n", fs.read(root, "Projects/Trip ideas/_node.md"))
         assertEquals("- Trip ideas [↳](<Trip ideas/_node.md>)\n- Website\n", fs.read(root, "Projects/_node.md"))
         assertEquals("- Other\n", fs.read(root, "Inbox/_node.md"))
-        assertEquals("See [ideas](lunarbor:/Projects/Trip%20ideas)\n", fs.read(root, "Plan.md"))
+        assertEquals("See [ideas](Projects/Trip%20ideas/_node.md)\n", fs.read(root, "Plan.md"))
         assertTrue(t.run("move", "path" to "/Projects", "to" to "/Projects/Trip ideas").isError)
     }
 

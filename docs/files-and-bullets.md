@@ -122,13 +122,19 @@ folders the outline already points at are hidden.
 
 ## Links and Starred
 
-Links point at folders and files by vault path, never at a bullet by its
-title:
+Links point at folders and files by path, never at a bullet by its
+title. They are plain relative Markdown links — from the folder the line is
+stored in, a node named by its `_node.md` — so GitHub, Obsidian and other
+Markdown tools follow them too:
 
 ```
-* See [soups](lunarbor:/Recipes/Soups)
-* Plan in [Budget 2027](lunarbor:/Budget%202027.md)
+* See [soups](Recipes/Soups/_node.md)
+* Plan in [Budget 2027](Budget%202027.md)
 ```
+
+When a line moves to another folder (indent, drag), its links are rewritten
+relative to its new place. Vaults from before this used `lunarbor:/Recipes/Soups`;
+Lunarbor converted them once at startup and still reads that form.
 
 A link can target any non-empty folder and any file. When a save renames or
 moves a folder (or moves an image), Lunarbor rewrites every link that
@@ -142,7 +148,7 @@ are saved to the node's `_node.md`; the mirror bullet itself is saved as the
 plain link line, so the files look the same as for any link. Its dot is a
 ring in the accent colour.
 
-`Starred.md` in the vault root stores bookmarks as the same `lunarbor:` links,
+`Starred.md` in the vault root stores bookmarks as the same links,
 so they stay current the same way. It is app data rather than a note:
 the folder contents list and link search leave it out.
 

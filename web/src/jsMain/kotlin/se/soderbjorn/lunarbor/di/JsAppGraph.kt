@@ -47,6 +47,14 @@ interface JsAppGraph {
     val fileSystem: FileSystem
 
     /**
+     * The app's one [NoteRepository], the only thing that touches the
+     * vault's files. Exposed for `runFormatMigrations`, which `Main.kt`
+     * runs before [documentRegistry] is first used; everything else goes
+     * through the registry.
+     */
+    val noteRepository: NoteRepository
+
+    /**
      * Singleton [DocumentRegistry] shared across every pane. The
      * registry hands out [se.soderbjorn.lunarbor.main.Document]
      * instances by `fileRel`, refcounted: two panes pointed at the

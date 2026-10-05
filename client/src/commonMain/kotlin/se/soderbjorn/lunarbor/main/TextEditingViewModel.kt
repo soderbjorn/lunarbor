@@ -37,6 +37,7 @@
 
 package se.soderbjorn.lunarbor.main
 
+import se.soderbjorn.lunarbor.data.LunarborLink
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.InlineStyle
 import se.soderbjorn.lunarbor.data.LineMarkdownPrefix
@@ -1829,7 +1830,10 @@ internal class TextEditingViewModel(
      * Markdown list, and [bulletLinesForPaste] can tell the first row's
      * depth from the rest when the text is pasted back. Block rows copy as
      * their indent plus content: the hidden [BlockLayout] markers never
-     * reach the clipboard.
+     * reach the clipboard. Links into the vault are copied vault-rooted
+     * (`/…`, [LunarborLink.rootedText]), since each row's relative links
+     * only hold in its own folder; the save after a paste writes them
+     * relative to where they landed.
      */
     fun getSelectedText(): String? {
         val s = state
@@ -1837,21 +1841,22 @@ internal class TextEditingViewModel(
         val sel = selectionOf(s) ?: return null
         val lines = s.lines
         val hidden = hiddenRowsIn(s)
+        fun rooted(row: Int, text: String) = LunarborLink.rootedText(text, document.linkBaseOf(row))
         val raw = if (sel.startRow == sel.endRow) {
-            lines[sel.startRow].substring(sel.startCol, sel.endCol)
+            rooted(sel.startRow, lines[sel.startRow].substring(sel.startCol, sel.endCol))
         } else {
             val firstLine = lines[sel.startRow]
             val firstFrom = if (sel.startCol <= DocumentLayout.textStartCol(firstLine)) 0 else sel.startCol
             buildString {
-                append(firstLine.substring(firstFrom))
+                append(rooted(sel.startRow, firstLine.substring(firstFrom)))
                 append('\n')
                 for (i in sel.startRow + 1 until sel.endRow) {
                     // What the privacy mode hides never reaches the clipboard.
                     if (PrivacyLayout.isHidden(hidden, i)) continue
-                    append(lines[i])
+                    append(rooted(i, lines[i]))
                     append('\n')
                 }
-                append(lines[sel.endRow].substring(0, sel.endCol))
+                append(rooted(sel.endRow, lines[sel.endRow].substring(0, sel.endCol)))
             }
         }
         // Block and code markers are an in-memory device; the clipboard

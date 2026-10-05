@@ -288,6 +288,8 @@ private fun buildRowElement(
     // Inline images on this row resolve against the row's own folder.
     val imageResolver: (String) -> String? = { src -> viewModel.resolveImageSrc(absoluteRow, src) }
     val wikiResolver: (String) -> String? = { name -> viewModel.wikiLinkHref(state, name) }
+    // Links are written relative to the row's folder; drawn as vault paths.
+    val linkResolver: (String) -> String = { url -> viewModel.linkHrefOf(absoluteRow, url) }
 
     // Inline-image rows are much taller than a text-only line, which
     // makes a baseline-aligned bullet visually float in the vertical
@@ -354,7 +356,7 @@ private fun buildRowElement(
         val bulletPrefix = buildBulletPrefix(absoluteRow, if (outline) onBulletMouseDown else null, interactive = outline)
         if (mirror) bulletPrefix.title = "Mirror: editing here edits the node it shows"
         rowDiv.appendChild(bulletPrefix)
-        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2), imageResolver, wikiResolver))
+        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2), imageResolver, wikiResolver, linkResolver))
         if (rowId != null && outline) buildFolderBadge(absoluteRow, rowId, state, viewModel)?.let(rowDiv::appendChild)
         // A search node's match count, on its line after the magnifier.
         if (searchView != null && rowId != null) rowDiv.appendChild(buildSearchNodeCount(searchView, rowId, viewModel))
@@ -373,7 +375,7 @@ private fun buildRowElement(
         // unless we stripped a zoom indent — in that case the displayed text
         // begins at `viewOriginCol` in raw model columns.
         rowDiv.setAttribute("data-prefix-len", viewOriginCol.toString())
-        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line, imageResolver, wikiResolver))
+        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line, imageResolver, wikiResolver, linkResolver))
     }
 
     markBrokenLinks(rowDiv, state, viewModel)
@@ -602,7 +604,10 @@ private fun decorateBlockRow(
     val editable = line.substring(markerCol + 1 + codePrefixLen + listPrefixLen)
     rowDiv.appendChild(
         if (codePrefixLen > 0) buildCodeTextRegion(rowDiv, editable)
-        else buildStyledTextRegion(rowDiv, editable, imageResolver) { name -> viewModel.wikiLinkHref(state, name) }
+        else buildStyledTextRegion(
+            rowDiv, editable, imageResolver, { name -> viewModel.wikiLinkHref(state, name) },
+            { url -> viewModel.linkHrefOf(absoluteRow, url) },
+        )
     )
 
     // Under the text of a collapsed large block's last shown row: how
@@ -820,12 +825,16 @@ private fun buildCodeTextRegion(rowDiv: HTMLElement, editable: String): HTMLElem
  *   resolved wiki link gets the same link class and `data-href` as a
  *   `[label](lunarbor:…)` link, so clicking and broken-link marking treat it
  *   alike.
+ * @param linkResolver Maps a link's destination as written to the href the
+ *   app uses — `lunarbor:/<path>` for a place in the vault, read relative to
+ *   the row's folder — normally `MainViewModel.linkHrefOf` for this row.
  */
 private fun buildStyledTextRegion(
     rowDiv: HTMLElement,
     editable: String,
     imageResolver: (String) -> String?,
     wikiResolver: (String) -> String?,
+    linkResolver: (String) -> String,
 ): HTMLElement {
     val wrapper = document.createElement("span") as HTMLElement
     wrapper.className = "lunarbor-text"
@@ -894,7 +903,7 @@ private fun buildStyledTextRegion(
                 span = createImageRunElement(run, baseRunClass = "lunarbor-text-run", imageResolver = imageResolver)
                 srcEnd = run.modelStart + (run.imageSourceLen ?: 0)
             } else {
-                val href = run.linkHref ?: run.wikiName?.let(wikiResolver)
+                val href = run.linkHref?.let(linkResolver) ?: run.wikiName?.let(wikiResolver)
                 if (href != null && run.linkHref == null) {
                     // A resolved wiki link: its brackets hide off the caret row.
                     appendWikiLinkSpans(wrapper, run, href, lineMarkerLen)

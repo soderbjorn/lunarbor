@@ -1,5 +1,5 @@
 - Pizza delivery at warp speed. 14 people, 1 office, 0 working coffee machines. #work
-- Peek at the [architecture sketch](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Slice%20—%20the%20app/Architecture), the [open bugs](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Slice%20—%20the%20app) (live search!), or the office drawn as [a starship bridge](lunarbor:/🍕%20Work%253A%20Warp%20Factor%20Pizza/Meetings/The%20office,%20drawn%20as%20a%20starship%20bridge%20%28by%20me,%20during%20a%20long%20meeting%29).
+- Peek at the [architecture sketch](Slice%20—%20the%20app/Architecture/_node.md), the [open bugs](./Slice%20—%20the%20app/_node.md) (live search!), or the office drawn as [a starship bridge](Meetings/The%20office,%20drawn%20as%20a%20starship%20bridge%20%28by%20me,%20during%20a%20long%20meeting%29/_node.md).
 - Slice — the app [↳](<Slice — the app/_node.md>)
 - People [↳](<People/_node.md>)
 - Meetings [↳](<Meetings/_node.md>)

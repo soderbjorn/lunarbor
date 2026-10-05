@@ -403,6 +403,12 @@ class MainViewModel(
     /** See `PaneBackingViewModel.activeLineStyle`. */
     fun activeLineStyle(): LineStyle? = paneBackingViewModel.activeLineStyle()
 
+    /** See `PaneBackingViewModel.linkHrefOf`. */
+    fun linkHrefOf(row: Int, url: String): String = paneBackingViewModel.linkHrefOf(row, url)
+
+    /** See `PaneBackingViewModel.linkBaseOf`. */
+    fun linkBaseOf(row: Int): String = paneBackingViewModel.linkBaseOf(row)
+
     /** See `PaneBackingViewModel.isMirror`. */
     fun isMirror(lineId: LineId): Boolean = paneBackingViewModel.isMirror(lineId)
 

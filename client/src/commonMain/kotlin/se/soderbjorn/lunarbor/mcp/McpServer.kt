@@ -171,8 +171,10 @@ class McpServer(private val tools: McpTools) {
               resort, for a standalone document the user wants as a file.
             - Bullet text is inline Markdown (**bold**, *italic*, `code`, [links](https://…)). #tags make things
               findable (search "#tag"); a tag on a parent covers everything under it.
-            - Link to another node or file with [text](lunarbor:/path), its path percent-encoded (spaces as %20). Lunarbor
-              keeps these links working when things move or are renamed.
+            - Link to another node or file with [text](/path), its vault path percent-encoded (spaces as %20), e.g.
+              [soups](/Recipes/Soups). Lunarbor stores links relative to the node they are in (a node named by its
+              _node.md: [soups](../Recipes/Soups/_node.md)), which is how you will read them back, and keeps them
+              working when things move or are renamed.
             - list_folder shows everything on disk in a folder (files, sizes, dates); read also reads any file — text
               as text, images as images, other files as base64.
             - Change things with edit (replace exact text from read), append, create_node, create_file, move and delete. A

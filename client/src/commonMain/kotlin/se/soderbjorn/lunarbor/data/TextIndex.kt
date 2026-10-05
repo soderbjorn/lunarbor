@@ -195,7 +195,8 @@ class TextIndex(
             }
             return
         }
-        linesByFile[fileRel] = if (NoteRepository.isOutlineFile(fileRel)) outlineEntry(text) else noteEntry(text)
+        linesByFile[fileRel] = if (NoteRepository.isOutlineFile(fileRel)) outlineEntry(text, LunarborLink.baseOfFile(fileRel))
+            else noteEntry(text, LunarborLink.baseOfFile(fileRel))
         dropDerived()
         onChanged?.invoke()
     }
@@ -566,7 +567,7 @@ class TextIndex(
          * (code verbatim), numbered by item the way [TextHit] describes;
          * plus the tags of each folder-backed item, by folder.
          */
-        private fun outlineEntry(text: String): Entry {
+        private fun outlineEntry(text: String, base: String): Entry {
             val composed = SubtreeCodec.composeNodeLines(SubtreeCodec.parseNodeFile(text), 0)
             val rows = composed.lines
             val out = ArrayList<Line>()
@@ -590,7 +591,7 @@ class TextIndex(
                         out += Line(
                             SearchQuery.normalize(shown.first), item, r - row, shown.first, shown.second,
                             shown.second.map(::tagKey).toSet(), folder, itemTags,
-                            if (code) emptySet() else LunarborLink.linkPathsIn(raw),
+                            if (code) emptySet() else LunarborLink.linkPathsIn(raw, base),
                             if (code) emptyList() else WikiLink.namesIn(raw),
                         )
                     }
@@ -614,14 +615,14 @@ class TextIndex(
         }
 
         /** A note's lines, numbered by line; each line's tags are its own. */
-        private fun noteEntry(text: String): Entry {
+        private fun noteEntry(text: String, base: String): Entry {
             val lines = text.replace("\r\n", "\n").split('\n').mapIndexedNotNull { i, raw ->
                 val (shown, tags) = visibleText(raw)
                 if (shown.isBlank()) null
                 else tags.map(::tagKey).toSet().let { keys ->
                     Line(
                         SearchQuery.normalize(shown), i, 0, shown, tags, keys, null, keys,
-                        LunarborLink.linkPathsIn(raw), WikiLink.namesIn(raw),
+                        LunarborLink.linkPathsIn(raw, base), WikiLink.namesIn(raw),
                     )
                 }
             }

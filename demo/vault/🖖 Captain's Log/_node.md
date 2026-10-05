@@ -1,4 +1,4 @@
 - Personal log of Maya Kepler, Android/iOS developer, retro-computer hoarder, owner of one (1) cat. #journal
-- Most recent first; today's entry is already open. Don't miss the legendary [Gradle rant](lunarbor:/🖖%20Captain's%20Log/2026/September/Stardate%202026.09.24%20—%20Wednesday%253A%20a%20long%20rant%20about%20build%20tools) from September.
+- Most recent first; today's entry is already open. Don't miss the legendary [Gradle rant](2026/September/Stardate%202026.09.24%20—%20Wednesday%253A%20a%20long%20rant%20about%20build%20tools/_node.md) from September.
 - 2026 [↳](<2026/_node.md>)
 - Log archive: older stardates are in the folder below as plain Markdown, imported from my old notes app.

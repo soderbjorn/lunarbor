@@ -8,12 +8,15 @@
  *  - **Text**: the link's label as plain text ([LinkSource.text]); other
  *    inline Markdown (`**bold**`) shows as written. Left empty, the link
  *    shows its URL.
- *  - **Link**: any URL (`https://…`, `mailto:…`, `lunarbor:/…`). Typing
- *    something that is not a URL searches the vault (`VaultIndex.search`,
- *    like Insert Link); picking a hit fills in its `lunarbor:/…` path, and
- *    its title as the text when the text is empty. A `lunarbor:` link is
- *    described under the field (kind and readable path). `www.…` gets
- *    `https://`. Emptied, Save removes the link.
+ *  - **Link**: any URL (`https://…`, `mailto:…`), or a place in the vault
+ *    as the file writes it — relative to the row's folder
+ *    (`../Pasta/_node.md`), or vault-rooted (`/Recipes/Pasta`). Typing
+ *    something that is not a URL or a path searches the vault
+ *    (`VaultIndex.search`, like Insert Link); picking a hit fills in its
+ *    relative link ([LunarborLink.relative]), and its title as the text
+ *    when the text is empty. A place in the vault is described under the
+ *    field (its readable path). `www.…` gets `https://`. Emptied, Save
+ *    removes the link.
  *
  * Enter saves (or picks the highlighted hit), ↑ / ↓ move through the hits,
  * Escape closes the hits, then the dialog. Reuses the Agent access dialog's
@@ -62,6 +65,7 @@ internal fun openLinkEditDialog(
 ) {
     if (document.querySelector(".lunarbor-linkedit-dialog") != null) return
     val link = viewModel.linkAt(row, col) ?: return
+    val base = viewModel.linkBaseOf(row)
     ensureAgentAccessStyles()
     ensureLinkEditStyles()
     val prepareJob = scope.launch { viewModel.prepareLinkSearch() }
@@ -118,7 +122,7 @@ internal fun openLinkEditDialog(
 
     fun describe() {
         val url = urlInput.value.trim()
-        val path = LunarborLink.parse(url)
+        val path = if (looksLikePath(url)) LunarborLink.resolve(url, base) else null
         hint.textContent = when {
             path == null -> ""
             viewModel.isPathHidden(path) -> "Not found"
@@ -139,7 +143,7 @@ internal fun openLinkEditDialog(
             item.addEventListener("mousedown", { e ->
                 e.preventDefault()
                 highlighted = index
-                pick(hit, urlInput, textInput)
+                pick(hit, base, urlInput, textInput)
                 hits = emptyList()
                 paintHits()
                 describe()
@@ -151,7 +155,7 @@ internal fun openLinkEditDialog(
     fun search() {
         searchJob?.cancel()
         val query = urlInput.value.trim()
-        if (query.isEmpty() || looksLikeUrl(query)) {
+        if (query.isEmpty() || looksLikeUrl(query) || looksLikePath(query)) {
             hits = emptyList()
             paintHits()
             return
@@ -189,7 +193,7 @@ internal fun openLinkEditDialog(
                 ke.stopPropagation()
                 val hit = hits.getOrNull(highlighted)
                 if (inUrl && hit != null) {
-                    pick(hit, urlInput, textInput)
+                    pick(hit, base, urlInput, textInput)
                     hits = emptyList()
                     paintHits()
                     describe()
@@ -226,15 +230,25 @@ internal fun openLinkEditDialog(
     first.select()
 }
 
-/** Puts [hit]'s `lunarbor:` path in [urlInput], and its title in an empty [textInput]. */
-private fun pick(hit: LinkTarget, urlInput: HTMLInputElement, textInput: HTMLInputElement) {
-    urlInput.value = LunarborLink.format(hit.pathRel)
+/**
+ * Puts a link to [hit], relative to the row's folder [base], in
+ * [urlInput], and its title in an empty [textInput].
+ */
+private fun pick(hit: LinkTarget, base: String, urlInput: HTMLInputElement, textInput: HTMLInputElement) {
+    urlInput.value = LunarborLink.relative(hit.pathRel, hit.kind == VaultEntryKind.FOLDER, base)
     if (textInput.value.isBlank()) textInput.value = hit.title
 }
 
 /** `true` when [text] already reads as a URL (`scheme:…` or `www.…`), so the vault is not searched. */
 private fun looksLikeUrl(text: String): Boolean =
     text.startsWith("www.") || Regex("^[A-Za-z][A-Za-z0-9+.-]*:\\S").containsMatchIn(text)
+
+/**
+ * `true` when [text] reads as a path rather than words to search for: it
+ * holds a `/` or a file extension (`plan.md`).
+ */
+private fun looksLikePath(text: String): Boolean =
+    '/' in text || Regex("\\.[A-Za-z0-9]{1,8}$").containsMatchIn(text)
 
 /** [url] trimmed, with `https://` before a `www.` address. */
 private fun normalizedUrl(url: String): String {

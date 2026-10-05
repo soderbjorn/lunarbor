@@ -15,7 +15,8 @@ DSL (2-space indentation):
   @ name.md <<<           inline file; content at same indent until '>>>'
   >>>
   {open}                  after a bullet: it starts unfolded (demo/state.json)
-Links: (lb:id) -> (lunarbor:/path/of/id), (lb:id/file.ext), (lb:/file.ext)
+Links: (lb:id) -> a relative link to node id's _node.md, (lb:id/file.ext), (lb:/file.ext),
+(lb:/) the root — relative to the folder of the file written (LunarborLink.relative)
 for a vault-root path. Root-level '@' lines attach to the vault root.
 """
 import re, shutil, sys
@@ -155,35 +156,42 @@ def block_title(b):
         if l.strip(): return plain(l.strip().lstrip("*- ").strip())
     return "Untitled"
 
-def link_path(rel):
-    if rel == "": return "lunarbor:/"
-    segs = rel.split("/")
-    enc = [enc_seg(s) for s in segs]
-    return "lunarbor:/" + "/".join(enc)
+def link_path(rel, is_folder, base):
+    """A link to vault path `rel` from folder `base`, as LunarborLink.relative writes it."""
+    target = (rel.split("/") if rel else []) + ([OUTLINE] if is_folder else [])
+    b = base.split("/") if base else []
+    common = 0
+    while common < len(b) and common < len(target) - 1 and b[common] == target[common]:
+        common += 1
+    parts = [".."] * (len(b) - common) + [enc_seg(x) for x in target[common:]]
+    # `Plan/_node.md` at a bullet's end would read as its child link.
+    child = is_folder and len(parts) == 2 and parts[0] != ".."
+    return ("./" if child else "") + "/".join(parts)
 
 def enc_seg(s):
     out = []
     for ch in s:
-        if ch.isspace() or ch in '%()<>[]\\#?':
+        if ch.isspace() or ch in '%()<>[]\\#?:':
             out.append("".join("%%%02X" % b for b in ch.encode()))
         else:
             out.append(ch)
     return "".join(out)
 
-def resolve_links(text, ids):
+def resolve_links(text, ids, base):
+    """Turns `(lb:…)` references into links relative to `base`, the folder the text is written in."""
     def rep(m):
         ref = m.group(1)
         from urllib.parse import unquote
-        if ref == "/": return "(lunarbor:/)"
+        if ref == "/": return "(" + link_path("", True, base) + ")"
         if ref.startswith("/"):
-            return "(" + link_path(unquote(ref[1:])) + ")"
+            return "(" + link_path(unquote(ref[1:]), False, base) + ")"
         if "/" in ref:
             nid, f = ref.split("/", 1)
-            base = ids[nid]
+            folder = ids[nid]
             f = unquote(f)
-            return "(" + link_path(f"{base}/{f}" if base else f) + ")"
+            return "(" + link_path(f"{folder}/{f}" if folder else f, False, base) + ")"
         if ref not in ids: raise SystemExit(f"unknown link id {ref}")
-        return "(" + link_path(ids[ref]) + ")"
+        return "(" + link_path(ids[ref], True, base) + ")"
     return re.sub(r"\(lb:([^)\s]+)\)", rep, text)
 
 OUTLINE = "_node.md"
@@ -210,14 +218,14 @@ def write(node, ids):
     after_block = False
     for c in node.children:
         if c.kind == "bullet":
-            text = esc_bullet(resolve_links(c.text, ids))
+            text = esc_bullet(resolve_links(c.text, ids, node.folder or ""))
             parts = [p for p in (text, child_link(c.folder) if c.backed else "") if p]
             out.append("- " + " ".join(parts) if parts else "-")
             after_block = False
         else:
             # A block is a blockquote; consecutive blocks need a blank line.
             if after_block: out.append("")
-            content = [resolve_links(l, ids) for l in c.text]
+            content = [resolve_links(l, ids, node.folder or "") for l in c.text]
             out += [">" if l == "" else "> " + l for l in content]
             if c.backed: out.append("> " + child_link(c.folder))
             after_block = True
@@ -232,7 +240,7 @@ def write(node, ids):
             shutil.copy(src, d / name)
         else:
             if name.endswith(".md"):
-                data = resolve_links(data.decode(), ids).encode()
+                data = resolve_links(data.decode(), ids, node.folder or "").encode()
             (d / name).write_bytes(data)
 
 def layout_state(ids):
@@ -288,7 +296,7 @@ def main():
     write(root, ids)
     starred = HERE / "starred.txt"
     if starred.exists():
-        lines = [resolve_links(l, ids) for l in starred.read_text().splitlines() if l.strip()]
+        lines = [resolve_links(l, ids, "") for l in starred.read_text().splitlines() if l.strip()]
         (OUT / "Starred.md").write_text("\n".join(lines) + "\n")
     import json
     state = {"lunarborOpenFolders": {"vault": "/demo-vault", "folders": sorted(OPEN)}}

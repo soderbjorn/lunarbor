@@ -1,7 +1,7 @@
 - # Hi, I'm Maya. This is my brain, as a tree. 🧠
 - A **live demo** of Lunarbor: click anything, type anywhere, drag things around. Nothing is saved, so go wild — reload and the universe resets. 🖖
 - 🚀 Start here: the 3-minute tour [↳](<🚀 Start here%253A the 3-minute tour/_node.md>)
-- 📌 Today: [Stardate 2026.10.02](lunarbor:/🖖%20Captain's%20Log/2026/October/Stardate%202026.10.02%20—%20Friday)
+- 📌 Today: [Stardate 2026.10.02](🖖%20Captain's%20Log/2026/October/Stardate%202026.10.02%20—%20Friday/_node.md)
 - 🖖 Captain's Log [↳](<🖖 Captain's Log/_node.md>)
 - 🍕 Work: Warp Factor Pizza [↳](<🍕 Work%253A Warp Factor Pizza/_node.md>)
 - 🕹️ Retro Lab [↳](<🕹️ Retro Lab/_node.md>)
