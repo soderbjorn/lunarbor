@@ -2022,8 +2022,9 @@ fun ensureStyles() {
            rounded where the run of code rows starts and ends. */
         .lunarbor-code-row > .lunarbor-code-text {
             display: block;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            font-size: 0.9em;
+            /* The Code font and size (App settings → Appearance → Fonts). */
+            font-family: var(--dt-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+            font-size: var(--dt-font-mono-size, 0.9em);
             white-space: pre-wrap;
             background: var(--t-border, rgba(255, 255, 255, 0.10));
             padding: 0 10px;
@@ -2045,11 +2046,18 @@ fun ensureStyles() {
             padding-bottom: 6px;
         }
         .lunarbor-md-code {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            font-size: 0.95em;
+            /* The Code font and size (App settings → Appearance → Fonts). */
+            font-family: var(--dt-font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+            font-size: var(--dt-font-mono-size, 0.95em);
             background: var(--t-border, rgba(255, 255, 255, 0.10));
             padding: 0 4px;
             border-radius: 3px;
+        }
+        /* Code in a heading grows with the heading, not the Code size. */
+        .lunarbor-md-h1 .lunarbor-md-code, .lunarbor-md-h2 .lunarbor-md-code,
+        .lunarbor-md-h3 .lunarbor-md-code, .lunarbor-md-h4 .lunarbor-md-code,
+        .lunarbor-md-h5 .lunarbor-md-code, .lunarbor-md-h6 .lunarbor-md-code {
+            font-size: 0.95em;
         }
         /* Read-only preview of a linked node under its link bullet. */
         /* A search node's query, `{{search: …}}`: a chip, still plain

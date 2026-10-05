@@ -67,6 +67,7 @@ import se.soderbjorn.lunula.web.layout.PaneAction
 import se.soderbjorn.lunula.web.layout.PaneTitleSegment
 import se.soderbjorn.lunula.web.layout.withNoneMaximized
 import se.soderbjorn.lunula.web.shell.AppShellHandle
+import se.soderbjorn.lunula.web.settings.FontSurfaceId
 import se.soderbjorn.lunula.web.shell.AppShellSpec
 import se.soderbjorn.lunula.web.shell.PaneAddMenuItem
 import se.soderbjorn.lunula.web.shell.PaneOverflowSpec
@@ -523,12 +524,17 @@ class AppShell(
                 rootContainer = root,
                 title = "Lunarbor",
                 persister = persister,
-                // What Lunarbor's own CSS paints when the user has picked
-                // nothing (`var(--dt-font-mono, 'JetBrains Mono', …)`,
-                // `var(--dt-font-prop-size, 17px)`), so Appearance → Fonts
-                // names the code font and text size actually on screen.
-                defaultMonoFontFamily = { "jetbrainsMono" },
+                // What the editor paints when the user has picked nothing, so
+                // Appearance → Fonts names the sizes actually on screen: 17px
+                // text (`EditorStyle.fontSize`) and 16px code (about the
+                // 0.95em code used to be). Code's font stays the system
+                // monospace (`system` — SF Mono on a Mac), so none is named.
                 defaultProseFontSizePx = { 17 },
+                defaultMonoFontSizePx = { 16 },
+                // Headings are sized from the text size (h1 1.6em …), never
+                // from `--dt-font-display-size`, so their line offers a font
+                // but no size.
+                fontSizeHidden = setOf(FontSurfaceId.Headings),
                 paneContent = { paneId ->
                     val container = document.createElement("div") as HTMLElement
                     // The toolkit's `.dt-pane-content` is a flex column;
