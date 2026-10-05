@@ -40,7 +40,11 @@ internal class LinkHoverPopup(
     private var popupEl: HTMLElement? = null
     private var showTimer: Int? = null
     private var hideTimer: Int? = null
-    private var hoveredLink: HTMLElement? = null
+    /** The link the pointer rests on ([linkKeyOf]), or null. */
+    private var hoveredKey: String? = null
+    /** The link the open popup belongs to. */
+    private var openKey: String? = null
+    private var linkRect: Rect? = null
     private var removeDocListeners: (() -> Unit)? = null
     private var editorEl: HTMLElement? = null
     private var pointerX: Double = 0.0
@@ -51,6 +55,12 @@ internal class LinkHoverPopup(
      * [SHOW_DELAY_MS] opens it; leaving the link and the popup, typing,
      * scrolling or pressing anywhere else closes it. Called once by
      * [MainScreen] when it builds the editor.
+     *
+     * A link is identified by its row and source column ([linkKeyOf]), never
+     * by its span: the editor repaints often and replaces the spans, and a
+     * fresh span under the pointer must not read as another link. While the
+     * popup is open, leaving is decided by geometry ([trackPointer]), so the
+     * pointer may cross other rows, links included, on its way to the button.
      */
     fun attach(editor: HTMLElement) {
         editorEl = editor
@@ -62,22 +72,47 @@ internal class LinkHoverPopup(
             pointerX = (e as MouseEvent).clientX.toDouble()
             pointerY = e.clientY.toDouble()
             val link = linkSpanOf(e.target as? Node)
-            if (link == null) {
-                scheduleHide()
+            val key = link?.let(::linkKeyOf)
+            if (popupEl != null) {
+                // The popup's own corridor decides when it closes; another
+                // link rested on long enough takes it over.
+                if (key == null || key == openKey) {
+                    cancelShow()
+                    hoveredKey = openKey
+                } else if (key != hoveredKey) {
+                    hoveredKey = key
+                    cancelShow()
+                    if (e.buttons.toInt() == 0) showTimer = window.setTimeout({ show(key) }, SHOW_DELAY_MS)
+                }
                 return@addEventListener
             }
-            cancelHide()
-            if (link === hoveredLink) return@addEventListener
-            hoveredLink = link
+            if (key == null) {
+                cancelShow()
+                hoveredKey = null
+                return@addEventListener
+            }
+            if (key == hoveredKey) return@addEventListener
+            hoveredKey = key
             cancelShow()
-            if (popupEl != null) close()
             // Not while a button is down: that's a click or a drag.
             if (e.buttons.toInt() != 0) return@addEventListener
-            showTimer = window.setTimeout({ show(link) }, SHOW_DELAY_MS)
+            showTimer = window.setTimeout({ show(key) }, SHOW_DELAY_MS)
         })
-        editor.addEventListener("mouseleave", { _ -> scheduleHide() })
+        editor.addEventListener("mouseleave", { _ ->
+            if (popupEl == null) {
+                cancelShow()
+                hoveredKey = null
+            }
+        })
         editor.addEventListener("mousedown", { _ -> cancelShow(); close() })
         editor.addEventListener("keydown", { _ -> cancelShow(); close() })
+    }
+
+    /** The link's identity across repaints: `row:sourceColumn`, or null. */
+    private fun linkKeyOf(link: HTMLElement): String? {
+        val row = (link.closest("[data-row]") as? HTMLElement)?.getAttribute("data-row") ?: return null
+        val src = link.getAttribute("data-src-start") ?: return null
+        return "$row:$src"
     }
 
     private fun linkSpanOf(node: Node?): HTMLElement? {
@@ -91,25 +126,21 @@ internal class LinkHoverPopup(
     }
 
     /**
-     * Opens the popup for [link] once the hover delay ran out, if the
-     * pointer still rests on that link. The editor repaints often (link
-     * checks, autosave), so the span captured on `mouseover` may have been
-     * replaced by now: the link under the last pointer position is looked
-     * up again and must be the same one (same row and source column).
+     * Opens the popup for the link [key] once the hover delay ran out, if
+     * the pointer still rests on that link. The span seen on `mouseover`
+     * may have been repainted away by now, so the link under the last
+     * pointer position is looked up again and must have the same key.
      */
-    private fun show(link: HTMLElement) {
+    private fun show(key: String) {
         showTimer = null
-        val row = (link.closest("[data-row]") as? HTMLElement)?.getAttribute("data-row") ?: return
-        val src = link.getAttribute("data-src-start") ?: return
         val live = linkSpanOf(document.elementFromPoint(pointerX, pointerY)) ?: return
-        if ((live.closest("[data-row]") as? HTMLElement)?.getAttribute("data-row") != row) return
-        if (live.getAttribute("data-src-start") != src) return
+        if (linkKeyOf(live) != key) return
         if (editorEl?.contains(live) != true) return
-        hoveredLink = live
-        showFor(live)
+        hoveredKey = key
+        showFor(live, key)
     }
 
-    private fun showFor(link: HTMLElement) {
+    private fun showFor(link: HTMLElement, key: String) {
         val href = link.getAttribute("data-href") ?: return
         val rowDiv = link.closest("[data-row]") as? HTMLElement ?: return
         val row = rowDiv.getAttribute("data-row")?.toIntOrNull() ?: return
@@ -133,12 +164,12 @@ internal class LinkHoverPopup(
         } ?: href
         popup.appendChild(edit)
 
-        popup.addEventListener("mouseenter", { _ -> cancelHide() })
-        popup.addEventListener("mouseleave", { _ -> scheduleHide() })
         // Keep presses in the popup from moving the editor's selection.
         popup.addEventListener("mousedown", { e -> e.preventDefault() })
         document.body?.appendChild(popup)
         popupEl = popup
+        openKey = key
+        linkRect = Rect(rect.left, rect.top, rect.right, rect.bottom)
 
         // Keep it inside the window.
         val box = popup.getBoundingClientRect()
@@ -149,13 +180,19 @@ internal class LinkHoverPopup(
             popup.style.top = "${maxOf(8.0, rect.top - 4 - box.height)}px"
         }
 
+        val onMove: (Event) -> Unit = { e -> trackPointer(e as MouseEvent) }
         val onScroll: (Event) -> Unit = { _ -> close() }
+        val onLeaveWindow: (Event) -> Unit = { _ -> scheduleHide() }
         val onDocDown: (Event) -> Unit = { e ->
             if (popupEl?.contains(e.target as? Node) != true) close()
         }
+        document.addEventListener("mousemove", onMove, true)
+        document.documentElement?.addEventListener("mouseleave", onLeaveWindow)
         window.addEventListener("scroll", onScroll, true)
         document.addEventListener("mousedown", onDocDown, true)
         removeDocListeners = {
+            document.removeEventListener("mousemove", onMove, true)
+            document.documentElement?.removeEventListener("mouseleave", onLeaveWindow)
             window.removeEventListener("scroll", onScroll, true)
             document.removeEventListener("mousedown", onDocDown, true)
         }
@@ -173,9 +210,26 @@ internal class LinkHoverPopup(
         return b
     }
 
+    /**
+     * Keeps the open popup while the pointer is inside the corridor — the
+     * box spanning the link and the popup, padded by [CORRIDOR_PAD_PX] — so
+     * the way from the link to the button never closes it; outside it the
+     * popup closes after [HIDE_DELAY_MS].
+     */
+    private fun trackPointer(e: MouseEvent) {
+        pointerX = e.clientX.toDouble()
+        pointerY = e.clientY.toDouble()
+        val popup = popupEl ?: return
+        val link = linkRect ?: return
+        val box = popup.getBoundingClientRect()
+        val inside = pointerX >= minOf(link.left, box.left) - CORRIDOR_PAD_PX &&
+            pointerX <= maxOf(link.right, box.right) + CORRIDOR_PAD_PX &&
+            pointerY >= minOf(link.top, box.top) - CORRIDOR_PAD_PX &&
+            pointerY <= maxOf(link.bottom, box.bottom) + CORRIDOR_PAD_PX
+        if (inside) cancelHide() else scheduleHide()
+    }
+
     private fun scheduleHide() {
-        cancelShow()
-        hoveredLink = null
         if (popupEl == null || hideTimer != null) return
         hideTimer = window.setTimeout({ hideTimer = null; close() }, HIDE_DELAY_MS)
     }
@@ -197,13 +251,22 @@ internal class LinkHoverPopup(
         removeDocListeners = null
         popupEl?.let { it.parentNode?.removeChild(it) }
         popupEl = null
+        openKey = null
+        linkRect = null
+        hoveredKey = null
     }
+
+    /** A link's box in client coordinates, kept from when the popup opened. */
+    private data class Rect(val left: Double, val top: Double, val right: Double, val bottom: Double)
 
     private companion object {
         /** How long the pointer rests on a link before the popup opens. */
         const val SHOW_DELAY_MS = 1000
 
-        /** Grace period for moving the pointer from the link into the popup. */
-        const val HIDE_DELAY_MS = 300
+        /** How long the pointer may stray outside the link + popup corridor. */
+        const val HIDE_DELAY_MS = 400
+
+        /** Slack around the link + popup box before the pointer counts as gone. */
+        const val CORRIDOR_PAD_PX = 12.0
     }
 }
