@@ -381,6 +381,9 @@ private fun buildRowElement(
     markBrokenLinks(rowDiv, state, viewModel)
     // The caret's row: a search node shows its `{{search: …}}` only here.
     if (absoluteRow == state.cursorRow) rowDiv.classList.add("lunarbor-row-caret")
+    // Done (LBR-24): the item whose title is struck through and everything
+    // under it are dimmed; only the item itself is struck (its Markdown).
+    if (viewModel.isRowDone(state, absoluteRow)) rowDiv.classList.add("lunarbor-row-done")
     return rowDiv
 }
 
@@ -1292,7 +1295,9 @@ private fun firstLineHeightCss(text: String, style: EditorStyle): String {
  * ([DocumentRegistry.SEARCH_NODE_MAX_HITS]). Pressing a row goes there in
  * this pane ([MainViewModel.navigateToSearchHit]); a Shift- / ⌘-press or a
  * right-click opens it in a new window
- * ([MainViewModel.openSearchHitInNewWindow], [OpenGesture]). The node's
+ * ([MainViewModel.openSearchHitInNewWindow], [OpenGesture]); its ✓
+ * circle, on hover, toggles done on the line itself ([buildHitDoneToggle],
+ * [MainViewModel.toggleDoneOnHit], LBR-22). The node's
  * −/+ control folds the whole list (its fold state). Everything acts on
  * mousedown: a repaint between press and release (the editor's selection
  * sync) would replace the element and swallow a click. Not editable and
@@ -1328,6 +1333,8 @@ private fun buildSearchNodeResults(
         val row = document.createElement("div") as HTMLElement
         row.className = "lunarbor-search-node-hit"
         row.title = "Go to this line"
+        // A done line (LBR-24) is dimmed, as in the outline.
+        if (hit.done) row.classList.add("lunarbor-hit-done")
         val text = document.createElement("span") as HTMLElement
         text.className = "lunarbor-search-node-text"
         appendHighlighted(text, hit.text, terms)
@@ -1335,6 +1342,14 @@ private fun buildSearchNodeResults(
         where.className = "lunarbor-search-node-where"
         // From the node's tree down: the rest of the path is where the node is.
         where.appendChild(isolatedText(viewModel.searchHitCrumbs(hit, under = view.scopeFolder).joinToString(" › ")))
+        // Toggle done (LBR-22): the ✓ circle before the text, on hover;
+        // never on note lines or code rows. Allowed on a read-only page:
+        // it edits the result's own line, not the page.
+        if (hit.canToggleDone) {
+            row.appendChild(buildHitDoneToggle(hit) { viewModel.toggleDoneOnHit(hit) })
+        } else {
+            row.appendChild((document.createElement("span") as HTMLElement).also { it.className = "lunarbor-hit-done-spacer" })
+        }
         row.appendChild(text)
         row.appendChild(where)
         row.addEventListener("mousedown", { ev ->
@@ -1872,6 +1887,14 @@ fun ensureStyles() {
             box-shadow: inset 0 0 0 2px var(--t-accent, #5ab0ff),
                 0 0 0 4px color-mix(in srgb, var(--t-accent, #5ab0ff) 30%, transparent);
         }
+        /* A done item (LBR-24) and everything under it: dimmed. Its
+           guide lines dim with it; the fold control keeps full strength
+           on hover. */
+        [data-row].lunarbor-row-done > .lunarbor-text,
+        [data-row].lunarbor-row-done > .lunarbor-bullet-prefix,
+        [data-row].lunarbor-row-done.lunarbor-block-row {
+            opacity: 0.5;
+        }
         /* Bullet rows carry a negative text-indent for the hanging
            indent; nothing inside a row may inherit it. */
         [data-row] * {
@@ -2125,6 +2148,27 @@ fun ensureStyles() {
             user-select: none;
             -webkit-user-select: none;
         }
+        /* "Daily template" (LBR-21): a small pill after the template
+           page's title — chrome, so it never takes the title's size. */
+        .lunarbor-title-daily-template {
+            display: inline-block;
+            margin-left: 12px;
+            padding: 1px 8px;
+            border-radius: 999px;
+            color: var(--t-accent, #6aa5ff);
+            background: color-mix(in srgb, var(--t-accent, #6aa5ff) 14%, transparent);
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--t-accent, #6aa5ff) 40%, transparent);
+            font-size: 12px;
+            font-weight: 500;
+            line-height: 18px;
+            letter-spacing: 0.02em;
+            font-style: normal;
+            text-decoration: none;
+            vertical-align: middle;
+            white-space: nowrap;
+            user-select: none;
+            -webkit-user-select: none;
+        }
         /* The count on the node's line, after the magnifier. */
         .lunarbor-search-node-count {
             margin-left: 8px;
@@ -2136,6 +2180,13 @@ fun ensureStyles() {
         }
         .lunarbor-search-node-count:hover {
             color: var(--t-text, #e6e6e6);
+        }
+        .lunarbor-search-node-hit.lunarbor-hit-done {
+            opacity: 0.5;
+        }
+        /* Done (LBR-24): struck through, like a done row in the outline. */
+        .lunarbor-search-node-hit.lunarbor-hit-done .lunarbor-search-node-text {
+            text-decoration: line-through;
         }
         .lunarbor-search-node-hit {
             display: flex;

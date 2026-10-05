@@ -249,7 +249,8 @@ internal fun isTitleHeading(line: String, title: String): Boolean {
 
 /**
  * Rows [startRow]..[endRowInclusive] of [state] that are on screen:
- * folded subtrees and the rows a privacy mode hides left out, and large blocks the pane has not expanded
+ * folded subtrees, the rows a privacy mode hides and — with "Hide done
+ * items" on — done items with their subtrees ([hiddenOnScreenIn]) left out, and large blocks the pane has not expanded
  * cut to their preview ([DocumentLayout.visibleRowsOf] with
  * [PaneBackingViewModel.State.expandedBlockIds]). A block the pane is
  * zoomed into always shows whole — it is the page.
@@ -263,8 +264,28 @@ internal fun visibleRowsIn(state: PaneBackingViewModel.State, startRow: Int, end
     val expanded = state.zoomedLineId?.let { state.expandedBlockIds + it } ?: state.expandedBlockIds
     return DocumentLayout.visibleRowsOf(
         docState.lines, docState.lineIds, state.collapsedIds, startRow, endRowInclusive, expanded,
-        hiddenRowsIn(state),
+        hiddenOnScreenIn(state),
     )
+}
+
+/**
+ * Rows of [state]'s document that are never on screen: the privacy mode's
+ * ([hiddenRowsIn]) plus, while the pane hides done items
+ * ([PaneBackingViewModel.State.hideDone], LBR-24), every done item on the
+ * page with its subtree ([DoneLayout.hiddenRows] from the row after the
+ * zoom target's own rows, so a done zoom target still shows its children). `null` when none.
+ *
+ * Only for what is on screen ([visibleRowsIn], `hasChildrenOnScreen`,
+ * `ensureVisibleRow`): the privacy mode's edit protections keep using
+ * [hiddenRowsIn] alone, since hiding done items never blocks an edit.
+ */
+internal fun hiddenOnScreenIn(state: PaneBackingViewModel.State): BooleanArray? {
+    val privacy = hiddenRowsIn(state)
+    if (!state.hideDone || state.isMarkdownMode) return privacy
+    val docState = state.documentState ?: return privacy
+    // The page's own item (a zoomed bullet or block) always shows.
+    val from = zoomInfoOf(state)?.let { DocumentLayout.itemLastRow(docState.lines, it.zoomRow) + 1 } ?: 0
+    return DoneLayout.union(privacy, DoneLayout.hiddenRows(docState.lines, from))
 }
 
 /**

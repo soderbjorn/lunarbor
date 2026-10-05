@@ -292,6 +292,25 @@ class MainViewModel(
     /** See `PaneBackingViewModel.navigateHome`. */
     fun navigateHome() = paneBackingViewModel.navigateHome()
 
+    /** See `PaneBackingViewModel.navigateToToday`. */
+    suspend fun navigateToToday(today: CalendarDate) = paneBackingViewModel.navigateToToday(today)
+
+    /** See `PaneBackingViewModel.navigateToAdjacentDay`. */
+    suspend fun navigateToAdjacentDay(forward: Boolean, today: CalendarDate) =
+        paneBackingViewModel.navigateToAdjacentDay(forward, today)
+
+    /** See `PaneBackingViewModel.journalDayOf`. */
+    fun journalDayOf(state: PaneBackingViewModel.State) = paneBackingViewModel.journalDayOf(state)
+
+    /** See `PaneBackingViewModel.isDailyTemplatePage`. */
+    fun isDailyTemplatePage(state: PaneBackingViewModel.State) = paneBackingViewModel.isDailyTemplatePage(state)
+
+    /** See `PaneBackingViewModel.canUseAsDailyTemplate`. */
+    fun canUseAsDailyTemplate(state: PaneBackingViewModel.State) = paneBackingViewModel.canUseAsDailyTemplate(state)
+
+    /** See `PaneBackingViewModel.setDailyTemplate`. */
+    fun setDailyTemplate(use: Boolean) = paneBackingViewModel.setDailyTemplate(use)
+
     /** See `PaneBackingViewModel.canNavigateUp`. */
     fun canNavigateUp(state: PaneBackingViewModel.State) = paneBackingViewModel.canNavigateUp(state)
 
@@ -358,6 +377,27 @@ class MainViewModel(
 
     /** See `PaneBackingViewModel.sortChildrenByName`. */
     fun sortChildrenByName(reverse: Boolean = false) = paneBackingViewModel.sortChildrenByName(reverse)
+
+    /** See `PaneBackingViewModel.toggleDone`. */
+    fun toggleDone() = paneBackingViewModel.toggleDone()
+
+    /** See `PaneBackingViewModel.toggleDoneOnHit` (LBR-22: the ✓ on a result row). */
+    fun toggleDoneOnHit(hit: se.soderbjorn.lunarbor.data.TextHit) = paneBackingViewModel.toggleDoneOnHit(hit)
+
+    /** See `PaneBackingViewModel.undoHitDoneToggle` (the toast's Undo). */
+    fun undoHitDoneToggle() = paneBackingViewModel.undoHitDoneToggle()
+
+    /** See `PaneBackingViewModel.dismissHitDoneToast`. */
+    fun dismissHitDoneToast() = paneBackingViewModel.dismissHitDoneToast()
+
+    /** See `PaneBackingViewModel.canToggleDone`. */
+    fun canToggleDone(state: PaneBackingViewModel.State): Boolean = paneBackingViewModel.canToggleDone(state)
+
+    /** See `PaneBackingViewModel.setHideDone`. */
+    fun setHideDone(on: Boolean) = paneBackingViewModel.setHideDone(on)
+
+    /** See `PaneBackingViewModel.isRowDone`. */
+    fun isRowDone(state: PaneBackingViewModel.State, row: Int): Boolean = paneBackingViewModel.isRowDone(state, row)
 
     /** See `PaneBackingViewModel.isPromotedRef`. */
     fun isPromotedRef(lineId: LineId): Boolean = paneBackingViewModel.isPromotedRef(lineId)

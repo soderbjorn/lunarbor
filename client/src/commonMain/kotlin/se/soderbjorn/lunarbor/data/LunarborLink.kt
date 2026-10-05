@@ -472,7 +472,9 @@ object LunarborLink {
         val sb = StringBuilder(text.length + 16)
         var last = 0
         for (occ in links) {
-            val dest = "/" + relative(occ.pathRel, occ.namesOutline, "")
+            // From the root, a direct subfolder's node reads `./Plan/_node.md`
+            // (see [relative]); rooted, the `./` is noise: `/Plan/_node.md`.
+            val dest = "/" + relative(occ.pathRel, occ.namesOutline, "").removePrefix("./")
             sb.append(text, last, occ.start).append(dest)
             last = occ.end
         }

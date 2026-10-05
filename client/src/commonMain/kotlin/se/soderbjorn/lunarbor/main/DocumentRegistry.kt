@@ -45,6 +45,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import se.soderbjorn.lunarbor.data.DoneState
+import se.soderbjorn.lunarbor.data.FolderName
+import se.soderbjorn.lunarbor.data.ImagePaths
+import se.soderbjorn.lunarbor.data.LunarborLink
 import se.soderbjorn.lunarbor.data.NodeFrontMatter
 import se.soderbjorn.lunarbor.data.NodeLine
 import se.soderbjorn.lunarbor.data.NoteRepository
@@ -52,6 +56,7 @@ import se.soderbjorn.lunarbor.data.PathMove
 import se.soderbjorn.lunarbor.data.PrivacyConfig
 import se.soderbjorn.lunarbor.data.PrivacyFilter
 import se.soderbjorn.lunarbor.data.PrivacyMode
+import se.soderbjorn.lunarbor.data.TextHit
 import se.soderbjorn.lunarbor.data.TextIndex
 import se.soderbjorn.lunarbor.data.SearchQuery
 import se.soderbjorn.lunarbor.data.SubtreeCodec
@@ -126,6 +131,14 @@ class DocumentRegistry(
      * page comes back with the same folds. Persisted by platform glue.
      */
     val foldMemory: FoldMemory = FoldMemory()
+
+    /**
+     * Which node is the daily template (LBR-21, [DailyTemplate]): new
+     * journal days start as a copy of its items ([dailyTemplateRows]).
+     * Kept current through folder moves ([applyPathMoves]); persisted by
+     * platform glue.
+     */
+    val dailyTemplate: DailyTemplate = DailyTemplate()
 
     /**
      * App-scoped full-text index behind the pane search: every line of
@@ -702,6 +715,7 @@ class DocumentRegistry(
         vaultIndex.moveKeys(moves)
         textIndex.moveKeys(moves)
         foldMemory.applyMoves(moves)
+        dailyTemplate.applyMoves(moves)
         if (live.isEmpty()) return
         val held = HashSet<String>()
         for (doc in openDocuments()) {
@@ -999,6 +1013,217 @@ class DocumentRegistry(
         return rel
     }
 
+    // ------------------------------------------------- daily template (LBR-21)
+
+    /**
+     * The rows a new journal day starts with: a copy of the daily
+     * template's ([dailyTemplate]) own items with their whole subtrees —
+     * bullets, blocks, search nodes, nested children, folder-backed
+     * children read from their folders — as `Document` lines (block
+     * markers included), in order, the template's own items at column 0;
+     * the caller indents them under the day.
+     *
+     * - Open documents are saved first ([flushAll]), so the copy has the
+     *   template's latest edits.
+     * - Links into the vault and images are written vault-rooted
+     *   (`/…`, [LunarborLink.rootedText], [ImagePaths.rootedEmbeds]), as a
+     *   copy does: each row's relative paths only hold in the template's
+     *   folders, and the day's first save rewrites links relative to where
+     *   they landed. Images are not copied; the day shows the template's.
+     * - What [filter] hides is left out: no template at all when the
+     *   template node itself is hidden ([isPathHidden]), and every hidden
+     *   item inside it with its subtree ([PrivacyLayout.hiddenRows]).
+     * - At most [TEMPLATE_MAX_ROWS] rows.
+     *
+     * Called by `PaneBackingViewModel.navigateToToday` (through its
+     * journal-path preparation) when it prepares a day that does not exist.
+     *
+     * @param dayFolder The vault folder the day's items will be stored in
+     *   (as the save rules would name it). No template applies when that
+     *   lies inside the template, which would copy the journal into itself.
+     * @param filter The privacy mode to apply (the app's by default).
+     * @return The rows, or `null` when there is no usable template: none
+     *   set, its outline gone (moved or deleted outside the app), hidden,
+     *   holding the day, or without visible items.
+     */
+    suspend fun dailyTemplateRows(dayFolder: String? = null, filter: PrivacyFilter = privacyFilter): List<String>? {
+        val folder = dailyTemplate.folder ?: return null
+        if (dayFolder != null && (dayFolder == folder || dayFolder.startsWith("$folder/"))) return null
+        flushAll()
+        if (!repository.fileExists(NoteRepository.outlineFileOf(folder))) return null
+        if (isPathHidden(folder, filter)) return null
+        val out = ArrayList<String>()
+        appendTemplateRows(folder, -PaneBackingViewModel.TAB_SIZE, filter, out)
+        return out.takeIf { rows -> rows.any { it.isNotBlank() } }
+    }
+
+    /**
+     * Appends the items of the node folder [folder] composed under a parent
+     * at column [parentIndent], each folder-backed item followed by its own
+     * items (recursively), to [out]. Rows [filter] hides are skipped with
+     * their subtrees. See [dailyTemplateRows].
+     */
+    private suspend fun appendTemplateRows(folder: String, parentIndent: Int, filter: PrivacyFilter, out: MutableList<String>) {
+        val loaded = repository.loadSubtree(folder, parentIndent)
+        val lines = loaded.lines
+        val hidden = PrivacyLayout.hiddenRows(lines, filter)
+        // A folder-backed item's children go after its own last row (a
+        // block's last content row).
+        val childrenAfter = HashMap<Int, Pair<String, Int>>()
+        for ((row, ref) in loaded.promotedByRow) {
+            childrenAfter[DocumentLayout.itemLastRow(lines, row)] = ref.folderRel to DocumentLayout.itemColumn(lines, row)
+        }
+        for (row in lines.indices) {
+            if (out.size >= TEMPLATE_MAX_ROWS) return
+            if (PrivacyLayout.isHidden(hidden, row)) continue
+            out += ImagePaths.rootedEmbeds(LunarborLink.rootedText(lines[row], folder), folder)
+            val (child, col) = childrenAfter[row] ?: continue
+            appendTemplateRows(child, col, filter, out)
+        }
+    }
+
+    // ------------------------------------------------- journal days for agents (LBR-23)
+
+    /**
+     * The part of a journal path that exists on disk: from the root down,
+     * the item matching each of [titles] ([DailyNotes.matchesTitle]; the
+     * first match, bullets only), stopping after the first item that is
+     * not folder-backed or at the first title not found. Callers
+     * [flushAll] first when unsaved edits matter. Rows the Today command
+     * prepared and nobody typed in are not on disk, so they do not count.
+     *
+     * Called by `McpTools` (`today`) and [createJournalDay].
+     *
+     * @param titles The path's titles, outermost first ([DailyNotes.titlePath]).
+     * @return One step per item found, outermost first.
+     */
+    suspend fun journalStepsOf(titles: List<String>): List<JournalStep> {
+        val out = ArrayList<JournalStep>(titles.size)
+        var folder = ""
+        for (title in titles) {
+            val item = repository.nodeItemsOf(folder).firstOrNull {
+                (it is NodeLine.Leaf && DailyNotes.matchesTitle(it.title, title)) ||
+                    (it is NodeLine.Folder && DailyNotes.matchesTitle(it.title, title))
+            } ?: break
+            when (item) {
+                is NodeLine.Folder -> {
+                    folder = if (folder.isEmpty()) item.folder else "$folder/${item.folder}"
+                    out += JournalStep(item.title, folder)
+                }
+                is NodeLine.Leaf -> {
+                    out += JournalStep(item.title, null)
+                    break
+                }
+                else -> break
+            }
+        }
+        return out
+    }
+
+    /**
+     * Creates the journal item path [titles] for real — what the Today
+     * command ([PaneBackingViewModel.navigateToToday]) prepares, but saved
+     * at once, because an agent is about to write to it:
+     *
+     *  1. saves every open document, and finds the deepest folder-backed
+     *     item of the path on disk ([journalStepsOf]);
+     *  2. picks the [Document] to add to: an open one that already holds
+     *     that node's items ([Document.itemsRowOf] — its own outline, or
+     *     an outline with the node expanded), preferring one with pending
+     *     rows (a pane that prepared the day: committing them in place
+     *     keeps the pane's rows and caret, where a reload from disk would
+     *     drop them), then the node's own outline; else acquires the
+     *     node's outline;
+     *  3. walks the rest of the path in it ([DailyNotes.findChild]); a row
+     *     on the way that is pending is committed with its whole group
+     *     ([Document.commitPendingRows]) — the pane's prepared day, with
+     *     its template rows or placeholder, becomes the real one;
+     *  4. inserts the items still missing, newest first like the Today
+     *     command (a new `Journal` last at the root), with the daily
+     *     template's items ([dailyTemplateRows], LBR-21) under a new day —
+     *     or nothing under it when there is no template: a day without
+     *     children is a plain bullet (its folder comes with its first
+     *     child);
+     *  5. saves ([Document.flush]); other documents holding a written node
+     *     reload through the save's usual refresh.
+     *
+     * An existing day is never changed (no template is applied to it).
+     * The caller checks the privacy scope first: nothing is created where
+     * [filter] hides `Journal` or a part of the path.
+     *
+     * Called by `McpTools` (`today`, with edits on, for today or a future
+     * day).
+     *
+     * @param titles The path's titles, outermost first ([DailyNotes.titlePath]).
+     * @param filter The connection's privacy scope; the template copy
+     *   leaves out what it hides.
+     * @return `true` when a new day was given the template's items.
+     */
+    suspend fun createJournalDay(titles: List<String>, filter: PrivacyFilter): Boolean {
+        flushAll()
+        val steps = journalStepsOf(titles)
+        // The deepest node on disk: where the missing items are added.
+        var parent = ""
+        var found = 0
+        for (step in steps) {
+            val folder = step.folder ?: break
+            parent = folder
+            found++
+        }
+        // The new day's folder as the save will name it (for the template's
+        // self-containment check).
+        val template = if (steps.size >= titles.size) null else {
+            val below = (found until titles.size).map { FolderName.forTitle(steps.getOrNull(it)?.title ?: titles[it]) }
+            dailyTemplateRows((listOf(parent).filter { it.isNotEmpty() } + below).joinToString("/"), filter)
+        }
+        val holders = openDocuments().filter { it.itemsRowOf(parent) != null }
+        val holder = holders.firstOrNull { it.hasPendingRows }
+            ?: holders.firstOrNull { it.fileRel == NoteRepository.outlineFileOf(parent) }
+            ?: holders.firstOrNull()
+        val fileRel = holder?.fileRel ?: NoteRepository.outlineFileOf(parent)
+        val doc = acquire(fileRel)
+        try {
+            doc.stateFlow.first { it.isLoaded }
+            var parentRow = doc.itemsRowOf(parent) ?: return false
+            var level = found
+            while (level < titles.size) {
+                val st = doc.stateFlow.value
+                val row = DailyNotes.findChild(st.lines, parentRow, titles[level])
+                if (row < 0) break
+                doc.pendingGroupOf(st.lineIds[row])?.let { doc.commitPendingRows(it) }
+                parentRow = row
+                level++
+            }
+            val missing = titles.drop(level)
+            var templated = false
+            if (missing.isNotEmpty()) {
+                val lines = doc.stateFlow.value.lines
+                val (at, indent) = when {
+                    parentRow >= 0 -> DailyNotes.firstChildRow(lines, parentRow) to
+                        DocumentLayout.itemColumn(lines, parentRow) + PaneBackingViewModel.TAB_SIZE
+                    // `Journal` itself: last among the root's items.
+                    level == 0 -> {
+                        val top = DailyNotes.childItemRows(lines, -1).firstOrNull()
+                        DailyNotes.lastTopLevelRow(lines) to (top?.let { DocumentLayout.itemColumn(lines, it) } ?: 0)
+                    }
+                    // A node's own outline: first among its items.
+                    else -> {
+                        val top = DailyNotes.childItemRows(lines, -1).firstOrNull()
+                        (top ?: 0) to (top?.let { DocumentLayout.itemColumn(lines, it) } ?: 0)
+                    }
+                }
+                templated = !template.isNullOrEmpty()
+                // Without a template the day gets no placeholder child.
+                val rows = DailyNotes.preparedRows(missing, indent, template).let { if (templated) it else it.dropLast(1) }
+                doc.insertRows(at, rows)
+            }
+            doc.flush()
+            return templated
+        } finally {
+            release(fileRel)
+        }
+    }
+
     // ------------------------------------------------------- agents (MCP)
 
     /**
@@ -1155,6 +1380,114 @@ class DocumentRegistry(
             release(fileRel)
             applyExternalChanges(listOf(fileRel))
         }
+    }
+
+    /** Serializes [toggleDoneOnHit] / [undoDoneOnHit], so two quick presses never interleave. */
+    private val hitDoneLock = Mutex()
+
+    /**
+     * Toggle done (LBR-24's rule, [DoneState.toggledRow]) on the line a
+     * search result names, where it is stored — from a search node's or
+     * the pane search's result list (LBR-22), without opening it:
+     *
+     *  1. saves every open document, so the hit's file is current;
+     *  2. picks the [Document] to edit: an open one holding the hit's
+     *     item ([Document.rowOfStoredItem] — the file's own, or one with
+     *     its folder expanded or mirrored), preferring one with pending
+     *     rows (a prepared day: its own save keeps them, a reload from
+     *     disk would drop them), then the file's own; else acquires the
+     *     file's document (the same path as [editForAgent]);
+     *  3. rewrites the item's row — a block by its first row; a hit done
+     *     only by inheritance strikes its own title — saves, and releases.
+     *
+     * The edit goes through `Document` primitives, not a pane's undo
+     * stack, so no pane's pending day is committed by it
+     * ([Document.commitPendingRowsEditedBetween] runs only for a pane's own
+     * edits); panes on the edited document see it at once, other holders
+     * of the node reload after the save, the save feeds the text index,
+     * and every search node re-runs at once ([refreshSearchNodesNow]).
+     *
+     * Called by `PaneBackingViewModel.toggleDoneOnHit`.
+     *
+     * @param hit A result with [TextHit.canToggleDone].
+     * @return What changed (for the toast's Undo, [undoDoneOnHit]), or
+     *   `null` when nothing could be toggled (a note line, a code row, the
+     *   line gone, a title with nothing to strike).
+     */
+    suspend fun toggleDoneOnHit(hit: TextHit): HitDoneToggle? = hitDoneLock.withLock {
+        if (!hit.canToggleDone) return@withLock null
+        val change = editHitRow(hit) { raw -> DoneState.toggledRow(raw) } ?: return@withLock null
+        HitDoneToggle(hit, change.first, change.second, DoneState.isDoneRow(change.second))
+    }
+
+    /**
+     * Undoes [toggle] ([toggleDoneOnHit]): puts the row's text back as it
+     * was, when the row still reads as the toggle left it; when it was
+     * edited since, only its done state is set back
+     * ([DoneState.withDoneRow]). Same path as [toggleDoneOnHit].
+     *
+     * Called by `PaneBackingViewModel.undoHitDoneToggle` (the toast's Undo).
+     *
+     * @return `true` when the row was changed back.
+     */
+    suspend fun undoDoneOnHit(toggle: HitDoneToggle): Boolean = hitDoneLock.withLock {
+        editHitRow(toggle.hit) { raw ->
+            if (raw == toggle.after) toggle.before else DoneState.withDoneRow(raw, !toggle.done)
+        } != null
+    }
+
+    /**
+     * Rewrites the row of [hit]'s item with [transform] (see
+     * [toggleDoneOnHit] for which document it goes through) and saves.
+     *
+     * @return The row's text before and after, or `null` when the row was
+     *   not found, is a code row, or [transform] left it unchanged.
+     */
+    private suspend fun editHitRow(hit: TextHit, transform: (String) -> String): Pair<String, String>? {
+        if (!NoteRepository.isOutlineFile(hit.fileRel)) return null
+        flushAll()
+        // The item's own row: a block's first row decides its done state.
+        val find = { doc: Document ->
+            doc.rowOfStoredItem(hit.fileRel, hit.itemIndex, 0)
+        }
+        val open = openDocuments().filter { it.stateFlow.value.isLoaded && find(it) != null }
+        val holder = open.firstOrNull { it.hasPendingRows } ?: open.firstOrNull { it.fileRel == hit.fileRel } ?: open.firstOrNull()
+        val fileRel = holder?.fileRel ?: hit.fileRel
+        val doc = acquire(fileRel)
+        try {
+            doc.stateFlow.first { it.isLoaded }
+            val row = find(doc) ?: return null
+            val lines = doc.stateFlow.value.lines
+            // A code row is never done; a hit on one is not offered.
+            val hitRow = doc.rowOfStoredItem(hit.fileRel, hit.itemIndex, hit.rowOffset) ?: row
+            if (BlockLayout.isCodeLine(lines[hitRow])) return null
+            val before = lines[row]
+            val after = transform(before)
+            if (after == before) return null
+            var head = 0
+            while (head < before.length && head < after.length && before[head] == after[head]) head++
+            var tail = 0
+            while (tail < before.length - head && tail < after.length - head &&
+                before[before.length - 1 - tail] == after[after.length - 1 - tail]
+            ) tail++
+            if (before.length - tail > head) doc.delete(row, head, row, before.length - tail)
+            if (after.length - tail > head) doc.insertText(row, head, after.substring(head, after.length - tail))
+            doc.flush()
+            refreshSearchNodesNow()
+            return before to after
+        } finally {
+            release(fileRel)
+        }
+    }
+
+    /**
+     * Re-runs every requested search node now rather than
+     * [SEARCH_NODE_REFRESH_MS] later, so a result toggled from a list
+     * ([toggleDoneOnHit]) leaves an `is:open` list at once.
+     */
+    private fun refreshSearchNodesNow() {
+        searchNodeRefresh?.cancel()
+        for (key in requestedSearchNodes.toList()) runSearchNode(key)
     }
 
     /** Serializes [applyExternalChanges] batches. */
@@ -1386,5 +1719,34 @@ class DocumentRegistry(
 
         /** Most results kept for a search node (it lists them a page at a time). */
         const val SEARCH_NODE_MAX_HITS: Int = 2_000
+
+        /** Most rows a daily template copies into a new day ([dailyTemplateRows]). */
+        const val TEMPLATE_MAX_ROWS: Int = 2_000
     }
 }
+
+/**
+ * One item of a journal path found on disk ([DocumentRegistry.journalStepsOf], LBR-23).
+ *
+ * @property title The item's title as written.
+ * @property folder Its vault folder, or `null` for a bullet without
+ *   children (no folder; the walk stops there).
+ */
+data class JournalStep(val title: String, val folder: String?)
+
+/**
+ * One Toggle done on a search result ([DocumentRegistry.toggleDoneOnHit],
+ * LBR-22), kept for the toast's Undo ([DocumentRegistry.undoDoneOnHit]).
+ *
+ * @property hit The result toggled; finds the row again by item index.
+ * @property before The item row's text before the toggle.
+ * @property after Its text after.
+ * @property done `true` when the toggle made the item done (the toast
+ *   reads "Marked done"), `false` when it made it not done.
+ */
+data class HitDoneToggle(
+    val hit: TextHit,
+    val before: String,
+    val after: String,
+    val done: Boolean,
+)

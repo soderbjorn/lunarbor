@@ -13,6 +13,7 @@ import se.soderbjorn.lunarbor.main.AppShell
 import se.soderbjorn.lunarbor.main.runFormatMigrations
 import se.soderbjorn.lunarbor.main.installBackupScheduler
 import se.soderbjorn.lunarbor.main.installMcpBridge
+import se.soderbjorn.lunarbor.main.localToday
 import se.soderbjorn.lunarbor.mcp.McpServer
 import se.soderbjorn.lunarbor.mcp.McpTools
 import se.soderbjorn.lunarbor.main.setLunarborVaultRoot
@@ -78,7 +79,7 @@ private suspend fun start() {
     // Agent access (MCP): answered here, against the live registry and
     // this shell's windows. Not in the DI graph — it needs the shell.
     installMcpBridge(
-        McpServer(McpTools(graph.documentRegistry, shell.agentWorkspace())),
+        McpServer(McpTools(graph.documentRegistry, shell.agentWorkspace(), today = ::localToday)),
         graph.coroutineScope,
     )
     // Automatic backups (App settings → Backup): the main process says

@@ -193,5 +193,8 @@ class LunarborLinkTest {
             "* [p](/Recipes/Pasta/_node.md) [w](https://x.test)",
             LunarborLink.rootedText("* [p](../Pasta/_node.md) [w](https://x.test)", "Recipes/Soups"),
         )
+        // A node right under the root is not `/./Recipes/_node.md`.
+        assertEquals("* [r](/Recipes/_node.md)", LunarborLink.rootedText("* [r](../../Recipes/_node.md)", "Templates/Daily"))
+        assertEquals("* [r](/Recipes/_node.md)", LunarborLink.rootedText("* [r](./Recipes/_node.md)", ""))
     }
 }

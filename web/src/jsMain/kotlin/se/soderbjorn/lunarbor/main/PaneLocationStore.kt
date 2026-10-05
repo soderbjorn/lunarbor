@@ -9,8 +9,9 @@
  * `{ "<paneId>": { "file": "<vault-relative file>", "zoom": ["title", …], "search": "…", "searchReversed": true } }`
  * (`search` only while the pane's search field is open, `searchReversed`
  * only while its results are reversed), plus `"scroll": <px>`, the
- * current page's scroll offset, and `"caret": {"row", "col", "text"}`, its
- * caret (`PaneBackingViewModel.Caret`)
+ * current page's scroll offset, `"caret": {"row", "col", "text"}`, its
+ * caret (`PaneBackingViewModel.Caret`), and `"hideDone": true` while the
+ * pane hides done items (LBR-24, `PaneBackingViewModel.State.hideDone`)
  * (in Electron that lands in the per-app `lunarbor.json`). Paths are
  * vault-relative, so a vault change rebases them first
  * (`AppShell.switchVault`, [VaultRelocation]).
@@ -53,6 +54,9 @@ class PaneLocationStore(
     /** Panes whose open search lists its results in reverse order. */
     private val reversedSearches: MutableSet<String> = mutableSetOf()
 
+    /** Panes that hide done items (LBR-24). */
+    private val hideDonePanes: MutableSet<String> = mutableSetOf()
+
     /** Pane id → scroll offset of its current page. */
     private val scrolls: MutableMap<String, Double> = mutableMapOf()
 
@@ -90,6 +94,7 @@ class PaneLocationStore(
                 locations[paneId] = FileHistoryEntry(file, zoom)
                 (entry.search as? String)?.let { searches[paneId] = it }
                 if (entry.searchReversed == true) reversedSearches += paneId
+                if (entry.hideDone == true) hideDonePanes += paneId
                 (entry.scroll as? Number)?.let { scrolls[paneId] = it.toDouble() }
                 val caret: dynamic = entry.caret
                 val row = caret?.row as? Number
@@ -153,9 +158,20 @@ class PaneLocationStore(
         scheduleSave()
     }
 
+    /** Whether [paneId] was hiding done items. */
+    fun isHideDone(paneId: String): Boolean = paneId in hideDonePanes
+
+    /** Notes whether [paneId] hides done items; written after the usual debounce. */
+    fun recordHideDone(paneId: String, on: Boolean) {
+        if ((paneId in hideDonePanes) == on) return
+        if (on) hideDonePanes += paneId else hideDonePanes -= paneId
+        scheduleSave()
+    }
+
     /** Drops [paneId]'s entry (the pane closed). */
     fun forget(paneId: String) {
         reversedSearches -= paneId
+        hideDonePanes -= paneId
         scrolls -= paneId
         carets -= paneId
         val hadSearch = searches.remove(paneId) != null
@@ -192,6 +208,7 @@ class PaneLocationStore(
             entry.zoom = loc.zoomTitlePath.toTypedArray()
             searches[paneId]?.let { entry.search = it }
             if (paneId in reversedSearches) entry.searchReversed = true
+            if (paneId in hideDonePanes) entry.hideDone = true
             scrolls[paneId]?.let { entry.scroll = it }
             carets[paneId]?.let { c ->
                 val caret: dynamic = js("({})")

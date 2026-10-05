@@ -460,6 +460,7 @@ class MainScreen(
                 ) {
                     prev.documentState?.lineIds?.let { foldTransition.capture(editor, it) }
                 } else null
+                if (backing != null) showHitDoneToast(backing)
                 if (!skipPaint) {
                     if (backing != null) searchBar.update(backing)
                     // The drawing editor takes the whole pane below the
@@ -673,6 +674,35 @@ class MainScreen(
 
     /** Closes the pane's search and puts the keyboard back in the editor (Escape, via [AppShell]). */
     fun closeSearch() = searchBar.close()
+
+    /**
+     * The pane search's highlighted result while its list shows, or `null`
+     * ([PaneSearchBar.selectedHit]). Read by [AppShell]'s palette to offer
+     * "Toggle done" on it (LBR-22).
+     */
+    val selectedSearchHit: se.soderbjorn.lunarbor.data.TextHit? get() = searchBar.selectedHit()
+
+    /** Toggle done on the highlighted search result ([PaneSearchBar.toggleSelectedDone]); the palette's command. */
+    fun toggleSelectedSearchHitDone() = searchBar.toggleSelectedDone()
+
+    /** Serial of the last Toggle done toast shown ([showHitDoneToast]). */
+    private var shownToastSerial = 0
+
+    /**
+     * Shows the "Marked done · Undo" toast (LBR-22) when [state] carries a
+     * Toggle done on a search result this view has not shown a toast for
+     * yet. Called on every state emission.
+     */
+    private fun showHitDoneToast(state: PaneBackingViewModel.State) {
+        val toast = state.hitDoneToast ?: return
+        if (toast.serial == shownToastSerial) return
+        shownToastSerial = toast.serial
+        showUndoToast(
+            if (toast.toggle.done) "Marked done" else "Marked not done",
+            onUndo = { viewModel.undoHitDoneToggle() },
+            onTimeout = { viewModel.dismissHitDoneToast() },
+        )
+    }
 
     /**
      * Whether [target] is contained inside this pane's editor element.
@@ -1052,6 +1082,19 @@ class MainScreen(
                 event.preventDefault()
                 return
             }
+        }
+        if (event.key == "Enter" && !event.shiftKey && !event.metaKey &&
+            (if (isMacPlatform) event.ctrlKey && !event.altKey else event.altKey && !event.ctrlKey)
+        ) {
+            // Toggle done (LBR-24): ⌃↩ on the Mac (Cmd-Enter and
+            // Shift-Cmd-Enter leave a block, Option-Cmd-Enter zooms),
+            // Alt-Enter elsewhere, where Ctrl stands in for Cmd. Strikes or
+            // unstrikes the whole title of the caret's item, or of every
+            // item the selection touches. Outlines only.
+            event.preventDefault()
+            syncSelectionFromDom(editor)
+            viewModel.toggleDone()
+            return
         }
         if (event.key == "Enter" && cmd && !event.altKey && event.shiftKey) {
             // Shift-Cmd-Enter in a block: leave it onto a new bullet right
@@ -2055,6 +2098,7 @@ class MainScreen(
                 val fileName = NoteRepository.displayNameOf(fileRel).ifBlank { "Untitled" }
                 applyTitleStyleClass(title, null)
                 title.textContent = fileName
+                appendDailyTemplateLabel(title, backing)
                 return
             }
         }
@@ -2078,6 +2122,23 @@ class MainScreen(
                 title.appendChild(count)
             }
         }
+        if (backing != null) appendDailyTemplateLabel(title, backing)
+    }
+
+    /**
+     * Appends the "Daily template" pill to the page [title] when the page
+     * is the daily template ([MainViewModel.isDailyTemplatePage], LBR-21):
+     * chrome, not content — not editable, not selectable, never saved.
+     * Called by [updateTitle] after it has filled the title.
+     */
+    private fun appendDailyTemplateLabel(title: HTMLElement, backing: PaneBackingViewModel.State) {
+        if (!viewModel.isDailyTemplatePage(backing)) return
+        val label = document.createElement("span") as HTMLElement
+        label.className = "lunarbor-title-daily-template"
+        label.setAttribute("contenteditable", "false")
+        label.title = "New journal days start as a copy of this page's items"
+        label.textContent = "Daily template"
+        title.appendChild(label)
     }
 
     /**

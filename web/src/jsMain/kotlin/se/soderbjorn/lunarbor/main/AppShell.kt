@@ -46,6 +46,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.await
 import kotlinx.coroutines.launch
 import kotlinx.browser.window
@@ -392,6 +393,35 @@ class AppShell(
     }
 
     /**
+     * Seeds [DocumentRegistry.dailyTemplate] (LBR-21) from the persister
+     * (key [DAILY_TEMPLATE_KEY]: `{ "<vault root dir>": "<template folder>" }`,
+     * per vault like [PRIVACY_MODE_KEY]) and writes it back whenever it
+     * changes — the palette's "Use as daily template" / "Stop using as
+     * daily template", or a move, rename or trashing of the template node.
+     * A setting with no settings UI. Called once at boot, before the first
+     * pane renders.
+     */
+    private suspend fun loadDailyTemplate() {
+        val template = documentRegistry.dailyTemplate
+        val vault = documentRegistry.rootDirectory
+        suspend fun readAll(): dynamic = try {
+            persister.read(DAILY_TEMPLATE_KEY)?.let { JSON.parse<dynamic>(it) }
+        } catch (_: Throwable) {
+            null
+        }
+        val stored: dynamic = readAll()
+        template.load(if (stored == null) null else stored[vault] as? String)
+        template.onChanged = {
+            scope.launch {
+                val all: dynamic = readAll() ?: js("({})")
+                val folder = template.folder
+                if (folder == null) js("delete all[vault]") else all[vault] = folder
+                persister.write(DAILY_TEMPLATE_KEY, JSON.stringify(all))
+            }
+        }
+    }
+
+    /**
      * Reads the vault's privacy modes and puts the app back in the mode it
      * was left in for this vault (persister key [PRIVACY_MODE_KEY]; a mode
      * that no longer exists falls back to "No privacy"), then writes the
@@ -457,6 +487,7 @@ class AppShell(
         installChromeSelectionTracker()
         installHotkeysShortcut()
         installSpaceShortcuts()
+        installTodayShortcut()
         installNavigateToShortcut()
         installSearchShortcuts()
         installStarredShortcut()
@@ -654,6 +685,7 @@ class AppShell(
             // [ensurePaneViewModel] opens each at its stored location.
             paneLocations.load { documentRegistry.fileExists(it) }
             loadFoldMemory()
+            loadDailyTemplate()
             // Before any pane shows: the privacy mode decides what can.
             loadPrivacyMode()
             tabSource.notify(layoutState)
@@ -734,6 +766,62 @@ class AppShell(
         se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
             se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(SPACE_SHAPE_ACTION, "3D mode: next shape", listOf(chord("2"))),
         ) { spaceMode.nextShape() }
+    }
+
+    /**
+     * Registers the Today command's configurable hotkey ([TODAY_ACTION]):
+     * ⌃⌘T (Ctrl-Alt-T off the Mac) — Cmd-T is the browser's and the
+     * toolkit's "new tab" convention, and no other binding uses ⌃⌘T.
+     * Listed (and rebindable) in the Keyboard Shortcuts sidebar.
+     */
+    private fun installTodayShortcut() {
+        val isMac = se.soderbjorn.lunula.web.hotkey.isMacPlatform()
+        val chord = se.soderbjorn.lunula.web.hotkey.Hotkey(key = "t", ctrl = true, meta = isMac, alt = !isMac)
+        se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
+            se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(TODAY_ACTION, "Today", listOf(chord)),
+        ) { goToToday() }
+    }
+
+    /**
+     * The Today command (palette "Today", [TODAY_ACTION]): takes the
+     * focused pane to today's journal item — the user's local date — via
+     * [MainViewModel.navigateToToday], then focuses its editor. When the
+     * privacy mode hides the journal, nothing moves and a short notice
+     * says so, without naming the mode or the tags.
+     */
+    private fun goToToday() {
+        val paneId = focusedPaneId() ?: return
+        val vm = paneViewModels[paneId] ?: return
+        scope.launch {
+            when (vm.navigateToToday(localToday())) {
+                PaneBackingViewModel.TodayOutcome.HIDDEN -> showConfirmDialog(
+                    title = "Today can't be opened",
+                    message = "The journal isn't shown in the current view.",
+                    cancelLabel = "Close",
+                )
+                PaneBackingViewModel.TodayOutcome.OPENED -> paneEditors[paneId]?.focusEditor()
+                else -> Unit
+            }
+        }
+    }
+
+    /**
+     * "Previous day" / "Next day" (LBR-20): takes the focused pane to the
+     * nearest existing journal day before or after the one it is on —
+     * "Next day" reaching today opens today as the Today command does —
+     * via [MainViewModel.navigateToAdjacentDay], then focuses its editor.
+     * Nowhere to go changes nothing, silently.
+     *
+     * @param forward `true` for "Next day".
+     */
+    private fun goToAdjacentDay(forward: Boolean) {
+        val paneId = focusedPaneId() ?: return
+        val vm = paneViewModels[paneId] ?: return
+        scope.launch {
+            if (vm.navigateToAdjacentDay(forward, localToday()) == PaneBackingViewModel.TodayOutcome.OPENED) {
+                paneEditors[paneId]?.focusEditor()
+            }
+        }
     }
 
     /**
@@ -1089,6 +1177,32 @@ class AppShell(
                 if (paneId != null) openInsertLinkModal(paneId, placeholder = "Mirror a node…")
             },
         )
+        // Daily notes (LBR-19): today's journal item, prepared if missing.
+        out += CommandPalette.Command(id = "today", title = "Today", run = { goToToday() })
+        // LBR-20: offered only on a journal day (or inside one); palette
+        // only, no hotkeys (decided in the ticket).
+        if (focusedPaneViewModel()?.let { it.journalDayOf(it.currentBackingState) } != null) {
+            out += CommandPalette.Command(id = "previous-day", title = "Previous day", run = { goToAdjacentDay(forward = false) })
+            out += CommandPalette.Command(id = "next-day", title = "Next day", run = { goToAdjacentDay(forward = true) })
+        }
+        // LBR-21: the daily template — any node page; "Stop using…" on the
+        // template's own page instead.
+        focusedPaneViewModel()?.let { vm ->
+            val st = vm.currentBackingState
+            if (vm.isDailyTemplatePage(st)) {
+                out += CommandPalette.Command(
+                    id = "stop-daily-template",
+                    title = "Stop using as daily template",
+                    run = { vm.setDailyTemplate(false) },
+                )
+            } else if (vm.canUseAsDailyTemplate(st)) {
+                out += CommandPalette.Command(
+                    id = "use-daily-template",
+                    title = "Use as daily template",
+                    run = { vm.setDailyTemplate(true) },
+                )
+            }
+        }
         out += CommandPalette.Command(
             id = "navigate-to",
             title = "Navigate to",
@@ -1118,6 +1232,33 @@ class AppShell(
         // The page node's direct children by name, each with its subtree.
         addStyleCmd("sort-children-by-name", "Sort children by name") { it.sortChildrenByName() }
         addStyleCmd("sort-children-by-name-reversed", "Sort children by name, reversed") { it.sortChildrenByName(reverse = true) }
+        // Done state (LBR-24): strike / unstrike the caret's items, and the
+        // pane's "Hide done items" view filter — outlines only.
+        focusedPaneViewModel()?.let { vm ->
+            val st = vm.currentBackingState
+            // While the pane search lists results, Toggle done acts on the
+            // highlighted one, where it is stored (LBR-22).
+            val screen = focusedPaneId()?.let { paneEditors[it] }
+            val hit = if (st.isSearchActive) screen?.selectedSearchHit else null
+            if (hit != null) {
+                if (hit.canToggleDone) {
+                    out += CommandPalette.Command(
+                        id = "toggle-done",
+                        title = "Toggle done",
+                        run = { screen?.toggleSelectedSearchHitDone() },
+                    )
+                }
+            } else if (vm.canToggleDone(st)) {
+                addStyleCmd("toggle-done", "Toggle done") { it.toggleDone() }
+            }
+            if (!st.isMarkdownMode && !st.isFileView) {
+                if (st.hideDone) {
+                    addStyleCmd("show-done-items", "Show done items") { it.setHideDone(false) }
+                } else {
+                    addStyleCmd("hide-done-items", "Hide done items") { it.setHideDone(true) }
+                }
+            }
+        }
         // The node the page is (zoom target, or a node's own outline), with
         // everything under it, after asking; the pane goes up a level. On a
         // note, image, drawing or other file, the same command trashes the
@@ -1712,6 +1853,14 @@ class AppShell(
         )
         val paneVm = se.soderbjorn.lunarbor.main.MainViewModel(scope, docView)
         paneViewModels[paneId] = paneVm
+        // "Hide done items" (LBR-24) is pane state, kept with the location.
+        if (initialFileRel == null && paneLocations.isHideDone(paneId)) paneVm.setHideDone(true)
+        scope.launch {
+            paneVm.stateFlow
+                .mapNotNull { it.backingState?.hideDone }
+                .distinctUntilChanged()
+                .collect { on -> if (paneViewModels[paneId] === paneVm) paneLocations.recordHideDone(paneId, on) }
+        }
         // The pane's open search comes back too, once it is where it was
         // (the search filters that page). Until then its search state is
         // not recorded, so the pane's initial "closed" can't erase it.
@@ -3153,6 +3302,12 @@ class AppShell(
          */
         private const val PRIVACY_MODE_KEY: String = "lunarborPrivacyMode"
 
+        /**
+         * Persister key of the daily template's node folder, per vault:
+         * `{ "<vault root dir>": "<folder>" }` ([loadDailyTemplate], LBR-21).
+         */
+        private const val DAILY_TEMPLATE_KEY: String = "lunarborDailyTemplate"
+
         /** Debounce between a fold change and its write. */
         private const val FOLD_MEMORY_SAVE_DEBOUNCE_MS: Long = 500
 
@@ -3177,6 +3332,9 @@ class AppShell(
 
         /** Hotkey action id: 3D mode's focused-window / all-windows switch ([installSpaceShortcuts]). */
         internal const val SPACE_SPLIT_ACTION: String = "lunarbor.space.split"
+
+        /** Hotkey action id: the Today command, ⌃⌘T ([installTodayShortcut]). */
+        internal const val TODAY_ACTION: String = "lunarbor.today"
 
         /** Hotkey action id: 3D mode's next shape — Pages, Crown, Cone, Galaxy (⌃⌘2). */
         internal const val SPACE_SHAPE_ACTION: String = "lunarbor.space.shape"
@@ -3273,4 +3431,13 @@ private fun pickMarkdownFileText(onPicked: (String) -> Unit) {
     input.addEventListener("cancel", { _: Event -> input.remove() })
     document.body?.appendChild(input as Node)
     input.click()
+}
+
+/**
+ * Today's date on the user's clock (local time, not UTC), for the Today
+ * command ([AppShell] `goToToday`).
+ */
+internal fun localToday(): CalendarDate {
+    val now: dynamic = js("new Date()")
+    return CalendarDate(now.getFullYear() as Int, (now.getMonth() as Int) + 1, now.getDate() as Int)
 }
