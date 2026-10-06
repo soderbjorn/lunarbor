@@ -96,7 +96,7 @@ internal class MapLegend {
         /** The map's legend: sections of (row id, keys separated by spaces, text). */
         private val MAP_SECTIONS: List<Pair<String, List<Triple<String, String, String>>>> = listOf(
             "MOUSE" to listOf(
-                Triple("click", "click", "Select and fold / unfold"),
+                Triple("click", "click", "Select and expand / collapse"),
                 Triple("edit", "double-click", "Edit it in Pages"),
                 Triple("orbit", "drag", "Orbit"),
                 Triple("pan", "⇧ drag", "Pan (or right-drag)"),
@@ -107,11 +107,11 @@ internal class MapLegend {
                 Triple("walk-v", "↑ ↓", "Parent / first child"),
                 Triple("edit-key", "P", "Edit the selection"),
                 Triple("open", "⏎", "Open it in the window"),
-                Triple("fold", "␣", "Fold / unfold"),
-                Triple("fold-all", "X", "Fold all"),
-                Triple("unfold-all", "O", "Unfold all"),
-                Triple("unfold-level", ".", "Unfold one more level"),
-                Triple("fold-level", ",", "Fold the deepest level"),
+                Triple("fold", "␣", "Expand / collapse"),
+                Triple("fold-all", "X", "Collapse all"),
+                Triple("unfold-all", "O", "Expand all"),
+                Triple("unfold-level", ".", "Expand one more level"),
+                Triple("fold-level", ",", "Collapse the deepest level"),
                 Triple("spread", "− +", "Less / more space between"),
                 Triple("fly", "F", "Free flight"),
                 Triple("shape", "L", "Next view"),

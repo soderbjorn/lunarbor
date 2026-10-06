@@ -1410,7 +1410,7 @@ internal class MapView(
         }
         action("Edit page", "P") { open(node.id, showPage = true) }
         action("Open in window", "⏎") { open(node.id, showPage = false) }
-        if (node.children.isNotEmpty()) action(if (node.id in folded) "Unfold" else "Fold", "␣") { toggleFold(node.id) }
+        if (node.children.isNotEmpty()) action(if (node.id in folded) "Expand" else "Collapse", "␣") { toggleFold(node.id) }
     }
 
     // --------------------------------------------------------------- scene

@@ -188,7 +188,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         <p>Every node — the vault root (Home) and every bullet that has children — has its own page,
         hanging at a fixed place in space. The page your window is on is in front of you, at exactly one
         screen pixel per pixel, and it is <b>the real editor</b>: type, press Enter for a new bullet, Tab and
-        Shift-Tab to indent, fold, search, paste images, use the palette — everything works as in 2D.
+        Shift-Tab to indent, expand and collapse, search, paste images, use the palette — everything works as in 2D.
         Notes, images, drawings and web pages open on the page too.</p>
         <h4>What you see</h4>
         <ul>
@@ -216,7 +216,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("⌥⌘←") + " " + k("⌥⌘→") to "Back / Forward.",
             k("⌃⌘↑") to "Fly up one level.",
             k("⇧⌃⌘↑") to "Fly home.",
-            k("⌘↑") + " " + k("⌘↓") to "Fold / unfold the caret's item.",
+            k("⌘↑") + " " + k("⌘↓") to "Collapse / expand the caret's item.",
             k("Esc") to "Leave 3D mode (in 2D, Esc clears the zoom instead).",
         )}
         <h4>One window or all of them</h4>
@@ -241,7 +241,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           <li><b>Link arcs</b> — brighter curves between two bodies when a note in one links to the other
           with a link into the vault. Links to a note or file count for the node that
           holds it.</li>
-          <li><b>Rings</b> — a ring around a body means it is <b>folded</b> on the map: its children are
+          <li><b>Rings</b> — a ring around a body means it is <b>collapsed</b> on the map: its children are
           tucked inside it. Its label shows how many (e.g. <code>Recipes · 12</code>).</li>
           <li><b>Labels</b> — up to about forty at a time, so they never pile up: the selection, the
           windows' nodes, the selection's parent and children and the top-level areas come first, then
@@ -256,20 +256,20 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             "Drag" to "Orbit around the point you are looking at.",
             "Right-drag, or " + k("⇧") + " drag" to "Pan.",
             "Scroll / pinch" to "Zoom in and out.",
-            "Click a body or label" to "Select it and fold or unfold it; the camera stays where it is. The arrow keys fly to the selection.",
-            "Double-click a body or label" to "Edit that node: open it in the focused window and switch to Pages, on its page. Its fold is left as it was.",
+            "Click a body or label" to "Select it and expand or collapse it; the camera stays where it is. The arrow keys fly to the selection.",
+            "Double-click a body or label" to "Edit that node: open it in the focused window and switch to Pages, on its page. Whether it is expanded or collapsed is left as it was.",
             "Click a window card" to "Focus that window and fly to its node. Double-click: back to Pages to write in it.",
             k("←") + " " + k("→") to "Previous / next sibling.",
             k("↑") to "Parent.",
-            k("↓") to "First child (unfolds the body if it is folded).",
+            k("↓") to "First child (expands the body if it is collapsed).",
             k("⏎") to "Open the selection in the focused window.",
             k("P") to "Edit the selection: as double-click.",
             k("E") to "Back to Pages, where the focused window already is.",
-            k("␣") to "Fold or unfold the selection.",
-            k("X") to "Fold every node, so only the top-level areas show.",
-            k("O") to "Unfold every node.",
-            k(".") to "Unfold one more level: every folded body showing at the shallowest depth.",
-            k(",") to "Fold the deepest level that is open.",
+            k("␣") to "Expand or collapse the selection.",
+            k("X") to "Collapse every node, so only the top-level areas show.",
+            k("O") to "Expand every node.",
+            k(".") to "Expand one more level: every collapsed body showing at the shallowest depth.",
+            k(",") to "Collapse the deepest level that is expanded.",
             k("−") + " " + k("+") to "Less or more space between the bodies (their size stays); remembered.",
             k("F") to "Free flight (below).",
             k("K") to "Hide or show the keyboard legend in the bottom left.",
@@ -278,7 +278,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("?") to "This help.",
         )}
         <p>With a body selected, a bar along the bottom shows its path (click a part to go there) and
-        buttons for <b>Edit page</b>, <b>Open in window</b> and <b>Fold / Unfold</b>. The top left shows the
+        buttons for <b>Edit page</b>, <b>Open in window</b> and <b>Expand / Collapse</b>. The top left shows the
         view and how many nodes and links are on the map, and says when it is still reading folders.</p>
         <h4>Free flight</h4>
         <p>${k("F")} turns the camera into a spaceship, as in Lunamux; ${k("F")} again lands it, and the
@@ -301,9 +301,9 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           outside the app.</li>
           <li>Positions come only from the tree (folder names and the order of siblings) — never from
           chance — so the same vault always looks the same and you can learn where things are.</li>
-          <li>The map starts with every node unfolded; <kbd>X</kbd> folds them all and <kbd>O</kbd> unfolds
-          them all again. At most 1,500 nodes are shown. Folds on the map are its own and do
-          not change folds in your windows.</li>
+          <li>The map starts with every node expanded; <kbd>X</kbd> collapses them all and <kbd>O</kbd> expands
+          them all again. At most 1,500 nodes are shown. What is expanded or collapsed on the map is its own and does
+          not change your windows.</li>
           <li>Moving between views makes the bodies glide to their new places, so you can follow a node
           from one shape to the next.</li>
         </ul>
