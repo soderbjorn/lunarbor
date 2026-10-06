@@ -1395,46 +1395,13 @@ internal class TextEditingViewModel(
     }
 
     /**
-     * TEMPORARY ("Clean up blocks (temporary)"): strips the frame
-     * imported Obsidian notes carry from every block in rows
-     * [startRow]..[endRow] ([NoteConversion.stripImportFrame]: leading
-     * `---` / blank rows, trailing blank / `---` / `![[…]]` rows). The
-     * blocks stay blocks; the first row keeps its id (and so the block's
-     * children and folder). A block left with nothing keeps one empty
-     * row. Blocks [skipRow] names are left alone; the caret goes to
-     * [startRow].
-     *
-     * Called by `PaneBackingViewModel.cleanUpBlocks` once every folder
-     * under the page is loaded.
-     *
-     * @return the number of blocks looked at.
-     */
-    fun cleanUpBlocksIn(startRow: Int, endRow: Int, skipRow: (Int) -> Boolean = { false }): Int =
-        forEachBlockIn(startRow, endRow, skipRow) { first ->
-            val lines0 = document.stateFlow.value.lines
-            val range = BlockLayout.rangeAt(lines0, first) ?: return@forEachBlockIn
-            val contents = range.map { BlockLayout.contentOf(lines0[it]) }
-            val kept = NoteConversion.stripImportFrame(contents).ifEmpty { listOf("") }
-            if (kept == contents) return@forEachBlockIn
-            val indent = BlockLayout.markerColumn(lines0[range.first])
-            if (range.last > range.first) document.deleteRows(range.first + 1, range.last)
-            val old = document.stateFlow.value.lines[range.first]
-            if (old.length > indent + 1) document.delete(range.first, indent + 1, range.first, old.length)
-            if (kept.first().isNotEmpty()) document.insertText(range.first, indent + 1, kept.first())
-            kept.drop(1).forEachIndexed { i, c ->
-                document.insertLine(range.first + 1 + i, BlockLayout.nextLine(indent, c))
-            }
-        }
-
-    /**
      * Runs [edit] on the first row of every block in rows
      * [startRow]..[endRow] that [skipRow] does not name, bottom-up (so an
      * edit may change the rows below it freely). The caret (and an
      * anchor) stays on its line, found again by id; when an edit removed
      * that line (a later row of a converted block), on the nearest line
      * above it that is still there, so the view does not scroll. A no-op
-     * in a plain Markdown file. Shared by [convertBlocksIn] and
-     * [cleanUpBlocksIn].
+     * in a plain Markdown file. Used by [convertBlocksIn].
      *
      * @return the number of blocks [edit] ran on.
      */

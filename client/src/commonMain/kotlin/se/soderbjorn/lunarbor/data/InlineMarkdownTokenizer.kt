@@ -184,6 +184,10 @@ data class StyledRun(
  * @property markerCols Model columns whose source character is a marker
  *   (e.g. the `*` chars of `**bold**`). The editor skips these when
  *   moving the cursor so the caret never lands inside a marker pair.
+ * @property styleMarkerCols The subset of [markerCols] that open or close
+ *   an [InlineStyle] (`**`, `*`, `~~`, `` ` ``) — never link, image or
+ *   character-reference syntax. Removing exactly these columns strips a
+ *   line's inline styles and nothing else (`MarkdownStyleViewModel.clearedLine`).
  */
 class TokenizedLine internal constructor(
     val runs: List<StyledRun>,
@@ -191,6 +195,7 @@ class TokenizedLine internal constructor(
     val domToModel: IntArray,
     val modelToDom: IntArray,
     val markerCols: Set<Int>,
+    val styleMarkerCols: Set<Int> = emptySet(),
 ) {
     /**
      * Returns the styles that enclose [modelCol]. If the cursor is at a
@@ -243,6 +248,7 @@ object InlineMarkdownTokenizer {
             domToModel = parser.domToModel.toIntArray(),
             modelToDom = parser.modelToDom,
             markerCols = parser.markerCols,
+            styleMarkerCols = parser.styleMarkerCols,
         )
     }
 
@@ -363,6 +369,7 @@ private class Parser(val text: String) {
     val domToModel = ArrayList<Int>(text.length + 1)
     val modelToDom = IntArray(text.length + 1)
     val markerCols = HashSet<Int>()
+    val styleMarkerCols = HashSet<Int>()
 
     private val activeStyles = ArrayDeque<InlineStyle>()
     private var pos: Int = 0
@@ -374,7 +381,7 @@ private class Parser(val text: String) {
             if (InlineStyle.INLINE_CODE in activeStyles) {
                 if (text[pos] == '`') {
                     flushRun()
-                    markMarker(pos, 1)
+                    markStyleMarker(pos, 1)
                     activeStyles.removeLast()
                     pos++
                     runStart = pos
@@ -426,7 +433,7 @@ private class Parser(val text: String) {
             val opener = findOpener()
             if (opener != null) {
                 flushRun()
-                markMarker(pos, opener.openMarker.length)
+                markStyleMarker(pos, opener.openMarker.length)
                 activeStyles.addLast(opener)
                 pos += opener.openMarker.length
                 runStart = pos
@@ -437,7 +444,7 @@ private class Parser(val text: String) {
             val closing = findClosingMarker()
             if (closing != null) {
                 flushRun()
-                markMarker(pos, closing.markerLength)
+                markStyleMarker(pos, closing.markerLength)
                 activeStyles.removeLast()
                 pos += closing.markerLength
                 runStart = pos
@@ -504,6 +511,12 @@ private class Parser(val text: String) {
             markerCols += i
             modelToDom[i] = displayBuilder.length
         }
+    }
+
+    /** [markMarker] for an [InlineStyle]'s opening or closing marker. */
+    private fun markStyleMarker(start: Int, len: Int) {
+        markMarker(start, len)
+        for (i in start until start + len) styleMarkerCols += i
     }
 
     private data class Closing(val style: InlineStyle, val markerLength: Int)

@@ -2028,6 +2028,12 @@ fun ensureStyles() {
         .lunarbor-block-foldable .lunarbor-block-delete {
             right: 28px;
         }
+        /* The extra 22px of padding is room for the controls only: a code
+           band on that row still reaches as far right as on the rows
+           below, the controls sitting over it. */
+        .lunarbor-block-foldable.lunarbor-code-row > .lunarbor-code-text {
+            margin-right: -40px;
+        }
         /* The last row a collapsed large block shows: its text fades out
            and a label under it says how much is hidden. */
         .lunarbor-block-clipped > .lunarbor-text {
@@ -2273,7 +2279,7 @@ fun ensureStyles() {
             pointer-events: none;
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
         }
-        /* "Convert block to nodes" / "Clean up blocks" progress
+        /* "Convert block to nodes" / "Clear formatting in subtree" progress
            (MainScreen.updateBulkEditProgress). */
         .lunarbor-bulk-progress {
             position: fixed;

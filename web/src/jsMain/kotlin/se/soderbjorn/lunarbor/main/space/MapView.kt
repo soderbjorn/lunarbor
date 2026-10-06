@@ -155,10 +155,10 @@ internal class MapView(
     // Camera: orbit around a target, current and goal.
     private var target = SpaceVec.ZERO
     private var goalTarget = SpaceVec.ZERO
-    private var theta = 0.6
-    private var goalTheta = 0.6
-    private var phi = 1.05
-    private var goalPhi = 1.05
+    private var theta = DEFAULT_THETA
+    private var goalTheta = DEFAULT_THETA
+    private var phi = DEFAULT_PHI
+    private var goalPhi = DEFAULT_PHI
     private var radius = 120.0
     private var goalRadius = 120.0
     private var framed = false
@@ -229,6 +229,11 @@ internal class MapView(
     private var dragLast: Pair<Double, Double>? = null
     private var dragPan = false
     private var dragged = false
+    /** The body the last click hit, and where (client px) and when — see [clickTarget]. */
+    private var lastClick: Triple<String, Double, Double>? = null
+    private var lastClickAt = 0.0
+    /** The body a double-click's first click hit, for the `dblclick` that follows. */
+    private var pairedClick: String? = null
 
     init {
         element.tabIndex = 0
@@ -469,6 +474,21 @@ internal class MapView(
         mode.requestFrame()
     }
 
+    /**
+     * C: the camera's defaults again — no selection, the starting viewing
+     * angle, the whole map in view — flown to, not cut. The spin goes back
+     * the short way round (the orbit angle may have wound up many turns).
+     * Called by [onKey] and, after landing, by the free flight's C.
+     */
+    private fun resetCamera() {
+        select(null, fly = false)
+        userMoved = false
+        val turns = kotlin.math.round((goalTheta - DEFAULT_THETA) / (2 * PI))
+        goalTheta = DEFAULT_THETA + turns * 2 * PI
+        goalPhi = DEFAULT_PHI
+        relayout(reframe = true)
+    }
+
     /** Points the camera at the whole map (or keeps following the selection). */
     private fun frame(positions: Map<String, SpaceVec>) {
         framed = true
@@ -700,9 +720,7 @@ internal class MapView(
             e.code == "KeyK" -> legend.toggle()
             e.code == "KeyC" -> {
                 land()
-                select(null, fly = false)
-                userMoved = false
-                relayout(reframe = true)
+                resetCamera()
             }
             e.key == "Enter" -> {
                 legend.flash("engage")
@@ -957,12 +975,13 @@ internal class MapView(
             me.preventDefault()
             me.stopPropagation()
             focus()
-            clickBody(id)
+            clickTarget(id, me.clientX.toDouble(), me.clientY.toDouble())?.let { clickBody(it) }
         })
         el.addEventListener("dblclick", { e ->
             e.preventDefault()
             e.stopPropagation()
-            open(id, showPage = true)
+            open(pairedClick ?: id, showPage = true)
+            pairedClick = null
         })
         labelsHost.appendChild(el)
         return el
@@ -1027,8 +1046,15 @@ internal class MapView(
         val perBody = HashMap<String, Int>()
         for (p in panes) {
             val anchor = anchors[p.id] ?: continue
-            val b = bodies[anchor] ?: continue
             val card = windowsHost.querySelector("[data-pane=\"${p.id}\"]") as? HTMLElement ?: continue
+            // No body yet (listings still being read): a card never placed
+            // would sit untransformed in the top left corner, over the strip.
+            val b = bodies[anchor]
+            if (b == null) {
+                card.style.visibility = "hidden"
+                continue
+            }
+            card.style.visibility = ""
             val nth = perBody.getOrPut(anchor) { 0 }
             perBody[anchor] = nth + 1
             // Read once per card: reading it every frame forced a layout after the label writes.
@@ -1101,15 +1127,78 @@ internal class MapView(
     }
 
     /**
+     * The body a click at client ([x], [y]) acts on. The first click of a
+     * double-click folds or unfolds its body, so the bodies move before the
+     * second click: a click soon after and near the last one is the second
+     * of a pair and means the body the first one hit ([hit] is ignored),
+     * and the `dblclick` that follows opens it ([pairedClick]).
+     * Called by the canvas's `mouseup` and a label's `mousedown`.
+     */
+    private fun clickTarget(hit: String?, x: Double, y: Double): String? {
+        val now = window.performance.now()
+        val prev = lastClick
+        if (prev != null && now - lastClickAt < DOUBLE_CLICK_MS &&
+            abs(x - prev.second) <= DOUBLE_CLICK_SLOP && abs(y - prev.third) <= DOUBLE_CLICK_SLOP
+        ) {
+            lastClick = null
+            pairedClick = prev.first
+            return prev.first
+        }
+        pairedClick = null
+        lastClick = hit?.let { Triple(it, x, y) }
+        lastClickAt = now
+        return hit
+    }
+
+    /**
      * A click on body [id] (or its label): selects it and folds / unfolds
-     * it with the camera held still — no flight, no zoom, and no following
-     * the body as the relayout moves it, which made the view drift away
-     * from the click. The keyboard walk and the selection bar still fly.
+     * it. Unfolding flies the camera to frame the body and everything that
+     * appeared under it ([frameSubtree]), for an overview of its children;
+     * folding holds the camera still. Never follows the body as the
+     * relayout moves it, which made the view drift away from the click.
      */
     private fun clickBody(id: String) {
         follow = null
         select(id, fly = false)
+        val wasFolded = id in folded
         toggleFold(id)
+        if (wasFolded && id !in folded) frameSubtree(id)
+    }
+
+    /**
+     * Flies the camera (keeping its viewing angle) so that body [id] and
+     * every body showing under it — at their new places after the relayout
+     * — just fill the view: the bounding sphere round them, with room for
+     * the bodies and their leaf dust, touches the narrower side of the
+     * view. Called by [clickBody] after an unfold.
+     */
+    private fun frameSubtree(id: String) {
+        val shown = graph.subtreeOf(id).filter { GraphLayout.visibleAnchor(graph, folded, it) == it }
+        val pts = shown.mapNotNull { bodies[it] }.filter { !it.leaving }
+        if (pts.size < 2) return
+        var minX = Double.MAX_VALUE; var minY = Double.MAX_VALUE; var minZ = Double.MAX_VALUE
+        var maxX = -Double.MAX_VALUE; var maxY = -Double.MAX_VALUE; var maxZ = -Double.MAX_VALUE
+        for (b in pts) {
+            val p = b.target
+            minX = min(minX, p.x); minY = min(minY, p.y); minZ = min(minZ, p.z)
+            maxX = max(maxX, p.x); maxY = max(maxY, p.y); maxZ = max(maxZ, p.z)
+        }
+        val c = SpaceVec((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2)
+        var reach = 0.0
+        for (b in pts) {
+            val p = b.target
+            val d = sqrt((p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y) + (p.z - c.z) * (p.z - c.z))
+            reach = max(reach, d + b.size * SUBTREE_BODY_MARGIN)
+        }
+        val half = FOV / 2 * PI / 180
+        val aspect = width.toDouble() / max(1, height)
+        // The narrower of the vertical and horizontal half-angles.
+        val fit = min(half, kotlin.math.atan(tan(half) * aspect))
+        follow = null
+        userMoved = true
+        goalTarget = c
+        goalRadius = (reach / sin(fit)).coerceIn(MIN_RADIUS, 4000.0 * MAX_SPREAD)
+        mode.requestFrame()
     }
 
     /** Folds or unfolds [id] (bodies under it fly in or out). */
@@ -1209,7 +1298,8 @@ internal class MapView(
             val t = me.target as? org.w3c.dom.Element
             if (t != null && t.closest(".lunarbor-map-window, .lunarbor-map-label, .lunarbor-map-bar, .lunarbor-map-hud") != null) return@addEventListener
             val box = element.getBoundingClientRect()
-            pick(me.clientX - box.left, me.clientY - box.top)?.let { open(it, showPage = true) }
+            (pairedClick ?: pick(me.clientX - box.left, me.clientY - box.top))?.let { open(it, showPage = true) }
+            pairedClick = null
         })
         element.addEventListener("wheel", { e ->
             val we = e as WheelEvent
@@ -1277,9 +1367,11 @@ internal class MapView(
         window.removeEventListener("mouseup", onUp)
         if (!dragged && dragStart != null && me.button.toInt() == 0) {
             val box = element.getBoundingClientRect()
-            val hit = pick(me.clientX - box.left, me.clientY - box.top)
+            val picked = pick(me.clientX - box.left, me.clientY - box.top)
             // A click selects and folds / unfolds; a double-click's second
-            // click folds it back, then `dblclick` opens it in Pages.
+            // click folds the same body back (wherever it moved), then
+            // `dblclick` opens it in Pages.
+            val hit = clickTarget(picked, me.clientX.toDouble(), me.clientY.toDouble())
             if (hit != null) clickBody(hit) else select(null, fly = false)
         }
         dragStart = null
@@ -1329,7 +1421,7 @@ internal class MapView(
             "l", "L" -> { mode.nextShape(); true }
             "?" -> { showSpaceHelp(shape); true }
             // C, as in Lunamux's "fly camera home".
-            "c", "C" -> { select(null, fly = false); userMoved = false; relayout(reframe = true); true }
+            "c", "C" -> { resetCamera(); true }
             else -> false
         }
         if (handled) {
@@ -1657,11 +1749,20 @@ internal class MapView(
         /** The closest orbit; zooming in further moves forward instead (see the wheel handler). */
         const val MIN_RADIUS = 2.0
 
+        /** Room round each body when framing a subtree ([frameSubtree]), in body sizes: the body and its leaf dust. */
+        const val SUBTREE_BODY_MARGIN = 3.0
+
         /** Free flight's thrust per Lunamux unit: the map is smaller than Lunamux's world. */
         const val FLIGHT_SCALE = 0.12
 
         /** [spread] when nothing is remembered: bodies 2.5× farther apart than [GraphLayout] places them. */
         const val DEFAULT_SPREAD = 2.5
+
+        /** The camera's starting orbit angle around the map (radians); C returns to it. */
+        const val DEFAULT_THETA = 0.6
+
+        /** The camera's starting tilt from straight above (radians); C returns to it. */
+        const val DEFAULT_PHI = 1.05
 
         /** The widest [spread] (− / + step between 1 and this); the starfield and far plane allow for it. */
         const val MAX_SPREAD = 8.0
@@ -1674,6 +1775,10 @@ internal class MapView(
 
         /** How far (px) the pointer may move between press and release and still count as a click. */
         const val CLICK_SLOP = 5
+        /** Two clicks this close in time (ms) … */
+        const val DOUBLE_CLICK_MS = 500.0
+        /** … and space (client px) are one double-click ([clickTarget]). */
+        const val DOUBLE_CLICK_SLOP = 8.0
 
         /** Zoom per wheel pixel of a mouse wheel or two-finger scroll (`exp(deltaY * rate)`). */
         const val WHEEL_ZOOM_RATE = 0.003

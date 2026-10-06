@@ -14,7 +14,7 @@
  *    pane identity (lunarbor has its own document-model-derived shape;
  *    the toolkit's local-mode tab list isn't expressive enough).
  *  - Top-bar actions before the toolkit's own: Starred, the command
- *    palette (Cmd-P) and the 3D mode cube (⌃⌘3), via
+ *    palette (Cmd-P) and the 3D mode planet (⌃⌘3), via
  *    `extraTopbarBeforeStandard`.
  *  - 3D mode ([SpaceMode]): this shell is its [SpaceHost] — it hands
  *    over the active tab's windows, their editors and breadcrumbs, and
@@ -1210,6 +1210,21 @@ class AppShell(
      * hasn't yet been recorded.
      */
     private fun buildPaletteCommands(): List<CommandPalette.Command> {
+        /**
+         * Asks before an edit that works on the caret's item with its whole
+         * subtree, loading every folder under it (the recursive palette
+         * commands); [run] only on confirmation.
+         */
+        fun confirmSubtreeEdit(title: String, message: String, confirmLabel: String, run: () -> Unit) {
+            showConfirmDialog(
+                title = title,
+                message = message,
+                confirmLabel = confirmLabel,
+                cancelLabel = "Cancel",
+                onConfirm = run,
+            )
+        }
+
         val out = mutableListOf<CommandPalette.Command>()
 
         fun addStyleCmd(id: String, title: String, action: (MainViewModel) -> Unit) {
@@ -1237,6 +1252,18 @@ class AppShell(
         }
         addStyleCmd("inline-code", "Inline code") {
             it.applyInlineStyle(se.soderbjorn.lunarbor.data.InlineStyle.INLINE_CODE)
+        }
+        // Headings, quotes and inline styles off: the caret's rows, or the
+        // caret's item with everything under it (bullets only, after asking).
+        addStyleCmd("clear-formatting", "Clear formatting") { it.clearFormatting() }
+        addStyleCmd("clear-formatting-in-subtree", "Clear formatting in subtree…") { vm ->
+            confirmSubtreeEdit(
+                title = "Clear formatting in the whole subtree?",
+                message = "Headings, quotes, bold, italic, strikethrough and inline code are removed from " +
+                    "this item and every bullet under it, at every depth. Blocks and files are left alone. " +
+                    "You can undo it.",
+                confirmLabel = "Clear Formatting",
+            ) { vm.clearFormattingInSubtree() }
         }
 
         // Pane / app actions
@@ -1437,10 +1464,15 @@ class AppShell(
         )
         // Every block in the page's whole tree (folders loaded all the
         // way down) becomes bullets, one per line (undoable).
-        addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { it.convertBlockToNodes() }
-        // TEMPORARY: every block under the page (folders loaded all the
-        // way down) loses the imported notes' `---` / `![[…]]` frame.
-        addStyleCmd("clean-up-blocks-temp", "Clean up blocks (temporary)") { it.cleanUpBlocks() }
+        addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { vm ->
+            if (!vm.blockEditCoversSubtree()) vm.convertBlockToNodes()
+            else confirmSubtreeEdit(
+                title = "Convert every block in the subtree?",
+                message = "Every block in this item and everything under it, at every depth, becomes " +
+                    "bullets. You can undo it.",
+                confirmLabel = "Convert",
+            ) { vm.convertBlockToNodes() }
+        }
         // A block holding a Markdown file's text: the system file chooser
         // picks the file (anywhere, not only in the vault); its text is
         // copied in, the file is left alone.
@@ -2328,11 +2360,11 @@ class AppShell(
     }
 
     /**
-     * The top-bar cube that toggles 3D mode ([SpaceMode.toggle], also ⌃⌘3).
+     * The top-bar planet that toggles 3D mode ([SpaceMode.toggle], also ⌃⌘3).
      * Its id, `lunarbor-topbar-space`, is what the chrome CSS hides while
      * 3D mode is disabled ([ensureLunarborChromeStyles]).
      *
-     * In the browser demo ([isDemoMode]) the bare cube is dressed as in
+     * In the browser demo ([isDemoMode]) the bare planet is dressed as in
      * Lunamux's web demo: a visible "3D Mode" label, a small "EXPERIMENTAL"
      * tag and an accent glow that stops by itself after ~15 s — website
      * visitors have no reason to hover an unlabelled icon, and 3D mode is
@@ -2340,14 +2372,14 @@ class AppShell(
      *
      * Called once, while building the shell spec in [render].
      *
-     * @return the cube's [TopbarAction]; in the demo it carries its own element.
+     * @return the planet's [TopbarAction]; in the demo it carries its own element.
      */
     private fun spaceTopbarAction(): TopbarAction {
         val label = "3D mode (⌃⌘3)"
         if (!isDemoMode()) {
             return TopbarAction(
                 id = SPACE_TOPBAR_ID,
-                iconHtml = ICON_CUBE,
+                iconHtml = ICON_PLANET,
                 label = label,
                 onActivate = { spaceMode.toggle() },
             )
@@ -2359,7 +2391,7 @@ class AppShell(
         button.setAttribute("type", "button")
         button.title = label
         button.setAttribute("aria-label", label)
-        button.innerHTML = ICON_CUBE
+        button.innerHTML = ICON_PLANET
         button.style.cssText = "display:inline-flex;align-items:center;gap:6px;padding:4px 8px;" +
             "background:transparent;border:0;border-radius:6px;color:inherit;cursor:pointer;"
         button.addEventListener("click", { spaceMode.toggle() })
@@ -3419,15 +3451,19 @@ class AppShell(
                 "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
                 "<path d=\"M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3\"/></svg>"
 
-        /** DOM id of the 3D mode cube ([spaceTopbarAction]); the chrome CSS hides it while disabled. */
+        /** DOM id of the 3D mode planet ([spaceTopbarAction]); the chrome CSS hides it while disabled. */
         private const val SPACE_TOPBAR_ID: String = "lunarbor-topbar-space"
 
-        /** Cube glyph: the top-bar button that toggles 3D mode (Lunamux's `ICON_CUBE`). */
-        private const val ICON_CUBE: String =
+        /**
+         * Ringed-planet glyph: the top-bar button that toggles 3D mode. The
+         * ring's back half stops where the planet hides it; its front half
+         * crosses the planet. Tilted as a whole.
+         */
+        private const val ICON_PLANET: String =
             "<svg class=\"lunarbor-space-cube\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
-                "<path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/>" +
-                "<polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg>"
+                "<g transform=\"rotate(-20 12 12)\"><circle cx=\"12\" cy=\"12\" r=\"6\"/>" +
+                "<path d=\"M6.64 9.3A10 3.2 0 0 0 2 12A10 3.2 0 0 0 22 12A10 3.2 0 0 0 17.36 9.3\"/></g></svg>"
 
         /** Hotkey action id: toggle 3D mode ([installSpaceShortcuts]). */
         internal const val SPACE_TOGGLE_ACTION: String = "lunarbor.space.toggle"

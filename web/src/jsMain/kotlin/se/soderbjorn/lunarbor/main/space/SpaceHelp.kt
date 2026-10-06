@@ -153,7 +153,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         read and edit, so the maps are for getting your bearings and the page in front of you is for
         writing.</p>
         <p>3D mode is experimental. It is turned on in App settings → Experimental → “Enable 3D mode”;
-        while that is off the cube button and the shortcuts below do nothing.</p>
+        while that is off the planet button and the shortcuts below do nothing.</p>
         """,
     ),
     HelpSection(
@@ -173,7 +173,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         one to switch tab), on the right the active tab's windows as <code>1 · Page title</code> chips (click
         one to focus that window; the focused one is outlined).</p>
         ${keys(
-            k("⌃⌘3") to "Enter or leave 3D mode (Ctrl-Alt-3 off the Mac). Also the cube in the top bar.",
+            k("⌃⌘3") to "Enter or leave 3D mode (Ctrl-Alt-3 off the Mac). Also the ringed planet in the top bar.",
             k("Esc") to "Leave 3D mode — unless a dialog, menu, the palette, a search field or other text field has the keyboard; then Esc goes to that first.",
             k("⌃⌘2") to "Next view: Pages → Crown → Cone → Galaxy → Pages (Ctrl-Alt-2 off the Mac).",
             k("⌃⌘1") to "Pages: the focused window alone, or all of the tab's windows (Ctrl-Alt-1).",
@@ -256,7 +256,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             "Drag" to "Orbit around the point you are looking at.",
             "Right-drag, or " + k("⇧") + " drag" to "Pan.",
             "Scroll / pinch" to "Zoom in and out.",
-            "Click a body or label" to "Select it and expand or collapse it; the camera stays where it is. The arrow keys fly to the selection.",
+            "Click a body or label" to "Select it and expand or collapse it. Expanding flies the camera to show the body and everything that appeared under it; collapsing leaves the camera where it is. The arrow keys fly to the selection.",
             "Double-click a body or label" to "Edit that node: open it in the focused window and switch to Pages, on its page. Whether it is expanded or collapsed is left as it was.",
             "Click a window card" to "Focus that window and fly to its node. Double-click: back to Pages to write in it.",
             k("←") + " " + k("→") to "Previous / next sibling.",
@@ -274,7 +274,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("F") to "Free flight (below).",
             k("K") to "Hide or show the keyboard legend in the bottom left.",
             k("L") to "Next view.",
-            k("C") to "Clear the selection and show the whole map again.",
+            k("C") to "Reset the camera: clear the selection and fly back to the starting view of the whole map.",
             k("?") to "This help.",
         )}
         <p>With a body selected, a bar along the bottom shows its path (click a part to go there) and
@@ -290,7 +290,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("↑") + " " + k("↓") to "Pitch.",
             k("←") + " " + k("→") to "Yaw.",
             k("Q") + " " + k("E") to "Roll.",
-            k("C") to "Land and fly back to the whole map.",
+            k("C") to "Land and reset the camera to the starting view of the whole map.",
             k("⏎") to "Edit the node ahead (the one in the dashed ring).",
             k("K") to "Hide or show the legend.",
             k("Esc") to "Leave 3D mode.",

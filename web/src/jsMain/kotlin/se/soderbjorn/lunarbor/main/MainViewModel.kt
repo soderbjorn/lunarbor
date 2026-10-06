@@ -175,8 +175,8 @@ class MainViewModel(
     /** See `PaneBackingViewModel.convertBlockToNodes`. */
     fun convertBlockToNodes() = paneBackingViewModel.convertBlockToNodes()
 
-    /** TEMPORARY. See `PaneBackingViewModel.cleanUpBlocks`. */
-    fun cleanUpBlocks() = paneBackingViewModel.cleanUpBlocks()
+    /** See `PaneBackingViewModel.blockEditCoversSubtree`. */
+    fun blockEditCoversSubtree(): Boolean = paneBackingViewModel.blockEditCoversSubtree()
 
     /** See `PaneBackingViewModel.hiddenBlockRows`. */
     fun hiddenBlockRows(state: PaneBackingViewModel.State, block: IntRange): Int? =
@@ -533,6 +533,12 @@ class MainViewModel(
 
     /** See `PaneBackingViewModel.applyLineStyle`. */
     fun applyLineStyle(style: LineStyle) = paneBackingViewModel.applyLineStyle(style)
+
+    /** See `PaneBackingViewModel.clearFormatting`. */
+    fun clearFormatting() = paneBackingViewModel.clearFormatting()
+
+    /** See `PaneBackingViewModel.clearFormattingInSubtree`. */
+    fun clearFormattingInSubtree() = paneBackingViewModel.clearFormattingInSubtree()
 
     /** See `PaneBackingViewModel.activeInlineStyles`. */
     fun activeInlineStyles(): Set<InlineStyle> = paneBackingViewModel.activeInlineStyles()

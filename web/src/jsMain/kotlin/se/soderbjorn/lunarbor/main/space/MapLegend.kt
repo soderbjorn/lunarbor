@@ -116,7 +116,7 @@ internal class MapLegend {
                 Triple("fly", "F", "Free flight"),
                 Triple("shape", "L", "Next view"),
                 Triple("pages", "E", "Back to Pages"),
-                Triple("home", "C", "Whole map"),
+                Triple("home", "C", "Reset camera"),
             ),
             "SYSTEM" to listOf(
                 Triple("help", "?", "Help"),

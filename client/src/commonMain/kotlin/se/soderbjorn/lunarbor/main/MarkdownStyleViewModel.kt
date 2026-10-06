@@ -9,6 +9,8 @@
  *   - [applyLineStyle]    — set / replace / remove a line-level prefix
  *     (heading 1–3, quote) on the cursor row or every row in a multi-row
  *     selection.
+ *   - [clearFormatting] / [clearFormattingIn] — strip both kinds from
+ *     the caret's rows, or from every bullet in a range of rows.
  *   - [activeInlineStyles] — which inline styles enclose the current
  *     cursor (or are common across the selection); used by the style
  *     dropdown to render check-marks.
@@ -22,6 +24,7 @@
 
 package se.soderbjorn.lunarbor.main
 
+import se.soderbjorn.lunarbor.data.DoneState
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.InlineStyle
 import se.soderbjorn.lunarbor.data.LineMarkdownPrefix
@@ -214,6 +217,70 @@ internal class MarkdownStyleViewModel(
         patch { it }
     }
 
+    // ------------------------------------------------------ clear formatting
+
+    /**
+     * "Clear formatting" (palette): strips the heading / quote prefix and
+     * every inline style marker (bold, italic, strikethrough, inline code)
+     * from the caret's row, or from every row a selection touches — bullets,
+     * block rows and Markdown-mode lines alike ([clearedLine]). Links, tags,
+     * images and list items stay; a done item stays done; code rows are
+     * left alone. The caret and anchor keep their place in the text.
+     *
+     * Called by `PaneBackingViewModel.clearFormatting` inside `recordEdit`.
+     */
+    fun clearFormatting() {
+        val s = state
+        if (!s.isLoaded) return
+        val (first, last) = rowSpan(s)
+        clearRows((first..last).toList())
+    }
+
+    /**
+     * The recursive "Clear formatting in subtree": [clearedLine] on every
+     * bullet row in [startRow]..[endRow] that [skipRow] does not name.
+     * Block rows are left alone — a block is free Markdown the user wrote
+     * as such — and so are other files (only this outline's rows are in
+     * the range). The caret keeps its place.
+     *
+     * Called by `PaneBackingViewModel.clearFormattingInSubtree` once every
+     * folder under the item is loaded.
+     */
+    fun clearFormattingIn(startRow: Int, endRow: Int, skipRow: (Int) -> Boolean) {
+        val s = state
+        if (!s.isLoaded) return
+        val rows = (startRow.coerceAtLeast(0)..endRow.coerceAtMost(s.lines.lastIndex)).filter { row ->
+            !skipRow(row) && DocumentLayout.bulletAsteriskColumn(s.lines[row]) >= 0
+        }
+        clearRows(rows)
+    }
+
+    /** Rewrites each of [rows] to its [clearedLine], moving the caret and anchor with their text. */
+    private fun clearRows(rows: List<Int>) {
+        val s = state
+        var cursorCol = s.cursorCol
+        var anchorCol = s.anchorCol
+        for (row in rows.asReversed()) {
+            val original = state.lines[row]
+            val (updated, mapCol) = clearedLine(original) ?: continue
+            if (updated == original) continue
+            document.delete(row, 0, row, original.length)
+            document.insertText(row, 0, updated)
+            if (row == s.cursorRow) cursorCol = mapCol(cursorCol)
+            if (row == s.anchorRow && anchorCol != null) anchorCol = mapCol(anchorCol)
+        }
+        patch {
+            val lines = it.documentState?.lines ?: return@patch it
+            fun clamp(row: Int, col: Int): Int =
+                lines.getOrNull(row)?.let { l -> col.coerceIn(DocumentLayout.caretStartCol(l), l.length) } ?: col
+            it.copy(
+                cursorCol = clamp(it.cursorRow, cursorCol),
+                anchorCol = anchorCol?.let { c -> it.anchorRow?.let { r -> clamp(r, c) } },
+                pendingInlineStyles = emptySet(),
+            )
+        }
+    }
+
     // --------------------------------------------------------- query helpers
 
     /**
@@ -339,6 +406,47 @@ internal class MarkdownStyleViewModel(
                 anchorCol = s.anchorCol?.let { c -> moved(s.anchorRow ?: s.cursorRow, c) },
                 pendingInlineStyles = emptySet(),
             )
+        }
+    }
+
+    companion object {
+        /**
+         * The row [line] (as `Document.lines` holds it) without formatting:
+         * its heading / quote prefix ([LineMarkdownPrefix]) and the
+         * [InlineStyle] markers the tokenizer finds
+         * ([se.soderbjorn.lunarbor.data.TokenizedLine.styleMarkerCols]) are
+         * removed; links, tags, images, entities, a block row's list prefix
+         * and everything before the text are kept. A done row stays done
+         * (its whole-title strike is put back, [DoneState.withDoneRow]).
+         *
+         * @return the new line and a map from an old column on it to the new
+         *   one, or `null` for a code row (verbatim, never formatted).
+         */
+        internal fun clearedLine(line: String): Pair<String, (Int) -> Int>? {
+            if (BlockLayout.isCodeLine(line)) return null
+            val tStart = DocumentLayout.textStartCol(line)
+            val listLen = BlockLayout.listPrefixLength(line)
+            val removed = HashSet<Int>()
+            val inlineStart = if (listLen > 0) {
+                tStart + listLen
+            } else {
+                val prefix = LineMarkdownPrefix.detect(line, tStart)
+                if (prefix.style != null) for (c in tStart until prefix.markerEnd) removed += c
+                prefix.markerEnd
+            }
+            val tokens = InlineMarkdownTokenizer.tokenize(line.substring(inlineStart))
+            for (c in tokens.styleMarkerCols) removed += inlineStart + c
+            if (removed.isEmpty()) return line to { c: Int -> c }
+            val cleared = buildString { line.forEachIndexed { i, ch -> if (i !in removed) append(ch) } }
+            val done = DoneState.isDoneRow(line)
+            val result = if (done) DoneState.withDoneRow(cleared, true) else cleared
+            val titleStart = DoneState.titleStartOf(cleared) ?: 0
+            val shift = if (done && result != cleared) 2 else 0
+            val map = { col: Int ->
+                val c = col - removed.count { it < col }
+                if (shift > 0 && c > titleStart) c + shift else c
+            }
+            return result to map
         }
     }
 

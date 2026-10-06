@@ -9,7 +9,7 @@
  * show ([MapView]); the strip's shape switcher, L (on the map) and ⌃⌘2
  * change shape. This file owns the mode as a whole:
  *
- *  - entering and leaving (the topbar cube, ⌃⌘3, Esc when nothing else
+ *  - entering and leaving (the topbar planet, ⌃⌘3, Esc when nothing else
  *    wants it), and the shape, remembered under the persister key
  *    [PERSIST_KEY] — never in the vault; the app always starts in 2D;
  *  - which windows are shown: only the focused one, filling the work area,
@@ -126,7 +126,7 @@ interface SpaceHost {
 /**
  * Whether 3D mode is turned on in App settings ("Enable 3D mode", off by
  * default in the app, on by default in the browser demo). While `false`
- * nothing reaches it: the topbar cube is hidden (no
+ * nothing reaches it: the topbar planet is hidden (no
  * `data-lunarbor-space-enabled` on `<body>`), ⌃⌘3 / ⌃⌘1 do nothing, and
  * the Keyboard Shortcuts sidebar leaves out its rows. Loaded by
  * [SpaceMode.restore], changed by [SpaceMode.setEnabled]; read by
@@ -139,7 +139,7 @@ var isSpaceModeEnabled: Boolean = false
  * The 3D "Pages" mode. One per app, built by `AppShell`.
  *
  * ### Callers
- * - `AppShell`: the topbar cube and the ⌃⌘3 action call [toggle], ⌃⌘1
+ * - `AppShell`: the topbar planet and the ⌃⌘3 action call [toggle], ⌃⌘1
  *   calls [toggleSplit]; [restore] at startup; [onLayoutChanged] after
  *   every tab / pane / focus change.
  * - [PageSpaceView]s call back for frames and focus.
@@ -262,7 +262,7 @@ class SpaceMode(
         return if (darkTheme) "hsl(${(h * 360).toInt()} 85% 62%)" else "hsl(${(h * 360).toInt()} 75% 45%)"
     }
 
-    /** Turns 3D mode on or off (the cube button, ⌃⌘3). */
+    /** Turns 3D mode on or off (the planet button, ⌃⌘3). */
     fun toggle() {
         if (!isSpaceModeEnabled) return
         if (isActive) exit() else scope.launch { enter() }
@@ -344,7 +344,7 @@ class SpaceMode(
         scope.launch { persister.write(ENABLED_KEY, enabled.toString()) }
     }
 
-    /** Sets [isSpaceModeEnabled] and the `<body>` attribute that shows the topbar cube. */
+    /** Sets [isSpaceModeEnabled] and the `<body>` attribute that shows the topbar planet. */
     private fun applyEnabled(enabled: Boolean) {
         isSpaceModeEnabled = enabled
         if (enabled) document.body?.setAttribute("data-lunarbor-space-enabled", "")
@@ -565,7 +565,7 @@ class SpaceMode(
 
     /**
      * The strip along the top: drags the window (Electron) and holds the
-     * leave button, since the topbar's cube is under the space.
+     * leave button, since the topbar's planet is under the space.
      */
     private fun buildStrip(): HTMLElement {
         val strip = div("lunarbor-space-strip")
@@ -733,12 +733,12 @@ class SpaceMode(
         /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off, on in the demo). */
         const val ENABLED_KEY: String = "lunarborSpaceEnabled"
 
-        /** The leave button's cube glyph. */
+        /** The leave button's glyph: the top bar's ringed planet ([AppShell]'s `ICON_PLANET`), smaller. */
         private const val ICON_LEAVE: String =
             "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" " +
                 "stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
-                "<path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/>" +
-                "<polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg>"
+                "<g transform=\"rotate(-20 12 12)\"><circle cx=\"12\" cy=\"12\" r=\"6\"/>" +
+                "<path d=\"M6.64 9.3A10 3.2 0 0 0 2 12A10 3.2 0 0 0 22 12A10 3.2 0 0 0 17.36 9.3\"/></g></svg>"
     }
 }
 

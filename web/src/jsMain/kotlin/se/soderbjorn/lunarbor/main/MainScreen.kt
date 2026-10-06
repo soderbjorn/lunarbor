@@ -2177,7 +2177,7 @@ class MainScreen(
 
     /**
      * Shows, updates or removes the progress pill of "Convert block to
-     * nodes" / "Clean up blocks" ([PaneBackingViewModel.State.bulkEditProgress]):
+     * nodes" / "Clear formatting in subtree" ([PaneBackingViewModel.State.bulkEditProgress]):
      * the label, folders loaded of those known, and a bar — indeterminate
      * until the first level of folders is known. Fixed at the window's
      * bottom right, like the restructuring banner. Called on every state

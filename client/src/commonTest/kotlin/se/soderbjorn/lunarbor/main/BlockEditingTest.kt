@@ -380,39 +380,6 @@ class BlockEditingTest {
     }
 
     @Test
-    fun clean_up_blocks_strips_the_import_frame_in_the_caret_item_tree() = runTest {
-        fs.writeFile(
-            "$root/Sub/_node.md",
-            "- 2023-11-14\n> ---\n>\n> ---\n> Deep one.\n>\n> Deep two.\n>\n> ---\n> ![[Framna/1-1/X/Overview]]\n",
-        )
-        val p = pane("- Sub [↳](<Sub/_node.md>)\n> ---\n>\n> ---\n> Top.\n> ---\n> mid\n>\n>\n> ---\n> ![[A/Overview]]\n")
-        // Fold Sub, so its folder has to be loaded again.
-        p.toggleCollapse(p.id(0))
-        runCurrent()
-        p.caretAtEnd(0)
-        p.cleanUpBlocks()
-        runBulkEdit()
-        assertEquals(
-            listOf("* Sub", "  * 2023-11-14", first(2, "Deep one."), next(2), next(2, "Deep two.")),
-            p.lines.take(5),
-        )
-        // The block beside Sub is not touched.
-        assertEquals(first(0, "---"), p.lines[5])
-        flush()
-        assertEquals("- 2023-11-14\n> Deep one.\n>\n> Deep two.\n", read("Sub/_node.md"))
-
-        // With the caret in that block, only it is cleaned.
-        val topBlock = p.id(5)
-        p.caretAtEnd(8)
-        p.cleanUpBlocks()
-        runBulkEdit()
-        assertEquals(listOf(first(0, "Top."), next(0, "---"), next(0, "mid")), p.lines.drop(5))
-        assertEquals(topBlock, p.id(5))
-        p.undo()
-        assertTrue(p.lines.any { it == next(0, "![[A/Overview]]") })
-    }
-
-    @Test
     fun converting_a_block_with_children_keeps_its_folder_under_the_first_bullet() = runTest {
         val p = pane("- A\n> ## Packing\n> list\n- B\n")
         p.caretAtEnd(3)

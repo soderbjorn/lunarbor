@@ -136,7 +136,7 @@ private fun buildPrivacySection(handlers: AppSettingsHandlers): HTMLElement {
 
 /**
  * The Experimental section: the "Enable 3D mode" switch, like Lunamux's
- * "Enable 3D app switcher". Applies at once — the topbar cube, ⌃⌘3 / ⌃⌘1
+ * "Enable 3D app switcher". Applies at once — the topbar planet, ⌃⌘3 / ⌃⌘1
  * and their Keyboard Shortcuts rows follow it.
  */
 private fun buildExperimentalSection(handlers: AppSettingsHandlers): HTMLElement {

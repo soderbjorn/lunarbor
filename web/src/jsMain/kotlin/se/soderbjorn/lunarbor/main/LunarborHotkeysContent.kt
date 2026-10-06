@@ -169,7 +169,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                     HotkeyEntry(
                         label = SPACE_TOGGLE_LABEL,
                         chord = effectiveChordLabel(AppShell.SPACE_TOGGLE_ACTION),
-                        iconSvg = ICON_CUBE,
+                        iconSvg = ICON_PLANET,
                     ),
                     HotkeyEntry(
                         label = SPACE_SPLIT_LABEL,
@@ -179,7 +179,7 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                     HotkeyEntry(
                         label = SPACE_SHAPE_LABEL,
                         chord = effectiveChordLabel(AppShell.SPACE_SHAPE_ACTION),
-                        iconSvg = ICON_CUBE,
+                        iconSvg = ICON_PLANET,
                     ),
                     HotkeyEntry(
                         label = "Leave 3D mode",
@@ -251,11 +251,12 @@ internal fun effectiveChordLabel(actionId: String): List<String> =
 // constants so this file stays platform-free and importable from any
 // jsMain code that wants the same icon vocabulary.
 
-private const val ICON_CUBE: String =
+/** The top bar's ringed planet (3D mode), at this file's stroke width. */
+private const val ICON_PLANET: String =
     "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
         "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +
-        "stroke-linejoin=\"round\"><path d=\"M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\"/>" +
-        "<polyline points=\"3.27 6.96 12 12.01 20.73 6.96\"/><line x1=\"12\" y1=\"22.08\" x2=\"12\" y2=\"12\"/></svg>"
+        "stroke-linejoin=\"round\"><g transform=\"rotate(-20 12 12)\"><circle cx=\"12\" cy=\"12\" r=\"6\"/>" +
+        "<path d=\"M6.64 9.3A10 3.2 0 0 0 2 12A10 3.2 0 0 0 22 12A10 3.2 0 0 0 17.36 9.3\"/></g></svg>"
 private const val ICON_ZOOM_IN: String =
     "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
         "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" " +

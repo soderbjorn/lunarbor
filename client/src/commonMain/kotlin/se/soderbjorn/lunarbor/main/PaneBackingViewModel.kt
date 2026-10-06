@@ -329,8 +329,8 @@ class PaneBackingViewModel(
      *   for the view's "Marked done · Undo" toast: the view shows a toast
      *   whenever the serial changes, and its Undo calls [undoHitDoneToggle].
      *   `null` when there is nothing to undo.
-     * @property bulkEditProgress While "Convert block to nodes" or "Clean up
-     *   blocks" runs on this pane ([editBlocksUnderPage]): what it does and
+     * @property bulkEditProgress While "Convert block to nodes" or "Clear
+     *   formatting in subtree" runs on this pane ([editBlocksUnderPage]): what it does and
      *   how far it got, for the view's progress bar. `null` otherwise.
      * @property privacyRevision Mirror of [DocumentRegistry.PrivacyView.revision]:
      *   changes whenever what is hidden may have changed, so the view repaints
@@ -3015,19 +3015,32 @@ class PaneBackingViewModel(
     }
 
     /**
-     * TEMPORARY ("Clean up blocks (temporary)", palette): the block the
-     * caret is in, or every block in the caret's item's whole subtree,
-     * loses the imported-note frame — `---` lines at the top, `---` and
-     * the `![[…]]` embed at the bottom — and stays a block
-     * ([TextEditingViewModel.cleanUpBlocksIn]). See [editBlocksUnderPage].
+     * "Clear formatting in subtree" (palette): the caret's item (a block's
+     * item when the caret is in one) and its whole subtree, every folder
+     * under it loaded, lose their heading / quote prefixes and inline
+     * styles — bullets only: block rows are left alone, and so are notes
+     * and other files ([MarkdownStyleViewModel.clearFormattingIn]). One
+     * undoable edit with a progress bar; see [editBlocksUnderPage].
      */
-    fun cleanUpBlocks() = editBlocksUnderPage("Cleaning up blocks") { start, end, skip ->
-        textEditing.cleanUpBlocksIn(start, end, skip)
+    fun clearFormattingInSubtree() = editBlocksUnderPage("Clearing formatting", wholeItem = true) { start, end, skip ->
+        markdownStyle.clearFormattingIn(start, end, skip)
+    }
+
+    /**
+     * Whether "Convert block to nodes" would work on
+     * the caret's item with its whole subtree (every folder under it
+     * loaded) rather than on one block — the view asks for a confirmation
+     * first then. `false` when the caret is in a block.
+     */
+    fun blockEditCoversSubtree(): Boolean {
+        val s = _stateFlow.value
+        val lines = s.documentState?.lines ?: return false
+        return s.cursorRow in lines.indices && BlockLayout.rangeAt(lines, s.cursorRow) == null
     }
 
     /**
      * Runs [edit] on the caret's place as one undoable edit: inside a
-     * block, on that block's rows only; elsewhere on the caret's item and
+     * block, on that block's rows only (unless [wholeItem]); elsewhere on the caret's item and
      * its whole subtree, after loading every folder-backed item under it
      * level by level. [edit] gets the first row, the last row, and which
      * rows to skip (those the privacy mode hides). Mirrors are not
@@ -3042,18 +3055,26 @@ class PaneBackingViewModel(
      * file or the item disappears while loading; a no-op in Markdown
      * mode, on read-only pages and while another such edit runs.
      *
-     * Called by [convertBlockToNodes] and [cleanUpBlocks].
+     * Called by [convertBlockToNodes] and [clearFormattingInSubtree].
      *
      * @param label What the progress bar says the edit does.
+     * @param wholeItem With the caret in a block, work on the block's item
+     *   and its whole subtree too, not on the block's rows alone.
      */
-    private fun editBlocksUnderPage(label: String, edit: (Int, Int, (Int) -> Boolean) -> Unit) {
+    private fun editBlocksUnderPage(
+        label: String,
+        wholeItem: Boolean = false,
+        edit: (Int, Int, (Int) -> Boolean) -> Unit,
+    ) {
         val s0 = _stateFlow.value
         if (!s0.isLoaded || s0.isMarkdownMode || s0.isReadOnlyPage || s0.bulkEditProgress != null) return
         val doc = document ?: return
         val lines0 = s0.documentState?.lines ?: return
         if (s0.cursorRow !in lines0.indices) return
-        val block = BlockLayout.rangeAt(lines0, s0.cursorRow)
-        val itemId = s0.documentState.lineIds.getOrNull(block?.first ?: s0.cursorRow) ?: return
+        val caretBlock = BlockLayout.rangeAt(lines0, s0.cursorRow)
+        val itemId = s0.documentState.lineIds.getOrNull(caretBlock?.first ?: s0.cursorRow) ?: return
+        // The block alone, or (null) the item with its subtree.
+        val block = if (wholeItem) null else caretBlock
         // The rows the edit covers: the block, or the item with its subtree.
         fun rangeNow(): IntRange? {
             val ds = doc.stateFlow.value
@@ -3877,6 +3898,12 @@ class PaneBackingViewModel(
             commitPlaceholderIfAny()
             markdownStyle.applyLineStyle(style)
         }
+    }
+
+    /** See [MarkdownStyleViewModel.clearFormatting]. A no-op on read-only pages. */
+    fun clearFormatting() {
+        if (_stateFlow.value.isReadOnlyPage) return
+        recordEdit(FrameKind.OTHER) { markdownStyle.clearFormatting() }
     }
 
     /** See [MarkdownStyleViewModel.activeInlineStyles]. */
