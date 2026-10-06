@@ -34,6 +34,10 @@
  *    process — renderer ui-settings writes never change it), read at
  *    startup by [resolveRunPaths], and applied at runtime by recreating
  *    the window against the new vault.
+ *  - The window's size, position and maximized state, saved as
+ *    `windowBounds` in `lunarbor.json` (main-owned like `vaultPath`)
+ *    on move / resize / close and restored by [createWindow]
+ *    (WindowBounds.kt fits them to the displays present).
  *  - App settings → Agent access: the MCP endpoint, its settings and the
  *    request relay to the renderer (McpHttpServer.kt).
  *  - App settings → Lunicle: named Lunicle connections (base URL +
@@ -493,7 +497,7 @@ private fun ensureDirSync(dir: String) {
  * missing / unreadable).
  *
  * Called by [main] while resolving [runPaths] and by the
- * `darkness:writeUiSettings` handler, which keeps the stored value.
+ * [withMainOwnedKeys], which keeps the stored value.
  */
 private fun readPersistedVaultPath(): String? {
     val obj: dynamic = parseJsonObjectOrEmpty(readSyncOrNull(appUiSettingsPath()))
@@ -501,18 +505,22 @@ private fun readPersistedVaultPath(): String? {
 }
 
 /**
- * [perAppJson] with its [SETTINGS_KEY_VAULT_PATH] replaced by [vaultPath]
- * (or removed when `null`), so a renderer write never changes or drops
- * the vault setting.
+ * [perAppJson] with the main-process-owned keys ([SETTINGS_KEY_VAULT_PATH],
+ * [SETTINGS_KEY_WINDOW_BOUNDS]) replaced by what is on disk (or removed
+ * when absent there), so a renderer write — whose blob may predate a
+ * change — never changes or drops them.
  *
  * @param perAppJson The per-app half of a renderer ui-settings blob.
- * @param vaultPath The value currently on disk.
  * @return The JSON object string to write to `lunarbor.json`.
  */
-private fun withPersistedVaultPath(perAppJson: String, vaultPath: String?): String {
+private fun withMainOwnedKeys(perAppJson: String): String {
     val obj: dynamic = parseJsonObjectOrEmpty(perAppJson)
-    if (vaultPath != null) obj[SETTINGS_KEY_VAULT_PATH] = vaultPath
-    else js("delete obj[\"vaultPath\"]")
+    val onDisk: dynamic = parseJsonObjectOrEmpty(readSyncOrNull(appUiSettingsPath()))
+    for (key in arrayOf(SETTINGS_KEY_VAULT_PATH, SETTINGS_KEY_WINDOW_BOUNDS)) {
+        val value = onDisk[key]
+        if (value != null && value != undefined) obj[key] = value
+        else js("delete obj[key]")
+    }
     return js("JSON.stringify(obj)") as String
 }
 
@@ -655,8 +663,15 @@ private fun createWindow() {
     additionalArguments += NewsHost.versionArguments()
 
     val options: dynamic = js("({})")
-    options.width = 1024
-    options.height = 720
+    // Size and position from last time (WindowBounds.kt), fitted to the
+    // displays present now; centred by the OS when the position is dropped.
+    val placement = placeWindow(readPersistedWindowBounds(), displayWorkAreas())
+    options.width = placement.width
+    options.height = placement.height
+    if (placement.x != null && placement.y != null) {
+        options.x = placement.x
+        options.y = placement.y
+    }
     options.title = APP_NAME
     // Dev window/taskbar icon on Linux & Windows (macOS ignores this and
     // uses the Dock icon set in [applyDevDockIcon] / the bundle icon).
@@ -688,6 +703,10 @@ private fun createWindow() {
 
     val w = BrowserWindow(options)
     mainWindow = w
+    if (placement.maximized) w.maximize()
+    for (event in arrayOf("resize", "move")) w.asDynamic().on(event) { schedulePersistWindowBounds(w) }
+    for (event in arrayOf("maximize", "unmaximize")) w.asDynamic().on(event) { persistWindowBounds(w) }
+    w.asDynamic().on("close") { persistWindowBounds(w) }
 
     val externalScheme = Regex("^(https?|mailto|tel|ftps?):", RegexOption.IGNORE_CASE)
 
@@ -730,6 +749,79 @@ private fun createWindow() {
     installSharedThemesWatcher()
 }
 
+/* --- Remembered window bounds (WindowBounds.kt) ------------------------ */
+
+/**
+ * The window placement stored as [SETTINGS_KEY_WINDOW_BOUNDS] in the
+ * per-app settings file, or `null` when none (or an unusable one) is
+ * stored. Called by [createWindow].
+ */
+private fun readPersistedWindowBounds(): WindowBounds? {
+    val obj: dynamic = parseJsonObjectOrEmpty(readSyncOrNull(appUiSettingsPath()))
+    val b: dynamic = obj[SETTINGS_KEY_WINDOW_BOUNDS] ?: return null
+    fun num(v: dynamic): Double? = if (jsTypeOf(v) == "number") v as Double else null
+    return windowBoundsOf(num(b.x), num(b.y), num(b.width), num(b.height), b.maximized as? Boolean)
+}
+
+/** Every display's work area, for [placeWindow]. Empty when Electron can't say. */
+private fun displayWorkAreas(): List<ScreenRect> = try {
+    screen.getAllDisplays().map { d ->
+        val a: dynamic = d.workArea
+        ScreenRect((a.x as Number).toInt(), (a.y as Number).toInt(), (a.width as Number).toInt(), (a.height as Number).toInt())
+    }
+} catch (_: Throwable) {
+    emptyList()
+}
+
+/**
+ * Stores [w]'s normal bounds and maximized state as
+ * [SETTINGS_KEY_WINDOW_BOUNDS], keeping every other key. Written
+ * synchronously (temp file + rename) so it also lands when called from
+ * the window's `close` event just before the app quits.
+ *
+ * Called by [createWindow]'s move / resize / maximize / close listeners
+ * and before the window is recreated (vault switch, title-bar toggle),
+ * so the new window opens where the old one was. Skipped while the
+ * window is full screen (its normal bounds are kept from before).
+ */
+private fun persistWindowBounds(w: BrowserWindow) {
+    if (w.isDestroyed() || w.isFullScreen() || w.isMinimized()) return
+    try {
+        val nb: dynamic = w.getNormalBounds()
+        val b: dynamic = js("({})")
+        b.x = nb.x
+        b.y = nb.y
+        b.width = nb.width
+        b.height = nb.height
+        b.maximized = w.isMaximized()
+        val obj: dynamic = parseJsonObjectOrEmpty(readSyncOrNull(appUiSettingsPath()))
+        val previous = js("JSON.stringify")(obj[SETTINGS_KEY_WINDOW_BOUNDS]) as String?
+        if (previous == js("JSON.stringify")(b) as String) return
+        obj[SETTINGS_KEY_WINDOW_BOUNDS] = b
+        val target = appUiSettingsPath()
+        val bufferModule: dynamic = js("require")("buffer")
+        val bytes = bufferModule.Buffer.from(js("JSON.stringify(obj, null, 2)") as String, "utf8")
+        val tmp = "$target.tmp"
+        fsSync.writeFileSync(tmp, bytes)
+        fsSync.renameSync(tmp, target)
+        lastWrittenAppUiSettings = bytes
+    } catch (err: Throwable) {
+        console.error("Could not save the window bounds", err.message)
+    }
+}
+
+/** Pending debounced [persistWindowBounds] timer, or `null`. */
+private var windowBoundsSaveTimer: dynamic = null
+
+/** [persistWindowBounds] 500 ms after the last move / resize of [w]. */
+private fun schedulePersistWindowBounds(w: BrowserWindow) {
+    if (windowBoundsSaveTimer != null) js("clearTimeout")(windowBoundsSaveTimer)
+    windowBoundsSaveTimer = js("setTimeout")({
+        windowBoundsSaveTimer = null
+        persistWindowBounds(w)
+    }, 500)
+}
+
 /* --- Atomic write ----------------------------------------------------- */
 
 private suspend fun atomicWriteUtf8(target: String, json: String): dynamic {
@@ -761,7 +853,8 @@ private fun registerIpcHandlers() {
             // `vaultPath` belongs to the main process (see
             // `lunarbor:setVault`): keep what is on disk, whatever the
             // renderer's blob — possibly booted before a change — says.
-            val perAppJson = withPersistedVaultPath(rendererPerAppJson, readPersistedVaultPath())
+            // Same for `windowBounds` (WindowBounds.kt).
+            val perAppJson = withMainOwnedKeys(rendererPerAppJson)
             // Read-merge-write on `themes.json`: re-read disk and
             // per-key merge before atomically writing, so a peer
             // Darkness app's additions survive even if our file watcher
@@ -811,6 +904,7 @@ private fun registerIpcHandlers() {
             chromePrefs = ChromePrefs(customTitleBar = next)
             saveChromePrefs(chromePrefs)
             val old = mainWindow
+            if (old != null) persistWindowBounds(old)
             createWindow()
             if (old != null && !old.isDestroyed()) old.destroy()
         }
@@ -858,6 +952,7 @@ private fun registerIpcHandlers() {
             runPaths = runPaths.withVault(abs)
             console.log(runPaths.vaultLogLine())
             val old = mainWindow
+            if (old != null) persistWindowBounds(old)
             createWindow()
             if (old != null && !old.isDestroyed()) old.destroy()
             ""

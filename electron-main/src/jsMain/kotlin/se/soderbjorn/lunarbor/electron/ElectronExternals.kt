@@ -17,6 +17,18 @@ external val protocol: Protocol
 external val net: ElectronNet
 external val dialog: Dialog
 
+/**
+ * Electron's `screen` module (only usable after `app.whenReady()`).
+ * `getAllDisplays()` returns `Display` objects whose `workArea` is
+ * `{ x, y, width, height }`; read by `createWindow` to fit the
+ * remembered window bounds (WindowBounds.kt) to the displays present.
+ */
+external val screen: ElectronScreen
+
+external interface ElectronScreen {
+    fun getAllDisplays(): Array<dynamic>
+}
+
 external interface Dialog {
     /**
      * Native open dialog attached to [window] as a sheet. Resolves to
@@ -142,6 +154,11 @@ external class BrowserWindow(options: dynamic = definedExternally) {
     fun focus()
     fun loadFile(filePath: String): Promise<Unit>
     fun destroy()
+    fun isMaximized(): Boolean
+    fun maximize()
+
+    /** The bounds the window has when not maximized / full screen: `{ x, y, width, height }`. */
+    fun getNormalBounds(): dynamic
 }
 
 external interface WebContents {
