@@ -2,7 +2,7 @@
  * SpaceHelp.kt (jsMain)
  * ---------------------
  * 3D mode's help (LBR-11): a scrollable modal dialog explaining the mode
- * as a whole and each of its shapes — Pages, Crown, Cone and Galaxy —
+ * as a whole and each of its shapes — Pages, Grove, Crown, Cone and Galaxy —
  * with every control and key. Opened by the "Help" button in the space's
  * top strip, and by `?` while a map has the keyboard ([MapView]).
  *
@@ -137,11 +137,14 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         <p>3D mode lays your vault out in space. It changes how you <em>see</em> and move through
         the vault — never what is in it: nothing is moved, renamed or saved differently, and leaving
         3D mode puts every window back exactly where it was, caret and scroll included.</p>
-        <p>There are four views, picked in the switcher at the top left:</p>
+        <p>There are five views, picked in the switcher at the top left:</p>
         <ul>
           <li><b>Pages</b> — where you write. Every node's page hangs at a fixed place in space; the page
           your window is on sits in front of you at full size and is the normal editor. Zooming flies
           between pages.</li>
+          <li><b>Grove</b> — Pages laid out over the whole vault: every node's page is a slab at a fixed
+          place and angle in one tree, and the camera turns to face the page you go to. Also for
+          writing.</li>
           <li><b>Crown</b> — the whole tree as a map, growing up and out from Home. Best for
           “where is everything?”.</li>
           <li><b>Cone</b> — the tree hanging down, each node's children in a ring below it. Best for
@@ -161,21 +164,23 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         """
         <p>3D mode covers the whole window. Along the top is a slim strip (you can drag the window by it):</p>
         <ul>
-          <li><b>View switcher</b> — Pages, Crown, Cone, Galaxy. The view you leave 3D mode in is the one
+          <li><b>View switcher</b> — Pages, Grove, Crown, Cone, Galaxy. The view you leave 3D mode in is the one
           you come back to.</li>
           <li><b>Help</b> — this dialog.</li>
-          <li><b>All windows / Focused window</b> (Pages only) — see below.</li>
+          <li><b>Fly</b> (Pages and Grove) — free flight, see below.</li>
+          <li><b>All windows / Focused window</b> (Pages and Grove) — see below.</li>
           <li><b>Leave 3D</b> — back to the normal layout.</li>
         </ul>
         <p>⌘P opens the command palette, exactly as in 2D. Menus, popups and dialogs all open above the space.</p>
-        <p>In Pages, along the bottom is the <b>dock</b>: on the left your tabs (with a pip per window; click
+        <p>In Pages and Grove, along the bottom is the <b>dock</b>: on the left your tabs (with a pip per window; click
         one to switch tab), on the right the active tab's windows as <code>1 · Page title</code> chips (click
         one to focus that window; the focused one is outlined).</p>
         ${keys(
             k("⌃⌘3") to "Enter or leave 3D mode (Ctrl-Alt-3 off the Mac). Also the ringed planet in the top bar.",
             k("Esc") to "Leave 3D mode — unless a dialog, menu, the palette, a search field or other text field has the keyboard; then Esc goes to that first.",
-            k("⌃⌘2") to "Next view: Pages → Crown → Cone → Galaxy → Pages (Ctrl-Alt-2 off the Mac).",
-            k("⌃⌘1") to "Pages: the focused window alone, or all of the tab's windows (Ctrl-Alt-1).",
+            k("⌃⌘2") to "Next view: Pages → Grove → Crown → Cone → Galaxy → Pages (Ctrl-Alt-2 off the Mac).",
+            k("⌃⌘1") to "Pages and Grove: the focused window alone, or all of the tab's windows (Ctrl-Alt-1).",
+            k("⌥⌘F") to "Pages and Grove: free flight — take off, or land back on the window's page (Ctrl-Alt-F off the Mac; ⌃⌘4 too).",
             k("⌘P") to "Command palette.",
         )}
         <p>The ⌃⌘ shortcuts can be rebound in App settings → Keyboard Shortcuts.</p>
@@ -191,8 +196,10 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         Notes, images, drawings and web pages open on the page too.</p>
         <h4>What you see</h4>
         <ul>
-          <li><b>The live page</b>, with a header holding Back / Forward and the breadcrumb of where the
-          window is (every segment but the last is clickable).</li>
+          <li><b>The live page</b>, with a header holding Back / Forward / Up and the breadcrumb of where
+          the window is (every segment but the last is clickable). Preview pages wear the same header —
+          the arrows dimmed, the breadcrumb clickable — and the same big title, so a page looks the same
+          before and after you fly onto it.</li>
           <li><b>Child pages</b> — the pages of this node's children hang behind it in a column on the
           left and one on the right, in outline order. Each is a read-only preview of that node's
           bullets.</li>
@@ -223,6 +230,61 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         (⌃⌘1) shows every window of the tab at its usual place and size, each with its own camera:
         zooming in one window leaves the others where they are. A page open in two windows is the same
         page, so typing in one shows up in the other as you type. Click a window to focus it.</p>
+        <h4>Free flight</h4>
+        <p>⌥⌘F (or ⌃⌘4, or <b>Fly</b> in the strip) turns the focused window's camera into a spaceship,
+        flown with the same keys as on the maps; the editor lets go of the keyboard meanwhile, and a
+        legend in the bottom left lists the keys. The page ahead has its border lit. Landing — F, C or
+        ⌥⌘F again — flies the camera back to face the window's page, the one it is zoomed to. Opening a
+        page from the ship flies there from where you are.</p>
+        <p>In Pages, flying shows the <b>whole vault</b>, laid out by Pages' own rules round the window's
+        page: the pages nearest you as previews with their bullets, those a little further as cards with
+        their title, and everything beyond as faint coloured shapes — they fill in as you fly closer.</p>
+        ${keys(
+            k("W") + " " + k("S") to "Throttle forward / reverse.",
+            k("A") + " " + k("D") to "Strafe left / right.",
+            k("⇧") to "Descend.",
+            k("↑") + " " + k("↓") to "Pitch.",
+            k("←") + " " + k("→") to "Yaw.",
+            k("Q") + " " + k("E") to "Roll.",
+            k("⏎") to "Open the page ahead (the lit one) in the window; the camera flies there from where you are.",
+            "Click a page" to "Open it and land.",
+            k("F") + " " + k("C") + " " + k("⌥⌘F") to "Land: back to the window's page.",
+            k("K") to "Hide or show the key legend.",
+            k("Esc") to "Leave 3D mode.",
+        )}
+        """,
+    ),
+    HelpSection(
+        "grove", "Grove",
+        """
+        <p>Grove is Pages laid out over the <b>whole vault</b> at once. Every node — Home and every
+        bullet that has children — is a page: a slab of real size with a little thickness, at a fixed
+        place and angle. Home faces you at the start. Each page's child pages hang further out around
+        it — left, right, above, below and in between, as many as there are — each turned to face the
+        page it hangs from, and their children hang further out again around them. Big branches get
+        more room, and no two pages ever overlap.</p>
+        <p>The page your window is on is the real editor, exactly as in Pages; everything you can do
+        there works here too.</p>
+        <h4>What you see</h4>
+        <ul>
+          <li><b>Nearby pages</b> — this node's children and grandchildren, its parent and the pages
+          above it, and its siblings — are read-only previews of their bullets. A preview grows taller
+          with its bullets.</li>
+          <li><b>Pages further away</b> are plain slabs with their title (the nearest ones; in free
+          flight, the ones nearest ahead of you).</li>
+        </ul>
+        <p>The whole vault has to be read before Grove can lay it out: until then you see the window's
+        page and its children alone, and then everything appears at once.</p>
+        <h4>Moving</h4>
+        <ul>
+          <li>Click a bullet's dot, or any page — a preview, a dot inside one, or a slab — to <b>fly</b>
+          there; the camera turns to face it square on.</li>
+          <li>Back / Forward, the breadcrumb and links fly too, the same way back. Pages never move
+          because of where you have been, so a page you return to is exactly where you left it.</li>
+          <li>Free flight (⌥⌘F) works as in Pages — see above; the slabs nearest ahead of you are
+          drawn as you go.</li>
+        </ul>
+        <p>The keys are those of Pages.</p>
         """,
     ),
     HelpSection(
@@ -368,7 +430,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           lighter), branches take the colour of the node they lead to, and link arcs blend from one end's
           colour to the other's. Home is drawn in the theme's text colour.</li>
           <li>In Pages, every page wears its area's hue as a coloured top edge and soft glow, on its
-          bullet dots, and on the thread leading to it.</li>
+          bullet dots, and on the thread leading to it. In Grove it colours the slab edges too.</li>
           <li>Some of the stars in the background are tinted, too.</li>
         </ul>
         <p>Your theme still decides the background, text and the controls, and 3D mode follows it when you

@@ -1,8 +1,9 @@
 /*
  * FreeFlight.kt (jsMain)
  * ----------------------
- * Free flight on 3D mode's maps (Crown, Cone, Galaxy): F turns the map's
- * camera into a spaceship, F again lands it back on the map's orbit. Ported
+ * Free flight in 3D mode: on the maps (Crown, Cone, Galaxy) F turns the
+ * map's camera into a spaceship and F again lands it back on the map's
+ * orbit; in Pages and Grove ⌥⌘F (or ⌃⌘4) takes off ([PageFlight]). Ported
  * from Lunamux's free flight so the two apps fly alike: the same keys, the
  * same ship model and the same "FREE FLIGHT" legend in the bottom left
  * ([MapLegend]).
@@ -18,7 +19,7 @@
  *    keys are handled by `MapView`, which owns the camera and the map.
  *  - [MapLegend] lists every key; a key flashes its row while used.
  *
- * Owned by `MapView`; no other caller. View glue only — no vault logic.
+ * Owned by `MapView` and [PageFlight]. View glue only — no vault logic.
  */
 
 package se.soderbjorn.lunarbor.main.space
@@ -244,7 +245,6 @@ internal class FreeFlight(private val scale: Double, private val legend: MapLege
     }
 }
 
-private operator fun SpaceVec.times(k: Double) = SpaceVec(x * k, y * k, z * k)
 private fun dot(a: SpaceVec, b: SpaceVec) = a.x * b.x + a.y * b.y + a.z * b.z
 private fun cross(f: SpaceVec, u: SpaceVec) = SpaceVec(f.y * u.z - f.z * u.y, f.z * u.x - f.x * u.z, f.x * u.y - f.y * u.x)
 private fun norm(v: SpaceVec): SpaceVec? {

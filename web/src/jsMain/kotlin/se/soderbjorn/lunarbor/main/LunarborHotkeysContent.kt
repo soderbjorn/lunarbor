@@ -182,6 +182,11 @@ internal fun lunarborHotkeysSpec(): HotkeysModalSpec {
                         iconSvg = ICON_PLANET,
                     ),
                     HotkeyEntry(
+                        label = SPACE_FLY_LABEL,
+                        chord = effectiveChordLabel(AppShell.SPACE_FLY_ACTION),
+                        iconSvg = ICON_PLANET,
+                    ),
+                    HotkeyEntry(
                         label = "Leave 3D mode",
                         chord = listOf("Esc"),
                         iconSvg = ICON_ESC,
@@ -224,7 +229,10 @@ private const val TODAY_LABEL: String = "Today (open or prepare today's journal 
 private const val SPACE_TOGGLE_LABEL: String = "Toggle 3D mode"
 
 /** Row label of the ⌃⌘2 action ([AppShell.SPACE_SHAPE_ACTION]). */
-private const val SPACE_SHAPE_LABEL: String = "3D mode: next shape (Pages, Crown, Cone, Galaxy)"
+private const val SPACE_SHAPE_LABEL: String = "3D mode: next shape (Pages, Grove, Crown, Cone, Galaxy)"
+
+/** Row label of the ⌥⌘F action ([AppShell.SPACE_FLY_ACTION]). */
+private const val SPACE_FLY_LABEL: String = "3D mode: free flight in Pages and Grove (take off / land)"
 
 /** Row label of the ⌃⌘1 action ([AppShell.SPACE_SPLIT_ACTION]). */
 private const val SPACE_SPLIT_LABEL: String = "3D mode: the focused window, or all windows"
@@ -239,6 +247,7 @@ internal val lunarborConfigurableHotkeys: Map<String, String> = mapOf(
     TODAY_LABEL to AppShell.TODAY_ACTION,
     SPACE_TOGGLE_LABEL to AppShell.SPACE_TOGGLE_ACTION,
     SPACE_SPLIT_LABEL to AppShell.SPACE_SPLIT_ACTION,
+    SPACE_FLY_LABEL to AppShell.SPACE_FLY_ACTION,
 )
 
 /** The first chord bound to [actionId] right now, as key caps; `—` when none is. */

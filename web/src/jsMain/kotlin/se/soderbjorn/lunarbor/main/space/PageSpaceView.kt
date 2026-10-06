@@ -23,7 +23,20 @@
  *    the thread leading to it.
  *
  * The camera follows the pane's state: when `(activeFileRel, zoomedLineId)`
- * changes to another page, the view flies. Editing never moves it. Page
+ * changes to another page, the view flies. Editing never moves it.
+ *
+ * **Free flight** ([PageFlight], ⌥⌘F or ⌃⌘4, or the strip's Fly button): the
+ * camera becomes the maps' spaceship and may turn; landing (F, C, ⌥⌘F)
+ * flies it back, turning upright again, to face the window's page, and
+ * Enter (or a click) opens the page ahead, whose border is highlighted
+ * (`is-aimed`). While flying the view paints the **whole vault** by
+ * Pages' own rules ([PageSpaceLayout.wholeLayout], anchored at the
+ * window's page): the [FLIGHT_FULL] pages nearest the ship as previews,
+ * the next [FLIGHT_SLABS] as title cards, every other page as a tinted
+ * rectangle drawn in WebGL behind the pages ([FarPages], through
+ * [backdropExtra]) — re-ranked as the ship moves. After a pick the
+ * camera holds where the ship stopped until the navigation arrives, so
+ * the flight there starts from the ship. Page
  * places come from `PageSpaceLayout` (commonMain), relative to the page the
  * window is on; places a view has used are remembered, so Back flies back
  * to exactly where the window was.
@@ -56,22 +69,26 @@ import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.MouseEvent
 import se.soderbjorn.lunarbor.data.LunarborLink
+import se.soderbjorn.lunarbor.main.GroveLayout
 import se.soderbjorn.lunarbor.main.LineId
 import se.soderbjorn.lunarbor.main.MainScreen
 import se.soderbjorn.lunarbor.main.MainViewModel
 import se.soderbjorn.lunarbor.main.PageSpaceGeometry
+import se.soderbjorn.lunarbor.main.PageSpaceKeys
 import se.soderbjorn.lunarbor.main.PageSpaceLayout
 import se.soderbjorn.lunarbor.main.PaneBackingViewModel
 import se.soderbjorn.lunarbor.main.SpaceChild
 import se.soderbjorn.lunarbor.main.SpaceItem
 import se.soderbjorn.lunarbor.main.SpacePalette
 import se.soderbjorn.lunarbor.main.SpacePage
+import se.soderbjorn.lunarbor.main.SpacePose
+import se.soderbjorn.lunarbor.main.SpaceQuat
 import se.soderbjorn.lunarbor.main.SpaceVec
+import se.soderbjorn.lunarbor.main.VaultGraph
 import se.soderbjorn.lunarbor.main.space.three.Camera3
 import se.soderbjorn.lunarbor.main.space.three.Css3DRenderer3
 import se.soderbjorn.lunarbor.main.space.three.Object3
 import se.soderbjorn.lunarbor.main.space.three.ThreeLib
-import se.soderbjorn.lunula.web.layout.PaneTitleSegment
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
@@ -94,15 +111,15 @@ import kotlin.math.sqrt
  * @param scope Scope for the state collectors; cancelled by [dispose].
  */
 internal class PageSpaceView(
-    val paneId: String,
+    override val paneId: String,
     private val lib: ThreeLib,
     private val vm: MainViewModel,
     private val screen: MainScreen,
     private val mode: SpaceMode,
     private val scope: CoroutineScope,
-) {
+) : SpaceWindowView {
     /** The view's box in the space overlay, positioned by [place]. */
-    val element: HTMLElement = div("lunarbor-space-view")
+    override val element: HTMLElement = div("lunarbor-space-view")
 
     private val cssRenderer: Css3DRenderer3 = lib.css3dRenderer()
     private val scene: Object3 = lib.scene()
@@ -111,15 +128,15 @@ internal class PageSpaceView(
     private val world: Object3 = lib.group()
 
     /** The three.js camera — fixed at `(0, 0, cameraDistance)`, see the file header. */
-    val camera: Camera3 = lib.perspectiveCamera(PageSpaceLayout.FOV_DEGREES, 1.0, 1.0, 400_000.0)
+    override val camera: Camera3 = lib.perspectiveCamera(PageSpaceLayout.FOV_DEGREES, 1.0, 1.0, 400_000.0)
 
     private val threads = document.createElementNS(SVG_NS, "svg") as org.w3c.dom.Element
 
     /** The view's rectangle inside the overlay, in CSS pixels. */
-    var x = 0; private set
-    var y = 0; private set
-    var w = 1; private set
-    var h = 1; private set
+    override var x = 0; private set
+    override var y = 0; private set
+    override var w = 1; private set
+    override var h = 1; private set
 
     /** Page and camera sizes for the current rectangle. */
     var geometry: PageSpaceGeometry = PageSpaceLayout.geometry(1.0, 1.0); private set
@@ -127,11 +144,41 @@ internal class PageSpaceView(
     /** Where the camera logically is (the world moves by its negation). */
     private var cam: SpaceVec = SpaceVec.ZERO
 
+    /** How the camera is turned: upright ([SpaceQuat.IDENTITY]) except in and after free flight. */
+    private var rot: SpaceQuat = SpaceQuat.IDENTITY
+
+    /** Free flight (⌥⌘F): while on, the ship owns the camera. */
+    private val freeFlight = PageFlight(element, onLand = { land() }, onEngage = { engage() }, requestFrame = { mode.requestFrame() })
+
+    /**
+     * Every page's place while flying (and until the flight back ends), by
+     * [PageSpaceLayout.wholeLayout]; empty otherwise.
+     */
+    private var flightPlaces: Map<String, SpaceVec> = emptyMap()
+
+    /** The vault graph [flightPlaces] was laid out from. */
+    private var flightGraph: VaultGraph? = null
+
+    /** Seconds since the flight's previews were last re-ranked. */
+    private var sinceFlightSync = 0.0
+
+    /** The pages too far for the DOM, drawn in WebGL. */
+    private val far = FarPages()
+
+    /**
+     * `performance.now()` until which the camera holds still after a pick
+     * in free flight, waiting for the navigation; 0 when not holding.
+     */
+    private var holdUntil = 0.0
+
+    /** The card whose border is highlighted as the page ahead. */
+    private var aimedEl: HTMLElement? = null
+
     /** The flight in progress, or `null` at rest. */
     private var flight: Flight? = null
 
     /** The page the window is on, or `null` until its first state has loaded. */
-    var page: SpacePage? = null; private set
+    override var page: SpacePage? = null; private set
 
     /** `(activeFileRel, zoomedLineId)` of [page]: a change is a navigation. */
     private var signature: Pair<String, LineId?>? = null
@@ -168,7 +215,15 @@ internal class PageSpaceView(
         world.add(live.obj)
         // Clicking anywhere in the view focuses its window (capture phase,
         // before the editor or a preview handles the press).
-        element.addEventListener("mousedown", { _ -> mode.focusPane(paneId) }, true)
+        element.addEventListener("mousedown", { _ ->
+            // A click while flying stops the ship and holds the camera: a click
+            // on a page then flies there from here; anything else lands.
+            if (freeFlight.isOn) {
+                freeFlight.stop()
+                hold(CLICK_HOLD_MS)
+            }
+            mode.focusPane(paneId)
+        }, true)
         element.addEventListener("focusin", { _ -> mode.focusPane(paneId) })
     }
 
@@ -177,7 +232,7 @@ internal class PageSpaceView(
      * pane. Call once, after the view's element is in the document and
      * [place]d.
      */
-    fun start() {
+    override fun start() {
         val now = vm.currentBackingState
         page = vm.spacePageOf(now)
         signature = now.activeFileRel to now.zoomedLineId
@@ -208,7 +263,9 @@ internal class PageSpaceView(
      * Gives the editor back to its pane and frees the view. With [focus],
      * the pane's editor takes the keyboard (the focused window only).
      */
-    fun dispose(focus: Boolean) {
+    override fun dispose(focus: Boolean) {
+        freeFlight.dispose()
+        far.dispose()
         jobs.forEach { it.cancel() }
         jobs.clear()
         refreshHandle?.let { window.clearTimeout(it) }
@@ -218,7 +275,159 @@ internal class PageSpaceView(
     }
 
     /** Puts the keyboard in the live page's editor, caret where the pane has it. */
-    fun focusEditor() = screen.focusEditor()
+    override fun focusEditor() = screen.focusEditor()
+
+    // ------------------------------------------------------- free flight
+
+    override val roundBackdrop: Boolean get() = freeFlight.isOn || rot != SpaceQuat.IDENTITY
+
+    override fun toggleFlight() {
+        if (freeFlight.isOn) {
+            land()
+            return
+        }
+        flight = null
+        holdUntil = 0.0
+        freeFlight.takeOff(cam, rot.rotate(SpaceVec(0.0, 0.0, -1.0)), rot.rotate(SpaceVec(0.0, 1.0, 0.0)))
+        flightSync()
+        mode.requestFrame()
+    }
+
+    /** The far pages' rectangles while there are any, drawn with the starfield. */
+    override val backdropExtra: Object3? get() = far.objectIfShown
+
+    /**
+     * Lands: the ship stops and the camera flies back, turning upright,
+     * to face the window's page — the one it is zoomed to now.
+     */
+    private fun land() {
+        if (!freeFlight.isOn) return
+        freeFlight.stop()
+        returnFlight()
+    }
+
+    /** Flies the camera from wherever it is back to face the window's page, upright. */
+    private fun returnFlight() {
+        holdUntil = 0.0
+        markAimed(null)
+        val at = page?.let { placed[it.key] } ?: SpaceVec.ZERO
+        val goal = PageSpaceLayout.cameraFor(at, geometry)
+        val dist = distance(cam, goal)
+        if (prefersReducedMotion() || dist < 1) {
+            cam = goal
+            rot = SpaceQuat.IDENTITY
+            endFlight()
+        } else {
+            val mid = SpaceVec((cam.x + goal.x) / 2, (cam.y + goal.y) / 2, (cam.z + goal.z) / 2 + dist * 0.3)
+            flight = Flight(cam, goal, mid, 0.0, PageSpaceLayout.flightSeconds(dist), rot)
+        }
+        screen.focusEditor()
+        mode.requestFrame()
+    }
+
+    /** Holds the camera where it is for [ms] (a pick waiting for its navigation). */
+    private fun hold(ms: Int) {
+        flight = null
+        markAimed(null)
+        holdUntil = window.performance.now() + ms
+        mode.requestFrame()
+    }
+
+    /**
+     * Enter while flying: opens the page ahead in the window (the flight
+     * there starts from the ship), or lands when that is the window's own
+     * page or there is none.
+     */
+    private fun engage() {
+        val key = freeFlight.target
+        val pv = key?.let { previews[it] }
+        if (pv == null || key == page?.key || key == leaving || (pv.lineId == null && pv.folderRel == null)) {
+            land()
+            return
+        }
+        freeFlight.stop()
+        hold(NAV_HOLD_MS)
+        // The flight lands on the page where it was seen.
+        placed[key] = pv.cur
+        goTo(pv.lineId, pv.folderRel)
+        screen.focusEditor()
+    }
+
+    /**
+     * Re-ranks the whole vault round the ship ([flightPlaces], laid out
+     * again when the vault graph changed): the [FLIGHT_FULL] pages nearest
+     * the camera become previews with their bullets, the next
+     * [FLIGHT_SLABS] title cards, and all others far rectangles.
+     */
+    private fun flightSync() {
+        val p = page ?: return
+        val graph = mode.pagesGraph()
+        if (graph !== flightGraph || flightPlaces.isEmpty()) {
+            flightGraph = graph
+            val at = placed[p.key] ?: SpaceVec.ZERO
+            flightPlaces = PageSpaceLayout.wholeLayout(GroveLayout.treeOf(graph, p), p.key, at, geometry)
+        }
+        val eye = cam
+        val ranked = flightPlaces.entries
+            .filter { it.key != p.key && it.key != leaving }
+            .map { it.key to it.value }
+            .sortedBy { (_, at) -> distance(at, eye) }
+        val byKey = HashMap<String, SpaceChild>()
+        for (c in p.children) {
+            byKey[c.key] = c
+            for (gc in c.children) byKey.getOrPut(gc.key) { gc }
+        }
+        val near = HashSet<String>()
+        ranked.take(FLIGHT_FULL + FLIGHT_SLABS).forEachIndexed { i, (key, at) ->
+            near += key
+            val full = i < FLIGHT_FULL
+            var pv = previews[key]
+            if (pv == null) {
+                pv = PreviewPage(key)
+                previews[key] = pv
+            }
+            val child = byKey[key]
+            val folder = child?.folderRel ?: folderOfKey(key)
+            pv.lineId = child?.lineId
+            pv.folderRel = folder
+            pv.depth = if (full) 1 else 2
+            val title = child?.title ?: folder?.let { graph.nodes[it]?.title } ?: ""
+            if (full) {
+                pv.fill(title, child?.items ?: folder?.let { mode.pageItems(it) }.orEmpty(), child)
+            } else {
+                pv.fill(title, emptyList(), null)
+            }
+            if (!pv.inScene) {
+                pv.cur = targets[key] ?: at
+                pv.scale = 1.0
+                addToScene(pv)
+            }
+        }
+        for ((key, pv) in previews.toList()) {
+            if (key in near || key == leaving) continue
+            if (pv.inScene) removeFromScene(pv)
+            previews.remove(key)
+        }
+        far.show(ranked.drop(FLIGHT_FULL + FLIGHT_SLABS))
+        renderFocus()
+    }
+
+    /** Ends the whole-vault painting of free flight: back to the window's own previews. */
+    private fun clearFlightPages() {
+        if (flightPlaces.isEmpty()) return
+        flightPlaces = emptyMap()
+        flightGraph = null
+        far.clear()
+    }
+
+    /** Highlights the border of the page [key] (the page ahead), or none. */
+    private fun markAimed(key: String?) {
+        val el = key?.let { if (it == page?.key) live.frame else previews[it]?.card }
+        if (el === aimedEl) return
+        aimedEl?.classList?.remove("is-aimed")
+        el?.classList?.add("is-aimed")
+        aimedEl = el
+    }
 
     // ------------------------------------------------------------ layout
 
@@ -227,7 +436,7 @@ internal class PageSpaceView(
      * [nw] × [nh]. A resize is not navigation: pages and camera jump to
      * their new places without gliding.
      */
-    fun place(nx: Int, ny: Int, nw: Int, nh: Int) {
+    override fun place(nx: Int, ny: Int, nw: Int, nh: Int) {
         if (nx == x && ny == y && nw == w && nh == h) return
         val resized = nw != w || nh != h
         x = nx; y = ny; w = max(1, nw); h = max(1, nh)
@@ -248,7 +457,11 @@ internal class PageSpaceView(
         placed.putAll(targets)
         for ((key, pv) in previews) targets[key]?.let { pv.cur = it; pv.scale = 1.0 }
         val f = flight
-        if (f != null) flight = f.copy(to = PageSpaceLayout.cameraFor(at, geometry)) else cam = PageSpaceLayout.cameraFor(at, geometry)
+        if (f != null) {
+            flight = f.copy(to = PageSpaceLayout.cameraFor(at, geometry))
+        } else if (!freeFlight.isOn) {
+            cam = PageSpaceLayout.cameraFor(at, geometry)
+        }
         renderNow()
     }
 
@@ -321,6 +534,10 @@ internal class PageSpaceView(
      * place at once, a preview takes over [from]'s, and the camera flies.
      */
     private fun flyTo(from: SpacePage, to: SpacePage) {
+        // Navigating lands the ship: the flight starts from where it is.
+        freeFlight.stop()
+        holdUntil = 0.0
+        markAimed(null)
         val fromAt = placed[from.key] ?: SpaceVec.ZERO
         val toAt = placed[to.key] ?: targets[to.key] ?: placeFor(from, fromAt, to)
         placed[to.key] = toAt
@@ -344,10 +561,11 @@ internal class PageSpaceView(
         val dist = distance(cam, goal)
         if (prefersReducedMotion() || dist < 1) {
             cam = goal
+            rot = SpaceQuat.IDENTITY
             endFlight()
         } else {
             val mid = SpaceVec((cam.x + goal.x) / 2, (cam.y + goal.y) / 2, (cam.z + goal.z) / 2 + dist * 0.3)
-            flight = Flight(cam, goal, mid, 0.0, PageSpaceLayout.flightSeconds(dist))
+            flight = Flight(cam, goal, mid, 0.0, PageSpaceLayout.flightSeconds(dist), rot)
         }
         renderNow()
         mode.requestFrame()
@@ -374,6 +592,7 @@ internal class PageSpaceView(
 
     private fun endFlight() {
         flight = null
+        if (!freeFlight.isOn && holdUntil == 0.0) clearFlightPages()
         val gone = leaving
         leaving = null
         if (gone != null && gone !in targets) previews[gone]?.let { removeFromScene(it) }
@@ -404,6 +623,11 @@ internal class PageSpaceView(
      * its parent's place; otherwise it appears at its own.
      */
     private fun syncPreviews(sprout: Boolean) {
+        // Flying (or flying back): the whole vault, ranked round the ship.
+        if (flightPlaces.isNotEmpty()) {
+            flightSync()
+            return
+        }
         val p = page ?: return
         val wanted = HashMap<String, Pair<SpaceChild, Int>>()
         val parents = HashMap<String, String>()
@@ -472,7 +696,7 @@ internal class PageSpaceView(
      *
      * @return `true` while anything is still moving.
      */
-    fun tick(dt: Double): Boolean {
+    override fun tick(dt: Double): Boolean {
         val reduced = prefersReducedMotion()
         val k = if (reduced) 1.0 else 1 - exp(-dt * 6)
         val ks = if (reduced) 1.0 else 1 - exp(-dt * 3.5)
@@ -486,7 +710,15 @@ internal class PageSpaceView(
             if (pv.cur != t || pv.scale < 1.0) moving = true
         }
         val f = flight
-        if (f != null) {
+        if (freeFlight.isOn) {
+            if (freeFlight.step(dt)) moving = true
+            val pose = freeFlight.pose()
+            cam = pose.position
+            rot = pose.rotation
+        } else if (holdUntil > 0) {
+            // A pick waits for its navigation; past the wait it lands.
+            if (window.performance.now() >= holdUntil) returnFlight() else moving = true
+        } else if (f != null) {
             val t = min(1.0, f.t + dt / f.duration)
             flight = f.copy(t = t)
             val e = if (t < 0.5) 4 * t * t * t else 1 - pow3(-2 * t + 2) / 2
@@ -496,8 +728,10 @@ internal class PageSpaceView(
                 u * u * f.from.y + 2 * u * e * f.ctrl.y + e * e * f.to.y,
                 u * u * f.from.z + 2 * u * e * f.ctrl.z + e * e * f.to.z,
             )
+            rot = if (f.fromRot == SpaceQuat.IDENTITY) f.fromRot else SpaceQuat.slerp(f.fromRot, SpaceQuat.IDENTITY, e)
             if (t >= 1) {
                 cam = f.to
+                rot = SpaceQuat.IDENTITY
                 endFlight()
             } else {
                 moving = true
@@ -509,8 +743,26 @@ internal class PageSpaceView(
                 cam = if (distance(next, goal) < 0.4) goal else next
                 if (cam != goal) moving = true
             }
+            if (rot != SpaceQuat.IDENTITY) {
+                val next = SpaceQuat.slerp(rot, SpaceQuat.IDENTITY, k)
+                rot = if (kotlin.math.abs(next.w) > 0.999999) SpaceQuat.IDENTITY else next
+                moving = true
+            }
+        }
+        if (flightPlaces.isNotEmpty()) {
+            sinceFlightSync += dt
+            if (sinceFlightSync > FLIGHT_SYNC_S) {
+                sinceFlightSync = 0.0
+                flightSync()
+            }
         }
         renderNow()
+        if (freeFlight.isOn) {
+            val pages = HashMap<String, SpaceVec>()
+            for (pv in previews.values) if (pv.inScene && pv.key != leaving) pages[pv.key] = pv.cur
+            page?.let { p -> placed[p.key]?.let { pages[p.key] = it } }
+            markAimed(freeFlight.aim(pages, camPose(), geometry.cameraDistance, w, h, geometry.pageWidth))
+        }
         return moving
     }
 
@@ -534,19 +786,34 @@ internal class PageSpaceView(
     }
 
     /** The world offset the shared background is drawn with, so it moves with this view. */
-    fun applyBackdropOffset(backdropWorld: Object3) {
+    override fun applyBackdropOffset(backdropWorld: Object3) {
         val d = geometry.cameraDistance
-        backdropWorld.position.set(-cam.x, -cam.y, d - cam.z)
+        val q = rot.conjugate()
+        val p = q.rotate(-cam)
+        backdropWorld.quaternion.set(q.x, q.y, q.z, q.w)
+        backdropWorld.position.set(p.x, p.y, p.z + d)
         backdropWorld.updateMatrixWorld(true)
     }
 
+    /** The world gets the inverse of the camera's pose — see the file header. */
     private fun applyCamera() {
         val d = geometry.cameraDistance
         camera.position.set(0.0, 0.0, d)
-        world.position.set(-cam.x, -cam.y, d - cam.z)
+        val q = rot.conjugate()
+        val p = q.rotate(-cam)
+        world.quaternion.set(q.x, q.y, q.z, q.w)
+        world.position.set(p.x, p.y, p.z + d)
         camera.updateMatrixWorld(true)
         scene.updateMatrixWorld(true)
     }
+
+    /** The camera as a pose (position and frame). */
+    private fun camPose(): SpacePose = SpacePose(
+        cam,
+        rot.rotate(SpaceVec(1.0, 0.0, 0.0)),
+        rot.rotate(SpaceVec(0.0, 1.0, 0.0)),
+        rot.rotate(SpaceVec(0.0, 0.0, 1.0)),
+    )
 
     /**
      * Stacks pages by distance from the camera (the live page on top) and
@@ -555,10 +822,12 @@ internal class PageSpaceView(
      */
     private fun orderHits() {
         live.slot.style.zIndex = "100000"
+        val fwd = rot.rotate(SpaceVec(0.0, 0.0, -1.0))
         for (pv in previews.values) {
             if (!pv.inScene) continue
-            val behind = pv.cur.z > cam.z - 1
-            val z = max(1, round(50_000 - (cam.z - pv.cur.z)).toInt()).toString()
+            val depth = (pv.cur - cam).dot(fwd)
+            val behind = depth < 1
+            val z = max(1, round(50_000 - depth).toInt()).toString()
             if (pv.el.style.zIndex != z) pv.el.style.zIndex = z
             val pe = if (behind || pv.key == leaving) "none" else "auto"
             if (pv.card.style.getPropertyValue("pointer-events") != pe) pv.card.style.setProperty("pointer-events", pe)
@@ -577,7 +846,7 @@ internal class PageSpaceView(
      */
     private fun updateThreads() {
         val p = page
-        if (p == null || flight != null) {
+        if (p == null || flight != null || freeFlight.isOn || rot != SpaceQuat.IDENTITY) {
             if (threads.innerHTML.isNotEmpty()) threads.innerHTML = ""
             return
         }
@@ -626,32 +895,12 @@ internal class PageSpaceView(
         element.setAttribute("data-page-key", page?.key ?: "")
         element.setAttribute("data-children", page?.children?.joinToString(",") { it.key } ?: "")
         tint(live.frame, page?.key)
-        val head = live.head
-        head.innerHTML = ""
-        val state = vm.currentBackingState
-        head.appendChild(navButton("‹", "Back (⌥⌘←)", vm.canZoomBack(state)) { vm.zoomBack() })
-        head.appendChild(navButton("›", "Forward (⌥⌘→)", vm.canZoomForward(state)) { vm.zoomForward() })
-        val crumbs = div("lunarbor-space-crumbs")
-        val segments: List<PaneTitleSegment> = mode.breadcrumbOf(paneId)
-        segments.forEachIndexed { i, seg ->
-            if (i > 0) crumbs.appendChild(span("lunarbor-space-crumb-sep", "›"))
-            val onClick = seg.onClick
-            val el = span(if (onClick != null && i < segments.lastIndex) "lunarbor-space-crumb is-link" else "lunarbor-space-crumb", seg.label)
-            if (onClick != null && i < segments.lastIndex) {
-                el.addEventListener("mousedown", { e ->
-                    e.preventDefault()
-                    mode.focusPane(paneId)
-                    onClick()
-                })
-            }
-            crumbs.appendChild(el)
-        }
-        head.appendChild(crumbs)
+        fillSpaceHead(live.head, vm, liveCrumbs()) { mode.focusPane(paneId) }
         renderFocus()
     }
 
     /** Outlines the live page while its window is the tab's focused one ([SpaceMode.isFocused]). */
-    fun renderFocus() {
+    override fun renderFocus() {
         live.frame.classList.toggle("is-focused", mode.isFocused(paneId))
     }
 
@@ -661,23 +910,17 @@ internal class PageSpaceView(
         if (c == null) el.style.removeProperty("--lb-area") else el.style.setProperty("--lb-area", c)
     }
 
-    private fun navButton(glyph: String, title: String, enabled: Boolean, go: () -> Unit): HTMLElement {
-        val b = document.createElement("button") as HTMLElement
-        b.className = "lunarbor-space-nav"
-        b.textContent = glyph
-        b.title = title
-        b.setAttribute("aria-label", title)
-        if (!enabled) b.setAttribute("disabled", "")
-        b.addEventListener("mousedown", { e ->
-            e.preventDefault()
-            if (!enabled) return@addEventListener
-            mode.focusPane(paneId)
-            go()
-        })
-        return b
-    }
-
     // ---------------------------------------------------------- previews
+
+    /** The window's breadcrumb ([SpaceMode.breadcrumbOf]) as header segments. */
+    private fun liveCrumbs(): List<SpaceCrumb> = mode.breadcrumbOf(paneId).map { SpaceCrumb(it.label, it.onClick) }
+
+    /**
+     * A preview's breadcrumb: its folder's path ([folderCrumbs]), or — a
+     * page with no folder yet — the window's breadcrumb with [title] after it.
+     */
+    private fun previewCrumbs(folderRel: String?, title: String): List<SpaceCrumb> =
+        folderRel?.let { folderCrumbs(it, title, vm) } ?: (liveCrumbs() + SpaceCrumb(title, null))
 
     /**
      * Zooms the window to an item shown in a preview: in place when its
@@ -685,6 +928,8 @@ internal class PageSpaceView(
      * link, which expands bullets on the way or opens the node's outline).
      */
     private fun goTo(lineId: LineId?, folderRel: String?) {
+        // A pick in free flight: keep holding until the navigation arrives.
+        if (holdUntil > 0) hold(NAV_HOLD_MS)
         mode.focusPane(paneId)
         val ids = vm.currentBackingState.documentState?.lineIds
         val row = lineId?.let { ids?.indexOf(it) }?.takeIf { it >= 0 }
@@ -742,8 +987,12 @@ internal class PageSpaceView(
 
         /** The visible card, as tall as its items (at most the slot). */
         val card: HTMLElement = div("lunarbor-space-page")
-        private val title: HTMLElement = div("lunarbor-space-preview-title")
+        /** The header row: dimmed arrows and the page's breadcrumb ([fillSpaceHead]). */
+        private val head: HTMLElement = div("lunarbor-space-head")
         private val body: HTMLElement = div("lunarbor-space-preview-body")
+
+        /** The page's big title, styled like the live page's (`.lunarbor-title`), so it never pops in or out in a flight. */
+        private val headline: HTMLElement = div("lunarbor-space-preview-headline")
         val obj: Object3
 
         /** Where the page is now (glides to its target). */
@@ -766,9 +1015,8 @@ internal class PageSpaceView(
         private var drawn: Any? = null
 
         init {
-            val head = div("lunarbor-space-head")
-            head.appendChild(title)
             card.appendChild(head)
+            card.appendChild(headline)
             card.appendChild(body)
             el.appendChild(card)
             obj = lib.css3dObject(el)
@@ -785,6 +1033,8 @@ internal class PageSpaceView(
                 if (item != null && (item.lineId != null || item.folderRel != null)) {
                     goTo(item.lineId, item.folderRel)
                 } else {
+                    // The flight lands on the page where it was seen.
+                    placed[key] = cur
                     goTo(lineId, folderRel)
                 }
             })
@@ -794,12 +1044,15 @@ internal class PageSpaceView(
 
         /** Draws [titleText] and [list]; a no-op when nothing changed. */
         fun fill(titleText: String, list: List<SpaceItem>, child: SpaceChild?) {
-            val sig = Triple(titleText, list, child?.children?.map { it.key })
+            val folder = folderRel ?: folderOfKey(key)
+            val sig = listOf(titleText, list, child?.children?.map { it.key }, folder)
             if (sig == drawn) return
             drawn = sig
             tint(card, key)
             items = list
-            title.textContent = titleText.ifEmpty { "Untitled" }
+            val shown = titleText.ifEmpty { if (key == PageSpaceKeys.ofFolder("")) "Home" else "Untitled" }
+            fillSpaceHead(head, null, previewCrumbs(folder, shown)) { mode.focusPane(paneId) }
+            headline.textContent = shown
             body.innerHTML = ""
             if (list.isEmpty()) {
                 body.appendChild(div("lunarbor-space-preview-empty").also { it.textContent = "…" })
@@ -821,17 +1074,112 @@ internal class PageSpaceView(
 
     /**
      * A camera flight: a quadratic Bézier from [from] to [to] through
-     * [ctrl] (pulled back on long hops), eased in and out.
+     * [ctrl] (pulled back on long hops), eased in and out, turning from
+     * [fromRot] back upright (a landing from free flight).
      *
      * @property t Progress, 0..1.
      * @property duration Seconds.
      */
-    private data class Flight(val from: SpaceVec, val to: SpaceVec, val ctrl: SpaceVec, val t: Double, val duration: Double)
+    private data class Flight(
+        val from: SpaceVec,
+        val to: SpaceVec,
+        val ctrl: SpaceVec,
+        val t: Double,
+        val duration: Double,
+        val fromRot: SpaceQuat = SpaceQuat.IDENTITY,
+    )
 
     private fun allChildren(p: SpacePage): List<SpaceChild> = p.children + p.children.flatMap { it.children }
 
+    /**
+     * The pages too far from the ship for the DOM, while flying: one
+     * tinted rectangle each (the top half of a page, in its area's hue),
+     * an instanced WebGL mesh drawn behind the pages with the starfield
+     * ([backdropExtra]) — far away, so behind is where they belong.
+     */
+    private inner class FarPages {
+        private val three: dynamic = lib.raw
+        private val mesh: dynamic
+        private val dummy: dynamic = construct(three.Object3D)
+        private val color: dynamic = construct(three.Color)
+        private var shown = false
+
+        init {
+            val params: dynamic = js("({})")
+            params.color = 0xffffff
+            params.transparent = true
+            params.opacity = 0.5
+            params.depthWrite = false
+            params.side = three.DoubleSide
+            mesh = construct(three.InstancedMesh, construct(three.PlaneGeometry, 1.0, 1.0), construct(three.MeshBasicMaterial, params), FAR_CAP)
+            mesh.count = 0
+            mesh.frustumCulled = false
+        }
+
+        /** The mesh while it draws anything, else `null`. */
+        val objectIfShown: Object3? get() = if (shown) mesh.unsafeCast<Object3>() else null
+
+        /** Draws a rectangle for each of [pages] (key → slot centre), at most [FAR_CAP]. */
+        fun show(pages: List<Pair<String, SpaceVec>>) {
+            val pw = geometry.pageWidth
+            val ph = geometry.pageHeight * 0.5
+            var i = 0
+            for ((key, at) in pages) {
+                if (i >= FAR_CAP) break
+                dummy.position.set(at.x, at.y + geometry.pageHeight / 2 - ph / 2, at.z)
+                dummy.scale.set(pw, ph, 1.0)
+                dummy.updateMatrix()
+                mesh.setMatrixAt(i, dummy.matrix)
+                val hue = mode.areaHue(SpacePalette.pathOfKey(key))
+                if (hue == null) color.setHSL(0.6, 0.1, if (mode.isDarkTheme) 0.7 else 0.4) else color.setHSL(hue, 0.75, if (mode.isDarkTheme) 0.6 else 0.45)
+                mesh.setColorAt(i, color)
+                i++
+            }
+            mesh.count = i
+            mesh.instanceMatrix.needsUpdate = true
+            if (mesh.instanceColor != null) mesh.instanceColor.needsUpdate = true
+            shown = i > 0
+        }
+
+        /** Draws nothing. */
+        fun clear() {
+            mesh.count = 0
+            shown = false
+        }
+
+        fun dispose() {
+            clear()
+            mesh.geometry.dispose()
+            mesh.material.dispose()
+        }
+    }
+
     private companion object {
         const val SVG_NS = "http://www.w3.org/2000/svg"
+
+        /** Free flight: pages nearest the ship drawn as previews with their bullets. */
+        const val FLIGHT_FULL = 24
+
+        /** Free flight: the next nearest, drawn as title cards. */
+        const val FLIGHT_SLABS = 140
+
+        /** Free flight: how often (seconds) the pages are re-ranked round the ship. */
+        const val FLIGHT_SYNC_S = 0.3
+
+        /** At most this many far rectangles. */
+        const val FAR_CAP = 6000
+
+        /** How long a click in free flight holds the camera, waiting to see whether it opens a page. */
+        const val CLICK_HOLD_MS = 400
+
+        /** How long a pick in free flight holds the camera, waiting for its navigation. */
+        const val NAV_HOLD_MS = 2500
+
+        /** The node folder a page key names, or `null` for a note, file or folderless item. */
+        fun folderOfKey(key: String): String? = if (key.startsWith("n:")) key.removePrefix("n:") else null
+
+        /** `new ctor(...args)` for three.js classes reached through [ThreeLib.raw]. */
+        fun construct(ctor: dynamic, vararg args: dynamic): dynamic = js("Reflect").construct(ctor, args)
 
         /** Delay before a non-navigation refresh (typing, listings landing). */
         const val REFRESH_MS = 120

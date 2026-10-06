@@ -5,9 +5,10 @@
  * Galaxy), modelled on Lunamux's: a "MAP" panel with the map's mouse and
  * keys, swapped for a "FREE FLIGHT" panel while flying ([FreeFlight]).
  * K shows or hides it (remembered for the session, in both panels); a key
- * in use flashes its row. Pages has no legend — its keys are the editor's.
+ * in use flashes its row. Pages and Grove show only the free-flight panel,
+ * while flying ([PageFlight]) — otherwise their keys are the editor's.
  *
- * Owned by `MapView`; view glue only.
+ * Owned by `MapView` and [PageFlight]; view glue only.
  */
 
 package se.soderbjorn.lunarbor.main.space
@@ -16,19 +17,28 @@ import kotlinx.browser.document
 import org.w3c.dom.HTMLElement
 
 /**
- * The map's key legend.
+ * A 3D view's key legend.
  *
  * ### Callers
  * - `MapView` appends [element], calls [show] when free flight starts or
  *   stops, [toggle] on K and [flash] for one-shot keys.
+ * - [PageFlight] does the same for Pages and Grove, with no landed panel.
  * - [FreeFlight] flashes the rows of held flight keys.
+ *
+ * @param mapSections The panel shown while not flying ("MAP"), or `null`
+ *   for none (the legend is then hidden until take-off).
+ * @param flightSections The "FREE FLIGHT" panel's rows.
  */
-internal class MapLegend {
+internal class MapLegend(
+    mapSections: List<Pair<String, List<Triple<String, String, String>>>>? = MAP_SECTIONS,
+    flightSections: List<Pair<String, List<Triple<String, String, String>>>> = FLIGHT_SECTIONS,
+) {
     /** The panel host; absolutely placed in the bottom left of the map. */
     val element: HTMLElement = div("lunarbor-map-legend")
 
-    private val mapPanel = buildPanel("MAP", MAP_SECTIONS)
-    private val flightPanel = buildPanel("FREE FLIGHT", FLIGHT_SECTIONS)
+    private val mapPanel = buildPanel("MAP", mapSections.orEmpty())
+    private val hasMapPanel = mapSections != null
+    private val flightPanel = buildPanel("FREE FLIGHT", flightSections)
     private var flying = false
 
     init {
@@ -60,7 +70,7 @@ internal class MapLegend {
     }
 
     private fun render() {
-        element.style.display = if (hidden) "none" else ""
+        element.style.display = if (hidden || (!flying && !hasMapPanel)) "none" else ""
         mapPanel.style.display = if (flying) "none" else ""
         flightPanel.style.display = if (flying) "" else "none"
     }
@@ -94,7 +104,7 @@ internal class MapLegend {
         private var hidden = false
 
         /** The map's legend: sections of (row id, keys separated by spaces, text). */
-        private val MAP_SECTIONS: List<Pair<String, List<Triple<String, String, String>>>> = listOf(
+        val MAP_SECTIONS: List<Pair<String, List<Triple<String, String, String>>>> = listOf(
             "MOUSE" to listOf(
                 Triple("click", "click", "Select and expand / collapse"),
                 Triple("edit", "double-click", "Edit it in Pages"),
@@ -127,7 +137,7 @@ internal class MapLegend {
         )
 
         /** Free flight's legend (Lunamux's keys). */
-        private val FLIGHT_SECTIONS: List<Pair<String, List<Triple<String, String, String>>>> = listOf(
+        val FLIGHT_SECTIONS: List<Pair<String, List<Triple<String, String, String>>>> = listOf(
             "FLY" to listOf(
                 Triple("fly-throttle", "W S", "Throttle forward / reverse"),
                 Triple("fly-strafe", "A D", "Strafe left / right"),
@@ -142,6 +152,29 @@ internal class MapLegend {
             ),
             "NODE" to listOf(
                 Triple("engage", "⏎", "Edit the node ahead"),
+            ),
+            "SYSTEM" to listOf(
+                Triple("legend", "K", "Hide shortcuts"),
+                Triple("close", "⎋", "Leave 3D"),
+            ),
+        )
+
+        /** Free flight's legend in Pages and Grove: landing goes back to the window's page. */
+        val PAGE_FLIGHT_SECTIONS: List<Pair<String, List<Triple<String, String, String>>>> = listOf(
+            "FLY" to listOf(
+                Triple("fly-throttle", "W S", "Throttle forward / reverse"),
+                Triple("fly-strafe", "A D", "Strafe left / right"),
+                Triple("fly-down", "⇧", "Descend"),
+                Triple("fly-pitch", "↑ ↓", "Pitch"),
+                Triple("fly-yaw", "← →", "Yaw"),
+                Triple("fly-roll", "Q E", "Roll"),
+            ),
+            "CAMERA" to listOf(
+                Triple("fly-land", "F C ⌥⌘F", "Land: back to the window's page"),
+            ),
+            "PAGE" to listOf(
+                Triple("engage", "⏎", "Open the page ahead"),
+                Triple("click", "click", "Open a page and land"),
             ),
             "SYSTEM" to listOf(
                 Triple("legend", "K", "Hide shortcuts"),

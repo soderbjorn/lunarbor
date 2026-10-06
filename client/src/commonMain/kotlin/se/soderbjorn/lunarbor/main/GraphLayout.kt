@@ -35,12 +35,13 @@ import kotlin.math.sqrt
 /** The shapes 3D mode can show: the page space and the three maps. */
 enum class SpaceShape(val label: String) {
     PAGES("Pages"),
+    GROVE("Grove"),
     CROWN("Crown"),
     CONE("Cone"),
     GALAXY("Galaxy");
 
     /** `true` for the map shapes, drawn by the web `MapView`. */
-    val isMap: Boolean get() = this != PAGES
+    val isMap: Boolean get() = this != PAGES && this != GROVE
 
     /** The shape after this one, wrapping (the L key, ⌃⌘2). */
     fun next(): SpaceShape = entries[(ordinal + 1) % entries.size]

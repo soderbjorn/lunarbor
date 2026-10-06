@@ -758,8 +758,12 @@ class AppShell(
      * [se.soderbjorn.lunula.web.hotkey.HotkeyBindings] (so the Keyboard
      * Shortcuts sidebar lists them and they can be rebound): toggle 3D
      * mode (⌃⌘3; Ctrl-Alt-3 off the Mac) and switch between the focused
-     * window alone and all of the tab's windows (⌃⌘1; Ctrl-Alt-1), and
-     * step to the next shape — Pages, Crown, Cone, Galaxy (⌃⌘2; Ctrl-Alt-2).
+     * window alone and all of the tab's windows (⌃⌘1; Ctrl-Alt-1), step
+     * to the next shape — Pages, Grove, Crown, Cone, Galaxy (⌃⌘2;
+     * Ctrl-Alt-2), and take off into free flight or land in Pages and
+     * Grove (⌥⌘F, or ⌃⌘4; Ctrl-Alt-F / Ctrl-Alt-4 off the Mac — a plain
+     * F would type into the editor). ⌥⌘F is free: ⌘F (search) wants no
+     * Option, and ⌃⌘F is macOS's full screen.
      * Both do nothing while the feature is off ([SpaceMode.setEnabled]).
      */
     private fun installSpaceShortcuts() {
@@ -774,6 +778,13 @@ class AppShell(
         se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
             se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(SPACE_SHAPE_ACTION, "3D mode: next shape", listOf(chord("2"))),
         ) { spaceMode.nextShape() }
+        se.soderbjorn.lunula.web.hotkey.HotkeyBindings.registerAction(
+            se.soderbjorn.lunula.web.hotkey.HotkeyActionSpec(
+                SPACE_FLY_ACTION,
+                "3D mode: free flight",
+                listOf(se.soderbjorn.lunula.web.hotkey.Hotkey(key = "f", alt = true, meta = isMac, ctrl = !isMac), chord("4")),
+            ),
+        ) { spaceMode.toggleFlight() }
     }
 
     /**
@@ -3503,8 +3514,11 @@ class AppShell(
         /** Hotkey action id: the Today command, ⌘D ([installTodayShortcut]). */
         internal const val TODAY_ACTION: String = "lunarbor.today"
 
-        /** Hotkey action id: 3D mode's next shape — Pages, Crown, Cone, Galaxy (⌃⌘2). */
+        /** Hotkey action id: 3D mode's next shape — Pages, Grove, Crown, Cone, Galaxy (⌃⌘2). */
         internal const val SPACE_SHAPE_ACTION: String = "lunarbor.space.shape"
+
+        /** Hotkey action id: free flight in Pages and Grove — take off or land (⌥⌘F, ⌃⌘4). */
+        internal const val SPACE_FLY_ACTION: String = "lunarbor.space.fly"
 
         /** Page-with-fold icon used for sidebar rows representing notes/tabs. */
         private const val ICON_NOTE: String =
@@ -3528,21 +3542,21 @@ class AppShell(
         private const val DISABLED_CLASS: String = "lunarbor-pane-action-disabled"
 
         /** Left arrow for the header's Back button: wide, to fill its wide hit area. */
-        private const val ICON_BACK: String =
+        internal const val ICON_BACK: String =
             "<svg viewBox=\"0 0 28 24\" width=\"23\" height=\"20\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" " +
                 "stroke-linejoin=\"round\">" +
                 "<line x1=\"23\" y1=\"12\" x2=\"5\" y2=\"12\"/><polyline points=\"12 5 5 12 12 19\"/></svg>"
 
         /** Right arrow for the header's Forward button: wide, to fill its wide hit area. */
-        private const val ICON_FORWARD: String =
+        internal const val ICON_FORWARD: String =
             "<svg viewBox=\"0 0 28 24\" width=\"23\" height=\"20\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" " +
                 "stroke-linejoin=\"round\">" +
                 "<line x1=\"5\" y1=\"12\" x2=\"23\" y2=\"12\"/><polyline points=\"16 5 23 12 16 19\"/></svg>"
 
         /** Up arrow for the header's Up button, drawn in the same box as Back / Forward. */
-        private const val ICON_UP: String =
+        internal const val ICON_UP: String =
             "<svg viewBox=\"0 0 28 24\" width=\"23\" height=\"20\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" " +
                 "stroke-linejoin=\"round\">" +

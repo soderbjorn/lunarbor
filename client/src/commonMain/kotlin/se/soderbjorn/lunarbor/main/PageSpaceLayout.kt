@@ -39,10 +39,11 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.round
+import kotlin.math.sqrt
 import kotlin.math.tan
 
 /**
- * A point (or offset) in page space, in CSS pixels.
+ * A point (or offset, or direction) in page space, in CSS pixels.
  *
  * @property x Rightwards.
  * @property y Upwards.
@@ -55,9 +56,33 @@ data class SpaceVec(val x: Double, val y: Double, val z: Double) {
     /** Component-wise difference. */
     operator fun minus(o: SpaceVec): SpaceVec = SpaceVec(x - o.x, y - o.y, z - o.z)
 
+    /** Scaled by [k]. */
+    operator fun times(k: Double): SpaceVec = SpaceVec(x * k, y * k, z * k)
+
+    /** Pointing the other way. */
+    operator fun unaryMinus(): SpaceVec = SpaceVec(-x, -y, -z)
+
+    /** Dot product. */
+    fun dot(o: SpaceVec): Double = x * o.x + y * o.y + z * o.z
+
+    /** Cross product (right-handed). */
+    fun cross(o: SpaceVec): SpaceVec = SpaceVec(y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x)
+
+    /** Euclidean length. */
+    val length: Double get() = sqrt(dot(this))
+
+    /** This direction at unit length, or `null` for a (near) zero vector. */
+    fun normalized(): SpaceVec? {
+        val l = length
+        return if (l < 1e-9) null else times(1 / l)
+    }
+
     companion object {
         /** The origin. */
         val ZERO: SpaceVec = SpaceVec(0.0, 0.0, 0.0)
+
+        /** Linear interpolation from [a] (t = 0) to [b] (t = 1). */
+        fun lerp(a: SpaceVec, b: SpaceVec, t: Double): SpaceVec = a + (b - a) * t
     }
 }
 
@@ -202,13 +227,59 @@ object PageSpaceLayout {
      */
     fun layout(tree: SpaceTree, g: PageSpaceGeometry, origin: SpaceVec = SpaceVec.ZERO): Map<String, SpaceVec> {
         val out = LinkedHashMap<String, SpaceVec>()
-        fun place(node: SpaceTree, at: SpaceVec, direction: Double?) {
-            if (node.key in out) return
-            out[node.key] = at
-            val offsets = if (direction == null) childOffsets(node.children.size, g) else columnOffsets(node.children.size, direction, g)
-            node.children.forEachIndexed { i, c -> place(c, at + offsets[i], if (offsets[i].x < 0) -1.0 else 1.0) }
+        placeSubtree(tree, origin, null, g, out)
+        return out
+    }
+
+    /**
+     * Places [node] at [at] and everything under it into [out], as [layout]
+     * does: split left and right when [direction] is `null` (a page laid
+     * out as the centre), else one column on that side (-1 left, 1 right).
+     * Keys already in [out] keep their place, with their subtrees.
+     */
+    private fun placeSubtree(node: SpaceTree, at: SpaceVec, direction: Double?, g: PageSpaceGeometry, out: MutableMap<String, SpaceVec>) {
+        if (node.key in out) return
+        out[node.key] = at
+        val offsets = if (direction == null) childOffsets(node.children.size, g) else columnOffsets(node.children.size, direction, g)
+        node.children.forEachIndexed { i, c -> placeSubtree(c, at + offsets[i], if (offsets[i].x < 0) -1.0 else 1.0, g, out) }
+    }
+
+    /**
+     * Positions of every page of [tree] (the whole vault) by Pages' own
+     * rules, anchored at the page [currentKey] at [currentAt]: its subtree
+     * exactly as [layout] lays it out there, then each ancestor in turn
+     * where going up would put it ([parentPosition]) with its other
+     * branches in their usual columns. For free flight over the whole
+     * vault — places further from the current page are approximate (deep
+     * columns of different branches may cross).
+     *
+     * A [currentKey] not in [tree] lays [tree] out from [currentAt] as a
+     * centre page.
+     */
+    fun wholeLayout(tree: SpaceTree, currentKey: String, currentAt: SpaceVec, g: PageSpaceGeometry): Map<String, SpaceVec> {
+        val path = ArrayList<SpaceTree>()
+        fun find(n: SpaceTree): Boolean {
+            path += n
+            if (n.key == currentKey) return true
+            for (c in n.children) if (find(c)) return true
+            path.removeAt(path.lastIndex)
+            return false
         }
-        place(tree, origin, null)
+        if (!find(tree)) return layout(tree, g, currentAt)
+        val out = LinkedHashMap<String, SpaceVec>()
+        placeSubtree(path.last(), currentAt, null, g, out)
+        for (k in path.size - 2 downTo 0) {
+            val parent = path[k]
+            val child = path[k + 1]
+            val n = parent.children.size
+            val i = parent.children.indexOfFirst { it.key == child.key }
+            val at = parentPosition(out.getValue(child.key), i, n, g)
+            if (parent.key !in out) out[parent.key] = at
+            val offsets = childOffsets(n, g)
+            parent.children.forEachIndexed { j, c ->
+                if (j != i) placeSubtree(c, at + offsets[j], if (offsets[j].x < 0) -1.0 else 1.0, g, out)
+            }
+        }
         return out
     }
 

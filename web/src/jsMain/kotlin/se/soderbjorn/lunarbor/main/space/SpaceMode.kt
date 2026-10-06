@@ -1,9 +1,13 @@
 /*
  * SpaceMode.kt (jsMain)
  * ---------------------
- * 3D mode (LBR-11) in four shapes ([SpaceShape]). In **Pages** every
+ * 3D mode (LBR-11) in five shapes ([SpaceShape]). In **Pages** every
  * node's page hangs at a fixed place in space, and each window looks into
- * that space through its own camera ([PageSpaceView]). The map shapes —
+ * that space through its own camera ([PageSpaceView]). **Grove** is its
+ * variant over the whole vault: every node's page a slab at a fixed place
+ * and angle in one tree, the camera turning to face each ([GroveView]).
+ * Both offer free flight (⌥⌘F or ⌃⌘4, the strip's Fly button; [PageFlight],
+ * [toggleFlight]). The map shapes —
  * **Crown**, **Cone** and **Galaxy** — show the whole node tree as bodies
  * in space instead, with the tab's windows as cards beside the nodes they
  * show ([MapView]); the strip's shape switcher, L (on the map) and ⌃⌘2
@@ -53,6 +57,10 @@ import se.soderbjorn.lunarbor.main.LinkPreviewItem
 import se.soderbjorn.lunarbor.main.MainScreen
 import se.soderbjorn.lunarbor.main.MainViewModel
 import se.soderbjorn.lunarbor.main.PageSpaceKeys
+import se.soderbjorn.lunarbor.main.PageSpaceModel
+import se.soderbjorn.lunarbor.main.SpaceItem
+import se.soderbjorn.lunarbor.main.VaultGraph
+import se.soderbjorn.lunarbor.main.VaultGraphBuilder
 import se.soderbjorn.lunarbor.main.SpacePalette
 import se.soderbjorn.lunarbor.main.SpaceShape
 import se.soderbjorn.lunarbor.main.space.three.Object3
@@ -140,7 +148,7 @@ var isSpaceModeEnabled: Boolean = false
  * - `AppShell`: the topbar planet and the ⌃⌘3 action call [toggle], ⌃⌘1
  *   calls [toggleSplit]; [restore] at startup; [onLayoutChanged] after
  *   every tab / pane / focus change.
- * - [PageSpaceView]s call back for frames and focus.
+ * - [PageSpaceView]s and [GroveView]s call back for frames and focus.
  *
  * @param host The app shell.
  * @param scope Scope for loading and the views' collectors.
@@ -159,6 +167,62 @@ class SpaceMode(
      * page views refresh their previews when it changes.
      */
     internal val linkPreviewsFlow: StateFlow<Map<String, List<LinkPreviewItem>>> get() = registry.linkPreviewsFlow
+
+    /** The registry's privacy mode (`DocumentRegistry.privacyFlow`); Grove views relay out when it changes. */
+    internal val privacyFlow: StateFlow<*> get() = registry.privacyFlow
+
+    /** [pagesGraph]'s last result and the listings and privacy state it was built from. */
+    private var pagesGraphCache: Triple<Any?, Any?, VaultGraph>? = null
+
+    /**
+     * The vault's node graph for Grove's whole-vault layout
+     * ([VaultGraphBuilder], the maps' builder): every node folder in
+     * outline order, without what the privacy mode hides. Asks for every
+     * listing it does not have yet; rebuilt only when the listings or the
+     * privacy mode changed since the last call.
+     */
+    internal fun pagesGraph(): VaultGraph {
+        val listings = registry.linkPreviewsFlow.value
+        val privacy = registry.privacyFlow.value
+        pagesGraphCache?.let { (l, p, g) -> if (l === listings && p == privacy) return g }
+        val filter = registry.privacyFilter
+        val hiddenItem: (String, LinkPreviewItem) -> Boolean = { _, item ->
+            filter.isActive && (filter.hides(item.tagKeys) || item.pathRel?.let { registry.isPathHidden(it, filter) } == true)
+        }
+        val g = VaultGraphBuilder.build("Home", { registry.requestLinkPreview(it) }, hiddenItem)
+        // Asking for listings may have added to them: key on what was read.
+        pagesGraphCache = Triple(listings, privacy, g)
+        return g
+    }
+
+    /**
+     * The items a full Grove preview of the node in [folderRel] lists: its
+     * cached listing ([DocumentRegistry.requestLinkPreview]) without what
+     * the privacy mode hides; empty while unknown.
+     */
+    internal fun pageItems(folderRel: String): List<SpaceItem> {
+        val all = registry.requestLinkPreview(folderRel) ?: return emptyList()
+        val filter = registry.privacyFilter
+        val shown = if (!filter.isActive) {
+            all
+        } else {
+            all.filterNot { filter.hides(it.tagKeys) || it.pathRel?.let { p -> registry.isPathHidden(p, filter) } == true }
+        }
+        return PageSpaceModel.itemsOfListing(shown)
+    }
+
+    /**
+     * Takes the focused window's view into free flight, or lands it
+     * (⌥⌘F or ⌃⌘4, the strip's Fly button). Pages and Grove only; nothing on a map
+     * (which flies with F) or while 3D mode is off.
+     */
+    fun toggleFlight() {
+        if (!isSpaceModeEnabled || !isActive || shape.isMap) return
+        val id = host.focusedPaneId()
+        val v = id?.let { views[it] } ?: views.values.firstOrNull() ?: return
+        v.toggleFlight()
+        requestFrame()
+    }
 
     /** The shape shown: Pages or one of the maps. Remembered. */
     var shape: SpaceShape = SpaceShape.PAGES
@@ -182,7 +246,7 @@ class SpaceMode(
     private var dock: HTMLElement? = null
     private var splitButton: HTMLElement? = null
     private var backdrop: Backdrop? = null
-    private val views = LinkedHashMap<String, PageSpaceView>()
+    private val views = LinkedHashMap<String, SpaceWindowView>()
     private var frameHandle: Int? = null
     private var lastFrame = 0.0
     private var themeObserver: dynamic = null
@@ -266,7 +330,7 @@ class SpaceMode(
      * The CSS colour of the area [pathRel] lies in ([SpacePalette]: a vivid
      * hue per top-level area, more colourful than the theme on purpose), or
      * `null` at the root. Hues follow the root's unfiltered outline order,
-     * so a privacy mode never shifts them. Called by [PageSpaceView] for
+     * so a privacy mode never shifts them. Called by [PageSpaceView] and [GroveView] for
      * page edges, item dots and threads.
      */
     internal fun areaColor(pathRel: String): String? {
@@ -274,6 +338,19 @@ class SpaceMode(
         val h = SpacePalette.hueOf(pathRel, hues) ?: return null
         return if (darkTheme) "hsl(${(h * 360).toInt()} 85% 62%)" else "hsl(${(h * 360).toInt()} 75% 45%)"
     }
+
+    /**
+     * The hue (0..1) of the area [pathRel] lies in ([SpacePalette]), or
+     * `null` at the root: [areaColor]'s hue, for WebGL (Pages' far pages
+     * in free flight).
+     */
+    internal fun areaHue(pathRel: String): Double? {
+        val hues = SpacePalette.areaHues { folder -> registry.requestLinkPreview(folder)?.mapNotNull { it.pathRel } }
+        return SpacePalette.hueOf(pathRel, hues)
+    }
+
+    /** `true` while the theme's background is dark. */
+    internal val isDarkTheme: Boolean get() = darkTheme
 
     /** Turns 3D mode on or off (the planet button, ⌃⌘3). */
     fun toggle() {
@@ -305,6 +382,7 @@ class SpaceMode(
         updateShapeButtons()
         if (!isActive || lib == null) return
         overlay?.classList?.toggle("is-map", next.isMap)
+        overlay?.classList?.toggle("is-grove", next == SpaceShape.GROVE)
         if (next.isMap) {
             if (!wasMap) {
                 // The editors go back to their (hidden) panes while the map shows.
@@ -315,6 +393,12 @@ class SpaceMode(
             renderDock()
         } else {
             map?.hide()
+            if (!wasMap) {
+                // Pages ↔ Grove: every window gets a view of the new kind.
+                val focused = host.focusedPaneId()
+                for (v in views.values) v.dispose(focus = v.paneId == focused)
+                views.clear()
+            }
             rebuildViews()
         }
         requestFrame()
@@ -433,6 +517,7 @@ class SpaceMode(
         ensureSpaceStyles()
         val ov = div("lunarbor-space")
         ov.classList.toggle("is-map", shape.isMap)
+        ov.classList.toggle("is-grove", shape == SpaceShape.GROVE)
         val canvasLayer = div("lunarbor-space-backdrop")
         ov.appendChild(canvasLayer)
         val vh = div("lunarbor-space-views")
@@ -527,12 +612,16 @@ class SpaceMode(
                 v.dispose(focus = false)
             }
         }
-        val fresh = mutableListOf<PageSpaceView>()
+        val fresh = mutableListOf<SpaceWindowView>()
         for (p in shown) {
             if (p.id in views) continue
             val vm = host.viewModelOf(p.id) ?: continue
             val screen = host.screenOf(p.id) ?: continue
-            val v = PageSpaceView(p.id, l, vm, screen, this, scope)
+            val v: SpaceWindowView = if (shape == SpaceShape.GROVE) {
+                GroveView(p.id, l, vm, screen, this, scope)
+            } else {
+                PageSpaceView(p.id, l, vm, screen, this, scope)
+            }
             vh.appendChild(v.element)
             views[p.id] = v
             fresh += v
@@ -605,6 +694,8 @@ class SpaceMode(
             return b
         }
         button("<span>Help</span>", "How 3D mode and each view work") { showSpaceHelp(shape) }
+        button("<span>Fly</span>", "Free flight: W S A D, arrows, Q E; F lands (⌥⌘F)") { toggleFlight() }
+            .classList.add("lunarbor-space-fly")
         splitButton = button("", "The focused window alone, or all of the tab's windows (⌃⌘1)") { toggleSplit() }
         splitButton?.classList?.add("lunarbor-space-split")
         updateSplitButton()
@@ -768,6 +859,12 @@ private class Backdrop(
     val canvas: HTMLCanvasElement get() = renderer.domElement
     private val scene = lib.scene()
     private val world = lib.group()
+
+    /** The original field, behind Pages' fixed camera (stars far off along `-z`). */
+    private val flat = lib.group()
+
+    /** The field all round, for cameras that turn ([SpaceWindowView.roundBackdrop]). */
+    private val round = lib.group()
     private val materials = mutableListOf<Pair<PointsMaterial3, Boolean>>()
     private var width = 1
     private var height = 1
@@ -803,10 +900,40 @@ private class Backdrop(
         val (dustPoints, dustMat) = lib.points(dust, 16.0, attenuate = true, sprite = sprite, colors = tints(DUST))
         starPoints.frustumCulled = false
         dustPoints.frustumCulled = false
-        world.add(starPoints)
-        world.add(dustPoints)
+        flat.add(starPoints)
+        flat.add(dustPoints)
+        world.add(flat)
         materials += starMat to true
         materials += dustMat to false
+        // A second field all round, for cameras that turn (Grove, free
+        // flight): stars on a far shell, dust nearer in. Its own seed, so
+        // the flat field above stays as it always was.
+        val roundRandom = Lcg(0x5eed + 1)
+        val shell = FloatArray(STARS * 3)
+        for (i in 0 until STARS) {
+            val zz = roundRandom.next() * 2 - 1
+            val a = roundRandom.next() * 2 * kotlin.math.PI
+            val r = 120_000 + roundRandom.next() * 80_000
+            val ring = kotlin.math.sqrt(1 - zz * zz)
+            shell[i * 3] = (r * ring * kotlin.math.cos(a)).toFloat()
+            shell[i * 3 + 1] = (r * ring * kotlin.math.sin(a)).toFloat()
+            shell[i * 3 + 2] = (r * zz).toFloat()
+        }
+        val roundDust = FloatArray(DUST * 3)
+        for (i in 0 until DUST) {
+            roundDust[i * 3] = ((roundRandom.next() - 0.5) * 40_000).toFloat()
+            roundDust[i * 3 + 1] = ((roundRandom.next() - 0.5) * 30_000).toFloat()
+            roundDust[i * 3 + 2] = ((roundRandom.next() - 0.5) * 40_000).toFloat()
+        }
+        val (shellPoints, shellMat) = lib.points(shell, 2.2, attenuate = false, sprite = sprite, colors = tints(STARS))
+        val (roundDustPoints, roundDustMat) = lib.points(roundDust, 16.0, attenuate = true, sprite = sprite, colors = tints(DUST))
+        shellPoints.frustumCulled = false
+        roundDustPoints.frustumCulled = false
+        round.add(shellPoints)
+        round.add(roundDustPoints)
+        world.add(round)
+        materials += shellMat to true
+        materials += roundDustMat to false
         renderer.autoClear = false
         renderer.setClearColor(0, 0.0)
         renderer.setPixelRatio(window.devicePixelRatio)
@@ -848,13 +975,22 @@ private class Backdrop(
         renderer.setScissorTest(true)
     }
 
-    /** Draws the background into [view]'s rectangle with its camera. */
-    fun renderView(view: PageSpaceView) {
+    /**
+     * Draws the background into [view]'s rectangle with its camera: the
+     * flat field for Pages, plus the round one while its camera turns;
+     * the round one alone for Grove.
+     */
+    fun renderView(view: SpaceWindowView) {
+        flat.visible = view !is GroveView
+        round.visible = view.roundBackdrop
         view.applyBackdropOffset(world)
+        val extra = view.backdropExtra
+        extra?.let { world.add(it) }
         val gy = height - (view.y + view.h)
         renderer.setViewport(view.x, gy, view.w, view.h)
         renderer.setScissor(view.x, gy, view.w, view.h)
         renderer.render(scene, view.camera)
+        extra?.let { world.remove(it) }
     }
 
     fun endFrame() {
@@ -1030,15 +1166,14 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 .lunarbor-space-page {
     pointer-events: auto; flex: 0 1 auto; max-height: 100%; min-height: 0;
     display: flex; flex-direction: column; overflow: hidden; box-sizing: border-box;
-    background: var(--t-surface, #252526); color: var(--t-text, #e6e6e6);
+    /* Every card wears the live editor's background and border, so a page
+       never changes colour as the window flies onto it or away. */
+    background: var(--t-bg, #1e1e1e); color: var(--t-text, #e6e6e6);
     border: 1px solid var(--t-border, rgba(255,255,255,.12)); border-radius: 10px;
     box-shadow: 0 18px 50px rgba(0,0,0,.28);
     font-family: var(--dt-font-prop, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif); cursor: pointer; user-select: none;
 }
-.lunarbor-space-page.is-live {
-    background: var(--t-bg, #1e1e1e); cursor: auto; user-select: auto;
-    border-color: var(--t-accent-soft, var(--t-border, rgba(255,255,255,.2)));
-}
+.lunarbor-space-page.is-live { cursor: auto; user-select: auto; }
 .lunarbor-space-views:not(.is-single) .lunarbor-space-page.is-live.is-focused {
     border-color: var(--t-accent, #7aa2ff);
     box-shadow: 0 0 0 1px var(--t-accent, #7aa2ff), 0 18px 50px rgba(0,0,0,.28);
@@ -1054,13 +1189,15 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 .lunarbor-space-crumb.is-link:hover { color: var(--t-text, #e6e6e6); text-decoration: underline; }
 .lunarbor-space-crumb:last-child { color: var(--t-text, #e6e6e6); }
 .lunarbor-space-crumb-sep { opacity: .6; }
+/* Back / Forward / Up: the pane header's arrows (AppShell.ICON_BACK …), as wide. */
+.lunarbor-space-navs { flex: none; display: inline-flex; align-items: center; gap: 2px; margin: -2px 4px -2px -6px; }
 .lunarbor-space-nav {
-    flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px;
-    background: transparent; color: var(--t-text-dim, #9aa0a6); font-size: 16px; line-height: 1; cursor: pointer;
+    flex: none; width: 34px; height: 26px; padding: 0; border: 0; border-radius: 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: transparent; color: var(--t-text-dim, #9aa0a6); cursor: pointer;
 }
 .lunarbor-space-nav:hover:not([disabled]) { background: var(--t-surface-alt, rgba(255,255,255,.08)); color: var(--t-text, #e6e6e6); }
 .lunarbor-space-nav[disabled] { opacity: .35; cursor: default; }
-.lunarbor-space-preview-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--t-text, #e6e6e6); font-weight: 600; font-size: 13px; }
 .lunarbor-space-preview-body { flex: 1; min-height: 0; overflow: hidden; padding: 14px 22px; font-size: 14px; line-height: 1.55; }
 .lunarbor-space-preview-empty { color: var(--t-text-dim, #9aa0a6); }
 .lunarbor-space-item { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
@@ -1073,7 +1210,6 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 .lunarbor-space-item-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lunarbor-space-page { border-top: 3px solid var(--lb-area, var(--t-border, rgba(255,255,255,.12))); }
 .lunarbor-space-page[style*="--lb-area"] { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lb-area) 35%, transparent), 0 18px 50px rgba(0,0,0,.28), 0 0 42px color-mix(in srgb, var(--lb-area) 22%, transparent); }
-.lunarbor-space-page[style*="--lb-area"] .lunarbor-space-preview-title { color: color-mix(in srgb, var(--lb-area) 55%, var(--t-text, #e6e6e6)); }
 .lunarbor-space-page .lunarbor-space-item-dot { background: var(--lb-area, var(--t-text-dim, #9aa0a6)); }
 .lunarbor-space-page .lunarbor-space-item-dot.is-node { box-shadow: 0 0 0 3px color-mix(in srgb, var(--lb-area, var(--t-text-dim, #9aa0a6)) 35%, transparent); }
 .lunarbor-space-page.is-live.is-fill { flex: 1 1 auto; }
@@ -1082,4 +1218,38 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 .lunarbor-space-live-host { flex: 1 1 auto; min-height: 0; height: auto !important; }
 .lunarbor-space-live-host > .lunarbor-scroll { flex: 0 1 auto !important; }
 .lunarbor-space-page.is-fill .lunarbor-space-live-host > .lunarbor-scroll { flex: 1 1 auto !important; }
+/* A preview's big title, as the live page's editor draws it (.lunarbor-title,
+   EditorStyle's 40px left padding), so a page keeps its title in a flight. */
+.lunarbor-space-preview-headline {
+    flex: none; padding: 6px 12px 2px 40px; font-size: 32px; font-weight: 600; line-height: 1.2;
+    font-family: var(--dt-font-display, var(--dt-font-prop, system-ui, sans-serif)); color: var(--t-text, #e6e6e6);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Free flight: the page ahead, which Enter or a click opens, has its border lit. */
+.lunarbor-space-page.is-aimed {
+    border-color: var(--t-accent, #7aa2ff) !important;
+    outline: 3px solid var(--t-accent, #7aa2ff); outline-offset: 3px;
+    box-shadow: 0 0 0 1px var(--t-accent, #7aa2ff), 0 0 48px color-mix(in srgb, var(--t-accent, #7aa2ff) 55%, transparent) !important;
+}
+/* Pages and Grove fly (⌥⌘F); the maps fly with F. */
+.lunarbor-space.is-map .lunarbor-space-fly { display: none; }
+/* Grove (GroveView): a page's slot is page-sized and transparent; its slab
+   box holds the card — as tall as its content, at most the slot for the live
+   page, up to 1.5 slots for a preview, which grows down past the slot — and
+   the slab's edges and back, turned into the depth. */
+.is-grove .lunarbor-space-slot { transform-style: preserve-3d; }
+.is-grove .lunarbor-space-box { position: relative; flex: 0 1 auto; min-height: 0; max-height: 100%; display: flex; flex-direction: column; transform-style: preserve-3d; }
+.is-grove .lunarbor-space-slot.is-live.is-fill > .lunarbor-space-box { flex: 1 1 auto; }
+.is-grove .lunarbor-space-slot.is-preview > .lunarbor-space-box { flex: none; max-height: none; }
+.is-grove .lunarbor-space-page { position: relative; border-radius: 3px; }
+.is-grove .lunarbor-space-edge { position: absolute; pointer-events: none; background: color-mix(in srgb, var(--lb-area, var(--t-border, #555)) 40%, var(--t-surface, #252526)); }
+.is-grove .lunarbor-space-edge.is-left { top: 0; bottom: 0; right: 100%; width: 14px; transform-origin: right center; transform: rotateY(-90deg); }
+.is-grove .lunarbor-space-edge.is-right { top: 0; bottom: 0; left: 100%; width: 14px; transform-origin: left center; transform: rotateY(90deg); }
+.is-grove .lunarbor-space-edge.is-top { left: 0; right: 0; bottom: 100%; height: 14px; transform-origin: center bottom; transform: rotateX(90deg); }
+.is-grove .lunarbor-space-edge.is-bottom { left: 0; right: 0; top: 100%; height: 14px; transform-origin: center top; transform: rotateX(-90deg); }
+.is-grove .lunarbor-space-edge.is-back { inset: 0; transform: translateZ(-14px); background: color-mix(in srgb, var(--lb-area, var(--t-border, #555)) 25%, var(--t-bg, #1e1e1e)); }
+.is-grove .lunarbor-space-box[style*="--lb-area"] > .lunarbor-space-page { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lb-area) 35%, transparent), 0 18px 50px rgba(0,0,0,.28), 0 0 42px color-mix(in srgb, var(--lb-area) 22%, transparent); }
+.is-grove .lunarbor-space-page.is-slab { min-height: 64px; }
+.is-grove .lunarbor-space-page.is-slab .lunarbor-space-preview-headline { padding-bottom: 14px; }
+.is-grove .lunarbor-space-page.is-slab .lunarbor-space-preview-body { display: none; }
 """

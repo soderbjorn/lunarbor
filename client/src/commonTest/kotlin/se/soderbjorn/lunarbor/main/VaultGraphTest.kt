@@ -187,7 +187,9 @@ class VaultGraphTest {
 
     @Test
     fun shapes_cycle() {
-        assertEquals(SpaceShape.CROWN, SpaceShape.PAGES.next())
+        assertEquals(SpaceShape.GROVE, SpaceShape.PAGES.next())
+        assertEquals(SpaceShape.CROWN, SpaceShape.GROVE.next())
+        assertTrue(!SpaceShape.GROVE.isMap && SpaceShape.CROWN.isMap)
         assertEquals(SpaceShape.PAGES, SpaceShape.GALAXY.next())
         assertEquals(SpaceShape.CONE, SpaceShape.of("CONE"))
         assertEquals(SpaceShape.PAGES, SpaceShape.of("nope"))

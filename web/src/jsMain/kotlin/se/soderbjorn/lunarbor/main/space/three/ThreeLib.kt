@@ -35,9 +35,16 @@ external interface Vec3 {
     fun setScalar(s: Double): Vec3
 }
 
+/** three.js `Quaternion` — an object's rotation. */
+external interface Quat3 {
+    /** Sets all four components; returns this quaternion. */
+    fun set(x: Double, y: Double, z: Double, w: Double): Quat3
+}
+
 /** three.js `Object3D` — anything placed in a scene. */
 external interface Object3 {
     val position: Vec3
+    val quaternion: Quat3
     val scale: Vec3
     var visible: Boolean
     var frustumCulled: Boolean

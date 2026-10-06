@@ -110,6 +110,29 @@ class PageSpaceLayoutTest {
     }
 
     @Test
+    fun the_whole_vault_hangs_round_the_current_page_by_pages_rules() {
+        val c = SpaceTree("c", listOf(SpaceTree("c1", listOf(SpaceTree("c1a"))), SpaceTree("c2")))
+        val p = SpaceTree("p", listOf(SpaceTree("s1"), c, SpaceTree("s3", listOf(SpaceTree("s3a")))))
+        val root = SpaceTree("r", listOf(p, SpaceTree("q", listOf(SpaceTree("q1")))))
+        val at = SpaceVec(100.0, 50.0, -4000.0)
+        val whole = PageSpaceLayout.wholeLayout(root, "c", at, g)
+        // Every page has a place.
+        assertEquals(setOf("r", "p", "q", "q1", "s1", "c", "c1", "c1a", "c2", "s3", "s3a"), whole.keys)
+        // The current page's subtree is exactly where Pages shows it.
+        for ((key, pos) in PageSpaceLayout.layout(c, g, at)) assertEquals(pos, whole[key])
+        // Its parent is where going up puts it, its siblings in their slots.
+        val parent = PageSpaceLayout.parentPosition(at, index = 1, siblingCount = 3, g = g)
+        assertEquals(parent, whole["p"])
+        val offsets = PageSpaceLayout.childOffsets(3, g)
+        assertEquals(parent + offsets[0], whole["s1"])
+        assertEquals(parent + offsets[2], whole["s3"])
+        // And so on up to the root.
+        assertEquals(PageSpaceLayout.parentPosition(parent, index = 0, siblingCount = 2, g = g), whole["r"])
+        // An unknown current page lays the tree out from there.
+        assertEquals(at, PageSpaceLayout.wholeLayout(root, "nope", at, g)["r"])
+    }
+
+    @Test
     fun the_camera_sits_in_front_of_the_page() {
         val page = SpaceVec(300.0, 40.0, -1600.0)
         val cam = PageSpaceLayout.cameraFor(page, g)
