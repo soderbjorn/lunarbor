@@ -16,6 +16,9 @@
  *    `projects()`, cached per connection. A key not in the cache refetches
  *    the list once (the project may be new); a change to the connection drops
  *    its cache.
+ *  - **Read-only tokens** ([isReadOnly], LBR-29): `GET /me`'s token scope,
+ *    asked once per connection, so a board knows its titles are not
+ *    editable before a write is refused.
  *
  * Provided once by `JsAppGraph` (`@Provides @SingleIn(AppScope::class)`) in
  * the desktop app; the browser demo provides none, so a `{{lunicle: …}}`
@@ -66,6 +69,9 @@ class LunicleService(
     /** Connection id → its projects, as last fetched. */
     private val projectCache = HashMap<String, List<LunicleProject>>()
 
+    /** Connection id → whether its token is read-only, once `GET /me` answered (LBR-29). */
+    private val readOnlyCache = HashMap<String, Boolean>()
+
     /**
      * Re-reads the connections from the store.
      *
@@ -82,7 +88,10 @@ class LunicleService(
      * its project cache, since its URL or token may now reach other projects.
      */
     suspend fun updateConnection(id: String, name: String? = null, baseUrl: String? = null, token: String? = null): LunicleConnectionsSnapshot {
-        projectsMutex.withLock { projectCache.remove(id) }
+        projectsMutex.withLock {
+            projectCache.remove(id)
+            readOnlyCache.remove(id)
+        }
         return adopt(store.update(id, name, baseUrl, token))
     }
 
@@ -90,6 +99,29 @@ class LunicleService(
     suspend fun removeConnection(id: String): LunicleConnectionsSnapshot {
         projectsMutex.withLock { projectCache.remove(id) }
         return adopt(store.remove(id))
+    }
+
+    /**
+     * Whether connection [connectionId]'s token is read-only (LBR-29):
+     * `GET /me`'s token scope, asked once per connection and cached until
+     * the connection changes. `false` when `/me` cannot be read (the
+     * board's writes then find out with a 403, [markReadOnly]). Called by [LunicleBoards]
+     * after a board's first good read.
+     */
+    suspend fun isReadOnly(connectionId: String): Boolean {
+        projectsMutex.withLock { readOnlyCache[connectionId] }?.let { return it }
+        val me = client(connectionId).me().valueOrNull()
+        // Only an explicit `read` scope counts: an answer without one says
+        // nothing. A failed `/me` is remembered as "not known to be
+        // read-only" too, so it is not asked on every read.
+        val readOnly = me?.tokenScope == "read"
+        projectsMutex.withLock { readOnlyCache[connectionId] = readOnly }
+        return readOnly
+    }
+
+    /** Remembers that [connectionId]'s token is read-only (a write answered 403 `insufficient_scope`). */
+    suspend fun markReadOnly(connectionId: String) {
+        projectsMutex.withLock { readOnlyCache[connectionId] = true }
     }
 
     /** A client for connection [connectionId] (cheap; not cached). */
@@ -158,7 +190,10 @@ class LunicleService(
         loaded = true
         _connections.value = snapshot.connections
         val ids = snapshot.connections.map { it.id }.toSet()
-        projectsMutex.withLock { projectCache.keys.retainAll(ids) }
+        projectsMutex.withLock {
+            projectCache.keys.retainAll(ids)
+            readOnlyCache.keys.retainAll(ids)
+        }
         return snapshot
     }
 }

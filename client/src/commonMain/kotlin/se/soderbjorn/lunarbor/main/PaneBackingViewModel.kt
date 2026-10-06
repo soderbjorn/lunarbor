@@ -105,6 +105,7 @@ import se.soderbjorn.lunarbor.lunicle.LunicleBoardKey
 import se.soderbjorn.lunarbor.lunicle.LunicleBoardLayout
 import se.soderbjorn.lunarbor.lunicle.LunicleBoardState
 import se.soderbjorn.lunarbor.lunicle.LunicleColumn
+import se.soderbjorn.lunarbor.lunicle.LunicleDraftAnchor
 import se.soderbjorn.lunarbor.lunicle.LunicleIssue
 import se.soderbjorn.lunarbor.lunicle.LuniclePill
 import se.soderbjorn.lunarbor.lunicle.LunicleSyncKind
@@ -190,6 +191,11 @@ class PaneBackingViewModel(
      *   listed starts folded only when it needs a resolution.
      * @property lunicleOpenIssues Issues this pane has unfolded on a board,
      *   by [lunicleIssueKey]. Unfolded issues are read in full.
+     * @property lunicleDrafts New issues this pane is writing on its boards
+     *   (LBR-29, [LunicleDraft]): never saved, sent only when the caret
+     *   leaves one with a title, dropped when the pane navigates away.
+     * @property lunicleEditing The issue whose title this pane is editing
+     *   (LBR-29), or `null`: kept on its board even if a poll drops it.
      * @property cursorRow Row of the caret, in absolute document coords.
      * @property cursorCol Column of the caret on [cursorRow].
      * @property anchorRow If non-null, together with [anchorCol] defines
@@ -320,6 +326,8 @@ class PaneBackingViewModel(
         val lunicleEnabled: Boolean = false,
         val lunicleColumnFolds: Map<String, Boolean> = emptyMap(),
         val lunicleOpenIssues: Set<String> = emptySet(),
+        val lunicleDrafts: List<LunicleDraft> = emptyList(),
+        val lunicleEditing: LunicleEditingIssue? = null,
         val cursorRow: Int = 0,
         val cursorCol: Int = 0,
         val anchorRow: Int? = null,
@@ -1190,6 +1198,9 @@ class PaneBackingViewModel(
             searchTotal = 0,
             isSearching = false,
             searchReversed = false,
+            // Board drafts are dropped when the pane navigates away (LBR-29).
+            lunicleDrafts = emptyList(),
+            lunicleEditing = null,
         )
         searchJob?.cancel()
         // Captured snapshots in undo/redo refer to the outgoing
@@ -1380,6 +1391,8 @@ class PaneBackingViewModel(
      * @property detail The issue in full (description, comments), once read.
      * @property loading `true` while its full read is under way.
      * @property url Its page in Lunicle's web app, or `null` (no `https:` base URL).
+     * @property editable `true` when its title can be edited here (LBR-29):
+     *   Lunicle's `canEdit` and a token that may write.
      */
     data class LunicleIssueView(
         val issue: LunicleBoardIssue,
@@ -1390,6 +1403,7 @@ class PaneBackingViewModel(
         val detail: LunicleIssue?,
         val loading: Boolean,
         val url: String?,
+        val editable: Boolean = false,
     )
 
     /**
@@ -1399,12 +1413,19 @@ class PaneBackingViewModel(
      * @property foldKey Its key in [State.lunicleColumnFolds] ([lunicleColumnKey]).
      * @property folded `true` when folded in this pane (by default: a column that needs a resolution).
      * @property issues Its issues' views, in [LunicleColumn.issues] order.
+     * @property items What the column draws (LBR-29): [issues] with this
+     *   pane's drafts and the issues being filed put in place
+     *   ([LunicleBoardEditing.place]).
+     * @property newIssueLine `true` when the column ends with a "New issue"
+     *   line (issues can be filed on the board).
      */
     data class LunicleColumnView(
         val column: LunicleColumn,
         val foldKey: String,
         val folded: Boolean,
         val issues: List<LunicleIssueView>,
+        val items: List<LunicleColumnItem> = issues.map { LunicleColumnItem.Issue(it) },
+        val newIssueLine: Boolean = false,
     )
 
     /**
@@ -1417,6 +1438,11 @@ class PaneBackingViewModel(
      * @property columns The board's columns; empty before the first read.
      * @property stale `true` when an error stands over a board read earlier:
      *   the board is drawn dimmed under the error.
+     * @property canCreate `true` when new issues can be filed (LBR-29): a
+     *   write token, not a project viewer.
+     * @property readOnly `true` when the connection's token is read-only.
+     * @property createdIds A sent draft's local id → the new issue's id, so
+     *   the keyboard's cursor follows a draft into the issue it became.
      */
     data class LunicleBoardView(
         val ref: LunicleNodeRef,
@@ -1425,6 +1451,9 @@ class PaneBackingViewModel(
         val sync: LunicleSyncLine,
         val columns: List<LunicleColumnView>,
         val stale: Boolean,
+        val canCreate: Boolean = false,
+        val readOnly: Boolean = false,
+        val createdIds: Map<Long, Long> = emptyMap(),
     )
 
     /**
@@ -1454,35 +1483,245 @@ class PaneBackingViewModel(
         if (!ref.isValid) {
             return LunicleBoardView(ref, key, folded, LunicleSyncLine(LunicleSyncKind.ERROR, LunicleBoardLayout.MALFORMED_TEXT), emptyList(), false)
         }
-        val board = state.lunicleBoards[key] ?: boards.request(key) ?: LunicleBoardState(key)
+        // The cache's own value first: an optimistic edit (LBR-29) shows at
+        // once, before the pane's mirror ([State.lunicleBoards]) catches up.
+        val board = boards.boardsFlow.value[key] ?: state.lunicleBoards[key] ?: boards.request(key) ?: LunicleBoardState(key)
         val sync = LunicleBoardLayout.syncLine(board, now)
-        val columns = board.board?.let { b ->
+        val canCreate = board.canCreate
+        val columns = board.board?.let { read ->
+            // Optimistic titles (LBR-29), and the issue being edited stays
+            // even when a poll no longer lists it.
+            var issues = read.issues.map { i -> board.titleEdits[i.id]?.let { i.copy(title = it) } ?: i }
+            state.lunicleEditing?.takeIf { it.board == key && issues.none { i -> i.id == it.issue.id } }?.let { issues = issues + it.issue }
+            val b = read.copy(issues = issues)
             val baseUrl = board.target?.connection?.baseUrl
+            val drafts = state.lunicleDrafts.filter { it.board == key }
             LunicleBoardLayout.columns(b).map { column ->
                 val columnKey = lunicleColumnKey(key, column.status.name)
+                val issueViews = column.issues.map { issue ->
+                    val issueKey = lunicleIssueKey(key, issue.id)
+                    val unfolded = issueKey in state.lunicleOpenIssues
+                    val detail = board.details[issue.id]
+                    LunicleIssueView(
+                        issue = issue,
+                        foldKey = issueKey,
+                        unfolded = unfolded,
+                        pills = LunicleBoardLayout.pills(issue, b.priorities, unfolded),
+                        commentsLabel = detail?.let { LunicleBoardLayout.commentsLabel(it.comments.size) },
+                        detail = detail,
+                        loading = issue.id in board.loadingIssues,
+                        url = baseUrl?.let { LunicleBoardLayout.issueUrl(it, issue.key) },
+                        editable = board.canEdit(issue),
+                    )
+                }
+                val status = column.status.name
                 LunicleColumnView(
                     column = column,
                     foldKey = columnKey,
                     folded = state.lunicleColumnFolds[columnKey] ?: column.foldedByDefault,
-                    issues = column.issues.map { issue ->
-                        val issueKey = lunicleIssueKey(key, issue.id)
-                        val unfolded = issueKey in state.lunicleOpenIssues
-                        val detail = board.details[issue.id]
-                        LunicleIssueView(
-                            issue = issue,
-                            foldKey = issueKey,
-                            unfolded = unfolded,
-                            pills = LunicleBoardLayout.pills(issue, b.priorities, unfolded),
-                            commentsLabel = detail?.let { LunicleBoardLayout.commentsLabel(it.comments.size) },
-                            detail = detail,
-                            loading = issue.id in board.loadingIssues,
-                            url = baseUrl?.let { LunicleBoardLayout.issueUrl(it, issue.key) },
-                        )
-                    },
+                    issues = issueViews,
+                    items = LunicleBoardEditing.place(
+                        issueViews,
+                        board.creating.filter { it.status == status },
+                        drafts.filter { it.status == status },
+                        board.createdIds,
+                    ),
+                    newIssueLine = canCreate,
                 )
             }
         }.orEmpty()
-        return LunicleBoardView(ref, key, folded, sync, columns, stale = board.error != null && board.board != null)
+        return LunicleBoardView(
+            ref, key, folded, sync, columns,
+            stale = board.error != null && board.board != null,
+            canCreate = canCreate,
+            readOnly = board.readOnlyToken,
+            createdIds = board.createdIds,
+        )
+    }
+
+    // ------------------------------------------------------------ board edits (LBR-29)
+
+    /**
+     * Starts editing the editable board row [ref] of the board node at
+     * [nodeRow] (LBR-29): an issue's title, a draft, or a column's "New
+     * issue" line. For an issue it remembers the issue
+     * ([State.lunicleEditing]) — kept on the board while edited, even if a
+     * poll drops it — and the title the edit starts from.
+     *
+     * Called by the web view's `LunicleBoardCursor` when its caret lands on
+     * such a row.
+     *
+     * @return The text the field starts with (the title shown, `""` for a
+     *   draft or "New issue"), or `null` when the row cannot be edited (a
+     *   read-only token, `canEdit: false`): the cursor then shows a tint.
+     */
+    fun beginLunicleEdit(nodeRow: Int, ref: LunicleRowRef, now: Long): String? {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return null
+        return when (ref.kind) {
+            LunicleRowKind.ISSUE -> {
+                val issue = issueViewOf(view, ref.issueId)?.takeIf { it.editable } ?: return null
+                val title = issue.issue.title
+                val editing = LunicleEditingIssue(view.key, issue.issue, title)
+                if (_stateFlow.value.lunicleEditing?.issue?.id != issue.issue.id) patch { it.copy(lunicleEditing = editing) }
+                title
+            }
+            LunicleRowKind.DRAFT -> if (_stateFlow.value.lunicleDrafts.any { it.localId == ref.issueId }) "" else null
+            LunicleRowKind.NEW_ISSUE -> if (view.canCreate) "" else null
+            else -> null
+        }
+    }
+
+    /**
+     * The caret leaves the edited board row [ref] of board [board] with
+     * [text] in its field (LBR-29) — by an arrow key, Escape, a click
+     * elsewhere, or the pane navigating away:
+     *
+     *  - an issue's title is sent (`PATCH /issues/{id}` `{title}`,
+     *    optimistic, [LunicleBoards.renameIssue]) when it changed and is
+     *    not empty; an empty one is not sent and the old title comes back;
+     *  - a draft with a title is filed ([LunicleBoards.createIssue]) and
+     *    gets its key from the answer; an empty draft is removed;
+     *  - text on the "New issue" line files an issue at the end of the
+     *    column, at the default priority.
+     *
+     * Called by the web view's `LunicleBoardCursor`. Keyed by the board,
+     * not a row, since the node may be gone (the pane navigated).
+     */
+    fun leaveLunicleRow(board: LunicleBoardKey, ref: LunicleRowRef, text: String) {
+        val boards = registry.lunicleBoards ?: return
+        when (ref.kind) {
+            LunicleRowKind.ISSUE -> {
+                val editing = _stateFlow.value.lunicleEditing?.takeIf { it.board == board && it.issue.id == ref.issueId }
+                if (editing != null) {
+                    patch { it.copy(lunicleEditing = null) }
+                    LunicleBoardEditing.committedTitle(editing.original, text)?.let { boards.renameIssue(board, editing.issue.id, it) }
+                }
+            }
+            LunicleRowKind.DRAFT -> {
+                val draft = _stateFlow.value.lunicleDrafts.firstOrNull { it.localId == ref.issueId } ?: return
+                patch { it.copy(lunicleDrafts = it.lunicleDrafts - draft) }
+                LunicleBoardEditing.draftTitle(text)?.let { boards.createIssue(draft.board, draft.localId, draft.status, draft.priority, it, draft.anchor) }
+            }
+            LunicleRowKind.NEW_ISSUE -> LunicleBoardEditing.draftTitle(text)?.let {
+                boards.createIssue(board, boards.newLocalId(), ref.status, null, it, LunicleDraftAnchor.End)
+            }
+            else -> {}
+        }
+    }
+
+    /**
+     * Enter on the board row [ref] of the board node at [nodeRow], with
+     * [text] in its field (LBR-29):
+     *
+     *  - on an issue's title (anywhere in it — it never splits): commits
+     *    the title as [leaveLunicleRow] does and starts a draft right below
+     *    it, in the same column and priority;
+     *  - on a draft with a title: files it and starts the next draft right
+     *    below it, same column and priority; on an empty draft nothing;
+     *  - on a column's name: starts a draft at the top of the column with
+     *    the priority of its first issue, unfolding the column;
+     *  - on the "New issue" line with text: files it at the end of the
+     *    column at the default priority; the line stays, empty.
+     *
+     * With a read-only token, `canEdit: false` or as a viewer nothing
+     * happens and the indicator says why ([LunicleBoards.explain], once).
+     *
+     * Called by the web view's `LunicleBoardCursor`.
+     *
+     * @return Where the caret goes: the new draft, the "New issue" line
+     *   again, or `null` for nowhere new (nothing happened).
+     */
+    fun lunicleEnter(nodeRow: Int, ref: LunicleRowRef, text: String, now: Long): LunicleRowRef? {
+        val boards = registry.lunicleBoards ?: return null
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return null
+        when (ref.kind) {
+            LunicleRowKind.ISSUE -> {
+                val issue = issueViewOf(view, ref.issueId) ?: return null
+                if (!issue.editable) {
+                    explainLunicleRow(nodeRow, ref, now)
+                    return null
+                }
+                leaveLunicleRow(view.key, ref, text)
+                if (!view.canCreate) {
+                    explainNoCreate(view)
+                    return null
+                }
+                return startDraft(view.key, issue.issue.status, issue.issue.priority, LunicleDraftAnchor.AfterIssue(issue.issue.id))
+            }
+            LunicleRowKind.DRAFT -> {
+                val draft = _stateFlow.value.lunicleDrafts.firstOrNull { it.localId == ref.issueId } ?: return null
+                if (LunicleBoardEditing.draftTitle(text) == null) return null
+                leaveLunicleRow(view.key, ref, text)
+                return startDraft(draft.board, draft.status, draft.priority, LunicleDraftAnchor.AfterLocal(draft.localId))
+            }
+            LunicleRowKind.COLUMN -> {
+                if (!view.canCreate) {
+                    explainNoCreate(view)
+                    return null
+                }
+                val column = view.columns.firstOrNull { it.column.status.name == ref.status } ?: return null
+                if (column.folded) toggleLunicleColumn(column)
+                return startDraft(view.key, ref.status, column.column.issues.firstOrNull()?.priority, LunicleDraftAnchor.Top)
+            }
+            LunicleRowKind.NEW_ISSUE -> {
+                if (!view.canCreate) return null
+                if (LunicleBoardEditing.draftTitle(text) == null) return null
+                leaveLunicleRow(view.key, ref, text)
+                return ref
+            }
+            else -> return null
+        }
+    }
+
+    /**
+     * ⌫ on an empty draft [ref] of the board node at [nodeRow] (LBR-29):
+     * removes it.
+     *
+     * Called by the web view's `LunicleBoardCursor`.
+     *
+     * @return Where the caret goes: the row above the draft, or
+     *   [LunicleBoardRows.Step.LeaveUp] when it was the first row; `null`
+     *   when [ref] is no draft of this pane.
+     */
+    fun removeLunicleDraft(nodeRow: Int, ref: LunicleRowRef, now: Long): LunicleBoardRows.Step? {
+        if (ref.kind != LunicleRowKind.DRAFT) return null
+        val draft = _stateFlow.value.lunicleDrafts.firstOrNull { it.localId == ref.issueId } ?: return null
+        val step = lunicleBoardOf(_stateFlow.value, nodeRow, now)?.let { LunicleBoardRows.step(LunicleBoardRows.of(it), ref, down = false) }
+            ?: LunicleBoardRows.Step.LeaveUp
+        patch { it.copy(lunicleDrafts = it.lunicleDrafts - draft) }
+        return step
+    }
+
+    /**
+     * A key that would edit the board row [ref] of the board node at
+     * [nodeRow], which cannot be edited (LBR-29): the indicator says why,
+     * once per board and reason — a read-only token, or Lunicle's
+     * `canEdit: false`. Called by the web view's `LunicleBoardCursor` for
+     * typing on such a title, and by [lunicleEnter].
+     */
+    fun explainLunicleRow(nodeRow: Int, ref: LunicleRowRef, now: Long) {
+        val boards = registry.lunicleBoards ?: return
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return
+        if (ref.kind != LunicleRowKind.ISSUE) return
+        val issue = issueViewOf(view, ref.issueId) ?: return
+        if (issue.editable) return
+        if (view.readOnly) boards.explain(view.key, "read-only", LunicleBoardLayout.READ_ONLY_TEXT)
+        else boards.explain(view.key, "no-edit", LunicleBoardLayout.noEditText(issue.issue.key))
+    }
+
+    /** Says why no issue can be filed on [view]'s board (once). */
+    private fun explainNoCreate(view: LunicleBoardView) {
+        val boards = registry.lunicleBoards ?: return
+        if (view.readOnly) boards.explain(view.key, "read-only", LunicleBoardLayout.READ_ONLY_TEXT)
+        else boards.explain(view.key, "no-create", LunicleBoardLayout.noCreateText(view.ref.key.uppercase()))
+    }
+
+    /** Adds a draft to [State.lunicleDrafts] and names its row. */
+    private fun startDraft(board: LunicleBoardKey, status: String, priority: String?, anchor: LunicleDraftAnchor): LunicleRowRef? {
+        val boards = registry.lunicleBoards ?: return null
+        val draft = LunicleDraft(boards.newLocalId(), board, status, priority, anchor)
+        patch { it.copy(lunicleDrafts = it.lunicleDrafts + draft) }
+        return LunicleRowRef(LunicleRowKind.DRAFT, status, draft.localId)
     }
 
     /** Folds or unfolds a board column in this pane ([State.lunicleColumnFolds]). Called by the view's −/+ and dot. */
@@ -4965,6 +5204,8 @@ class PaneBackingViewModel(
             searchJob?.cancel()
             patched = patched.copy(
                 searchQuery = null, searchHits = emptyList(), searchTotal = 0, isSearching = false, searchReversed = false,
+                // Board drafts are dropped when the pane navigates away (LBR-29).
+                lunicleDrafts = emptyList(),
             )
             _stateFlow.value = reconcile(patched)
             recordFolds(_stateFlow.value)

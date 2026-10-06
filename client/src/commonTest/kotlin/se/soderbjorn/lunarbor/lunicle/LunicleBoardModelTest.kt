@@ -116,7 +116,7 @@ class LunicleBoardModelTest {
         val notice = synced.copy(notice = "Linus commented on X", noticeUntil = 106_000)
         assertEquals(LunicleSyncLine(LunicleSyncKind.REMOTE, "Linus commented on X"), LunicleBoardLayout.syncLine(notice, 105_000))
         assertEquals(LunicleSyncKind.SYNCED, LunicleBoardLayout.syncLine(notice, 106_000).kind)
-        assertEquals(LunicleSyncKind.SAVING, LunicleBoardLayout.syncLine(synced.copy(saving = true), 0).kind)
+        assertEquals(LunicleSyncKind.SAVING, LunicleBoardLayout.syncLine(synced.copy(writes = 1), 0).kind)
         val failed = synced.copy(error = LunicleError.Http(401, "invalid_token", "Bad token."))
         assertEquals(LunicleSyncLine(LunicleSyncKind.ERROR, "Check the token in App settings → Lunicle."), LunicleBoardLayout.syncLine(failed, 0))
     }

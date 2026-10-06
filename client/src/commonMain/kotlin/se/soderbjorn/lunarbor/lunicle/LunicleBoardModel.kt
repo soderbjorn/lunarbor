@@ -69,8 +69,23 @@ data class LunicleBoardKey(val connection: String?, val key: String) {
  * @property notice The remote-change notice ([LunicleBoardDiff.remoteMessage]),
  *   shown until [noticeUntil].
  * @property noticeUntil When [notice] stops showing (epoch ms).
- * @property saving `true` while a write of this board is under way (LBR-29 on).
+ * @property writes How many writes of this board are under way (LBR-29):
+ *   the indicator says "Saving to Lunicle…" while there are any ([saving]).
  * @property loadingIssues Issue ids whose full read is under way.
+ * @property titleEdits Issue id → the title a write under way is setting
+ *   (optimistic, LBR-29): shown in place of the board's title until the
+ *   write answers; dropped on failure, so the old title comes back.
+ * @property creating Issues being created from drafts (LBR-29), shown in
+ *   place until the board lists them ([LunicleCreatingIssue.createdId]).
+ * @property createdIds A created draft's local id → the new issue's id, so
+ *   drafts anchored after it find it once it is a real issue.
+ * @property alert A write's error, or why the board cannot be edited
+ *   ("This token is read-only…"), shown in red until [alertUntil].
+ * @property alertUntil When [alert] stops showing (epoch ms).
+ * @property savedAt When the last write succeeded (epoch ms): the
+ *   indicator says "Synced just now" for [LunicleBoardLayout.SAVED_MS].
+ * @property readOnlyToken `true` when the connection's token is read-only
+ *   (`GET /me` scope, or a write answered 403 `insufficient_scope`).
  */
 data class LunicleBoardState(
     val key: LunicleBoardKey,
@@ -82,8 +97,70 @@ data class LunicleBoardState(
     val error: LunicleError? = null,
     val notice: String? = null,
     val noticeUntil: Long = 0,
-    val saving: Boolean = false,
+    val writes: Int = 0,
     val loadingIssues: Set<Long> = emptySet(),
+    val titleEdits: Map<Long, String> = emptyMap(),
+    val creating: List<LunicleCreatingIssue> = emptyList(),
+    val createdIds: Map<Long, Long> = emptyMap(),
+    val alert: String? = null,
+    val alertUntil: Long = 0,
+    val savedAt: Long? = null,
+    val readOnlyToken: Boolean = false,
+) {
+    /** `true` while a write of this board is under way. */
+    val saving: Boolean get() = writes > 0
+
+    /**
+     * Whether new issues can be filed on this board: not with a read-only
+     * token, nor as a project viewer (Lunicle's `yourRole`).
+     */
+    val canCreate: Boolean
+        get() = !readOnlyToken && (target?.project?.yourRole ?: board?.project?.yourRole).orEmpty() != "viewer"
+
+    /** Whether [issue]'s title can be changed: its `canEdit`, and a write token. */
+    fun canEdit(issue: LunicleBoardIssue): Boolean = issue.canEdit && !readOnlyToken
+}
+
+/**
+ * Where a new issue's row sits in its column until the board lists it
+ * (LBR-29): a draft's place, and the place of the issue it became while
+ * Lunicle files it.
+ */
+sealed interface LunicleDraftAnchor {
+    /** At the top of the column (Enter on the column's name). */
+    data object Top : LunicleDraftAnchor
+
+    /** At the end of the column (the "New issue" line). */
+    data object End : LunicleDraftAnchor
+
+    /** Right below the issue [issueId] (Enter on its title). */
+    data class AfterIssue(val issueId: Long) : LunicleDraftAnchor
+
+    /** Right below another new issue, by its local id (Enter on a draft). */
+    data class AfterLocal(val localId: Long) : LunicleDraftAnchor
+}
+
+/**
+ * A draft that has been sent to Lunicle (LBR-29): shown in place, with its
+ * title, until the board lists the new issue.
+ *
+ * @property localId The draft's local id (negative, from
+ *   [LunicleBoards.newLocalId]; unique app-wide).
+ * @property status The column it is filed in.
+ * @property priority Its priority, or `null` for the project's default.
+ * @property title The title sent.
+ * @property anchor Where its row sits.
+ * @property createdId The new issue's id, once Lunicle answered.
+ * @property createdKey The new issue's key (`FRA-12`), once Lunicle answered.
+ */
+data class LunicleCreatingIssue(
+    val localId: Long,
+    val status: String,
+    val priority: String?,
+    val title: String,
+    val anchor: LunicleDraftAnchor,
+    val createdId: Long? = null,
+    val createdKey: String? = null,
 )
 
 /** The sync indicator's colour (theme variables in the view). */
@@ -200,7 +277,14 @@ object LunicleBoardLayout {
      */
     fun syncLine(state: LunicleBoardState, now: Long): LunicleSyncLine {
         state.error?.let { return LunicleSyncLine(LunicleSyncKind.ERROR, errorText(it)) }
+        val alert = state.alert
+        if (alert != null && now < state.alertUntil) return LunicleSyncLine(LunicleSyncKind.ERROR, alert)
         if (state.saving) return LunicleSyncLine(LunicleSyncKind.SAVING, "Saving to Lunicle…")
+        // Right after a write: "Synced just now", even while the stream is live.
+        val saved = state.savedAt
+        if (saved != null && now - saved < SAVED_MS) {
+            return LunicleSyncLine(LunicleSyncKind.SYNCED, "Synced just now", syncedAt = if (state.live) null else saved)
+        }
         val notice = state.notice
         if (notice != null && now < state.noticeUntil) return LunicleSyncLine(LunicleSyncKind.REMOTE, notice)
         val at = state.syncedAt ?: return LunicleSyncLine(LunicleSyncKind.LOADING, "Loading…")
@@ -233,6 +317,28 @@ object LunicleBoardLayout {
         is LunicleError.Transport -> "Offline: ${error.message}"
         else -> error.message
     }
+
+    /** How long the indicator says "Synced just now" after a write (LBR-29). */
+    const val SAVED_MS: Long = 4_000
+
+    /**
+     * The sentence for a write that failed (LBR-29), shown in red on the
+     * indicator while the edit is reverted. A read-only token says so.
+     */
+    fun writeErrorText(error: LunicleError): String = when {
+        error is LunicleError.Http && error.isReadOnlyToken -> READ_ONLY_TEXT
+        error is LunicleError.Http && error.status == 403 -> "Lunicle refused the change: ${error.message}"
+        else -> "Not saved: ${errorText(error)}"
+    }
+
+    /** Why nothing on a board can be edited with a read-only token (LBR-29). */
+    const val READ_ONLY_TEXT: String = "This token is read-only: make a read-write token in Lunicle to edit here."
+
+    /** Why an issue's title cannot be edited: Lunicle's `canEdit` is false. */
+    fun noEditText(issueKey: String): String = "You can't edit $issueKey in Lunicle."
+
+    /** Why no issue can be filed on a board: a project viewer. */
+    fun noCreateText(projectKey: String): String = "You can't file issues in $projectKey (viewer)."
 
     /** The message for a reference that is not `[<connection>/]<KEY>`. */
     const val MALFORMED_TEXT: String = "Write it as {{lunicle: <connection>/<KEY>}}."

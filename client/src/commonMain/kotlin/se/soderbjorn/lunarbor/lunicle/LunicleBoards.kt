@@ -31,6 +31,19 @@
  *    goes back to "Synced …" / "Live".
  *  - **Errors** keep the last good board ([LunicleBoardState.board]) under
  *    [LunicleBoardState.error].
+ *  - **Writes** (LBR-29): [renameIssue] and [createIssue] are optimistic —
+ *    the new title, or the new issue's row, shows at once
+ *    ([LunicleBoardState.titleEdits] / [LunicleBoardState.creating]) while
+ *    the indicator says "Saving to Lunicle…"; a success says "Synced just
+ *    now" and re-reads the board, a failure takes the change back and shows
+ *    the error in red ([LunicleBoardState.alert]). Every write carries the
+ *    main process's `X-Lunicle-Origin`, so the stream marks its echo `self`;
+ *    and the issues this app changed are left out of the next read's
+ *    remote-change notice, so an own edit never reads as someone else's.
+ *  - **Read-only**: a board's first good read asks whether the token is
+ *    read-only ([LunicleService.isReadOnly]); a write answered 403
+ *    `insufficient_scope` says so too. [explain] shows why something
+ *    cannot be edited, once per board and reason.
  *
  * Board rows are never written anywhere: not into `Document.lines`, the
  * vault, the indexes, or anything agents see.
@@ -101,6 +114,18 @@ class LunicleBoards(
     private val burst = LinkedHashMap<LunicleBoardKey, MutableList<LunicleChangeHint>>()
     private var burstJob: Job? = null
     private var poller: Job? = null
+
+    /** Last local id handed out ([newLocalId]); counts down from 0. */
+    private var localSeq = 0L
+
+    /** Board → issue ids this app changed that no read has seen since (left out of notices). */
+    private val ownChanges = HashMap<LunicleBoardKey, MutableSet<Long>>()
+
+    /** Board → issue ids a write of this app is changing right now. */
+    private val writing = HashMap<LunicleBoardKey, MutableSet<Long>>()
+
+    /** `<board id>|<reason>` pairs [explain] has shown. */
+    private val explained = HashSet<String>()
 
     init {
         events?.setListener(::onStreamMessage)
@@ -207,6 +232,142 @@ class LunicleBoards(
         }
     }
 
+    /**
+     * A new local id for a draft (LBR-29): negative, never reused, unique
+     * app-wide — so a draft anchored after another pane's new issue, or a
+     * created draft's row, can be named before Lunicle gives it an id.
+     * Called by `PaneBackingViewModel` when it starts a draft.
+     */
+    fun newLocalId(): Long = --localSeq
+
+    /**
+     * Sets issue [issueId]'s title on board [key] to [title]
+     * (`PATCH /issues/{id}` `{title}`), optimistically: the board shows
+     * [title] at once and "Saving to Lunicle…"; on success "Synced just
+     * now" and a re-read, on failure the old title and the error in red.
+     * A board not resolved yet ignores it.
+     *
+     * Called by `PaneBackingViewModel` when the caret leaves an edited
+     * title, or on Enter.
+     */
+    fun renameIssue(key: LunicleBoardKey, issueId: Long, title: String) {
+        val target = stateOf(key).target ?: return
+        writing.getOrPut(key) { HashSet() } += issueId
+        put(key) { it.copy(titleEdits = it.titleEdits + (issueId to title), writes = it.writes + 1) }
+        scope.launch {
+            val r = service.client(target.connection.id).updateIssue(issueId, LunicleIssueChanges(title = LunicleField.Set(title)))
+            writing[key]?.remove(issueId)
+            fun withoutEdit(s: LunicleBoardState) =
+                if (s.titleEdits[issueId] == title) s.titleEdits - issueId else s.titleEdits
+            when (r) {
+                is LunicleResult.Ok -> {
+                    ownChanges.getOrPut(key) { HashSet() } += issueId
+                    val t = now()
+                    put(key) { s ->
+                        s.copy(
+                            board = s.board?.let { b -> b.copy(issues = b.issues.map { if (it.id == issueId) it.copy(title = title) else it }) },
+                            details = s.details[issueId]?.let { d -> s.details + (issueId to d.copy(summary = d.summary.copy(title = title))) } ?: s.details,
+                            titleEdits = withoutEdit(s),
+                            writes = (s.writes - 1).coerceAtLeast(0),
+                            savedAt = t,
+                        )
+                    }
+                    afterSave(key, t)
+                }
+                is LunicleResult.Failure -> failed(key, target, r.error) { s -> s.copy(titleEdits = withoutEdit(s)) }
+            }
+        }
+    }
+
+    /**
+     * Files a new issue on board [key] from a draft (`POST
+     * /projects/{id}/issues` with `title`, `status`, `priority`),
+     * optimistically: its row ([LunicleCreatingIssue]) shows at once at
+     * [anchor] with "Saving to Lunicle…", gets its key from the answer and
+     * gives way to the real issue once a re-read lists it. On failure the
+     * row goes and the error shows in red.
+     *
+     * Called by `PaneBackingViewModel` when the caret leaves a draft with a
+     * title, on Enter in one, and for the column's "New issue" line.
+     *
+     * @param localId The draft's [newLocalId].
+     * @param priority `null` for the project's default.
+     */
+    fun createIssue(key: LunicleBoardKey, localId: Long, status: String, priority: String?, title: String, anchor: LunicleDraftAnchor) {
+        val target = stateOf(key).target ?: return
+        val entry = LunicleCreatingIssue(localId, status, priority, title, anchor)
+        put(key) { it.copy(creating = it.creating + entry, writes = it.writes + 1) }
+        scope.launch {
+            val r = service.client(target.connection.id)
+                .createIssue(target.project.id, LunicleNewIssue(title = title, status = status, priority = priority))
+            when (r) {
+                is LunicleResult.Ok -> {
+                    val created = r.value
+                    ownChanges.getOrPut(key) { HashSet() } += created.id
+                    val t = now()
+                    put(key) { s ->
+                        val onBoard = s.board?.issues?.any { it.id == created.id } == true
+                        s.copy(
+                            creating = if (onBoard) s.creating.filter { it.localId != localId }
+                            else s.creating.map { if (it.localId == localId) it.copy(createdId = created.id, createdKey = created.key) else it },
+                            createdIds = s.createdIds + (localId to created.id),
+                            writes = (s.writes - 1).coerceAtLeast(0),
+                            savedAt = t,
+                        )
+                    }
+                    afterSave(key, t)
+                }
+                is LunicleResult.Failure -> failed(key, target, r.error) { s -> s.copy(creating = s.creating.filter { it.localId != localId }) }
+            }
+        }
+    }
+
+    /**
+     * Shows [text] in red on board [key]'s indicator, once per board and
+     * [reason] this session: why a title cannot be edited or no issue can
+     * be filed (a read-only token, `canEdit: false`, a viewer). Called by
+     * `PaneBackingViewModel` when a key would edit what cannot be edited.
+     */
+    fun explain(key: LunicleBoardKey, reason: String, text: String) {
+        if (!explained.add("${key.id}|$reason")) return
+        showAlert(key, text)
+    }
+
+    /** "Synced just now" goes back to the usual line after [LunicleBoardLayout.SAVED_MS]; the board is re-read. */
+    private fun afterSave(key: LunicleBoardKey, at: Long) {
+        scope.launch {
+            delay(LunicleBoardLayout.SAVED_MS)
+            put(key) { s -> if (s.savedAt == at) s.copy(savedAt = null) else s }
+        }
+        refresh(key)
+    }
+
+    /**
+     * A write of board [key] failed: [revert] takes the optimistic change
+     * back, the error shows in red, and a 403 `insufficient_scope` marks
+     * every board of the connection read-only.
+     */
+    private suspend fun failed(key: LunicleBoardKey, target: LunicleBoardTarget, error: LunicleError, revert: (LunicleBoardState) -> LunicleBoardState) {
+        put(key) { s -> revert(s).copy(writes = (s.writes - 1).coerceAtLeast(0)) }
+        if (error is LunicleError.Http && error.isReadOnlyToken) {
+            service.markReadOnly(target.connection.id)
+            _boards.update { all ->
+                all.mapValues { (_, s) -> if (s.target?.connection?.id == target.connection.id) s.copy(readOnlyToken = true) else s }
+            }
+        }
+        showAlert(key, LunicleBoardLayout.writeErrorText(error))
+    }
+
+    /** Puts [text] on board [key]'s indicator, in red, for [ALERT_MS]. */
+    private fun showAlert(key: LunicleBoardKey, text: String) {
+        val until = now() + ALERT_MS
+        put(key) { it.copy(alert = text, alertUntil = until) }
+        scope.launch {
+            delay(ALERT_MS)
+            put(key) { s -> if (s.alert != null && now() >= s.alertUntil) s.copy(alert = null) else s }
+        }
+    }
+
     /** Boards some pane shows unfolded. */
     private fun shownKeys(): Set<LunicleBoardKey> = interests.values.flatMapTo(LinkedHashSet()) { it.keys }
 
@@ -299,8 +460,12 @@ class LunicleBoards(
                 return
             }
         }
+        val readOnly = service.isReadOnly(target.connection.id)
+        // Issues this app changed are not news: left out of the notice.
+        val own = ownChanges.remove(key).orEmpty() + writing[key].orEmpty()
         val before = stateOf(key)
         val changes = LunicleBoardDiff.diff(before.board, board)
+        val news = LunicleChanges(changes.changed - own, changes.added - own, changes.removed - own)
         val hinted = hints.mapNotNullTo(HashSet()) { it.issueId }
         val onBoard = board.issues.mapTo(HashSet()) { it.id }
         val unfolded = unfoldedOf(key)
@@ -309,8 +474,8 @@ class LunicleBoards(
         val details = LinkedHashMap(before.details - changes.removed - ((changes.changed + hinted) - refetch))
         for (id in refetch) client.issue(id).valueOrNull()?.let { details[id] = it }
         val message = before.board?.let { old ->
-            if (changes.isEmpty && hinted.isEmpty()) null
-            else LunicleBoardDiff.remoteMessage(changes, old, board, hints, before.details, details)
+            if (news.isEmpty && hinted.isEmpty()) null
+            else LunicleBoardDiff.remoteMessage(news, old, board, hints, before.details, details)
         }
         val t = now()
         put(key) {
@@ -323,6 +488,9 @@ class LunicleBoards(
                 error = null,
                 notice = message ?: it.notice,
                 noticeUntil = if (message != null) t + noticeMillis else it.noticeUntil,
+                // A created issue the board now lists needs its stand-in row no more.
+                creating = it.creating.filter { c -> c.createdId == null || c.createdId !in onBoard },
+                readOnlyToken = it.readOnlyToken || readOnly,
             )
         }
         if (message != null) {
@@ -356,5 +524,8 @@ class LunicleBoards(
 
         /** How long the remote-change notice shows on the node line. */
         const val NOTICE_MS: Long = 6_000
+
+        /** How long a write's error, or why a board cannot be edited, shows in red (LBR-29). */
+        const val ALERT_MS: Long = 8_000
     }
 }

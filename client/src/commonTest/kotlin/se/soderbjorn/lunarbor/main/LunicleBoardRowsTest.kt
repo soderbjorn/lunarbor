@@ -8,7 +8,8 @@
  * row under an issue folds the issue and lands on its title; the caret's
  * row is found again by issue id plus kind after a poll that adds issues
  * above it, moves it, or removes it; and ⌘↑ on the node's own line folds
- * the board node. */
+ * the board node. Each unfolded column ends with its "New issue" line
+ * (LBR-29). */
 package se.soderbjorn.lunarbor.main
 
 import kotlinx.coroutines.flow.first
@@ -53,9 +54,9 @@ class LunicleBoardRowsTest {
            "issues":[$issues]}"""
 
     private val firstIssues = """
-        {"id":1,"key":"FRA-1","title":"Low one","status":"New","priority":"Normal","updatedAt":1},
-        {"id":2,"key":"FRA-2","title":"Urgent","status":"New","priority":"High","updatedAt":1},
-        {"id":3,"key":"FRA-3","title":"Done","status":"Closed","priority":"Normal","updatedAt":1}"""
+        {"id":1,"key":"FRA-1","title":"Low one","status":"New","priority":"Normal","updatedAt":1,"canEdit":true},
+        {"id":2,"key":"FRA-2","title":"Urgent","status":"New","priority":"High","updatedAt":1,"canEdit":true},
+        {"id":3,"key":"FRA-3","title":"Done","status":"Closed","priority":"Normal","updatedAt":1,"canEdit":true}"""
 
     private val api = FakeLunicleApi().apply {
         answer(LunicleMethod.GET, "/api/v1/projects", 200, """[{"id":2,"name":"Framnafolk","keyPrefix":"FRA"}]""")
@@ -101,20 +102,20 @@ class LunicleBoardRowsTest {
     fun rows_follow_the_board_and_its_folds() = runTest {
         val p = pane()
         // Closed needs a resolution: last and folded.
-        assertEquals(listOf("c:New", "i:2", "i:1", "c:In progress", "c:Closed"), p.keys())
+        assertEquals(listOf("c:New", "i:2", "i:1", "e:New", "c:In progress", "e:In progress", "c:Closed"), p.keys())
         unfoldUrgent(p)
         assertEquals(
-            listOf("c:New", "i:2", "d:2", "m:2:5", "m:2:6", "a:2", "i:1", "c:In progress", "c:Closed"),
+            listOf("c:New", "i:2", "d:2", "m:2:5", "m:2:6", "a:2", "i:1", "e:New", "c:In progress", "e:In progress", "c:Closed"),
             p.keys(),
         )
         val rows = p.rows()
-        assertEquals(listOf(0, 1, 2, 2, 2, 2, 1, 0, 0), rows.map { it.depth })
-        // A real caret on titles, the description and "Comment…"; a highlight elsewhere.
-        assertEquals(listOf(false, true, true, false, false, true, true, false, false), rows.map { it.editable })
+        assertEquals(listOf(0, 1, 2, 2, 2, 2, 1, 1, 0, 1, 0), rows.map { it.depth })
+        // A caret on titles, the description, "Comment…" and "New issue"; a highlight elsewhere.
+        assertEquals(listOf(false, true, true, false, false, true, true, true, false, true, false), rows.map { it.editable })
         // Folding the column hides everything under it; unfolding Closed shows its issue.
         p.foldLunicleRow(0, p.ref("c:New"), folded = true, now = 0)
         p.foldLunicleRow(0, p.ref("c:Closed"), folded = false, now = 0)
-        assertEquals(listOf("c:New", "c:In progress", "c:Closed", "i:3"), p.keys())
+        assertEquals(listOf("c:New", "c:In progress", "e:In progress", "c:Closed", "i:3", "e:Closed"), p.keys())
     }
 
     @Test
@@ -124,7 +125,7 @@ class LunicleBoardRowsTest {
         p.foldLunicleRow(0, p.ref("i:1"), folded = false, now = 0)
         val desc = p.rows().first { it.ref.key == "d:1" }
         assertFalse(desc.editable)
-        assertEquals(listOf("c:New", "i:2", "i:1", "d:1", "c:In progress", "c:Closed"), p.keys())
+        assertEquals(listOf("c:New", "i:2", "i:1", "d:1", "e:New", "c:In progress", "e:In progress", "c:Closed"), p.keys())
     }
 
     @Test
@@ -135,7 +136,7 @@ class LunicleBoardRowsTest {
         assertEquals("c:New", LunicleBoardRows.entry(rows, down = true)?.key)
         assertEquals("c:Closed", LunicleBoardRows.entry(rows, down = false)?.key)
         assertEquals(LunicleBoardRows.Step.To(p.ref("i:2")), LunicleBoardRows.step(rows, p.ref("c:New"), down = true))
-        assertEquals(LunicleBoardRows.Step.To(p.ref("i:1")), LunicleBoardRows.step(rows, p.ref("c:In progress"), down = false))
+        assertEquals(LunicleBoardRows.Step.To(p.ref("e:New")), LunicleBoardRows.step(rows, p.ref("c:In progress"), down = false))
         // Past either end the caret goes back into the document.
         assertEquals(LunicleBoardRows.Step.LeaveUp, LunicleBoardRows.step(rows, p.ref("c:New"), down = false))
         assertEquals(LunicleBoardRows.Step.LeaveDown, LunicleBoardRows.step(rows, p.ref("c:Closed"), down = true))
@@ -150,7 +151,7 @@ class LunicleBoardRowsTest {
         for (child in listOf("d:2", "m:2:6", "a:2")) {
             val at = p.foldLunicleRow(0, p.ref(child), folded = true, now = 0)
             assertEquals("i:2", at?.key)
-            assertEquals(listOf("c:New", "i:2", "i:1", "c:In progress", "c:Closed"), p.keys())
+            assertEquals(listOf("c:New", "i:2", "i:1", "e:New", "c:In progress", "e:In progress", "c:Closed"), p.keys())
             // ⌘↓ on the title opens it again; ⌘↓ on a child changes nothing.
             p.foldLunicleRow(0, p.ref("i:2"), folded = false, now = 0)
             assertEquals("d:2", p.foldLunicleRow(0, p.ref("d:2"), folded = false, now = 0)?.key)
@@ -175,18 +176,18 @@ class LunicleBoardRowsTest {
             LunicleMethod.GET, boardPath, 200,
             boardJson(
                 firstIssues + """,
-                {"id":7,"key":"FRA-7","title":"New urgent","status":"New","priority":"High","updatedAt":2},
-                {"id":8,"key":"FRA-8","title":"Another","status":"New","priority":"High","updatedAt":2}""",
+                {"id":7,"key":"FRA-7","title":"New urgent","status":"New","priority":"High","updatedAt":2,"canEdit":true},
+                {"id":8,"key":"FRA-8","title":"Another","status":"New","priority":"High","updatedAt":2,"canEdit":true}""",
             ),
         )
         p.reportShownBoards(mapOf(p.lunicleBoardOf(p.stateFlow.value, 0, 0)!!.key to emptySet()))
         boards.refreshShown()
         runCurrent()
         val rows = p.rows()
-        assertEquals(listOf("c:New", "i:2", "i:7", "i:8", "i:1", "c:In progress", "c:Closed"), rows.map { it.ref.key })
+        assertEquals(listOf("c:New", "i:2", "i:7", "i:8", "i:1", "e:New", "c:In progress", "e:In progress", "c:Closed"), rows.map { it.ref.key })
         assertEquals(caret, LunicleBoardRows.relocate(rows, caret))
         assertEquals(4, LunicleBoardRows.indexOf(rows, caret))
-        assertEquals(LunicleBoardRows.Step.To(p.ref("c:In progress")), LunicleBoardRows.step(rows, caret, down = true))
+        assertEquals(LunicleBoardRows.Step.To(p.ref("e:New")), LunicleBoardRows.step(rows, caret, down = true))
     }
 
     @Test
@@ -213,7 +214,7 @@ class LunicleBoardRowsTest {
         runCurrent()
         val rows = p.rows()
         assertEquals(
-            listOf("c:New", "i:2", "d:2", "m:2:5", "a:2", "c:In progress", "i:1", "c:Closed"),
+            listOf("c:New", "i:2", "d:2", "m:2:5", "a:2", "e:New", "c:In progress", "i:1", "e:In progress", "c:Closed"),
             rows.map { it.ref.key },
         )
         // The moved issue is found in its new column; the gone comment falls back to its issue.

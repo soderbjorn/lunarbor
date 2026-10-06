@@ -2,7 +2,8 @@
  *
  * The rows of a board node (LBR-28) that the keyboard walks: column names,
  * issues, and under an unfolded issue its description, comments and
- * "Comment…" — in the order the view draws them, from the pane's
+ * "Comment…"; drafts, issues being filed and each unfolded column's
+ * "New issue" line (LBR-29) — in the order the view draws them, from the pane's
  * [PaneBackingViewModel.LunicleBoardView] (board + the pane's board folds).
  * Pure, so the order, entering and leaving at both ends, and finding the
  * caret's row again after a re-read are tested directly
@@ -20,16 +21,26 @@
 package se.soderbjorn.lunarbor.main
 
 /**
- * What a board row is. [editable] rows take a real caret (an issue's
- * title, its description, "Comment…"; the column's "New issue" line joins
- * them with LBR-29); the others are drawn as a highlight and swallow typing.
+ * What a board row is. [editable] rows take a caret (an issue's title, a
+ * draft, the "New issue" line, its description, "Comment…") — a row's own
+ * [LunicleBoardRow.editable] can still say no (a read-only token,
+ * `canEdit: false`); the others are drawn as a highlight and swallow typing.
  */
 enum class LunicleRowKind(val editable: Boolean) {
     /** A column's name and count. */
     COLUMN(false),
 
-    /** An issue's line: title, pills, key. */
+    /** An issue's line: title, pills, key. Its title is edited in place (LBR-29). */
     ISSUE(true),
+
+    /** A new issue being written (LBR-29, [LunicleDraft]); named by its local id. */
+    DRAFT(true),
+
+    /** A sent draft until the board lists it (LBR-29); named by its local id. */
+    CREATING(false),
+
+    /** The last row of an unfolded column: "New issue" (LBR-29). */
+    NEW_ISSUE(true),
 
     /** An unfolded issue's description (its "Loading…" row until it is read). */
     DESCRIPTION(true),
@@ -48,7 +59,9 @@ enum class LunicleRowKind(val editable: Boolean) {
  * @property status The column the row is in (for [LunicleRowKind.COLUMN]
  *   its name; for issue rows the column it was last seen in, used only as
  *   the fallback when the issue is gone).
- * @property issueId The issue, for every kind but [LunicleRowKind.COLUMN].
+ * @property issueId The issue, for the issue kinds; the local id for
+ *   [LunicleRowKind.DRAFT] and [LunicleRowKind.CREATING]; `null` for a
+ *   column and its "New issue" line.
  * @property commentId The comment, for [LunicleRowKind.COMMENT].
  */
 data class LunicleRowRef(
@@ -69,11 +82,20 @@ data class LunicleRowRef(
             LunicleRowKind.DESCRIPTION -> "d:$issueId"
             LunicleRowKind.COMMENT -> "m:$issueId:$commentId"
             LunicleRowKind.ADD_COMMENT -> "a:$issueId"
+            LunicleRowKind.DRAFT -> "n:$issueId"
+            LunicleRowKind.CREATING -> "p:$issueId"
+            LunicleRowKind.NEW_ISSUE -> "e:$status"
         }
 
-    /** The issue's own row, for a row under an issue; `null` for a column. */
+    /**
+     * The issue's own row, for an issue's row or a row under an issue;
+     * `null` for a column, a draft, an issue being filed and "New issue".
+     */
     val issueRef: LunicleRowRef?
-        get() = issueId?.let { LunicleRowRef(LunicleRowKind.ISSUE, status, it) }
+        get() = when (kind) {
+            LunicleRowKind.COLUMN, LunicleRowKind.DRAFT, LunicleRowKind.CREATING, LunicleRowKind.NEW_ISSUE -> null
+            else -> issueId?.let { LunicleRowRef(LunicleRowKind.ISSUE, status, it) }
+        }
 }
 
 /**
@@ -81,8 +103,9 @@ data class LunicleRowRef(
  *
  * @property ref Its name.
  * @property depth Board depth: 0 a column, 1 an issue, 2 an issue's child.
- * @property editable Whether it takes a real caret ([LunicleRowKind.editable];
- *   a description only once the issue has been read).
+ * @property editable Whether it takes a caret ([LunicleRowKind.editable];
+ *   a description only once the issue has been read; a title only when it
+ *   can be changed — `canEdit` and a write token, LBR-29).
  */
 data class LunicleBoardRow(val ref: LunicleRowRef, val depth: Int, val editable: Boolean)
 
@@ -92,8 +115,10 @@ object LunicleBoardRows {
     /**
      * The navigable rows of [view], top to bottom, exactly as
      * `LunicleBoardView.buildLunicleBoard` draws them: each column, and
-     * unless it is folded its issues, each unfolded issue followed by its
-     * description, its comments (once read) and "Comment…" (once read).
+     * unless it is folded its entries ([PaneBackingViewModel.LunicleColumnView.items]:
+     * issues, drafts, issues being filed), each unfolded issue followed by
+     * its description, its comments (once read) and "Comment…" (once
+     * read), and last the column's "New issue" line when it has one.
      * Empty before the first read and for a malformed reference.
      */
     fun of(view: PaneBackingViewModel.LunicleBoardView): List<LunicleBoardRow> {
@@ -102,9 +127,20 @@ object LunicleBoardRows {
             val status = column.column.status.name
             out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.COLUMN, status), 0, editable = false)
             if (column.folded) continue
-            for (issue in column.issues) {
+            for (item in column.items) {
+                val issue = when (item) {
+                    is LunicleColumnItem.Draft -> {
+                        out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.DRAFT, status, item.draft.localId), 1, editable = true)
+                        continue
+                    }
+                    is LunicleColumnItem.Creating -> {
+                        out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.CREATING, status, item.entry.localId), 1, editable = false)
+                        continue
+                    }
+                    is LunicleColumnItem.Issue -> item.view
+                }
                 val id = issue.issue.id
-                out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.ISSUE, status, id), 1, editable = true)
+                out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.ISSUE, status, id), 1, editable = issue.editable)
                 if (!issue.unfolded) continue
                 val detail = issue.detail
                 out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.DESCRIPTION, status, id), 2, editable = detail != null)
@@ -114,6 +150,7 @@ object LunicleBoardRows {
                 }
                 out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.ADD_COMMENT, status, id), 2, editable = true)
             }
+            if (column.newIssueLine) out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.NEW_ISSUE, status), 1, editable = true)
         }
         return out
     }
@@ -162,12 +199,26 @@ object LunicleBoardRows {
      * The row [ref] names after the board was re-read or refolded: the
      * same row when it is still there (wherever it moved); else, for a
      * comment or "Comment…" that is gone (deleted, or the issue folded),
-     * its issue's row; for an issue that is gone, its column's row; `null`
+     * its issue's row; a draft that was sent, its "being filed" row, and
+     * either, once Lunicle filed it, the new issue's row (via
+     * [createdIds]); for an issue that is gone, its column's row; `null`
      * when not even that is left (the caret then leaves the board).
      * Called by the view's cursor after every repaint.
+     *
+     * @param createdIds A sent draft's local id → the new issue's id
+     *   ([PaneBackingViewModel.LunicleBoardView.createdIds]).
      */
-    fun relocate(rows: List<LunicleBoardRow>, ref: LunicleRowRef): LunicleRowRef? {
+    fun relocate(rows: List<LunicleBoardRow>, ref: LunicleRowRef, createdIds: Map<Long, Long> = emptyMap()): LunicleRowRef? {
         rows.firstOrNull { it.ref.key == ref.key }?.let { return it.ref }
+        if (ref.kind == LunicleRowKind.DRAFT || ref.kind == LunicleRowKind.CREATING) {
+            val local = ref.issueId
+            val filing = LunicleRowRef(LunicleRowKind.CREATING, ref.status, local)
+            if (ref.kind == LunicleRowKind.DRAFT) rows.firstOrNull { it.ref.key == filing.key }?.let { return it.ref }
+            createdIds[local]?.let { id ->
+                val issue = LunicleRowRef(LunicleRowKind.ISSUE, ref.status, id)
+                rows.firstOrNull { it.ref.key == issue.key }?.let { return it.ref }
+            }
+        }
         ref.issueRef?.takeIf { ref.kind != LunicleRowKind.ISSUE }?.let { issue ->
             rows.firstOrNull { it.ref.key == issue.key }?.let { return it.ref }
         }
