@@ -15,7 +15,8 @@
  *    Steps are counted in 60 Hz frames ([step]'s `frames`), so flight runs
  *    at the same speed on any refresh rate.
  *  - Keys (by physical `code`, held while down): W / S throttle, A / D
- *    strafe, Shift descend, ↑ / ↓ pitch, ← / → yaw, Q / E roll. One-shot
+ *    strafe, R / V rise / descend (along the ship's roof; Lunamux has only
+ *    Shift to descend), ↑ / ↓ pitch, ← / → yaw, Q / E roll. One-shot
  *    keys are handled by `MapView`, which owns the camera and the map.
  *  - [MapLegend] lists every key; a key flashes its row while used.
  *
@@ -155,7 +156,8 @@ internal class FreeFlight(private val scale: Double, private val legend: MapLege
         if (isHeld("KeyS")) { vx -= f.x * a; vy -= f.y * a; vz -= f.z * a }
         if (isHeld("KeyA")) { vx -= r.x * a; vy -= r.y * a; vz -= r.z * a }
         if (isHeld("KeyD")) { vx += r.x * a; vy += r.y * a; vz += r.z * a }
-        if (isHeld("ShiftLeft") || isHeld("ShiftRight")) { vx -= u.x * a; vy -= u.y * a; vz -= u.z * a }
+        if (isHeld("KeyR")) { vx += u.x * a; vy += u.y * a; vz += u.z * a }
+        if (isHeld("KeyV")) { vx -= u.x * a; vy -= u.y * a; vz -= u.z * a }
         pos = SpaceVec(pos.x + vx * n, pos.y + vy * n, pos.z + vz * n)
         val damp = FLY_DAMPING.pow(n)
         val rotDamp = FLY_ROT_DAMPING.pow(n)
@@ -222,13 +224,13 @@ internal class FreeFlight(private val scale: Double, private val legend: MapLege
         val FLY_KEY_CODES = setOf(
             "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
             "KeyW", "KeyS", "KeyQ", "KeyE", "KeyA", "KeyD",
-            "ShiftLeft", "ShiftRight",
+            "KeyR", "KeyV",
         )
 
         private fun flyRowOf(code: String): String? = when (code) {
             "KeyW", "KeyS" -> "fly-throttle"
             "KeyA", "KeyD" -> "fly-strafe"
-            "ShiftLeft", "ShiftRight" -> "fly-down"
+            "KeyR", "KeyV" -> "fly-vertical"
             "ArrowUp", "ArrowDown" -> "fly-pitch"
             "ArrowLeft", "ArrowRight" -> "fly-yaw"
             "KeyQ", "KeyE" -> "fly-roll"

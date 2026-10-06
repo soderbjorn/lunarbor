@@ -2476,6 +2476,11 @@ fun ensureStyles() {
            (a pseudo-element: no text, so caret mapping never sees it). */
         .lunarbor-md-search {
             font-size: 0;
+            /* Out of the row's height, folded or a chip: a zero-size (or
+               smaller) box with the row's pixel line height sits on the
+               baseline and stretches the line, so the row would jump
+               whenever the caret came or went. */
+            line-height: 0;
         }
         .lunarbor-md-search::before {
             content: "";
@@ -2493,6 +2498,7 @@ fun ensureStyles() {
            as its name. Still text, so caret mapping never changes. */
         .lunarbor-md-wiki-syntax {
             font-size: 0;
+            line-height: 0; /* as for .lunarbor-md-search: no jump with the caret */
         }
         .lunarbor-row-caret .lunarbor-md-wiki-syntax {
             font-size: inherit;

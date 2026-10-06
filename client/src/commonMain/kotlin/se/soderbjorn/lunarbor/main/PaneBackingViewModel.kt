@@ -2438,7 +2438,8 @@ class PaneBackingViewModel(
      * no children, is already in the requested state, or in Markdown mode.
      * Unfolding a folded folder-backed bullet loads its children, as a click
      * on its −/+ control does ([toggleCollapse]). A board node (LBR-28)
-     * counts as a parent: its board is its contents.
+     * counts as a parent, its board being its contents, and so does a
+     * search node (its result list) — with no child bullets too.
      *
      * Called by the web view for Cmd-Down (unfold) / Cmd-Up (fold).
      */
@@ -2451,10 +2452,12 @@ class PaneBackingViewModel(
         val row = BlockLayout.rangeAt(lines, s.cursorRow)?.first ?: s.cursorRow
         val id = docState.lineIds.getOrNull(row) ?: return
         val foldedRef = doc.isPromotedRef(id) && id !in s.expandedRefIdsLocal
-        // A board node (LBR-28) folds like a parent: its board is its contents.
+        // A board node (LBR-28) folds like a parent: its board is its
+        // contents; so does a search node, its result list.
         val hasChildren = foldedRef ||
             DocumentLayout.hasChildren(lines, row, DocumentLayout.itemColumn(lines, row)) ||
-            lunicleBoardOf(s, row, 0) != null
+            lunicleBoardOf(s, row, 0) != null ||
+            (DocumentLayout.bulletAsteriskColumn(lines[row]) >= 0 && SearchNode.queryOf(SubtreeCodec.titleOf(lines[row])) != null)
         if (!hasChildren) return
         val isFolded = foldedRef || id in s.collapsedIds
         if (isFolded != folded) toggleCollapse(id)

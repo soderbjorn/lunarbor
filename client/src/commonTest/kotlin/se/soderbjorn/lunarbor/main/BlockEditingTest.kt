@@ -571,6 +571,17 @@ class BlockEditingTest {
     }
 
     @Test
+    fun caret_item_folds_and_unfolds_a_search_node_without_children() = runTest {
+        // Its result list is its contents, as its −/+ control says.
+        val p = pane("- Open tasks {{search: #todo}}\n- B\n")
+        p.caretAtEnd(0)
+        p.setCaretItemFolded(true)
+        assertTrue(p.id(0) in p.stateFlow.value.collapsedIds)
+        p.setCaretItemFolded(false)
+        assertFalse(p.id(0) in p.stateFlow.value.collapsedIds)
+    }
+
+    @Test
     fun paste_inside_a_block_keeps_the_lines_verbatim() = runTest {
         val p = pane("- A\n> x\n")
         p.caretAtEnd(1)

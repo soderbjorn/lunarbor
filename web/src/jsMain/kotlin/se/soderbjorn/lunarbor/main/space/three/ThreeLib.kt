@@ -164,10 +164,19 @@ class ThreeLib internal constructor(private val three: dynamic, private val css3
         return js("new c.CSS3DRenderer()").unsafeCast<Css3DRenderer3>()
     }
 
-    /** Wraps [element] so it can be placed in a scene. */
+    /**
+     * Wraps [element] so it can be placed in a scene. three.js sets
+     * `pointer-events: auto` inline on it, which would beat the
+     * stylesheet: a page's transparent, page-sized slot would then catch
+     * clicks meant for the cards behind it. The inline value is cleared,
+     * so the stylesheet decides (`.lunarbor-space-slot`: only its card
+     * takes the pointer).
+     */
     fun css3dObject(element: HTMLElement): Object3 {
         val c = css3d
-        return js("new c.CSS3DObject(element)").unsafeCast<Object3>()
+        val obj = js("new c.CSS3DObject(element)").unsafeCast<Object3>()
+        element.style.removeProperty("pointer-events")
+        return obj
     }
 
     /**

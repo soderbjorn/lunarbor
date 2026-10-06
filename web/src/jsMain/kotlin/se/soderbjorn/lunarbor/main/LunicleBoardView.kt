@@ -674,6 +674,7 @@ internal fun lunicleBoardCss(): String = """
            text, so caret mapping never sees it), like a search query. */
         .lunarbor-md-lunicle {
             font-size: 0;
+            line-height: 0; /* as for .lunarbor-md-search: no jump with the caret */
         }
         .lunarbor-md-lunicle::before {
             content: "";

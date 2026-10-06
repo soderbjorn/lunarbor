@@ -242,7 +242,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         ${keys(
             k("W") + " " + k("S") to "Throttle forward / reverse.",
             k("A") + " " + k("D") to "Strafe left / right.",
-            k("⇧") to "Descend.",
+            k("R") + " " + k("V") to "Rise / descend.",
             k("↑") + " " + k("↓") to "Pitch.",
             k("←") + " " + k("→") to "Yaw.",
             k("Q") + " " + k("E") to "Roll.",
@@ -351,7 +351,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
         ${keys(
             k("W") + " " + k("S") to "Throttle forward / reverse.",
             k("A") + " " + k("D") to "Strafe left / right.",
-            k("⇧") to "Descend.",
+            k("R") + " " + k("V") to "Rise / descend.",
             k("↑") + " " + k("↓") to "Pitch.",
             k("←") + " " + k("→") to "Yaw.",
             k("Q") + " " + k("E") to "Roll.",

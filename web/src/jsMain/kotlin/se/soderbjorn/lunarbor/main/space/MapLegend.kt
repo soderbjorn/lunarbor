@@ -141,7 +141,7 @@ internal class MapLegend(
             "FLY" to listOf(
                 Triple("fly-throttle", "W S", "Throttle forward / reverse"),
                 Triple("fly-strafe", "A D", "Strafe left / right"),
-                Triple("fly-down", "⇧", "Descend"),
+                Triple("fly-vertical", "R V", "Rise / descend"),
                 Triple("fly-pitch", "↑ ↓", "Pitch"),
                 Triple("fly-yaw", "← →", "Yaw"),
                 Triple("fly-roll", "Q E", "Roll"),
@@ -164,7 +164,7 @@ internal class MapLegend(
             "FLY" to listOf(
                 Triple("fly-throttle", "W S", "Throttle forward / reverse"),
                 Triple("fly-strafe", "A D", "Strafe left / right"),
-                Triple("fly-down", "⇧", "Descend"),
+                Triple("fly-vertical", "R V", "Rise / descend"),
                 Triple("fly-pitch", "↑ ↓", "Pitch"),
                 Triple("fly-yaw", "← →", "Yaw"),
                 Triple("fly-roll", "Q E", "Roll"),
