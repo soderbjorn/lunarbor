@@ -1,7 +1,7 @@
 /* JsAppGraph.kt (jsMain) — Metro DI graph for the web/Electron renderer.
  *
  * Declares the app-scoped infrastructure (coroutine scope, persister,
- * FileSystem, NoteRepository, DocumentRegistry, LunicleService). Per-pane view models are
+ * FileSystem, NoteRepository, DocumentRegistry, LunicleService, LunicleBoards). Per-pane view models are
  * deliberately NOT in the graph — AppShell.ensurePaneViewModel builds them.
  *
  * The vault root comes from the Electron main process (LUNARBOR_VAULT /
@@ -26,6 +26,7 @@ import se.soderbjorn.lunarbor.demo.DEMO_VAULT_ROOT
 import se.soderbjorn.lunarbor.demo.DemoPersister
 import se.soderbjorn.lunarbor.demo.demoFileSystem
 import se.soderbjorn.lunarbor.demo.isDemoMode
+import se.soderbjorn.lunarbor.lunicle.LunicleBoards
 import se.soderbjorn.lunarbor.lunicle.LunicleService
 import se.soderbjorn.lunarbor.main.DocumentRegistry
 import se.soderbjorn.lunarbor.main.ElectronLunicleBridge
@@ -124,12 +125,27 @@ interface JsAppGraph {
         return LunicleService(api = relay, store = relay)
     }
 
+    /**
+     * The board cache behind `{{lunicle: …}}` nodes (LBR-27), over the
+     * service and the main process's change streams; `null` without a
+     * [LunicleService] (the browser demo), so board nodes stay plain text.
+     */
+    @SingleIn(AppScope::class)
+    @Provides
+    fun provideLunicleBoards(service: LunicleService?, scope: CoroutineScope): LunicleBoards? {
+        if (service == null) return null
+        val bridge: dynamic = lunicleBridge()
+        val events = if (bridge == null) null else ElectronLunicleBridge(bridge)
+        return LunicleBoards(service, events, scope, now = { kotlin.js.Date.now().toLong() })
+    }
+
     @SingleIn(AppScope::class)
     @Provides
     fun provideDocumentRegistry(
         repository: NoteRepository,
         scope: CoroutineScope,
-    ): DocumentRegistry = DocumentRegistry(repository, scope)
+        lunicleBoards: LunicleBoards?,
+    ): DocumentRegistry = DocumentRegistry(repository, scope, lunicleBoards = lunicleBoards)
 }
 
 fun createJsAppGraph(): JsAppGraph = createGraph<JsAppGraph>()

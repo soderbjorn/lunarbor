@@ -40,8 +40,12 @@ import org.w3c.dom.events.MouseEvent
  *   currently-applicable commands. Letting the host pass a lambda means
  *   commands can capture the focused pane / active tab at open time
  *   without the palette having to know any of those concepts itself.
+ * @param placeholder The input's placeholder. A one-off palette used as a
+ *   picker (e.g. "Insert Lunicle board…"'s connection and project lists,
+ *   LBR-27) says what it lists.
  */
 internal class CommandPalette(
+    private val placeholder: String = "Type a command…",
     private val provideCommands: () -> List<Command>,
 ) {
 
@@ -132,7 +136,7 @@ internal class CommandPalette(
         val input = document.createElement("input") as HTMLInputElement
         input.type = "text"
         input.className = "lunarbor-palette-input"
-        input.placeholder = "Type a command…"
+        input.placeholder = placeholder
         input.autocomplete = "off"
         input.spellcheck = false
         input.addEventListener("input", { _ -> rebuildList(input.value) })

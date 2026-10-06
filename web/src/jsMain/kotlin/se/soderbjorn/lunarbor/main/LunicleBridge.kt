@@ -4,7 +4,9 @@
  * implements the commonMain ports [LunicleApi] and [LunicleConnectionStore]
  * over the preload's `noteApi.lunicleRequest` / `getLunicle` /
  * `addLunicleConnection` / `updateLunicleConnection` /
- * `removeLunicleConnection` (electron-main `LunicleHost.kt`).
+ * `removeLunicleConnection` (electron-main `LunicleHost.kt`), and
+ * [LunicleEventSource] (LBR-27) over `noteApi.lunicleWatch` /
+ * `onLunicleEvent` — the change streams the main process holds.
  *
  * Every Lunicle request goes through the Electron main process: Lunicle
  * sends no CORS headers, so a `fetch` from here would be refused, and the
@@ -23,6 +25,8 @@ import se.soderbjorn.lunarbor.lunicle.LunicleApi
 import se.soderbjorn.lunarbor.lunicle.LunicleConnection
 import se.soderbjorn.lunarbor.lunicle.LunicleConnectionStore
 import se.soderbjorn.lunarbor.lunicle.LunicleConnectionsSnapshot
+import se.soderbjorn.lunarbor.lunicle.LunicleEventSource
+import se.soderbjorn.lunarbor.lunicle.LunicleStreamMessage
 import se.soderbjorn.lunarbor.lunicle.LunicleHttpResponse
 import se.soderbjorn.lunarbor.lunicle.LunicleMethod
 import kotlin.js.Promise
@@ -35,14 +39,47 @@ internal fun lunicleBridge(): dynamic {
 }
 
 /**
- * [LunicleApi] + [LunicleConnectionStore] over the Electron preload.
+ * [LunicleApi] + [LunicleConnectionStore] + [LunicleEventSource] over the
+ * Electron preload.
  *
- * Constructed by `JsAppGraph.provideLunicleService` only when
+ * Constructed by `JsAppGraph.provideLunicleService` (requests, connections)
+ * and `JsAppGraph.provideLunicleBoards` (change streams) only when
  * [lunicleBridge] is non-null.
  *
  * @param bridge The preload's `noteApi` ([lunicleBridge]).
  */
-internal class ElectronLunicleBridge(private val bridge: dynamic) : LunicleApi, LunicleConnectionStore {
+internal class ElectronLunicleBridge(private val bridge: dynamic) : LunicleApi, LunicleConnectionStore, LunicleEventSource {
+
+    private var listener: ((LunicleStreamMessage) -> Unit)? = null
+    private var subscribed = false
+
+    /** See [LunicleEventSource.watch]: `noteApi.lunicleWatch({ connectionId, projectIds })`. */
+    override fun watch(connectionId: String, projectIds: Set<Long>) {
+        if (jsTypeOf(bridge.lunicleWatch) != "function") return
+        val spec: dynamic = js("({})")
+        spec.connectionId = connectionId
+        spec.projectIds = projectIds.map { it.toDouble() }.toTypedArray()
+        try {
+            bridge.lunicleWatch(spec)
+        } catch (e: Throwable) {
+            console.error("[lunarbor] lunicleWatch failed", e)
+        }
+    }
+
+    /** See [LunicleEventSource.setListener]: `noteApi.onLunicleEvent`, subscribed once. */
+    override fun setListener(listener: (LunicleStreamMessage) -> Unit) {
+        this.listener = listener
+        if (subscribed || jsTypeOf(bridge.onLunicleEvent) != "function") return
+        subscribed = true
+        bridge.onLunicleEvent { payload: dynamic ->
+            val json = try {
+                Json.parseToJsonElement(js("JSON.stringify")(payload) as String)
+            } catch (_: Throwable) {
+                null
+            }
+            LunicleStreamMessage.parse(json)?.let { this.listener?.invoke(it) }
+        }
+    }
 
     override suspend fun request(
         connectionId: String,

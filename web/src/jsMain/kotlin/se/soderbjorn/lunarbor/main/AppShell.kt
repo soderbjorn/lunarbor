@@ -799,6 +799,65 @@ class AppShell(
      * privacy mode hides the journal, nothing moves and a short notice
      * says so, without naming the mode or the tags.
      */
+    /**
+     * "Insert Lunicle board…" (LBR-27): asks for a connection — skipped
+     * when exactly one has a token — then for one of its projects (from
+     * `projects()`), and inserts `Lunicle board {{lunicle: <conn>/<KEY>}}`
+     * into the focused pane ([MainViewModel.insertLunicleBoard]). The
+     * pickers are one-off command palettes. Explains itself in a dialog
+     * when there is no connection or the projects cannot be listed.
+     */
+    private fun insertLunicleBoard() {
+        val service = lunicleService ?: return
+        val paneId = focusedPaneId() ?: return
+        scope.launch {
+            val connections = service.refreshConnections().connections.filter { it.hasToken }
+            when (connections.size) {
+                0 -> showConfirmDialog(
+                    title = "No Lunicle connection",
+                    message = "Add a connection with a token in App settings → Lunicle first.",
+                    cancelLabel = "Close",
+                )
+                1 -> pickLunicleProject(paneId, connections.single())
+                else -> CommandPalette(placeholder = "Lunicle connection…") {
+                    connections.map { c ->
+                        CommandPalette.Command(id = "lunicle-${c.id}", title = "${c.name} — ${c.baseUrl}", run = { pickLunicleProject(paneId, c) })
+                    }
+                }.open()
+            }
+        }
+    }
+
+    /** The project step of [insertLunicleBoard], for [connection]. */
+    private fun pickLunicleProject(paneId: String, connection: se.soderbjorn.lunarbor.lunicle.LunicleConnection) {
+        val service = lunicleService ?: return
+        scope.launch {
+            when (val r = service.client(connection.id).projects()) {
+                is se.soderbjorn.lunarbor.lunicle.LunicleResult.Failure -> showConfirmDialog(
+                    title = "Couldn't list the projects",
+                    message = se.soderbjorn.lunarbor.lunicle.LunicleBoardLayout.errorText(r.error),
+                    cancelLabel = "Close",
+                )
+                is se.soderbjorn.lunarbor.lunicle.LunicleResult.Ok -> if (r.value.isEmpty()) {
+                    showConfirmDialog(
+                        title = "No projects",
+                        message = "The token of “${connection.name}” sees no projects.",
+                        cancelLabel = "Close",
+                    )
+                } else {
+                    CommandPalette(placeholder = "Project in ${connection.name}…") {
+                        r.value.map { p ->
+                            CommandPalette.Command(id = "project-${p.id}", title = "${p.keyPrefix} — ${p.name}", run = {
+                                paneViewModels[paneId]?.insertLunicleBoard(connection.name, p.keyPrefix)
+                                paneEditors[paneId]?.focusEditor()
+                            })
+                        }
+                    }.open()
+                }
+            }
+        }
+    }
+
     private fun goToToday() {
         val paneId = focusedPaneId() ?: return
         val vm = paneViewModels[paneId] ?: return
@@ -1116,6 +1175,8 @@ class AppShell(
     private fun installFolderRefreshOnFocus() {
         window.addEventListener("focus", { _: Event ->
             scope.launch { documentRegistry.refreshVaultListings() }
+            // Board nodes on screen (LBR-27) re-read their boards too.
+            documentRegistry.lunicleBoards?.refreshShown()
         })
     }
 
@@ -1249,6 +1310,11 @@ class AppShell(
         addStyleCmd("delete-block", "Delete block") { it.deleteBlockAtCursor() }
         // A search node with an example expression, selected for editing.
         addStyleCmd("insert-search-node", "Insert search node") { it.insertSearchNode() }
+        // A board node (LBR-27): pick a connection (skipped when there is
+        // one) and a project. Electron only — the demo has no Lunicle.
+        if (lunicleService != null) {
+            out += CommandPalette.Command(id = "insert-lunicle-board", title = "Insert Lunicle board…", run = { insertLunicleBoard() })
+        }
         // Every fold under the page's node, at every depth (large blocks'
         // previews stay as they are).
         addStyleCmd("expand-all-children", "Expand all children") { it.setAllChildrenFolded(false) }
@@ -1785,8 +1851,11 @@ class AppShell(
         // left out too: they label the item (and show as pills on its
         // row and the page title), they don't name it. Navigation is
         // keyed on `lineId`, so the text-stripping never affects where a
-        // click takes you.
-        fun flat(s: String) = FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(s))
+        // click takes you. Node queries (`{{search: …}}`, `{{lunicle: …}}`)
+        // are no part of a name either.
+        fun flat(s: String) = FolderName.withoutTags(
+            InlineMarkdownTokenizer.tokenize(se.soderbjorn.lunarbor.data.LunicleNode.stripQueries(s)),
+        )
         for (ancestor in vm.bulletAncestors(backing)) {
             segments += PaneTitleSegment(
                 label = flat(ancestor.titleText).ifBlank { "(untitled)" },

@@ -150,11 +150,15 @@ fun paint(
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ) {
     editor.innerHTML = ""
+    // The boards drawn unfolded (LBR-27), reported once the paint is done:
+    // what the board cache polls, streams and reads in full.
+    val shownBoards = LinkedHashMap<se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, Set<Long>>()
     if (!state.isLoaded) {
+        viewModel.reportShownBoards(emptyMap())
         paintLoading(editor)
         return
     }
-    val docState = state.documentState ?: return
+    val docState = state.documentState ?: return viewModel.reportShownBoards(emptyMap())
     val zoom = viewModel.zoomInfo(state)
     // Not zoomed: from the first row, or the second when a note's
     // `# H1` repeats the page title (State.hidesTitleHeading).
@@ -168,7 +172,49 @@ fun paint(
         if (zoomId != null && searchView != null) {
             editor.appendChild(buildSearchNodeResults(searchView, zoom.zoomRow, viewModel, style, isPage = true))
         }
+        // Zoomed into a board node (LBR-27): its board heads the page.
+        val boardView = if (zoomId != null) viewModel.lunicleBoardOf(state, zoom.zoomRow) else null
+        if (boardView != null) {
+            editor.appendChild(buildLunicleBoard(boardView, viewModel, style, isPage = true))
+            recordShownBoard(shownBoards, boardView)
+        }
     }
+    try {
+        paintRows(editor, state, docState, zoom, startRow, endRowInclusive, viewModel, style, onBulletMouseDown, shownBoards)
+    } finally {
+        viewModel.reportShownBoards(shownBoards)
+    }
+}
+
+/**
+ * Records [view] — a board drawn unfolded — with the issues it shows
+ * unfolded, for [MainViewModel.reportShownBoards].
+ */
+private fun recordShownBoard(
+    shown: MutableMap<se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, Set<Long>>,
+    view: PaneBackingViewModel.LunicleBoardView,
+) {
+    if (!view.ref.isValid) return
+    val open = view.columns.flatMap { c -> c.issues.filter { it.unfolded }.map { it.issue.id } }.toSet()
+    shown[view.key] = shown[view.key].orEmpty() + open
+}
+
+/**
+ * The rows part of [paint]: one element per visible row from [startRow]
+ * to [endRowInclusive], and the empty-outline hint.
+ */
+private fun paintRows(
+    editor: HTMLElement,
+    state: PaneBackingViewModel.State,
+    docState: Document.State,
+    zoom: PaneBackingViewModel.ZoomInfo?,
+    startRow: Int,
+    endRowInclusive: Int,
+    viewModel: MainViewModel,
+    style: EditorStyle,
+    onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)?,
+    shownBoards: MutableMap<se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, Set<Long>>,
+) {
     if (endRowInclusive < startRow) return
 
     // When zoomed, indents render relative to the zoom target so the
@@ -214,7 +260,8 @@ fun paint(
         val line = if (stripPrefix > 0) rawLine.substring(stripPrefix) else rawLine
         editor.appendChild(
             buildRowElement(
-                row, line, stripPrefix, state, docState, viewModel, style, blockOfRow[row], onBulletMouseDown
+                row, line, stripPrefix, state, docState, viewModel, style, blockOfRow[row], onBulletMouseDown,
+                shownBoards = shownBoards,
             )
         )
     }
@@ -262,6 +309,8 @@ fun paint(
  *   click to zoom, drag to move. `null` disables it.
  * @param isZoomBody `true` for the rows of the block item the pane is
  *   zoomed into, drawn as the page's body (see [decorateBlockRow]).
+ * @param shownBoards Collects the boards drawn unfolded (and their
+ *   unfolded issues) for `MainViewModel.reportShownBoards`.
  */
 private fun buildRowElement(
     absoluteRow: Int,
@@ -274,6 +323,7 @@ private fun buildRowElement(
     block: IntRange?,
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
     isZoomBody: Boolean = false,
+    shownBoards: MutableMap<se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, Set<Long>>? = null,
 ): HTMLElement {
     val rowDiv = document.createElement("div") as HTMLElement
     rowDiv.setAttribute("data-row", absoluteRow.toString())
@@ -329,11 +379,13 @@ private fun buildRowElement(
         val outline = !state.isMarkdownMode
         // A search node folds like a parent: its results are its contents.
         val searchView = if (rowId != null && outline) viewModel.searchNodeOf(state, absoluteRow) else null
+        // So does a board node (LBR-27): its board is its contents.
+        val boardView = if (rowId != null && outline) viewModel.lunicleBoardOf(state, absoluteRow) else null
         if (rowId != null && outline) {
             val isFoldedPromotedRef = viewModel.isPromotedRef(rowId) &&
                 rowId !in state.expandedRefIdsLocal
             // Children the privacy mode hides do not count.
-            val isCollapsibleParent = viewModel.hasChildrenOnScreen(state, absoluteRow) || searchView != null
+            val isCollapsibleParent = viewModel.hasChildrenOnScreen(state, absoluteRow) || searchView != null || boardView != null
             val isCollapsedNow = rowId in state.collapsedIds
             if (isCollapsibleParent) {
                 if (isCollapsedNow || isFoldedPromotedRef) rowDiv.classList.add("lunarbor-row-folded")
@@ -356,8 +408,19 @@ private fun buildRowElement(
         val bulletPrefix = buildBulletPrefix(absoluteRow, if (outline) onBulletMouseDown else null, interactive = outline)
         if (mirror) bulletPrefix.title = "Mirror: editing here edits the node it shows"
         rowDiv.appendChild(bulletPrefix)
-        rowDiv.appendChild(buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2), imageResolver, wikiResolver, linkResolver))
+        rowDiv.appendChild(
+            buildStyledTextRegion(rowDiv, line.substring(bulletCol + 2), imageResolver, wikiResolver, linkResolver, state.lunicleEnabled)
+        )
         if (rowId != null && outline) buildFolderBadge(absoluteRow, rowId, state, viewModel)?.let(rowDiv::appendChild)
+        // A board node (LBR-27): its sync indicator on the line, and its
+        // board under the text (unless folded).
+        if (boardView != null) {
+            rowDiv.appendChild(buildLunicleSyncIndicator(boardView))
+            if (!boardView.folded) {
+                rowDiv.appendChild(buildLunicleBoard(boardView, viewModel, style))
+                shownBoards?.let { recordShownBoard(it, boardView) }
+            }
+        }
         // A search node's match count, on its line after the magnifier.
         if (searchView != null && rowId != null) rowDiv.appendChild(buildSearchNodeCount(searchView, rowId, viewModel))
         // A search node lists its live results under its text (unless folded).
@@ -690,7 +753,7 @@ private const val ICON_BLOCK_COLLAPSE: String =
  *   carries the indent).
  * @return The guide layer, or `null` at depth 0 (no ancestors).
  */
-private fun appendIndentGuides(rowDiv: HTMLElement, depth: Int, left: String, style: EditorStyle): HTMLElement? {
+internal fun appendIndentGuides(rowDiv: HTMLElement, depth: Int, left: String, style: EditorStyle): HTMLElement? {
     if (depth <= 0) return null
     val step = style.indentStepPx
     val guides = document.createElement("span") as HTMLElement
@@ -721,7 +784,7 @@ private const val GUIDE_X = "0.45em"
  * dot: the bullet glyph's margins and width plus the space after it, so
  * the box's left edge lines up with a sibling bullet's text.
  */
-private const val BLOCK_DOT_SLOT = "1.15em"
+internal const val BLOCK_DOT_SLOT = "1.15em"
 
 /**
  * The outline dot of a block item, hung in the slot left of the block's
@@ -838,6 +901,7 @@ private fun buildStyledTextRegion(
     imageResolver: (String) -> String?,
     wikiResolver: (String) -> String?,
     linkResolver: (String) -> String,
+    lunicleEnabled: Boolean = false,
 ): HTMLElement {
     val wrapper = document.createElement("span") as HTMLElement
     wrapper.className = "lunarbor-text"
@@ -913,7 +977,11 @@ private fun buildStyledTextRegion(
                     continue
                 }
                 span = document.createElement("span") as HTMLElement
-                span.className = runClassName(run.styles, isLink = href != null, isTag = run.isTag, isSearch = run.isSearchQuery)
+                span.className = runClassName(
+                    run.styles, isLink = href != null, isTag = run.isTag, isSearch = run.isSearchQuery,
+                    // Electron only (LBR-27): in the demo a `{{lunicle: …}}` stays plain text.
+                    isLunicle = run.isLunicleQuery && lunicleEnabled,
+                )
                 if (run.isTag) span.style.setProperty("--tag-h", tagHue(run.text).toString())
                 if (href != null) {
                     span.setAttribute("data-href", href)
@@ -1032,8 +1100,9 @@ internal fun inlineRunCssClasses(
     isTag: Boolean = false,
     isImage: Boolean = false,
     isSearch: Boolean = false,
+    isLunicle: Boolean = false,
 ): List<String> {
-    if (styles.isEmpty() && !isLink && !isTag && !isImage && !isSearch) return emptyList()
+    if (styles.isEmpty() && !isLink && !isTag && !isImage && !isSearch && !isLunicle) return emptyList()
     val out = ArrayList<String>(styles.size + 2)
     if (InlineStyle.BOLD in styles) out += "lunarbor-md-bold"
     if (InlineStyle.ITALIC in styles) out += "lunarbor-md-italic"
@@ -1043,6 +1112,7 @@ internal fun inlineRunCssClasses(
     if (isTag) out += "lunarbor-md-tag"
     if (isImage) out += "lunarbor-md-image"
     if (isSearch) out += "lunarbor-md-search"
+    if (isLunicle) out += "lunarbor-md-lunicle"
     return out
 }
 
@@ -1210,8 +1280,9 @@ private fun runClassName(
     isLink: Boolean = false,
     isTag: Boolean = false,
     isSearch: Boolean = false,
+    isLunicle: Boolean = false,
 ): String {
-    val extras = inlineRunCssClasses(styles, isLink, isTag, isSearch = isSearch)
+    val extras = inlineRunCssClasses(styles, isLink, isTag, isSearch = isSearch, isLunicle = isLunicle)
     if (extras.isEmpty()) return "lunarbor-text-run"
     return "lunarbor-text-run " + extras.joinToString(" ")
 }
@@ -1467,14 +1538,17 @@ internal fun isolatedText(text: String): HTMLElement {
  *
  * @param isCollapsed `true` when the parent's children are hidden in
  *   this pane (folded, or a folder-backed bullet not yet expanded).
+ * @param animate `false` to skip [FOLD_EVENT] (board rows, which are not
+ *   document rows the fold animation could follow).
  * @param onToggle What a click does.
  *
  * Folder-backed bullets use the same chevron as any other parent: since
  * every parent bullet is folder-backed once saved, a separate adornment
  * would mark nothing and only flicker in after the first save.
  */
-private fun buildChevron(
+internal fun buildChevron(
     isCollapsed: Boolean,
+    animate: Boolean = true,
     onToggle: () -> Unit,
 ): HTMLElement {
     val target = document.createElement("div") as HTMLElement
@@ -1514,9 +1588,12 @@ private fun buildChevron(
         me.stopPropagation()
         me.preventDefault()
         // Tell the pane a fold is starting, so it animates the repaint
-        // (`MainScreen` listens on the editor).
-        val init: dynamic = js("({ bubbles: true })")
-        target.dispatchEvent(org.w3c.dom.events.Event(FOLD_EVENT, init.unsafeCast<org.w3c.dom.EventInit>()))
+        // (`MainScreen` listens on the editor). Board rows (LBR-27) are
+        // not document rows, so they fold without it.
+        if (animate) {
+            val init: dynamic = js("({ bubbles: true })")
+            target.dispatchEvent(org.w3c.dom.events.Event(FOLD_EVENT, init.unsafeCast<org.w3c.dom.EventInit>()))
+        }
         onToggle()
     })
     return target
@@ -2538,6 +2615,6 @@ fun ensureStyles() {
             border-top: 1px solid var(--t-border, #3a3a3a);
             margin: 4px 0;
         }
-    """.trimIndent()
+    """.trimIndent() + "\n" + lunicleBoardCss()
     document.head?.appendChild(style)
 }

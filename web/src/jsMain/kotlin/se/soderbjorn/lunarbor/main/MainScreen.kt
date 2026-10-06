@@ -479,6 +479,11 @@ class MainScreen(
                         html.hide()
                         scrollWrapper.style.display = ""
                     }
+                    // No editor on screen: no board node shown either (LBR-27);
+                    // the editor's paint reports its own.
+                    if (backing == null || backing.isFileView || backing.isSearchActive) {
+                        viewModel.reportShownBoards(emptyMap())
+                    }
                     if (backing != null && (backing.isDrawingView || backing.isHtmlView)) {
                         // Nothing else to paint: the editor and the folder
                         // contents list are hidden with the scroll wrapper.
@@ -2143,6 +2148,14 @@ class MainScreen(
                 count.textContent = searchCountText(view.result)
                 title.appendChild(count)
             }
+            // A board node's page (LBR-27): its sync indicator, as on its line.
+            viewModel.lunicleBoardOf(backing, zoomRow)?.let { view ->
+                val holder = document.createElement("span") as HTMLElement
+                holder.className = "lunarbor-title-lunicle-sync"
+                holder.setAttribute("contenteditable", "false")
+                holder.appendChild(buildLunicleSyncIndicator(view))
+                title.appendChild(holder)
+            }
         }
         if (backing != null) appendDailyTemplateLabel(title, backing)
     }
@@ -2206,6 +2219,8 @@ class MainScreen(
                 isLink = run.linkHref != null,
                 isTag = run.isTag,
                 isSearch = run.isSearchQuery,
+                // A board node's reference (LBR-27): its icon, only where there is Lunicle.
+                isLunicle = run.isLunicleQuery && viewModel.currentBackingState.lunicleEnabled,
             )
             val full = if (baseRunClass == null) classes
                 else if (classes.isEmpty()) listOf(baseRunClass)

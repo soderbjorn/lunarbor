@@ -227,6 +227,35 @@ class MainViewModel(
     fun searchNodeOf(state: PaneBackingViewModel.State, row: Int): PaneBackingViewModel.SearchNodeView? =
         paneBackingViewModel.searchNodeOf(state, row)
 
+    /** See `PaneBackingViewModel.lunicleBoardOf`; the clock is the browser's. */
+    fun lunicleBoardOf(state: PaneBackingViewModel.State, row: Int): PaneBackingViewModel.LunicleBoardView? =
+        paneBackingViewModel.lunicleBoardOf(state, row, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.toggleLunicleColumn`. */
+    fun toggleLunicleColumn(column: PaneBackingViewModel.LunicleColumnView) = paneBackingViewModel.toggleLunicleColumn(column)
+
+    /** See `PaneBackingViewModel.toggleLunicleIssue`. */
+    fun toggleLunicleIssue(issue: PaneBackingViewModel.LunicleIssueView) = paneBackingViewModel.toggleLunicleIssue(issue)
+
+    /** See `PaneBackingViewModel.reportShownBoards`. */
+    fun reportShownBoards(shown: Map<se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, Set<Long>>) =
+        paneBackingViewModel.reportShownBoards(shown)
+
+    /** See `PaneBackingViewModel.insertLunicleBoard`. */
+    fun insertLunicleBoard(connection: String, key: String) = paneBackingViewModel.insertLunicleBoard(connection, key)
+
+    /**
+     * Platform glue: opens an `https:` page (a Lunicle issue, LBR-27) in
+     * the system browser through the main process's
+     * `lunarbor:openExternalUrl` (which refuses anything else). Without the
+     * bridge, a new browser tab.
+     */
+    fun openExternalUrl(url: String) {
+        if (!url.startsWith("https://")) return
+        val noteApi = js("globalThis.noteApi")
+        if (noteApi?.openExternalUrl != null) noteApi.openExternalUrl(url) else window.open(url, "_blank")
+    }
+
 
     /**
      * Platform glue: opens a search result in a new window. Set by
