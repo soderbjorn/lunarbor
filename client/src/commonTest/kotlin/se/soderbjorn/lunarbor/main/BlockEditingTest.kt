@@ -349,23 +349,28 @@ class BlockEditingTest {
     }
 
     @Test
-    fun temporary_special_converts_imported_blocks_in_the_whole_tree() = runTest {
+    fun clean_up_blocks_strips_the_import_frame_in_the_whole_tree() = runTest {
         fs.writeFile(
             "$root/Sub/_node.md",
             "- 2023-11-14\n> ---\n>\n> ---\n> Deep one.\n>\n> Deep two.\n>\n> ---\n> ![[Framna/1-1/X/Overview]]\n",
         )
-        val p = pane("- Sub [↳](<Sub/_node.md>)\n> ---\n>\n> ---\n> Top.\n>\n>\n> ---\n> ![[A/Overview]]\n")
+        val p = pane("- Sub [↳](<Sub/_node.md>)\n> ---\n>\n> ---\n> Top.\n> ---\n> mid\n>\n>\n> ---\n> ![[A/Overview]]\n")
         // Fold Sub, so its folder has to be loaded again.
         p.toggleCollapse(p.id(0))
         runCurrent()
-        p.convertImportedBlocksUnderPage()
+        val topBlock = p.id(p.lines.indexOf(first(0, "---")))
+        p.cleanUpBlocks()
         runCurrent()
         assertEquals(
-            listOf("* Sub", "  * 2023-11-14", "  * Deep one.", "  * Deep two.", "* Top."),
+            listOf(
+                "* Sub", "  * 2023-11-14", first(2, "Deep one."), next(2), next(2, "Deep two."),
+                first(0, "Top."), next(0, "---"), next(0, "mid"),
+            ),
             p.lines,
         )
+        assertEquals(topBlock, p.id(5))
         flush()
-        assertEquals("- 2023-11-14\n- Deep one.\n- Deep two.\n", read("Sub/_node.md"))
+        assertEquals("- 2023-11-14\n> Deep one.\n>\n> Deep two.\n", read("Sub/_node.md"))
         p.undo()
         assertEquals(first(2, "---"), p.lines[2])
         assertTrue(p.lines.any { it == next(0, "![[A/Overview]]") })

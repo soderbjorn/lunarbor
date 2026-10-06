@@ -1348,26 +1348,66 @@ internal class TextEditingViewModel(
     /**
      * Converts every block in rows [startRow]..[endRow] to bullets, one
      * per line ([NoteConversion.nodeGroupsOfBlock]), each in its block's
-     * parent; see [convertBlockRows] for one block. With
-     * [stripImportFrame] (TEMPORARY, "Convert to block - temporary
-     * special") each block first loses the frame imported Obsidian notes
-     * carry ([NoteConversion.stripImportFrame]: leading `---` / blank
-     * rows, trailing blank / `---` / `![[…]]` rows). Blocks whose first
+     * parent; see [convertBlockRows] for one block. Blocks whose first
      * row [skipRow] says to leave (privacy-hidden ones) are left alone.
      * Converted bottom-up, so the rows above stay valid. The caret goes
      * to [startRow]. A no-op in a plain Markdown file.
      *
-     * Called by `PaneBackingViewModel.convertBlocksUnderPage` once every
+     * Called by `PaneBackingViewModel.convertBlockToNodes` once every
      * folder under the page is loaded; undo restores the blocks through
      * the pane's snapshot history.
      *
      * @return the number of blocks converted.
      */
-    fun convertBlocksIn(
+    fun convertBlocksIn(startRow: Int, endRow: Int, skipRow: (Int) -> Boolean = { false }): Int =
+        forEachBlockIn(startRow, endRow, skipRow) { convertBlockRows(it) }
+
+    /**
+     * TEMPORARY ("Clean up blocks (temporary)"): strips the frame
+     * imported Obsidian notes carry from every block in rows
+     * [startRow]..[endRow] ([NoteConversion.stripImportFrame]: leading
+     * `---` / blank rows, trailing blank / `---` / `![[…]]` rows). The
+     * blocks stay blocks; the first row keeps its id (and so the block's
+     * children and folder). A block left with nothing keeps one empty
+     * row. Blocks [skipRow] names are left alone; the caret goes to
+     * [startRow].
+     *
+     * Called by `PaneBackingViewModel.cleanUpBlocks` once every folder
+     * under the page is loaded.
+     *
+     * @return the number of blocks looked at.
+     */
+    fun cleanUpBlocksIn(startRow: Int, endRow: Int, skipRow: (Int) -> Boolean = { false }): Int =
+        forEachBlockIn(startRow, endRow, skipRow) { first ->
+            val lines0 = document.stateFlow.value.lines
+            val range = BlockLayout.rangeAt(lines0, first) ?: return@forEachBlockIn
+            val contents = range.map { BlockLayout.contentOf(lines0[it]) }
+            val kept = NoteConversion.stripImportFrame(contents).ifEmpty { listOf("") }
+            if (kept == contents) return@forEachBlockIn
+            val indent = BlockLayout.markerColumn(lines0[range.first])
+            if (range.last > range.first) document.deleteRows(range.first + 1, range.last)
+            val old = document.stateFlow.value.lines[range.first]
+            if (old.length > indent + 1) document.delete(range.first, indent + 1, range.first, old.length)
+            if (kept.first().isNotEmpty()) document.insertText(range.first, indent + 1, kept.first())
+            kept.drop(1).forEachIndexed { i, c ->
+                document.insertLine(range.first + 1 + i, BlockLayout.nextLine(indent, c))
+            }
+        }
+
+    /**
+     * Runs [edit] on the first row of every block in rows
+     * [startRow]..[endRow] that [skipRow] does not name, bottom-up (so an
+     * edit may change the rows below it freely), then puts the caret at
+     * the text start of [startRow]. A no-op in a plain Markdown file.
+     * Shared by [convertBlocksIn] and [cleanUpBlocksIn].
+     *
+     * @return the number of blocks [edit] ran on.
+     */
+    private inline fun forEachBlockIn(
         startRow: Int,
         endRow: Int,
-        stripImportFrame: Boolean,
-        skipRow: (Int) -> Boolean = { false },
+        skipRow: (Int) -> Boolean,
+        edit: (Int) -> Unit,
     ): Int {
         val s = state
         if (!s.isLoaded || !document.bulletsOnly) return 0
@@ -1380,7 +1420,7 @@ internal class TextEditingViewModel(
                 r = range.last + 1
             } else r++
         }
-        for (first in firsts.asReversed()) convertBlockRows(first, stripImportFrame)
+        for (first in firsts.asReversed()) edit(first)
         val lines = document.stateFlow.value.lines
         if (lines.isNotEmpty()) {
             val row = startRow.coerceIn(0, lines.lastIndex)
@@ -1397,9 +1437,7 @@ internal class TextEditingViewModel(
 
     /**
      * The document edit behind [convertBlocksIn]: replaces the block
-     * containing [row] with its nodes. With [stripImportFrame] the
-     * block's rows lose the imported-note frame first
-     * ([NoteConversion.stripImportFrame]).
+     * containing [row] with its nodes.
      *
      * The first node takes over the block's first row — and with it the
      * row's [LineId], so a block with children keeps its folder, its
@@ -1409,15 +1447,12 @@ internal class TextEditingViewModel(
      * goes after the block's whole subtree, at the block's level. A no-op
      * when [row] is not in a block.
      */
-    private fun convertBlockRows(row: Int, stripImportFrame: Boolean) {
+    private fun convertBlockRows(row: Int) {
         val lines0 = document.stateFlow.value.lines
         val range = BlockLayout.rangeAt(lines0, row) ?: return
         val indent = BlockLayout.markerColumn(lines0[range.first])
         val contents = range.map { BlockLayout.contentOf(lines0[it]) }
-        val groups = NoteConversion.nodeGroupsOfBlock(
-            if (stripImportFrame) NoteConversion.stripImportFrame(contents) else contents,
-            indent,
-        )
+        val groups = NoteConversion.nodeGroupsOfBlock(contents, indent)
         // Bottom-up, so the row indices above stay valid.
         val subtreeEnd = DocumentLayout.subtreeEnd(lines0, range.first, indent)
         groups.drop(1).flatten().forEachIndexed { i, l -> document.insertLine(subtreeEnd + 1 + i, l) }

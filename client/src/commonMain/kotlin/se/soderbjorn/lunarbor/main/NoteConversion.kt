@@ -173,14 +173,13 @@ object NoteConversion {
     }
 
     /**
-     * TEMPORARY ("Convert to block - temporary special"): [rowContents]
+     * TEMPORARY ("Clean up blocks (temporary)"): [rowContents]
      * without the frame imported Obsidian 1-1 notes carry — the leading
      * rows that are blank or `---` (an empty front matter), and the
      * trailing rows that are blank, `---` or an `![[…]]` embed (the
      * old-format link to an overview page). Rows between are untouched.
      *
-     * Called by `TextEditingViewModel.convertBlockRows` before
-     * [nodeGroupsOfBlock].
+     * Called by `TextEditingViewModel.cleanUpBlocksIn`.
      */
     fun stripImportFrame(rowContents: List<String>): List<String> {
         fun isFrame(c: String) = c.isBlank() || c.trim() == "---"

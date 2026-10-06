@@ -2083,31 +2083,36 @@ class PaneBackingViewModel(
 
     /**
      * "Convert block to nodes" (palette): every block in the page's whole
-     * tree becomes bullets, one per line. See [convertBlocksUnderPage].
+     * tree becomes bullets, one per line
+     * ([TextEditingViewModel.convertBlocksIn]). See [editBlocksUnderPage].
      */
-    fun convertBlockToNodes() = convertBlocksUnderPage(stripImportFrame = false)
+    fun convertBlockToNodes() = editBlocksUnderPage { start, end, skip ->
+        textEditing.convertBlocksIn(start, end, skip)
+    }
 
     /**
-     * TEMPORARY ("Convert to block - temporary special", palette): as
-     * [convertBlockToNodes], but each block first loses the imported-note
-     * frame (`---` lines at the top, `---` and the `![[…]]` embed at the
-     * bottom; [NoteConversion.stripImportFrame]).
+     * TEMPORARY ("Clean up blocks (temporary)", palette): every block in
+     * the page's whole tree loses the imported-note frame — `---` lines
+     * at the top, `---` and the `![[…]]` embed at the bottom — and stays
+     * a block ([TextEditingViewModel.cleanUpBlocksIn]). See
+     * [editBlocksUnderPage].
      */
-    fun convertImportedBlocksUnderPage() = convertBlocksUnderPage(stripImportFrame = true)
+    fun cleanUpBlocks() = editBlocksUnderPage { start, end, skip ->
+        textEditing.cleanUpBlocksIn(start, end, skip)
+    }
 
     /**
      * Loads every folder-backed item under the page (the zoom target's
      * subtree, or the whole outline) level by level — so those items end
-     * up unfolded — then converts every block there to nodes
-     * ([TextEditingViewModel.convertBlocksIn]), [stripImportFrame]
-     * passed on. Mirrors are not followed, so mirrored nodes elsewhere
-     * are left alone, and blocks the privacy mode hides are skipped. One
-     * undoable edit. Stops if the pane switches file while loading; a
-     * no-op in Markdown mode and on read-only pages.
+     * up unfolded — then runs [edit] on the page's rows (first row, last
+     * row, and which rows to skip: those the privacy mode hides) as one
+     * undoable edit. Mirrors are not followed, so mirrored nodes
+     * elsewhere are left alone. Stops if the pane switches file while
+     * loading; a no-op in Markdown mode and on read-only pages.
      *
-     * Called by [convertBlockToNodes] and [convertImportedBlocksUnderPage].
+     * Called by [convertBlockToNodes] and [cleanUpBlocks].
      */
-    private fun convertBlocksUnderPage(stripImportFrame: Boolean) {
+    private fun editBlocksUnderPage(edit: (Int, Int, (Int) -> Boolean) -> Unit) {
         val s0 = _stateFlow.value
         if (!s0.isLoaded || s0.isMarkdownMode || s0.isReadOnlyPage) return
         val doc = document ?: return
@@ -2141,9 +2146,7 @@ class PaneBackingViewModel(
             val start = zoom?.startRow ?: 0
             val end = zoom?.endRowInclusive ?: lines.lastIndex
             val hidden = hiddenRowsIn(s)
-            recordEdit(FrameKind.OTHER) {
-                textEditing.convertBlocksIn(start, end, stripImportFrame) { PrivacyLayout.isHidden(hidden, it) }
-            }
+            recordEdit(FrameKind.OTHER) { edit(start, end) { PrivacyLayout.isHidden(hidden, it) } }
         }
     }
 
