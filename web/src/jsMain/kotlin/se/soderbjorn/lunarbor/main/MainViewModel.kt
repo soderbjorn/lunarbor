@@ -265,6 +265,22 @@ class MainViewModel(
     fun explainLunicleRow(nodeRow: Int, ref: LunicleRowRef) =
         paneBackingViewModel.explainLunicleRow(nodeRow, ref, kotlin.js.Date.now().toLong())
 
+    /** See `PaneBackingViewModel.openLunicleMenu`; the clock is the browser's. */
+    fun openLunicleMenu(nodeRow: Int, issueId: Long, trigger: Char?, field: se.soderbjorn.lunarbor.lunicle.LuniclePill.Field?): LunicleMenu? =
+        paneBackingViewModel.openLunicleMenu(nodeRow, issueId, trigger, field, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.lunicleMenuOptions`; the clock is the browser's. */
+    fun lunicleMenuOptions(nodeRow: Int, menu: LunicleMenu): List<LunicleMenuOption> =
+        paneBackingViewModel.lunicleMenuOptions(nodeRow, menu, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.pickLunicleOption`; the clock is the browser's. */
+    fun pickLunicleOption(nodeRow: Int, menu: LunicleMenu, option: LunicleMenuOption): PaneBackingViewModel.LuniclePick =
+        paneBackingViewModel.pickLunicleOption(nodeRow, menu, option, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.chooseLunicleResolution`; the clock is the browser's. */
+    fun chooseLunicleResolution(nodeRow: Int, choice: LunicleResolutionChoice, resolution: String?): LunicleRowRef? =
+        paneBackingViewModel.chooseLunicleResolution(nodeRow, choice, resolution, kotlin.js.Date.now().toLong())
+
     /** See `PaneBackingViewModel.insertLunicleBoard`. */
     fun insertLunicleBoard(connection: String, key: String) = paneBackingViewModel.insertLunicleBoard(connection, key)
 

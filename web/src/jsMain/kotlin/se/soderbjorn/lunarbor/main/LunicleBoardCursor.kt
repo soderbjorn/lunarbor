@@ -38,6 +38,18 @@
  * `canEdit: false`) gets a tint; typing on it makes the indicator say why
  * once (`MainViewModel.explainLunicleRow`).
  *
+ * **Properties (LBR-30).** `#` or `@` on an issue's title row (never typed
+ * into the title) opens a property menu ([LunicleBoardMenuPopup]) —
+ * `MainViewModel.openLunicleMenu`; a press on a pill opens that field's
+ * ([pressPill]), the caret going onto the title. While a menu shows it
+ * owns the keys `LunicleBoardMenu.key` names (typing narrows it, ↑ / ↓
+ * wrap, Enter / Tab pick, Esc, ⌫ on an empty query and a space close it);
+ * a pick is `MainViewModel.pickLunicleOption`, and a closing status first
+ * shows the resolution popup (↑ / ↓ / Enter, Esc cancels the move,
+ * `MainViewModel.chooseLunicleResolution`). The caret then follows the
+ * issue to where the change put it (its new column, or a folded closing
+ * column's row).
+ *
  * Board edits are remote writes, never in the pane's undo stack: ⌘Z on a
  * board row outside a field does nothing. Every other key on a row that is
  * not a field is swallowed, so it never edits the node's line, where the
@@ -127,6 +139,21 @@ internal class LunicleBoardCursor(
     private var spot: Spot? = null
     private var field: Field? = null
 
+    /** The open property menu (LBR-30), or `null`. */
+    private var menu: LunicleMenu? = null
+
+    /** The open resolution popup (LBR-30), or `null`. */
+    private var resolution: LunicleResolutionChoice? = null
+
+    /** The popup both are drawn in; a press outside closes them. */
+    private val popup = LunicleBoardMenuPopup(onDismiss = {
+        menu = null
+        resolution = null
+    })
+
+    /** The node row of the open menu's board, for the intents. */
+    private var menuNodeRow = -1
+
     /** `true` while the cursor is on a board row. */
     val isActive: Boolean get() = spot != null
 
@@ -138,6 +165,7 @@ internal class LunicleBoardCursor(
      * committed ([leaveField]) and the editor's caret shows again.
      */
     fun clear(editor: HTMLElement) {
+        closeMenus()
         if (spot == null) return
         leaveField(refocus = false)
         spot = null
@@ -165,6 +193,26 @@ internal class LunicleBoardCursor(
             viewModel.setSelection(nodeRow, endCol, nodeRow, endCol)
         }
         move(editor, nodeId, ref)
+    }
+
+    /**
+     * A press on an issue's pill (LBR-30, [LUNICLE_PILL_EVENT]): the caret
+     * goes onto the issue's title ([press]) and a menu for just that field
+     * opens, its current value highlighted. An issue that cannot be edited
+     * gets no menu (the indicator says why, once).
+     *
+     * @param key The issue row's [LunicleRowRef.key].
+     * @param fieldName A `LuniclePill.Field` name.
+     */
+    fun pressPill(editor: HTMLElement, nodeRow: Int, key: String, fieldName: String) {
+        val pillField = se.soderbjorn.lunarbor.lunicle.LuniclePill.Field.entries.firstOrNull { it.name == fieldName } ?: return
+        closeMenus()
+        press(editor, nodeRow, key)
+        val issueId = spot?.ref?.takeIf { it.key == key }?.issueId ?: return
+        val opened = viewModel.openLunicleMenu(nodeRow, issueId, null, pillField) ?: return
+        menu = opened
+        menuNodeRow = nodeRow
+        renderMenu(editor)
     }
 
     /** Remembers the field's selection before a repaint detaches it. Called by `MainScreen.reconcile`. */
@@ -198,6 +246,27 @@ internal class LunicleBoardCursor(
         val f = field?.takeIf { it.ref.key == at.key }
         // An input method composing in the field owns every key.
         if (f != null && (event.asDynamic().isComposing == true || event.keyCode == 229)) return true
+        // An open property menu or resolution popup goes first (LBR-30).
+        if (resolution != null || menu != null) {
+            if (handleMenuKey(editor, current.nodeId, board, event)) return true
+        }
+        // `#` / `@` on an issue's title row open a property menu, never typed (LBR-30).
+        if (at.kind == LunicleRowKind.ISSUE && (event.key == "#" || event.key == "@") && !event.metaKey && !event.ctrlKey) {
+            val opened = viewModel.openLunicleMenu(board.nodeRow, at.issueId ?: return true, event.key.first(), null)
+            if (opened != null) {
+                menu = opened
+                menuNodeRow = board.nodeRow
+                renderMenu(editor)
+                event.preventDefault()
+                return true
+            }
+            // No menu: an issue that cannot be edited (said why) is swallowed;
+            // `@` with nobody to assign types into the title as usual.
+            if (f == null) {
+                event.preventDefault()
+                return true
+            }
+        }
         val foldChord = event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
         when {
             (event.key == "ArrowDown" || event.key == "ArrowUp") && plain -> {
@@ -246,6 +315,149 @@ internal class LunicleBoardCursor(
         }
         event.preventDefault()
         return true
+    }
+
+    /**
+     * A key while a property menu or the resolution popup is open (LBR-30).
+     *
+     * @return `true` when it was the popup's key (default prevented).
+     */
+    private fun handleMenuKey(editor: HTMLElement, nodeId: LineId, board: Rows, event: KeyboardEvent): Boolean {
+        if (event.key in MODIFIER_KEYS) return false
+        if (event.metaKey || event.ctrlKey) {
+            // A chord closes the popup and goes on as usual.
+            closeMenus()
+            return false
+        }
+        val choice = resolution
+        if (choice != null) {
+            when (event.key) {
+                "ArrowDown", "ArrowUp" -> {
+                    resolution = choice.moved(down = event.key == "ArrowDown")
+                    renderMenu(editor)
+                }
+                "Enter", "Tab" -> chooseResolution(editor, nodeId, board, choice.picked)
+                "Escape" -> closeMenus()
+                else -> {}
+            }
+            event.preventDefault()
+            return true
+        }
+        val m = menu ?: return false
+        val options = viewModel.lunicleMenuOptions(board.nodeRow, m)
+        when (val step = LunicleBoardMenu.key(m, options, event.key)) {
+            is LunicleMenuStep.Update -> {
+                menu = step.menu
+                renderMenu(editor)
+            }
+            is LunicleMenuStep.Pick -> pick(editor, nodeId, board, m, step.option)
+            LunicleMenuStep.Close -> closeMenus()
+            LunicleMenuStep.CloseAndPass -> {
+                closeMenus()
+                return false
+            }
+            LunicleMenuStep.Pass -> return false
+        }
+        event.preventDefault()
+        return true
+    }
+
+    /**
+     * Picks [option] of [m] (Enter, Tab or a press): a closing status opens
+     * the resolution popup first; otherwise the change is sent and the
+     * caret follows the issue.
+     */
+    private fun pick(editor: HTMLElement, nodeId: LineId, board: Rows, m: LunicleMenu, option: LunicleMenuOption) {
+        menu = null
+        when (val result = viewModel.pickLunicleOption(board.nodeRow, m, option)) {
+            is PaneBackingViewModel.LuniclePick.NeedsResolution -> {
+                resolution = result.choice
+                renderMenu(editor)
+            }
+            is PaneBackingViewModel.LuniclePick.Done -> {
+                popup.hide()
+                followChange(editor, nodeId, result.caret)
+            }
+        }
+    }
+
+    /** The resolution popup's pick: the move is sent with [picked]. */
+    private fun chooseResolution(editor: HTMLElement, nodeId: LineId, board: Rows, picked: String?) {
+        val choice = resolution ?: return
+        resolution = null
+        popup.hide()
+        followChange(editor, nodeId, viewModel.chooseLunicleResolution(board.nodeRow, choice, picked))
+    }
+
+    /** The caret goes where a property change put the issue (the same row, or a folded column's). */
+    private fun followChange(editor: HTMLElement, nodeId: LineId, caret: LunicleRowRef?) {
+        if (caret == null) return
+        move(editor, nodeId, caret)
+    }
+
+    /** Closes the property menu and the resolution popup. */
+    private fun closeMenus() {
+        menu = null
+        resolution = null
+        popup.hide()
+    }
+
+    /**
+     * Draws the open menu or resolution popup under the cursor's row (or
+     * closes it when that row, or its issue, is gone). Called on every
+     * change of the menu and after every repaint ([applyHighlight]).
+     */
+    private fun renderMenu(editor: HTMLElement) {
+        val s = spot
+        val m = menu
+        val choice = resolution
+        if (s == null || (m == null && choice == null)) {
+            closeMenus()
+            return
+        }
+        val issueId = m?.issueId ?: choice?.issueId
+        val nodeRow = menuNodeRow
+        val rowEl = editor.querySelector("[$LUNICLE_BOARD_ROW_ATTR=\"$nodeRow\"] [$LUNICLE_ROW_KEY_ATTR=\"i:$issueId\"]") as? HTMLElement
+        if (rowEl == null || s.ref.key != "i:$issueId") {
+            closeMenus()
+            return
+        }
+        if (choice != null) {
+            popup.show(
+                rowEl, "Resolution",
+                choice.resolutions.map { LunicleBoardMenuPopup.Row(it, checked = false) },
+                choice.highlight.coerceIn(0, (choice.resolutions.size - 1).coerceAtLeast(0)),
+                emptyText = "No resolutions in this project",
+                onHover = { i ->
+                    resolution = resolution?.copy(highlight = i)
+                    renderMenu(editor)
+                },
+                onPick = { i ->
+                    val current = spot ?: return@show
+                    val board = rowsOf(viewModel.currentBackingState, current.nodeId) ?: return@show
+                    chooseResolution(editor, current.nodeId, board, choice.resolutions.getOrNull(i))
+                },
+            )
+            return
+        }
+        val open = m ?: return
+        val options = viewModel.lunicleMenuOptions(nodeRow, open)
+        popup.show(
+            rowEl, LunicleBoardMenu.head(open),
+            options.map { LunicleBoardMenuPopup.Row(it.label, it.current, if (it.showHeader) it.section else null) },
+            LunicleBoardMenu.highlightOf(open, options.size),
+            emptyText = "No match",
+            onHover = { i ->
+                menu = menu?.copy(highlight = i)
+                renderMenu(editor)
+            },
+            onPick = { i ->
+                val current = spot ?: return@show
+                val board = rowsOf(viewModel.currentBackingState, current.nodeId) ?: return@show
+                val option = options.getOrNull(i) ?: return@show
+                pick(editor, current.nodeId, board, open, option)
+            },
+        )
     }
 
     /**
@@ -316,6 +528,7 @@ internal class LunicleBoardCursor(
         val ref = if (s != null && board != null) LunicleBoardRows.relocate(board.rows, s.ref, board.view.createdIds) else null
         if (s == null || board == null || ref == null || (!board.isPage && state.cursorRow != board.nodeRow)) {
             spot = null
+            closeMenus()
             leaveField(refocus = true)
             editor.classList.remove(ACTIVE_CLASS)
             return
@@ -345,6 +558,8 @@ internal class LunicleBoardCursor(
             scrollPending = false
             rowEl.asDynamic().scrollIntoView(js("({ block: 'nearest' })"))
         }
+        // The repaint rebuilt the row the menu hangs under (LBR-30).
+        if (menu != null || resolution != null) renderMenu(editor)
     }
 
     /**
@@ -394,6 +609,7 @@ internal class LunicleBoardCursor(
         val f = field ?: return
         if (f.input !== input || document.activeElement === input || !document.hasFocus()) return
         leaveField(refocus = false)
+        closeMenus()
         spot = null
     }
 
@@ -423,6 +639,7 @@ internal class LunicleBoardCursor(
 
     /** Puts the cursor on [ref] of the node [nodeId] and scrolls it into view. */
     private fun move(editor: HTMLElement, nodeId: LineId, ref: LunicleRowRef) {
+        if (spot?.ref?.key != ref.key) closeMenus()
         if (field != null && field?.ref?.key != ref.key) leaveField(refocus = true)
         spot = Spot(nodeId, ref)
         scrollPending = true

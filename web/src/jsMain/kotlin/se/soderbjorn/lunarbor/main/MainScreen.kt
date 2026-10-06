@@ -801,6 +801,12 @@ class MainScreen(
             searchNodeHitCursor.clear(editor)
             lunicleBoardCursor.press(editor, (detail.row as Number).toInt(), detail.key as String)
         })
+        // A press on an issue's pill opens that field's menu (LBR-30).
+        editor.addEventListener(LUNICLE_PILL_EVENT, { event ->
+            val detail = event.asDynamic().detail ?: return@addEventListener
+            searchNodeHitCursor.clear(editor)
+            lunicleBoardCursor.pressPill(editor, (detail.row as Number).toInt(), detail.key as String, detail.field as String)
+        })
         editor.addEventListener("keydown", { event ->
             handleKey(editor, event as KeyboardEvent)
         })

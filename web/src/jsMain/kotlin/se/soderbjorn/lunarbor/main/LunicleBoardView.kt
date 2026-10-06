@@ -33,6 +33,11 @@
  * every repaint; editable rows mark where their caret is drawn
  * ([LUNICLE_CARET_HOST_CLASS]).
  *
+ * Properties (LBR-30): every pill dispatches [LUNICLE_PILL_EVENT] on a
+ * press, so `LunicleBoardCursor` opens that field's menu; the row a change
+ * moved ([PaneBackingViewModel.LunicleBoardView.flashKey]) gets
+ * `is-flash`, a warm background fading over `LunicleBoardMenu.FLASH_MS`.
+ *
  * Colours are the theme's `--t-*` variables; pills use the accent, not the
  * tags' `tagHue` palette (they are not tags). The CSS is installed by
  * [ensureLunicleBoardStyles], called from `ensureStyles`.
@@ -220,7 +225,7 @@ internal fun buildLunicleBoard(
                 if (issue.editable) fieldText("lunarbor-lunicle-issue-title", titleText, nodeRow, issueRef)
                 else span("lunarbor-lunicle-issue-title $LUNICLE_CARET_HOST_CLASS", titleText),
             )
-            for (pill in issue.pills) line.appendChild(span("lunarbor-lunicle-pill", pill.text))
+            for (pill in issue.pills) line.appendChild(pillElement(pill, nodeRow, issueRef))
             if (!issue.unfolded) {
                 issue.commentsLabel?.let { line.appendChild(span("lunarbor-lunicle-dim", it)) }
             } else {
@@ -249,7 +254,44 @@ internal fun buildLunicleBoard(
             box.appendChild(row)
         }
     }
+    view.flashKey?.let { flash ->
+        // The row a property change moved (LBR-30) flashes; a repaint
+        // resumes the fade where it was rather than starting it again.
+        val rows = box.children
+        for (i in 0 until rows.length) {
+            val el = rows.item(i) as? HTMLElement ?: continue
+            if (el.getAttribute(LUNICLE_ROW_KEY_ATTR) != flash) continue
+            el.classList.add("is-flash")
+            el.style.setProperty("animation-delay", "-${(now - view.flashAt).coerceAtLeast(0)}ms")
+        }
+    }
     return box
+}
+
+/**
+ * Dispatched (bubbling) by a press on an issue's pill (LBR-30), with
+ * `detail = { row, key, field }` — the node's document row, the issue
+ * row's key and the pill's `LuniclePill.Field` name. `MainScreen` hands it
+ * to `LunicleBoardCursor.pressPill`.
+ */
+internal const val LUNICLE_PILL_EVENT = "lunarbor-lunicle-pill"
+
+/** An issue's pill: a press opens its field's menu ([LUNICLE_PILL_EVENT]). */
+private fun pillElement(pill: se.soderbjorn.lunarbor.lunicle.LuniclePill, nodeRow: Int, issueRef: LunicleRowRef): HTMLElement {
+    val el = span("lunarbor-lunicle-pill", pill.text)
+    el.title = "Change ${LunicleBoardMenu.sectionOf(pill.field).lowercase()}"
+    el.addEventListener("mousedown", { ev ->
+        val me = ev as MouseEvent
+        ev.preventDefault()
+        ev.stopPropagation()
+        if (me.button.toInt() != 0) return@addEventListener
+        val detail: dynamic = js("({})")
+        detail.row = nodeRow
+        detail.key = issueRef.key
+        detail.field = pill.field.name
+        el.dispatchEvent(org.w3c.dom.CustomEvent(LUNICLE_PILL_EVENT, org.w3c.dom.CustomEventInit(detail = detail, bubbles = true)))
+    })
+    return el
 }
 
 /** The "New issue" line's placeholder text (LBR-29). */
@@ -716,6 +758,24 @@ internal fun lunicleBoardCss(): String = """
         .lunarbor-lunicle-creating .lunarbor-lunicle-issue-title {
             opacity: 0.75;
         }
+        /* Properties (LBR-30): pills open their field's menu; a changed
+           issue (or the folded closing column it went into) flashes a warm
+           background that fades over 1.5 s. */
+        .lunarbor-lunicle-pill {
+            cursor: pointer;
+        }
+        .lunarbor-lunicle-pill:hover {
+            background: color-mix(in srgb, var(--t-accent, #e8825e) 24%, transparent);
+        }
+        .lunarbor-lunicle-row.is-flash {
+            border-radius: 6px;
+            animation: lunarbor-lunicle-flash ${LunicleBoardMenu.FLASH_MS}ms ease-out both;
+        }
+        @keyframes lunarbor-lunicle-flash {
+            from { background: color-mix(in srgb, var(--t-warn, #e8b04b) 30%, transparent); }
+            to { background: transparent; }
+        }
+        ${LunicleBoardMenuPopup.CSS}
         @keyframes lunarbor-lunicle-caret-blink {
             50% { opacity: 0; }
         }
