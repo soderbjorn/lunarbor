@@ -1,14 +1,15 @@
 /* JsAppGraph.kt (jsMain) — Metro DI graph for the web/Electron renderer.
  *
  * Declares the app-scoped infrastructure (coroutine scope, persister,
- * FileSystem, NoteRepository, DocumentRegistry). Per-pane view models are
+ * FileSystem, NoteRepository, DocumentRegistry, LunicleService). Per-pane view models are
  * deliberately NOT in the graph — AppShell.ensurePaneViewModel builds them.
  *
  * The vault root comes from the Electron main process (LUNARBOR_VAULT /
  * LUNARBOR_LOCAL_DATA, default ~/lunarbor-db) via the preload bridge's
  * `noteApi.vaultRoot`; this file never hardcodes a vault path. In the
  * browser demo (no bridge, see demo/DemoMode.kt) the file system, vault
- * root and persister are the demo's in-memory stand-ins instead. */
+ * root and persister are the demo's in-memory stand-ins instead, and there
+ * is no LunicleService at all (`null`): the demo has no Lunicle. */
 package se.soderbjorn.lunarbor.di
 
 import dev.zacsweers.metro.DependencyGraph
@@ -25,7 +26,10 @@ import se.soderbjorn.lunarbor.demo.DEMO_VAULT_ROOT
 import se.soderbjorn.lunarbor.demo.DemoPersister
 import se.soderbjorn.lunarbor.demo.demoFileSystem
 import se.soderbjorn.lunarbor.demo.isDemoMode
+import se.soderbjorn.lunarbor.lunicle.LunicleService
 import se.soderbjorn.lunarbor.main.DocumentRegistry
+import se.soderbjorn.lunarbor.main.ElectronLunicleBridge
+import se.soderbjorn.lunarbor.main.lunicleBridge
 import se.soderbjorn.lunarbor.platform.FileSystem
 import se.soderbjorn.lunarbor.platform.PlatformFileSystem
 
@@ -82,6 +86,14 @@ interface JsAppGraph {
      */
     val persister: Persister
 
+    /**
+     * The app's one [LunicleService] (LBR-26): named Lunicle connections,
+     * their clients and board-key resolution, over the Electron main
+     * process's relay ([ElectronLunicleBridge]). `null` without that relay —
+     * in the browser demo, which has no Lunicle at all.
+     */
+    val lunicleService: LunicleService?
+
     @SingleIn(AppScope::class)
     @Provides
     fun provideCoroutineScope(): CoroutineScope = GlobalScope
@@ -102,6 +114,15 @@ interface JsAppGraph {
     @Provides
     fun provideNoteRepository(fileSystem: FileSystem): NoteRepository =
         NoteRepository(fileSystem, rootDirectory = bridgeVaultRoot())
+
+    @SingleIn(AppScope::class)
+    @Provides
+    fun provideLunicleService(): LunicleService? {
+        if (isDemoMode()) return null
+        val bridge = lunicleBridge() ?: return null
+        val relay = ElectronLunicleBridge(bridge)
+        return LunicleService(api = relay, store = relay)
+    }
 
     @SingleIn(AppScope::class)
     @Provides

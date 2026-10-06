@@ -107,6 +107,9 @@ import se.soderbjorn.lunarbor.main.space.SpaceTab
  *   the app when a `TabSource` is supplied).
  * @param newsUpdates The app's News & updates checker ([startNewsUpdates]);
  *   its bell joins the topbar. `null` in the browser demo: no bell.
+ * @param lunicleService The app's Lunicle connections and clients
+ *   (`JsAppGraph.lunicleService`, LBR-26); App settings → Lunicle edits its
+ *   connections. `null` in the browser demo: no Lunicle at all.
  */
 class AppShell(
     private val scope: CoroutineScope,
@@ -114,6 +117,7 @@ class AppShell(
     private val fileSystem: se.soderbjorn.lunarbor.platform.FileSystem,
     private val persister: Persister,
     private val newsUpdates: se.soderbjorn.lunarbor.newsupdates.NewsUpdatesBackingViewModel? = null,
+    private val lunicleService: se.soderbjorn.lunarbor.lunicle.LunicleService? = null,
 ) {
 
     /** Mounted root element. Captured at boot for the toolkit assembler. */
@@ -643,7 +647,7 @@ class AppShell(
                 // `undefined` and the toggle stays hidden.
                 isElectron = (js("typeof globalThis !== 'undefined' && globalThis.darknessApi != null") as Boolean),
                 // The topbar gear: jumps to Themes / Appearance / Keyboard
-                // Shortcuts, plus the Vault, Backup and Agent access sections
+                // Shortcuts, plus the Vault, Backup, Agent access and Lunicle sections
                 // (AppSettingsContent.kt).
                 appSettingsContent = {
                     buildAppSettingsContent(
@@ -654,6 +658,7 @@ class AppShell(
                             switchVault = { dir -> switchVault(dir) },
                             flushEdits = { documentRegistry.flushAll() },
                             privacyModes = { documentRegistry.privacyFlow.value.modes },
+                            lunicle = lunicleService,
                             openPrivacy = { openPrivacyDialog(scope, documentRegistry) },
                             spaceModeEnabled = { isSpaceModeEnabled },
                             setSpaceModeEnabled = { spaceMode.setEnabled(it) },

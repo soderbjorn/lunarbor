@@ -74,6 +74,8 @@ private suspend fun start() {
         // News & updates bell: checks lunarbor.dev from the desktop app
         // only — null (no bell, no fetch) in the browser demo.
         newsUpdates = startNewsUpdates(graph.coroutineScope),
+        // Lunicle connections (App settings → Lunicle): null in the demo.
+        lunicleService = graph.lunicleService,
     )
     shell.render(app)
     // Agent access (MCP): answered here, against the live registry and

@@ -211,6 +211,16 @@ App settings → **Agent access** turns on an MCP server so agents (Claude Code,
 - **Edits go through the app**: `DocumentRegistry.editForAgent` flushes, acquires the file's `Document`, applies the change, saves and reloads other documents that splice the file in. `edit` replaces one exact snippet of a node's own items and diffs the result onto the rows (`Document.rewriteRows`, ids paired by `Document.matchIds`), so a `<!-- /path -->` line keeps its folder even when retitled; dropping one needs `delete_nodes: true`. Paths are vault-relative; `..` and dot segments (the trash) are refused.
 - **Settings UI** (`web/.../AgentAccessSettings.kt`): the sidebar summary + `openAgentAccessDialog`: the on/off toggle and status, one card per connection — name (editable), privacy scope (a picker: "No privacy" + the vault's modes; a deleted mode shows "Choose a scope…" and an off notice), allow edits, masked key (Show / Copy / New key…), and copy-ready setup for Claude Code (`claude mcp add --transport http --scope user <name> …`), JSON clients and Claude Desktop under a per-connection server name (`lunarbor`, `lunarbor-<name>`) — and "Add connection" (no privacy scope). Confirmations are inline in the card.
 
+## Lunicle boards
+
+Lunarbor talks to one or more Lunicle instances (epic LBR-25). LBR-26 is the base: named connections and a typed client; nothing is drawn on pages yet.
+
+- **Connections** (App settings → **Lunicle**, Electron only — the browser demo has no Lunicle at all; `web/.../main/LunicleSettings.kt`): a summary and a "Lunicle connections…" dialog, Agent access's pattern. One card per connection: **name** (the slug in `{{lunicle: <name>/<KEY>}}`: letters, digits, `-`, `_`, unique ignoring case), **base URL** (`https:`; `http:` only for `localhost` / `127.0.0.1`), **personal access token** (`lnl_pat_…`, shown masked to Lunicle's own display prefix; Replace… types a new one, Show reveals what is typed), **Test** (`GET /api/v1/me`: whose token, read-only or read-write, or the error) and Delete… (confirmed in the card). "Add connection" adds a card with a free name and `https://issues.lunicle.dev`. A hint says tokens are made in Lunicle → Settings → You → API access; a read-only token gives read-only boards.
+- **Storage** (`electron-main/.../LunicleHost.kt`): the main process's own `lunarbor-lunicle.json` beside `lunarbor-mcp.json`, mode 0600, `formatVersion: 1`. The renderer never sees a token once entered: `lunarbor:getLunicle` / `addLunicleConnection` / `updateLunicleConnection` / `removeLunicleConnection` answer `{ error, connections }` with `{ id, name, baseUrl, hasToken, tokenHint }`. Name, URL and token are validated there (`lunicleNameError`, `normalizeLunicleBaseUrl`, `lunicleTokenError`; `LunicleHostTest`).
+- **Why the main process relays**: Lunicle sends no CORS headers, so the renderer can never `fetch` it — and the token stays out of the renderer. `lunarbor:lunicleRequest({ connectionId, method, path, query, body })` refuses any path outside `/api/v1/` (`isAllowedLuniclePath`: no `..`, encoded or not, no query or fragment in the path), adds `Authorization: Bearer <token>`, times out (connect 8 s, request 20 s), never follows redirects, and answers `{ status, json }` or `{ transportError }`. One `LunicleRemote` per connection holds its token, base URL and request helper — where LBR-27's change stream hangs off.
+- **Client** (commonMain `lunicle/`): `LunicleApi` (the request port, like `NewsFetcher`) and `LunicleConnectionStore`, implemented in `:web` by `ElectronLunicleBridge` (`main/LunicleBridge.kt`); `LunicleClient` — `me`, `projects`, `board`, `issue`, `createIssue`, `updateIssue`, `moveIssue`, `addComment`, each a `LunicleResult` (never thrown); `LunicleRequests` builds them by Lunicle's REST rules (ids in paths only; statuses, priorities, resolutions, assignees **by name** under snake_case names; an unknown argument is a 400, so only set fields are sent, and on an update `LunicleField.Omit` ≠ `Set(null)` — `assignee: null` unassigns); `LunicleModels` parses leniently by hand over `JsonElement` (unknown keys ignored, malformed list entries skipped; `board.assignableUsers` is `null` when absent), errors are `{error, message}` → `LunicleError.Http` (404 also means "not visible", 403 `insufficient_scope` a read-only token, 600 requests a minute per token). Tested in `LunicleModelsTest`, `LunicleClientTest`, `LunicleServiceTest`.
+- **`LunicleService`** (app-scoped, `JsAppGraph.lunicleService`, `@Provides @SingleIn(AppScope::class)`; `null` in the demo, so a `{{lunicle: …}}` bullet stays plain text there): the connections flow, add / update / remove (dropping that connection's caches), `testConnection`, and `resolveProject(connection?, KEY)` — the connection by name ignoring case (no name: the only connection, if exactly one), the project by `keyPrefix` ignoring case from `projects()`, cached per connection and refetched once for an unknown key. Handed to `AppShell` by `Main.kt`.
+
 ## Backlinks
 
 Under the bullets of the page a pane shows — before the folder contents list, on nodes, notes and images — a **"Linked from · N"** section lists every line elsewhere that links to this page (LBR-7; `web/.../main/BacklinksList.kt`, painted by `paintFolderContents`).
@@ -368,6 +378,12 @@ client/src/commonMain/.../newsupdates/
   NewsHttp.kt                         ← Ktor fetcher (engine per target: Js / OkHttp / Darwin)
   NewsUpdatesPorts.kt                 ← state store + fetcher interfaces, dev toggles
 
+client/src/commonMain/.../lunicle/
+  LunicleApi.kt                       ← request + connection-store ports (Electron relay on the web)
+  LunicleClient.kt                    ← typed calls; request building (names, snake_case, omit vs null)
+  LunicleModels.kt                    ← board / issue / me models, lenient parsers, errors
+  LunicleService.kt                   ← app-scoped: connections, clients, KEY → project resolution
+
 client/src/commonMain/.../mcp/
   McpServer.kt                        ← MCP JSON-RPC + agent instructions
   McpTools.kt                         ← the agent tools (read/search/edit/windows)
@@ -423,6 +439,8 @@ web/src/jsMain/.../
   main/AppSettingsContent.kt          ← App settings + keyboard-shortcuts sidebars
   main/BackupSettings.kt              ← App settings → Backup section + automatic-backup answer
   main/AgentAccessSettings.kt         ← App settings → Agent access (MCP)
+  main/LunicleSettings.kt             ← App settings → Lunicle: connections dialog, Test
+  main/LunicleBridge.kt               ← LunicleApi + connection store over the preload's relay
   main/PrivacyDialog.kt               ← Configure privacy dialog + top-bar mode chip
   main/McpBridge.kt                   ← MCP requests from the main process → McpServer
   main/NewsUpdates.kt                 ← News & updates bell + dialog, Electron store/fetch
@@ -442,6 +460,7 @@ electron-main/src/jsMain/.../electron/
   VaultBackup.kt                      ← backups: settings, schedule, write gate
   ZipWriter.kt                        ← folder → .zip (deflate, ZIP64)
   McpHttpServer.kt                    ← MCP endpoint: localhost, key, relay to renderer
+  LunicleHost.kt                      ← Lunicle connections (lunarbor-lunicle.json) + API request relay
   NewsHost.kt                         ← app version for the renderer, lunarbor-news.json, external links
   FsWatchdog.kt                       ← notices a stuck libuv thread pool, offers a restart
 

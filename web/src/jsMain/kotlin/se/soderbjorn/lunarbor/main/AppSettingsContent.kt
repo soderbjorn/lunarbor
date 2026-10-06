@@ -18,10 +18,13 @@
  *        automatic interval and last backup — see BackupSettings.kt.
  *     4. An **Agent access** section (Electron only): the MCP server's
  *        switch, key and setup instructions — see AgentAccessSettings.kt.
- *     5. A **Privacy** section: "Edit privacy modes…" opens the Configure
+ *     5. A **Lunicle** section (Electron only, with a `LunicleService`):
+ *        a summary and the "Lunicle connections…" dialog — see
+ *        LunicleSettings.kt.
+ *     6. A **Privacy** section: "Edit privacy modes…" opens the Configure
  *        privacy dialog (PrivacyDialog.kt). It never shows the current
  *        mode — nothing in the chrome tells an onlooker one is on.
- *     6. An **Experimental** section: "Enable 3D mode" (off by default;
+ *     7. An **Experimental** section: "Enable 3D mode" (off by default;
  *        `SpaceMode.setEnabled`).
  *  - **Keyboard shortcuts** (`AppShellSpec.hotkeysContent`): the curated
  *    [lunarborHotkeysSpec] list, grouped, with keycap chords. Replaces the
@@ -29,7 +32,8 @@
  *
  * Every setting here is local: the vault path lives in the Electron main
  * process's `lunarbor.json`, the MCP settings in its `lunarbor-mcp.json`,
- * the backup settings in its `lunarbor-backup.json`.
+ * the backup settings in its `lunarbor-backup.json`, the Lunicle
+ * connections in its `lunarbor-lunicle.json`.
  *
  * Platform view code only — builds DOM, delegates every action. */
 package se.soderbjorn.lunarbor.main
@@ -60,6 +64,8 @@ import kotlin.js.Promise
  *   "Back up now" calls it before zipping the vault.
  * @property privacyModes The vault's privacy modes (`DocumentRegistry.privacyFlow`),
  *   offered as Agent access connections' privacy scopes.
+ * @property lunicle The app's Lunicle connections (`JsAppGraph.lunicleService`);
+ *   `null` (browser demo) hides the Lunicle section.
  * @property openPrivacy Opens the Configure privacy dialog (`openPrivacyDialog`).
  * @property spaceModeEnabled Whether 3D mode is turned on
  *   (`isSpaceModeEnabled`), read when the body is built.
@@ -72,6 +78,7 @@ class AppSettingsHandlers(
     val switchVault: suspend (String) -> String?,
     val flushEdits: suspend () -> Unit,
     val privacyModes: () -> List<se.soderbjorn.lunarbor.data.PrivacyMode> = { emptyList() },
+    val lunicle: se.soderbjorn.lunarbor.lunicle.LunicleService? = null,
     val openPrivacy: () -> Unit = {},
     val spaceModeEnabled: () -> Boolean = { false },
     val setSpaceModeEnabled: (Boolean) -> Unit = {},
@@ -94,6 +101,7 @@ fun buildAppSettingsContent(handlers: AppSettingsHandlers): HTMLElement {
     if (vaultBridge() != null) body.appendChild(buildVaultSection(handlers))
     if (backupBridge() != null) body.appendChild(buildBackupSection(handlers.scope, handlers.flushEdits))
     if (mcpBridge() != null) body.appendChild(buildAgentAccessSection(handlers.scope, handlers.privacyModes))
+    handlers.lunicle?.let { body.appendChild(buildLunicleSection(handlers.scope, it)) }
     body.appendChild(buildPrivacySection(handlers))
     body.appendChild(buildExperimentalSection(handlers))
     return body
