@@ -85,7 +85,11 @@ object NoteConversion {
      *
      * - every non-blank row is a bullet of its own (line breaks are kept
      *   as separate bullets, never joined); blank rows are dropped;
-     * - a heading (`# …` to `###### …`) is a bullet at the top level;
+     * - a heading (`# …` to `###### …`) is a bullet, and everything after
+     *   it up to the next heading of the same or a higher level is its
+     *   child — so a `###` under a `##` nests one step deeper, and a
+     *   heading's lines and lists hang under it (headings that skip a
+     *   level still nest only one step);
      * - every list item (`* `, `- `, `+ `, `1. `, `1) `) is a bullet of its
      *   own — the `*` / `-` / `+` marker dropped, a number kept — and a
      *   nested item is a child of the item above it; a line indented
@@ -94,7 +98,8 @@ object NoteConversion {
      *   bullet cannot hold code — the child of a list item it is indented
      *   under.
      *
-     * The first node is always at [indent]. An empty block gives one
+     * Lists and indented lines nest from the depth of the heading they
+     * are under. The first node is always at [indent]. An empty block gives one
      * empty bullet.
      *
      * Called by `TextEditingViewModel.convertBlockToNodesAt`.
@@ -110,12 +115,15 @@ object NoteConversion {
         val nodes = ArrayList<Node>()
         // Content indents of the open list items, outermost first.
         val listIndents = ArrayList<Int>()
+        // Levels of the open headings (1 for `#` … 6), outermost first;
+        // content nests this many steps deep.
+        val headings = ArrayList<Int>()
         var lastWasCode = false
         // Depth of a line or code run indented by [lead]: the child of
         // the innermost open list item it is indented under, else top level.
         fun depthUnderList(lead: Int): Int {
             while (listIndents.isNotEmpty() && listIndents.last() >= lead) listIndents.removeAt(listIndents.lastIndex)
-            return listIndents.size
+            return headings.size + listIndents.size
         }
         for (c in rowContents) {
             if (c.startsWith(BlockLayout.CODE)) {
@@ -137,12 +145,15 @@ object NoteConversion {
             when {
                 HEADING.containsMatchIn(body) -> {
                     listIndents.clear()
-                    nodes += Node(0, StringBuilder(body))
+                    val level = body.takeWhile { it == '#' }.length
+                    while (headings.isNotEmpty() && headings.last() >= level) headings.removeAt(headings.lastIndex)
+                    nodes += Node(headings.size, StringBuilder(body))
+                    headings += level
                 }
                 marker != null -> {
                     while (listIndents.isNotEmpty() && listIndents.last() >= lead) listIndents.removeAt(listIndents.lastIndex)
                     val text = if (marker.value.first().isDigit()) body else body.substring(marker.value.length)
-                    val node = Node(listIndents.size, StringBuilder(text.trim()))
+                    val node = Node(headings.size + listIndents.size, StringBuilder(text.trim()))
                     listIndents += lead
                     nodes += node
                 }

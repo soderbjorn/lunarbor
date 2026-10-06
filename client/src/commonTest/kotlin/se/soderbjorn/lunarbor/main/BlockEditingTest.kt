@@ -371,11 +371,11 @@ class BlockEditingTest {
 
         p.caretAtEnd(2)
         p.convertBlockToNodes()
-        assertEquals(listOf("* A", "* ## Packing", "  * B", "* list"), p.lines)
+        assertEquals(listOf("* A", "* ## Packing", "  * list", "  * B"), p.lines)
         assertEquals(blockId, p.id(1))
         flush()
-        assertEquals("- A\n- ## Packing [↳](<Packing/_node.md>)\n- list\n", read("_node.md"))
-        assertEquals("- B\n", read("Packing/_node.md"))
+        assertEquals("- A\n- ## Packing [↳](<Packing/_node.md>)\n", read("_node.md"))
+        assertTrue(read("Packing/_node.md")!!.endsWith("- list\n- B\n"))
     }
 
     @Test
