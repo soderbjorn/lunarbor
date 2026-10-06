@@ -2379,6 +2379,11 @@ class PaneBackingViewModel(
      * expansions, as a zoom's refold does, so unfolding again is instant.
      * A no-op in Markdown mode.
      *
+     * Items deeper than the pane has loaded (under a folded, never-loaded
+     * child) have no rows to fold, so their open state is dropped from
+     * [DocumentRegistry.foldMemory] ([FoldMemory.forgetUnder] the page's
+     * folder): unfolding a child later shows its children folded.
+     *
      * Called by the web command palette ("Collapse children and
      * grandchildren").
      */
@@ -2386,6 +2391,7 @@ class PaneBackingViewModel(
         val s = _stateFlow.value
         if (!s.isLoaded || s.isMarkdownMode) return
         val items = foldableItemsUnderPage(directOnly = false)
+        currentNodeFolder(s)?.let { registry.foldMemory.forgetUnder(it) }
         patch {
             it.copy(collapsedIds = it.collapsedIds + items, zoomUnfoldedIds = it.zoomUnfoldedIds - items)
         }

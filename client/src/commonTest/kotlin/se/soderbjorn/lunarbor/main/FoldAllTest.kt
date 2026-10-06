@@ -39,8 +39,9 @@ class FoldAllTest {
         seed("Recipes/Soups/Cold/_node.md", "- Gazpacho\n")
     }
 
-    private suspend fun TestScope.pane(): PaneBackingViewModel {
-        val registry = DocumentRegistry(repo, backgroundScope)
+    private suspend fun TestScope.pane(
+        registry: DocumentRegistry = DocumentRegistry(repo, backgroundScope),
+    ): PaneBackingViewModel {
         val pane = PaneBackingViewModel(registry, backgroundScope, "_node.md")
         pane.stateFlow.first { it.isLoaded }
         runCurrent()
@@ -113,5 +114,24 @@ class FoldAllTest {
         assertTrue(p.idOf("Cold") in p.stateFlow.value.collapsedIds)
         // The zoom target itself is not folded.
         assertFalse(recipes in p.stateFlow.value.collapsedIds)
+    }
+
+    @Test
+    fun collapse_also_folds_remembered_items_that_are_not_loaded() = runTest {
+        seedVault()
+        val registry = DocumentRegistry(repo, backgroundScope)
+        // Soups and Cold were left open earlier; Recipes was folded, so
+        // neither is loaded on the page.
+        registry.foldMemory.load(listOf("Recipes/Soups", "Recipes/Soups/Cold"))
+        val p = pane(registry)
+        assertFalse(p.isShown("Soups"))
+
+        p.collapseChildrenAndGrandchildren()
+        runCurrent()
+        p.toggleCollapse(p.idOf("Recipes"))
+        runCurrent()
+        assertTrue(p.isShown("Soups"))
+        assertFalse(p.isShown("Tomato"))
+        assertTrue(registry.foldMemory.snapshot().none { it.startsWith("Recipes/") })
     }
 }

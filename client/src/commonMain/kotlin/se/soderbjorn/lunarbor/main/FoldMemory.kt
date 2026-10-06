@@ -27,7 +27,8 @@ import se.soderbjorn.lunarbor.data.PathMove
  *
  * ### Callers
  * - [PaneBackingViewModel]: [isExpanded] when an item is first seen,
- *   [setExpanded] whenever its open state may have changed.
+ *   [setExpanded] whenever its open state may have changed, [forgetUnder]
+ *   on "Collapse children and grandchildren".
  * - [DocumentRegistry.applyPathMoves]: [applyMoves].
  * - Platform glue (web `AppShell`): [load] at boot, [snapshot] on
  *   [onChanged].
@@ -51,6 +52,19 @@ class FoldMemory {
     fun setExpanded(folder: String, expanded: Boolean) {
         val changed = if (expanded) folders.add(folder) else folders.remove(folder)
         if (changed) onChanged?.invoke()
+    }
+
+    /**
+     * Forgets every remembered folder strictly under [folder] (`""`, the
+     * vault root, forgets them all), so items deeper than a pane has
+     * loaded start folded when they are next seen. Notifies [onChanged]
+     * when something was forgotten.
+     *
+     * Called by [PaneBackingViewModel.collapseChildrenAndGrandchildren].
+     */
+    fun forgetUnder(folder: String) {
+        val prefix = if (folder.isEmpty()) "" else "$folder/"
+        if (folders.removeAll { it.startsWith(prefix) && it != folder }) onChanged?.invoke()
     }
 
     /**
