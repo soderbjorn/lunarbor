@@ -148,6 +148,13 @@ class MainScreen(
     private var htmlViewer: HtmlViewer? = null
 
     /**
+     * The [htmlViewer]'s host, kept so a re-mount ([render] into a new
+     * container, entering or leaving 3D mode) moves it along with the
+     * other elements.
+     */
+    private var htmlHostElement: HTMLElement? = null
+
+    /**
      * Wrapper element that owns the page's vertical scroll. Holds the
      * editor and the folder contents list as siblings so they scroll together.
      * The editor itself no longer scrolls — its content height grows as
@@ -321,9 +328,11 @@ class MainScreen(
         val existingBanner = restructureBannerElement
         val existingImageViewer = imageViewerElement
         val existingDrawingHost = drawingHostElement
+        val existingHtmlHost = htmlHostElement
         if (existingTitle != null && existingScroll != null &&
             existingEditor != null && existingBanner != null &&
-            existingImageViewer != null && existingDrawingHost != null
+            existingImageViewer != null && existingDrawingHost != null &&
+            existingHtmlHost != null
         ) {
             // Idempotent re-mount: AppShell rebuilds the pane chrome on
             // every navigation transition (back/forward stack changes
@@ -340,6 +349,7 @@ class MainScreen(
             root.appendChild(existingTitle)
             root.appendChild(existingScroll)
             root.appendChild(existingDrawingHost)
+            root.appendChild(existingHtmlHost)
             root.appendChild(existingBanner)
             return
         }
@@ -389,6 +399,7 @@ class MainScreen(
 
         val htmlHost = buildDrawingHostElement().apply { className = "lunarbor-html-host" }
         root.appendChild(htmlHost)
+        htmlHostElement = htmlHost
         val html = HtmlViewer(htmlHost)
         htmlViewer = html
 
