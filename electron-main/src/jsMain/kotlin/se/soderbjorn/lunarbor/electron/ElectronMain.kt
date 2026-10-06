@@ -216,7 +216,7 @@ fun main() {
     // App settings → Agent access: the MCP endpoint (off unless turned on).
     McpHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-mcp.json") }) { mainWindow }
     // App settings → Lunicle: connections + the API request relay.
-    LunicleHost.install { sharedDarknessPath("$APP_NAME_KEBAB-lunicle.json") }
+    LunicleHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-lunicle.json") }) { mainWindow }
     // App settings → Backup: zips of the vault and their schedule.
     BackupHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-backup.json") }, { runPaths.vaultDir }) { mainWindow }
     // The topbar's News & updates bell: its state file, the version, links.
@@ -625,6 +625,7 @@ private fun createWindow() {
     installVaultWatcher(runPaths.vaultDir) { mainWindow }
     // The new window's renderer announces itself before MCP requests go to it.
     McpHost.onWindowCreated()
+    LunicleHost.onWindowCreated()
     BackupHost.onWindowCreated()
     val settingsJson = readMergedUiSettingsJsonSync()
     val layoutJson = readSyncOrNull(defaultAppLayoutStatePath())

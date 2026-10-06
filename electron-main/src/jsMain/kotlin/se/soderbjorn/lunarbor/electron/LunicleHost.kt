@@ -21,9 +21,24 @@
  *    whole request 20 s; redirects are never followed, so the token never
  *    travels to another host).
  *
- * Shape: one [LunicleRemote] per connection holds its token, base URL and
- * request helper — the place a per-connection change stream (LBR-27, SSE)
- * hangs off. [LunicleHost] keeps the settings file and the IPC handlers.
+ *  - **Change streams** (LBR-27, Lunicle's SSE from LNL-224): one
+ *    [LunicleStream] per connection, `GET /api/v1/events?projects=…&origin=…`
+ *    covering every project a board node on screen shows
+ *    (`lunarbor:lunicleWatch({ connectionId, projectIds })`). Events go to
+ *    the renderer as `lunarbor:lunicleEvent` (`{ connectionId, event, id,
+ *    data }`), and the stream's state as `{ connectionId, status }`
+ *    (`connected`, `disconnected`, `unsupported` on a 404). It resumes with
+ *    `Last-Event-ID`, reconnects with backoff ([lunicleStreamBackoffMs]:
+ *    5 s, 15 s, 60 s, then every 5 min) and treats 60 s without a byte
+ *    (Lunicle pings every 25 s) as a dead stream.
+ *  - **Own echo**: every write carries `X-Lunicle-Origin: <`[LUNICLE_ORIGIN]`>`
+ *    and every stream asks with `?origin=` the same id, so events this
+ *    app's own writes caused arrive with `"self": true` and the renderer
+ *    ignores them.
+ *
+ * Shape: one [LunicleRemote] per connection holds its token, base URL,
+ * request helper and change stream. [LunicleHost] keeps the settings file
+ * and the IPC handlers.
  *
  * Validation lives here, at the trust boundary ([lunicleNameError],
  * [normalizeLunicleBaseUrl], [lunicleTokenError]), and is tested in
@@ -60,6 +75,108 @@ internal const val LUNICLE_TOKEN_PREFIX: String = "lnl_pat_"
 
 /** Longest connection name. */
 private const val LUNICLE_NAME_MAX: Int = 32
+
+/**
+ * This app run's id for Lunicle's own-echo rule (LNL-224): sent as
+ * `X-Lunicle-Origin` on every write and as `?origin=` on every change
+ * stream, so events our writes caused come back marked `self`. 24 hex
+ * characters (Lunicle accepts 1–64 of `[A-Za-z0-9_-]`).
+ */
+internal val LUNICLE_ORIGIN: String by lazy { cryptoModuleLunicle.randomBytes(12).toString("hex") as String }
+
+/** A stream silent this long (Lunicle pings every 25 s) is dead: reconnect. */
+internal const val LUNICLE_STREAM_SILENCE_MS: Int = 60_000
+
+/**
+ * Pause before reconnect attempt [attempt] (0 = the first after a drop):
+ * 5 s, 15 s, 60 s, then every 5 minutes.
+ */
+internal fun lunicleStreamBackoffMs(attempt: Int): Int = when {
+    attempt <= 0 -> 5_000
+    attempt == 1 -> 15_000
+    attempt == 2 -> 60_000
+    else -> 300_000
+}
+
+/**
+ * The change stream's URL path and query for [projectIds]
+ * (`/api/v1/events?projects=1,2,3&origin=<id>`).
+ */
+internal fun lunicleStreamPath(projectIds: Collection<Long>, origin: String): String =
+    "/api/v1/events?projects=" + projectIds.sorted().joinToString(",") + "&origin=" + origin
+
+/**
+ * An incremental parser of `text/event-stream` (the WHATWG rules Lunicle
+ * writes by): lines end in `\n`, `\r\n` or `\r`; a blank line dispatches
+ * the event gathered so far; `:` lines are comments (Lunicle's `: ping`);
+ * `data:` lines join with `\n`; one space after the colon is dropped.
+ * Pure, tested in `LunicleHostTest`.
+ *
+ * @param onEvent Called per event with its `id` (or `null`), its name
+ *   (`message` when none was given) and its data.
+ * @param onComment Called per comment line (a sign of life).
+ */
+internal class SseParser(
+    private val onEvent: (id: String?, event: String, data: String) -> Unit,
+    private val onComment: () -> Unit = {},
+) {
+    private var pending = ""
+    private var id: String? = null
+    private var event = ""
+    private val data = StringBuilder()
+    private var hasData = false
+
+    /** The id of the last event that carried one: what a reconnect resumes from. */
+    var lastEventId: String? = null
+        private set
+
+    /** Takes the next piece of the stream, in any split. */
+    fun feed(chunk: String) {
+        pending += chunk
+        while (true) {
+            val nl = pending.indexOfFirst { it == '\n' || it == '\r' }
+            if (nl < 0) break
+            // A lone `\r` at the very end may be the first half of `\r\n`.
+            if (pending[nl] == '\r' && nl == pending.length - 1) break
+            val line = pending.substring(0, nl)
+            val skip = if (pending[nl] == '\r' && pending.getOrNull(nl + 1) == '\n') 2 else 1
+            pending = pending.substring(nl + skip)
+            line(line)
+        }
+    }
+
+    private fun line(line: String) {
+        if (line.isEmpty()) {
+            if (hasData) {
+                val text = data.toString()
+                id?.let { lastEventId = it }
+                onEvent(id, event.ifEmpty { "message" }, text)
+            }
+            id = null
+            event = ""
+            data.clear()
+            hasData = false
+            return
+        }
+        if (line.startsWith(":")) {
+            onComment()
+            return
+        }
+        val colon = line.indexOf(':')
+        val field = if (colon < 0) line else line.substring(0, colon)
+        var value = if (colon < 0) "" else line.substring(colon + 1)
+        if (value.startsWith(" ")) value = value.substring(1)
+        when (field) {
+            "event" -> event = value
+            "data" -> {
+                if (hasData) data.append('\n')
+                data.append(value)
+                hasData = true
+            }
+            "id" -> if ('\u0000' !in value) id = value
+        }
+    }
+}
 
 /**
  * One stored connection.
@@ -155,6 +272,28 @@ internal fun lunicleTokenHint(token: String): String =
  * @property record The stored connection.
  */
 internal class LunicleRemote(val record: LunicleConnectionRecord) {
+
+    /** This connection's change stream, made on the first [watch]. */
+    private var stream: LunicleStream? = null
+
+    /** Projects the stream covers (empty: none open). */
+    val watchedProjects: Set<Long> get() = stream?.projects.orEmpty()
+
+    /**
+     * Makes the change stream cover exactly [projectIds] (empty closes it).
+     *
+     * @param send Delivers one message to the renderer.
+     */
+    fun watch(projectIds: Set<Long>, send: (dynamic) -> Unit) {
+        val s = stream ?: LunicleStream(this, send).also { stream = it }
+        s.setProjects(projectIds)
+    }
+
+    /** Closes the change stream for good (the connection changed or went). */
+    fun closeStream() {
+        stream?.close()
+        stream = null
+    }
 
     /**
      * Sends one request to `<baseUrl><path>?<query>` with the Bearer token.
@@ -275,6 +414,159 @@ internal class LunicleRemote(val record: LunicleConnectionRecord) {
 }
 
 /**
+ * One connection's change stream (see the file header): opened while
+ * [projects] is non-empty, resumed from the last event id, reconnected
+ * with backoff, and declared dead after [LUNICLE_STREAM_SILENCE_MS] of
+ * silence. A 404 means the server has no stream: the renderer is told
+ * `unsupported` (it polls) and one more try follows after 5 minutes.
+ *
+ * Callbacks of a replaced request are ignored (a generation counter), so
+ * a restart never sees the old connection's end as its own.
+ *
+ * @param remote The connection: base URL and token.
+ * @param send Delivers a message object to the renderer.
+ */
+internal class LunicleStream(private val remote: LunicleRemote, private val send: (dynamic) -> Unit) {
+    /** Projects the stream covers. */
+    var projects: Set<Long> = emptySet()
+        private set
+
+    private var generation = 0
+    private var request: dynamic = null
+    private var retryTimer: dynamic = null
+    private var silenceTimer: dynamic = null
+    private var attempt = 0
+    private var lastEventId: String? = null
+    private var lastActivity = 0.0
+    private var connected = false
+
+    /**
+     * Covers [next] from now on: restarts the stream when the set changed
+     * (or it is down); an unchanged set only repeats `connected`.
+     */
+    fun setProjects(next: Set<Long>) {
+        if (next == projects && (request != null || retryTimer != null)) {
+            // A renderer that started over (a reload) asks again: tell it
+            // where the stream stands, since it missed the first word.
+            if (connected) status("connected")
+            return
+        }
+        projects = next
+        attempt = 0
+        stop()
+        if (projects.isNotEmpty()) connect()
+    }
+
+    /** Closes it; nothing more is sent. */
+    fun close() {
+        projects = emptySet()
+        stop()
+    }
+
+    private fun stop() {
+        generation++
+        request?.destroy()
+        request = null
+        val retry = retryTimer
+        if (retry != null) js("clearTimeout")(retry)
+        retryTimer = null
+        val silence = silenceTimer
+        if (silence != null) js("clearInterval")(silence)
+        silenceTimer = null
+        if (connected) status("disconnected")
+        connected = false
+    }
+
+    private fun status(state: String) {
+        val m: dynamic = js("({})")
+        m.connectionId = remote.record.id
+        m.status = state
+        send(m)
+    }
+
+    /** After a drop: [state] to the renderer, and the next attempt after the backoff. */
+    private fun dropped(gen: Int, state: String, delayMs: Int) {
+        if (gen != generation) return
+        connected = false
+        stop()
+        status(state)
+        if (projects.isEmpty()) return
+        retryTimer = js("setTimeout")({
+            retryTimer = null
+            connect()
+        }, delayMs)
+        attempt++
+    }
+
+    private fun connect() {
+        val gen = ++generation
+        val urlCtor: dynamic = js("URL")
+        val full = remote.record.baseUrl + lunicleStreamPath(projects, LUNICLE_ORIGIN)
+        val url: dynamic = try { js("new urlCtor(full)") } catch (_: Throwable) { return }
+        val h: dynamic = js("({})")
+        h["Authorization"] = "Bearer ${remote.record.token}"
+        h["Accept"] = "text/event-stream"
+        h["Cache-Control"] = "no-cache"
+        h["User-Agent"] = "Lunarbor/${app.getVersion()}"
+        lastEventId?.let { h["Last-Event-ID"] = it }
+        val opts: dynamic = js("({})")
+        opts.method = "GET"
+        opts.headers = h
+        val module = if ((url.protocol as String) == "http:") httpModuleLunicle else httpsModule
+        val parser = SseParser(
+            onEvent = { id, event, data -> if (gen == generation) forward(id, event, data) },
+            onComment = {},
+        )
+        lastActivity = js("Date.now()") as Double
+        val req: dynamic = module.request(url, opts) { res: dynamic ->
+            if (gen != generation) {
+                res.resume()
+                return@request
+            }
+            val code = res.statusCode as Int
+            if (code != 200) {
+                res.resume()
+                if (code == 404) dropped(gen, "unsupported", 300_000)
+                else dropped(gen, "disconnected", lunicleStreamBackoffMs(attempt))
+                return@request
+            }
+            connected = true
+            attempt = 0
+            status("connected")
+            res.setEncoding("utf8")
+            res.on("data") { chunk: dynamic ->
+                if (gen == generation) {
+                    lastActivity = js("Date.now()") as Double
+                    parser.feed(chunk as String)
+                    parser.lastEventId?.let { lastEventId = it }
+                }
+            }
+            res.on("end") { dropped(gen, "disconnected", lunicleStreamBackoffMs(attempt)) }
+            res.on("error") { _: dynamic -> dropped(gen, "disconnected", lunicleStreamBackoffMs(attempt)) }
+        }
+        req.on("error") { _: dynamic -> dropped(gen, "disconnected", lunicleStreamBackoffMs(attempt)) }
+        req.end()
+        request = req
+        silenceTimer = js("setInterval")({
+            val now = js("Date.now()") as Double
+            if (gen == generation && now - lastActivity > LUNICLE_STREAM_SILENCE_MS) {
+                dropped(gen, "disconnected", lunicleStreamBackoffMs(attempt))
+            }
+        }, 10_000)
+    }
+
+    /** One event to the renderer: `{ connectionId, event, id, data }`, the data parsed as JSON. */
+    private fun forward(id: String?, event: String, data: String) {
+        val m: dynamic = js("({})")
+        m.connectionId = remote.record.id
+        m.event = event
+        m.id = id
+        m.data = try { js("JSON.parse")(data) } catch (_: Throwable) { null }
+        send(m)
+    }
+}
+
+/**
  * Owner of the Lunicle connections and their IPC handlers.
  *
  * ### Callers
@@ -283,16 +575,20 @@ internal class LunicleRemote(val record: LunicleConnectionRecord) {
 internal object LunicleHost {
     private var settingsPath: () -> String = { "" }
     private var remotes: List<LunicleRemote> = emptyList()
+    private var window: () -> BrowserWindow? = { null }
 
     /**
      * Loads `lunarbor-lunicle.json` and registers `lunarbor:getLunicle`,
      * `addLunicleConnection`, `updateLunicleConnection`,
-     * `removeLunicleConnection` and `lunicleRequest`.
+     * `removeLunicleConnection`, `lunicleRequest` and `lunicleWatch`.
      *
      * @param settingsFile Path of `lunarbor-lunicle.json`.
+     * @param currentWindow The window whose renderer hears the change streams.
      */
-    fun install(settingsFile: () -> String) {
+    fun install(settingsFile: () -> String, currentWindow: () -> BrowserWindow?) {
         settingsPath = settingsFile
+        window = currentWindow
+        ipcMain.handle("lunarbor:lunicleWatch") { _, spec -> watch(spec) }
         remotes = readSettings().map(::LunicleRemote)
         ipcMain.handle("lunarbor:getLunicle") { _, _ -> status(null) }
         ipcMain.handle("lunarbor:addLunicleConnection") { _, spec -> add(spec) }
@@ -305,6 +601,35 @@ internal object LunicleHost {
     }
 
     private fun records(): List<LunicleConnectionRecord> = remotes.map { it.record }
+
+    /**
+     * Called when a new window is created: its renderer starts over and
+     * asks for the streams it needs again, so every stream closes.
+     */
+    fun onWindowCreated() {
+        for (r in remotes) r.closeStream()
+    }
+
+    /** `{ connectionId, projectIds }`: what that connection's change stream covers. */
+    private fun watch(spec: dynamic): Boolean {
+        val remote = remotes.firstOrNull { it.record.id == spec?.connectionId as? String } ?: return false
+        if (remote.record.token.isEmpty()) return false
+        val raw: dynamic = spec.projectIds
+        val ids = LinkedHashSet<Long>()
+        if (raw != null && js("Array").isArray(raw) as Boolean) {
+            for (i in 0 until (raw.length as Int)) {
+                val n = (raw[i] as? Number)?.toLong() ?: continue
+                if (n > 0) ids += n
+            }
+        }
+        remote.watch(ids) { message -> sendToRenderer(message) }
+        return true
+    }
+
+    private fun sendToRenderer(message: dynamic) {
+        val w = window() ?: return
+        if (!w.isDestroyed()) w.webContents.send("lunarbor:lunicleEvent", message)
+    }
 
     /** Adds a connection from `{ name?, baseUrl?, token? }`; a missing name gets a free `lunicle`, `lunicle-2`, …. */
     private fun add(spec: dynamic): dynamic {
@@ -360,13 +685,25 @@ internal object LunicleHost {
         if (method !in setOf("GET", "POST", "PATCH", "PUT", "DELETE")) return refuse("Unsupported method $method.")
         val path = spec.path as? String ?: return refuse("No path.")
         if (!isAllowedLuniclePath(path)) return refuse("Only Lunicle's API ($LUNICLE_API_PREFIX…) can be reached.")
-        return remote.request(method, path, spec.query, spec.body as? String)
+        // Own echo (LNL-224): events our writes cause come back marked `self`.
+        val headers: dynamic = if (method == "GET") null else js("({})")
+        if (headers != null) headers["X-Lunicle-Origin"] = LUNICLE_ORIGIN
+        return remote.request(method, path, spec.query, spec.body as? String, headers)
     }
 
     /** Stores [next] and rebuilds the remotes (a changed token or URL takes effect at once). */
     private fun apply(next: List<LunicleConnectionRecord>) {
         val old = remotes.associateBy { it.record }
-        remotes = next.map { old[it] ?: LunicleRemote(it) }
+        val oldById = remotes.associateBy { it.record.id }
+        val kept = next.mapNotNull { old[it] }.toSet()
+        remotes = next.map { record ->
+            old[record] ?: LunicleRemote(record).also { fresh ->
+                // A changed URL or token: the stream starts over on the new one.
+                val projects = oldById[record.id]?.watchedProjects.orEmpty()
+                if (projects.isNotEmpty() && record.token.isNotEmpty()) fresh.watch(projects) { m -> sendToRenderer(m) }
+            }
+        }
+        for (r in old.values) if (r !in kept) r.closeStream()
         writeSettings(next)
     }
 

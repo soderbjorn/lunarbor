@@ -117,6 +117,20 @@ contextBridge.exposeInMainWorld("noteApi", {
   removeLunicleConnection: (id) => ipcRenderer.invoke("lunarbor:removeLunicleConnection", id),
   lunicleRequest: (spec) => ipcRenderer.invoke("lunarbor:lunicleRequest", spec),
   /**
+   * Board nodes' change streams (LBR-27, LunicleHost.kt): `lunicleWatch(
+   * { connectionId, projectIds })` makes that connection's one SSE stream
+   * cover exactly those projects (an empty list closes it).
+   * `onLunicleEvent(cb)` hears `{ connectionId, status }` (`connected`,
+   * `disconnected`, `unsupported`) and `{ connectionId, event, id, data }`
+   * (the event's JSON); it returns an unsubscribe function.
+   */
+  lunicleWatch: (spec) => ipcRenderer.invoke("lunarbor:lunicleWatch", spec),
+  onLunicleEvent: (cb) => {
+    const handler = (_event, payload) => { try { cb(payload); } catch (e) { console.error("[lunarbor] lunicle event failed", e); } };
+    ipcRenderer.on("lunarbor:lunicleEvent", handler);
+    return () => ipcRenderer.removeListener("lunarbor:lunicleEvent", handler);
+  },
+  /**
    * App settings → Backup (VaultBackup.kt). Each resolves to the status
    * `{ folder, intervalHours, running, error, lastBackupName, lastBackupMs }`.
    * `setBackup` takes `{ intervalHours }`; `chooseBackupFolder` opens a
