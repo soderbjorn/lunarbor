@@ -27,9 +27,9 @@ The site folder can be served from any static host at any path.
   which the `:web:generateDemoVault` task packs from `demo/vault/` and
   `demo/state.json`. Everything is editable; a reload starts over.
   Images, drawings and HTML pages are served as `blob:` URLs.
-- `DemoPersister` keeps the look (theme, UI settings) per browser in
-  `localStorage`. Everything else (tabs, windows, pane locations, folds)
-  starts from `demo/state.json` in memory on every load.
+- `DemoPersister` keeps everything in memory, the look (theme,
+  appearance) included: tabs, windows, pane locations, folds and theme
+  all start from `demo/state.json` on every load.
 
 ## Editing the tour
 

@@ -11,8 +11,9 @@
  * - the vault is a [DemoFileSystem] in memory, seeded from the bundled
  *   `demo-vault.js` (built from `demo/vault/` by the `:web` Gradle task
  *   `generateDemoVault`); edits work and last until the page reloads;
- * - the persister ([DemoPersister]) keeps only the look (theme and UI
- *   settings) in `localStorage`, so every visit starts at the same place;
+ * - the persister ([DemoPersister]) keeps everything in memory — the
+ *   look (theme, appearance) included — so every reload starts the tour
+ *   at the same place, in the demo's own look;
  * - desktop-only settings (vault, backup, agent access) hide themselves,
  *   as they already do without the bridge.
  *
@@ -27,7 +28,6 @@ import kotlinx.browser.window
 import kotlinx.coroutines.await
 import org.w3c.dom.HTMLScriptElement
 import se.soderbjorn.lunula.core.Persister
-import se.soderbjorn.lunula.web.LocalStoragePersister
 import kotlin.js.Date
 import kotlin.js.Promise
 
@@ -134,22 +134,21 @@ private fun decodeBase64(data: String): ByteArray {
 }
 
 /**
- * The demo's [Persister]: the look (theme selection, custom themes, UI
- * settings) persists per browser in `localStorage`, under its own
- * namespace so it never mixes with anything else; everything about the
- * vault and the window layout (pane locations, open folds, tabs) lives in
- * memory, so every reload starts the tour at the same place — matching a
- * vault that is itself reseeded on every reload. The in-memory values
- * start from `demo/state.json` (see [loadDemoVault]), which also gives
- * the look its default (the demo's own theme) until the visitor picks one.
+ * The demo's [Persister]: every key lives in memory — the look (theme
+ * selection, custom themes, appearance, UI settings) as much as the
+ * window layout (pane locations, open folds, tabs) — so every reload
+ * starts the tour at the same place and in the demo's own look, matching
+ * a vault that is itself reseeded on every reload. The values start from
+ * `demo/state.json` (see [loadDemoVault]). Looks earlier builds kept in
+ * `localStorage` (under `lunarbor-demo:`) are removed on start.
  *
  * Provided by `JsAppGraph.providePersister` in demo mode.
  */
 class DemoPersister : Persister {
-    private val durable = LocalStoragePersister(namespace = "lunarbor-demo")
     private val memory = HashMap(demoInitialState)
 
     init {
+        forgetStoredLook()
         // Authoring aid for demo/state.json: arrange tabs, windows and folds
         // in the running demo, then run `copy(lunarborDemoState())` in the
         // console and keep the keys you want (see demo/README.md).
@@ -160,13 +159,24 @@ class DemoPersister : Persister {
         }
     }
 
-    private fun isDurable(key: String) =
-        key.startsWith("darkness.theme") || key == "darkness.uiSettings"
-
-    override suspend fun read(key: String): String? =
-        if (isDurable(key)) durable.read(key) ?: demoInitialState[key] else memory[key]
+    override suspend fun read(key: String): String? = memory[key]
 
     override suspend fun write(key: String, value: String) {
-        if (isDurable(key)) durable.write(key, value) else memory[key] = value
+        memory[key] = value
+    }
+
+    /**
+     * Removes the look earlier demo builds kept in `localStorage`
+     * (`lunarbor-demo:<key>`), so nothing of it lingers in the visitor's
+     * browser. Storage that throws (blocked site data) is left alone.
+     */
+    private fun forgetStoredLook() {
+        try {
+            val storage = window.localStorage
+            val stale = (0 until storage.length).mapNotNull { storage.key(it) }
+                .filter { it.startsWith("lunarbor-demo:") }
+            stale.forEach { storage.removeItem(it) }
+        } catch (_: Throwable) {
+        }
     }
 }
