@@ -1360,7 +1360,7 @@ class AppShell(
             title = "Search this tree",
             run = { focusedPaneId()?.let { paneEditors[it]?.openSearch() } },
         )
-        // Only offered with the caret in a block: its paragraphs become
+        // Only offered with the caret in a block: its lines become
         // bullets in the block's parent (undoable).
         if (focusedPaneViewModel()?.isBlockLine() == true) {
             addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { it.convertBlockToNodes() }
