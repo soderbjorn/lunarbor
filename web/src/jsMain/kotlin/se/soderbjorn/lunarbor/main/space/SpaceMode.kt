@@ -745,7 +745,9 @@ class SpaceMode(
     private fun frame(now: Double) {
         frameHandle = null
         if (!isActive) return
-        val dt = min(0.05, max(0.0, (now - lastFrame) / 1000))
+        // Capped, so a pause (a hidden window) never jumps the scene; at 0.1 s
+        // motion keeps real time down to 10 frames a second (a big map).
+        val dt = min(0.1, max(0.0, (now - lastFrame) / 1000))
         lastFrame = now
         var moving = false
         if (shape.isMap) {
@@ -1180,10 +1182,10 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
     font-family: var(--dt-font-prop, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif); cursor: pointer; user-select: none;
 }
 .lunarbor-space-page.is-live { cursor: auto; user-select: auto; }
-.lunarbor-space-views:not(.is-single) .lunarbor-space-page.is-live.is-focused {
-    border-color: var(--t-accent, #7aa2ff);
-    box-shadow: 0 0 0 1px var(--t-accent, #7aa2ff), 0 18px 50px rgba(0,0,0,.28);
-}
+/* A faint page (a grandchild, the page being left, a title card far off)
+   fades its content only: the card itself stays opaque, so the cards
+   behind it never show through. */
+.lunarbor-space-page > * { opacity: var(--lb-fade, 1); }
 .lunarbor-space-head {
     flex: none; display: flex; align-items: center; gap: 6px; min-width: 0;
     padding: 6px 12px; border-bottom: 1px solid var(--t-border, rgba(255,255,255,.12));
@@ -1269,4 +1271,19 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 .is-grove .lunarbor-space-box[style*="--lb-area"] > .lunarbor-space-page { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lb-area) 35%, transparent), 0 18px 50px rgba(0,0,0,.28), 0 0 42px color-mix(in srgb, var(--lb-area) 22%, transparent); }
 .is-grove .lunarbor-space-page.is-slab { min-height: 64px; }
 .is-grove .lunarbor-space-page.is-slab .lunarbor-space-preview-headline { padding-bottom: 14px; }
+/* The window's own page stands out from the previews round it, which wear
+   their area's hue (often the same as its own): the theme's accent as a
+   double ring and a wide glow. Rings, not a thicker border, so the editor
+   never reflows. In split view only the focused window's page glows. Last
+   in the sheet, to win over the area and Grove rules above. */
+.lunarbor-space-page.is-live {
+    border-color: var(--t-accent, #7aa2ff) !important;
+    box-shadow: 0 0 0 2px var(--t-accent, #7aa2ff),
+        0 0 0 7px color-mix(in srgb, var(--t-accent, #7aa2ff) 22%, transparent),
+        0 18px 50px rgba(0,0,0,.35),
+        0 0 90px color-mix(in srgb, var(--t-accent, #7aa2ff) 38%, transparent) !important;
+}
+.lunarbor-space-views:not(.is-single) .lunarbor-space-page.is-live:not(.is-focused) {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--t-accent, #7aa2ff) 60%, transparent), 0 18px 50px rgba(0,0,0,.28) !important;
+}
 """

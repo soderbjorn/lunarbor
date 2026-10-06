@@ -44,7 +44,9 @@ import kotlin.math.sqrt
  *   Lunamux's world, so thrust is scaled down to keep the same feel.
  * @param legend The map's key legend: flashes the row of a key in use.
  */
-internal class FreeFlight(private val scale: Double, private val legend: MapLegend) {
+internal class FreeFlight(scale: Double, private val legend: MapLegend) {
+    /** Thrust per Lunamux unit: how big this world is next to Lunamux's. Changeable (the maps' spacing). */
+    var scale: Double = scale
     /** `true` while flying. */
     var isOn = false
         private set
@@ -125,7 +127,7 @@ internal class FreeFlight(private val scale: Double, private val legend: MapLege
      * repeated; a fraction runs as one scaled step).
      */
     fun step(frames: Double) {
-        var left = frames.coerceIn(0.0, 4.0)
+        var left = frames.coerceIn(0.0, 6.0)
         while (left > 1e-6) {
             val n = if (left >= 1.0) 1.0 else left
             stepOnce(n)

@@ -138,7 +138,7 @@ internal class MapView(
     private val legend = MapLegend()
 
     /** Free flight (F): while on, it owns the camera instead of the orbit. */
-    private val flight = FreeFlight(FLIGHT_SCALE, legend)
+    private val flight = FreeFlight(FLIGHT_SCALE * spread, legend)
 
     /** The dashed ring on the body ahead while flying ([flightTargetId]). */
     private val flightTarget = div("lunarbor-flight-target")
@@ -632,6 +632,7 @@ internal class MapView(
         if (next == spread) return
         val k = next / spread
         spread = next
+        flight.scale = FLIGHT_SCALE * spread
         mode.setMapSpread(next)
         target = SpaceVec(target.x * k, target.y * k, target.z * k)
         goalTarget = SpaceVec(goalTarget.x * k, goalTarget.y * k, goalTarget.z * k)
@@ -1798,8 +1799,13 @@ internal class MapView(
         /** Room round each body when framing a subtree ([frameSubtree]), in body sizes: the body and its leaf dust. */
         const val SUBTREE_BODY_MARGIN = 3.0
 
-        /** Free flight's thrust per Lunamux unit: the map is smaller than Lunamux's world. */
-        const val FLIGHT_SCALE = 0.12
+        /**
+         * Free flight's thrust per Lunamux unit at a [spread] of 1: the map
+         * is smaller than Lunamux's world. Multiplied by [spread], so the
+         * ship crosses a widened map as quickly; at the default spread it
+         * crosses about two viewing distances a second.
+         */
+        const val FLIGHT_SCALE = 0.1
 
         /** [spread] when nothing is remembered: bodies 2.5× farther apart than [GraphLayout] places them. */
         const val DEFAULT_SPREAD = 2.5

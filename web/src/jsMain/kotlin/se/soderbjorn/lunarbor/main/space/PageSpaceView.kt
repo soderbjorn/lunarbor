@@ -15,9 +15,12 @@
  *  - **Previews** — read-only outlines of the child and grandchild pages
  *    (`PageSpaceModel`, through `PaneBackingViewModel.spacePageOf`), and of
  *    the page left behind while the camera flies away from it. Clicking one,
- *    or a dot in it, zooms the window there. A page may have hundreds of
- *    grandchildren: only the [NAV_FULL] nearest (children first) show their
- *    bullets, the next [NAV_SLABS] are title cards, the rest [FarPages].
+ *    or a dot in it, zooms the window there. The rest of the vault hangs
+ *    round them as free flight lays it out ([aroundPlaces]: siblings,
+ *    other branches), once every listing has landed — never a page that
+ *    would show over the window's own ([staysBehind]). Only the
+ *    [NAV_FULL] nearest (children first) show their bullets, the next
+ *    [NAV_SLABS] are title cards, the rest [FarPages].
  *  - **Threads** — an SVG overlay drawing a curve from each child bullet's
  *    dot on the live page to that child's page.
  *  - **Colour** — every page wears its area's hue (`SpaceMode.areaColor`,
@@ -34,8 +37,8 @@
  * (`is-aimed`). While flying the view paints the **whole vault** by
  * Pages' own rules ([PageSpaceLayout.wholeLayout], anchored at the
  * window's page): the [FLIGHT_FULL] pages nearest the ship as previews,
- * the next [FLIGHT_SLABS] as title cards, every other page as a tinted
- * rectangle drawn in WebGL behind the pages ([FarPages], through
+ * the next [FLIGHT_SLABS] as title cards, every other page as a small
+ * card without text drawn in WebGL behind the pages ([FarPages], through
  * [backdropExtra]) — re-ranked as the ship moves, with some slack
  * ([KEEP_FACTOR]) so pages near the cut do not flicker between the three,
  * and previews that leave kept with their DOM ([PARK_CAP]). After a pick the
@@ -202,6 +205,12 @@ internal class PageSpaceView(
     /** Free flight: previews off the scene, kept with their DOM ([park]). */
     private val parked = LinkedHashMap<String, PreviewPage>()
 
+    /**
+     * Free flight: where the ship took off, until it first moves or turns —
+     * meanwhile [flightSync] keeps the view as it was ([syncAround]).
+     */
+    private var takeOffAt: SpaceVec? = null
+
     /** Free flight: the near set [far] was last drawn for. */
     private var farFor: Set<String>? = null
 
@@ -306,6 +315,7 @@ internal class PageSpaceView(
         flight = null
         holdUntil = 0.0
         freeFlight.takeOff(cam, rot.rotate(SpaceVec(0.0, 0.0, -1.0)), rot.rotate(SpaceVec(0.0, 1.0, 0.0)))
+        takeOffAt = cam
         flightSync()
         mode.requestFrame()
     }
@@ -383,6 +393,16 @@ internal class PageSpaceView(
             flightGraph = graph
             val at = placed[p.key] ?: SpaceVec.ZERO
             flightPlaces = PageSpaceLayout.wholeLayout(GroveLayout.treeOf(graph, p), p.key, at, geometry)
+        }
+        // Until the ship moves, the view stays exactly as it was before take-off.
+        takeOffAt?.let { at ->
+            if (distance(cam, at) < 2 && kotlin.math.abs(rot.w) > 0.99999) {
+                syncAround(sprout = false)
+                return
+            }
+            takeOffAt = null
+            // syncAround drew its own far cards: draw the flight's.
+            farFor = null
         }
         val eye = cam
         val ranked = flightPlaces.entries
@@ -463,6 +483,7 @@ internal class PageSpaceView(
         flightPlaces = emptyMap()
         flightGraph = null
         farFor = null
+        takeOffAt = null
         parked.clear()
         far.clear()
     }
@@ -675,6 +696,16 @@ internal class PageSpaceView(
             flightSync()
             return
         }
+        syncAround(sprout)
+    }
+
+    /**
+     * [syncPreviews] outside free flight: the page's children and
+     * grandchildren and the rest of the vault round it ([aroundPlaces],
+     * [staysBehind]) — also free flight's first view, until the ship moves
+     * ([takeOffAt]), so taking off changes nothing on screen.
+     */
+    private fun syncAround(sprout: Boolean) {
         val p = page ?: return
         val wanted = HashMap<String, Pair<SpaceChild, Int>>()
         val parents = HashMap<String, String>()
@@ -687,51 +718,122 @@ internal class PageSpaceView(
             }
         }
         wanted.remove(p.key)
-        // A page with hundreds of grandchildren (LBR-11): only the nearest
-        // are DOM cards — children first, then by distance from where the
-        // camera faces the page — the rest far rectangles, as in free flight.
+        // Every page round the camera, not just this page's children and
+        // grandchildren: the rest of the vault hangs where free flight shows
+        // it ([aroundPlaces]), so siblings and other branches stay in view.
+        // Only the nearest are DOM cards — children first, then by distance
+        // from where the camera faces the page — the rest far cards.
         val eye = placed[p.key]?.let { PageSpaceLayout.cameraFor(it, geometry) } ?: cam
-        val ranked = wanted.entries
-            .mapNotNull { (key, pair) -> targets[key]?.let { Triple(key, pair.second, it) } }
-            .sortedWith(compareBy<Triple<String, Int, SpaceVec>> { it.second }.thenBy { distance(it.third, eye) })
-        val fullKeys = ranked.take(NAV_FULL).mapTo(HashSet()) { it.first }
-        val cardKeys = ranked.take(NAV_FULL + NAV_SLABS).mapTo(HashSet()) { it.first }
-        wanted.keys.retainAll(cardKeys)
+        val entries = ArrayList<Around>()
         for ((key, pair) in wanted) {
-            val (child, depth) = pair
             val at = targets[key] ?: continue
+            entries += Around(key, at, pair.first, pair.second)
+        }
+        placed[p.key]?.let { here ->
+            for ((key, at) in aroundPlaces(p, here)) {
+                if (key == p.key || key == leaving || key in wanted || !staysBehind(at, here)) continue
+                entries += Around(key, at, null, 2)
+            }
+        }
+        val ranked = entries.sortedWith(compareBy<Around> { if (it.depth == 1) 0 else 1 }.thenBy { distance(it.at, eye) })
+        val cards = ranked.take(NAV_FULL + NAV_SLABS)
+        val fullKeys = ranked.take(NAV_FULL).mapTo(HashSet()) { it.key }
+        val shownKeys = cards.mapTo(HashSet()) { it.key }
+        val graph = if (cards.any { it.child == null }) mode.pagesGraph() else null
+        aroundTargets = cards.filter { it.child == null }.associate { it.key to it.at }
+        for (e in cards) {
+            val key = e.key
             var pv = previews[key]
             val fresh = pv == null
             if (pv == null) {
                 pv = PreviewPage(key)
                 previews[key] = pv
             }
-            pv.lineId = child.lineId
-            pv.folderRel = child.folderRel
-            pv.depth = depth
             val full = key in fullKeys
+            val child = e.child
+            if (child != null) {
+                pv.lineId = child.lineId
+                pv.folderRel = child.folderRel
+            } else {
+                pv.lineId = null
+                pv.folderRel = folderOfKey(key)
+            }
+            pv.depth = e.depth
             // A title card: header and title only, no glow (cheap to draw in numbers).
             pv.card.classList.toggle("is-slab", !full)
-            pv.fill(child.title, if (full) child.items else emptyList(), if (full) child else null)
+            if (child != null) {
+                pv.fill(child.title, if (full) child.items else emptyList(), if (full) child else null)
+            } else {
+                val folder = pv.folderRel
+                val title = folder?.let { graph?.nodes?.get(it)?.title }.orEmpty()
+                pv.fill(title, if (full) folder?.let { mode.pageItems(it) }.orEmpty() else emptyList(), null)
+            }
             if (!pv.inScene) {
                 val from = parents[key]?.let { placed[it] }
                 if (sprout && fresh && from != null) {
                     pv.cur = from
                     pv.scale = 0.0
                 } else {
-                    pv.cur = at
+                    pv.cur = e.at
                     pv.scale = 1.0
                 }
                 addToScene(pv)
             }
         }
         for ((key, pv) in previews.toList()) {
-            if (key == leaving) continue
-            if (key !in wanted && pv.inScene) removeFromScene(pv)
-            if (key !in wanted && key != leaving) previews.remove(key)
+            if (key == leaving || key in shownKeys) continue
+            if (pv.inScene) removeFromScene(pv)
+            previews.remove(key)
         }
-        far.show(ranked.drop(NAV_FULL + NAV_SLABS).map { it.first to it.third })
+        far.show(ranked.drop(NAV_FULL + NAV_SLABS).map { it.key to it.at })
         renderFocus()
+    }
+
+    /**
+     * `true` when a page of the rest of the vault at [at] never shows over
+     * the window's page at [here]: it hangs clearly behind it (the opaque
+     * live card covers it), or level with it or nearer but beside it, past
+     * its width (perspective only pushes a nearer page further out). Other
+     * branches' columns can cross the window's page ([PageSpaceLayout.wholeLayout]);
+     * those pages are left out, so the window's page is always in front.
+     */
+    private fun staysBehind(at: SpaceVec, here: SpaceVec): Boolean {
+        if (at.z < here.z - BEHIND_MARGIN) return true
+        return kotlin.math.abs(at.x - here.x) >= geometry.pageWidth + BEHIND_MARGIN
+    }
+
+    /**
+     * A page [syncPreviews] may show: its [key] and place [at], its
+     * [child] when it is one of the page's children or grandchildren
+     * (`null` for the rest of the vault), and [depth] (1 a child, 2
+     * anything else — drawn fainter).
+     */
+    private class Around(val key: String, val at: SpaceVec, val child: SpaceChild?, val depth: Int)
+
+    /** Where the shown pages of the rest of the vault glide to ([tick]); the others come from [targets]. */
+    private var aroundTargets: Map<String, SpaceVec> = emptyMap()
+
+    /** [aroundPlaces]' last result and what it was laid out from. */
+    private var around: Pair<List<Any?>, Map<String, SpaceVec>>? = null
+
+    /**
+     * Where every page of the vault hangs round the window's page [p] at
+     * [at] — free flight's layout ([PageSpaceLayout.wholeLayout]): its
+     * subtree as [targets] has it, each ancestor where going up puts it,
+     * their other branches in their columns. The same places whichever
+     * page of a branch the window is on, so pages stay put as it moves.
+     * Empty until every listing has landed (as Grove waits), so the
+     * surroundings never shift as the vault loads; cached until the
+     * graph, the page, its place or the view's size change.
+     */
+    private fun aroundPlaces(p: SpacePage, at: SpaceVec): Map<String, SpaceVec> {
+        val graph = mode.pagesGraph()
+        if (graph.root == null || !graph.nodes.values.all { it.loaded }) return emptyMap()
+        val sig = listOf(graph, p, at, geometry)
+        around?.let { (s, places) -> if (s.size == sig.size && s[0] === graph && s.drop(1) == sig.drop(1)) return places }
+        val places = PageSpaceLayout.wholeLayout(GroveLayout.treeOf(graph, p), p.key, at, geometry)
+        around = sig to places
+        return places
     }
 
     private fun addToScene(pv: PreviewPage) {
@@ -764,7 +866,7 @@ internal class PageSpaceView(
         var moving = false
         for (pv in previews.values) {
             if (!pv.inScene) continue
-            val t = if (pv.key == leaving) pv.cur else targets[pv.key] ?: pv.cur
+            val t = if (pv.key == leaving) pv.cur else targets[pv.key] ?: aroundTargets[pv.key] ?: pv.cur
             val next = lerp(pv.cur, t, k)
             pv.cur = if (distance(next, t) < 0.4) t else next
             pv.scale = if (1 - pv.scale < 0.002) 1.0 else pv.scale + (1 - pv.scale) * ks
@@ -898,7 +1000,9 @@ internal class PageSpaceView(
                 2 -> "0.45"
                 else -> "1"
             }
-            if (pv.el.style.opacity != opacity) pv.el.style.opacity = opacity
+            // Only the content fades (`--lb-fade`): a translucent card would
+            // let the cards behind it show through its text.
+            if (pv.card.style.getPropertyValue("--lb-fade") != opacity) pv.card.style.setProperty("--lb-fade", opacity)
         }
     }
 
@@ -1165,16 +1269,26 @@ internal class PageSpaceView(
     private fun allChildren(p: SpacePage): List<SpaceChild> = p.children + p.children.flatMap { it.children }
 
     /**
-     * The pages too far from the ship for the DOM, while flying: one
-     * tinted rectangle each (the top half of a page, in its area's hue),
-     * an instanced WebGL mesh drawn behind the pages with the starfield
-     * ([backdropExtra]) — far away, so behind is where they belong.
+     * The pages too far from the ship for the DOM, while flying: each a
+     * small card drawn in WebGL — a title card's shape and colours (the
+     * editor's background, a faint outline in its area's hue, the area's
+     * hue along its top edge) without its text — behind the pages with
+     * the starfield ([backdropExtra]). Far away, so behind is where they
+     * belong.
+     *
+     * One instanced mesh, three instances a page (outline, body, top
+     * edge), drawn far to near without depth writes: painter's order, so
+     * a nearer card always covers a farther one, and the parts of one
+     * card never fight in the depth buffer (its near plane makes that
+     * coarse at these distances).
      */
     private inner class FarPages {
         private val three: dynamic = lib.raw
         private val mesh: dynamic
         private val dummy: dynamic = construct(three.Object3D)
         private val color: dynamic = construct(three.Color)
+        private val bg: dynamic = construct(three.Color)
+        private val area: dynamic = construct(three.Color)
         private var shown = false
 
         /** Each page's hue, worked out once per flight ([clear] forgets them). */
@@ -1184,10 +1298,10 @@ internal class PageSpaceView(
             val params: dynamic = js("({})")
             params.color = 0xffffff
             params.transparent = true
-            params.opacity = 0.5
+            params.opacity = FAR_OPACITY
             params.depthWrite = false
             params.side = three.DoubleSide
-            mesh = construct(three.InstancedMesh, construct(three.PlaneGeometry, 1.0, 1.0), construct(three.MeshBasicMaterial, params), FAR_CAP)
+            mesh = construct(three.InstancedMesh, construct(three.PlaneGeometry, 1.0, 1.0), construct(three.MeshBasicMaterial, params), FAR_CAP * 3)
             mesh.count = 0
             mesh.frustumCulled = false
         }
@@ -1195,21 +1309,43 @@ internal class PageSpaceView(
         /** The mesh while it draws anything, else `null`. */
         val objectIfShown: Object3? get() = if (shown) mesh.unsafeCast<Object3>() else null
 
-        /** Draws a rectangle for each of [pages] (key → slot centre), at most [FAR_CAP]. */
+        /** Places instance [i] as a [w] × [h] rectangle centred at ([x], [y], [z]) in [c]. */
+        private fun part(i: Int, x: Double, y: Double, z: Double, w: Double, h: Double, c: dynamic) {
+            dummy.position.set(x, y, z)
+            dummy.scale.set(w, h, 1.0)
+            dummy.updateMatrix()
+            mesh.setMatrixAt(i, dummy.matrix)
+            mesh.setColorAt(i, c)
+        }
+
+        /** Draws a card for each of [pages] (key → slot centre), at most [FAR_CAP], far ones first. */
         fun show(pages: List<Pair<String, SpaceVec>>) {
+            val dark = mode.isDarkTheme
+            // The cards' own background (`.lunarbor-space-page`: --t-bg).
+            val css = try {
+                window.getComputedStyle(element).getPropertyValue("--t-bg").trim()
+            } catch (_: Throwable) {
+                ""
+            }
+            bg.set(if (dark) 0x1e1e1e else 0xffffff)
+            if (css.startsWith("#") || css.startsWith("rgb") || css.startsWith("hsl")) {
+                try { bg.setStyle(css) } catch (_: Throwable) { }
+            }
             val pw = geometry.pageWidth
-            val ph = geometry.pageHeight * 0.5
+            val top = geometry.pageHeight / 2
+            val eye = cam
+            val sorted = pages.take(FAR_CAP).sortedByDescending { (_, at) -> distance(at, eye) }
             var i = 0
-            for ((key, at) in pages) {
-                if (i >= FAR_CAP) break
-                dummy.position.set(at.x, at.y + geometry.pageHeight / 2 - ph / 2, at.z)
-                dummy.scale.set(pw, ph, 1.0)
-                dummy.updateMatrix()
-                mesh.setMatrixAt(i, dummy.matrix)
+            for ((key, at) in sorted) {
                 val hue = hues.getOrPut(key) { mode.areaHue(SpacePalette.pathOfKey(key)) }
-                if (hue == null) color.setHSL(0.6, 0.1, if (mode.isDarkTheme) 0.7 else 0.4) else color.setHSL(hue, 0.75, if (mode.isDarkTheme) 0.6 else 0.45)
-                mesh.setColorAt(i, color)
-                i++
+                // As `SpaceMode.areaColor`: hsl(h 85% 62%) on dark, hsl(h 75% 45%) on light.
+                if (hue == null) area.setHSL(0.6, 0.08, if (dark) 0.55 else 0.6) else area.setHSL(hue, if (dark) 0.85 else 0.75, if (dark) 0.62 else 0.45)
+                val cy = at.y + top - FAR_CARD_H / 2
+                // A 1px outline in the area's hue at 35% (the card's box-shadow ring).
+                color.copy(bg).lerp(area, 0.35)
+                part(i++, at.x, cy, at.z, pw + 2 * FAR_LINE, FAR_CARD_H + 2 * FAR_LINE, color)
+                part(i++, at.x, cy, at.z, pw, FAR_CARD_H, bg)
+                part(i++, at.x, at.y + top - FAR_EDGE / 2, at.z, pw + 2 * FAR_LINE, FAR_EDGE, area)
             }
             mesh.count = i
             mesh.instanceMatrix.needsUpdate = true
@@ -1255,8 +1391,23 @@ internal class PageSpaceView(
         /** Free flight: how often (seconds) the pages are re-ranked round the ship. */
         const val FLIGHT_SYNC_S = 0.3
 
-        /** At most this many far rectangles. */
+        /** At most this many far cards. */
         const val FAR_CAP = 6000
+
+        /** How far behind the window's page (or beside it) a page of the rest of the vault must hang to be shown ([staysBehind]). */
+        const val BEHIND_MARGIN = 120.0
+
+        /** A far card's height: a title card's (header and title). */
+        const val FAR_CARD_H = 84.0
+
+        /** A far card's top edge in its area's hue (thicker than the cards' 3px, so it reads from afar). */
+        const val FAR_EDGE = 6.0
+
+        /** A far card's outline width. */
+        const val FAR_LINE = 2.0
+
+        /** Far cards' opacity: a title card further back is fainter. */
+        const val FAR_OPACITY = 0.8
 
         /** How long a click in free flight holds the camera, waiting to see whether it opens a page. */
         const val CLICK_HOLD_MS = 400

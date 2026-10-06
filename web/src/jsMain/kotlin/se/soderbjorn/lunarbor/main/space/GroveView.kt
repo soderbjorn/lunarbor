@@ -740,8 +740,10 @@ internal class GroveView(
                 pv.isSlab -> "0.6"
                 else -> "1"
             }
-            // On the card: opacity on a preserve-3d slot would flatten its edges.
-            if (pv.card.style.opacity != opacity) pv.card.style.opacity = opacity
+            // Only the card's content fades (`--lb-fade`): a translucent card
+            // would let the cards behind it show through its text (and
+            // opacity on a preserve-3d slot would flatten its edges).
+            if (pv.card.style.getPropertyValue("--lb-fade") != opacity) pv.card.style.setProperty("--lb-fade", opacity)
         }
     }
 
