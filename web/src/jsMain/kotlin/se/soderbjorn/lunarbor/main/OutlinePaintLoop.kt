@@ -175,7 +175,7 @@ fun paint(
         // Zoomed into a board node (LBR-27): its board heads the page.
         val boardView = if (zoomId != null) viewModel.lunicleBoardOf(state, zoom.zoomRow) else null
         if (boardView != null) {
-            editor.appendChild(buildLunicleBoard(boardView, viewModel, style, isPage = true))
+            editor.appendChild(buildLunicleBoard(boardView, zoom.zoomRow, viewModel, style, isPage = true))
             recordShownBoard(shownBoards, boardView)
         }
     }
@@ -417,7 +417,7 @@ private fun buildRowElement(
         if (boardView != null) {
             rowDiv.appendChild(buildLunicleSyncIndicator(boardView))
             if (!boardView.folded) {
-                rowDiv.appendChild(buildLunicleBoard(boardView, viewModel, style))
+                rowDiv.appendChild(buildLunicleBoard(boardView, absoluteRow, viewModel, style))
                 shownBoards?.let { recordShownBoard(it, boardView) }
             }
         }

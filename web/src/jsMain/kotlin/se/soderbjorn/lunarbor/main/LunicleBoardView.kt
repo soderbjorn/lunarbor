@@ -16,7 +16,14 @@
  * lines — but fold through the pane's own board fold state
  * (`MainViewModel.toggleLunicleColumn` / `toggleLunicleIssue`). Everything
  * acts on mousedown: a repaint between press and release would swallow a
- * click. Read-only until LBR-28 to LBR-31.
+ * click. Read-only until LBR-29 to LBR-31.
+ *
+ * The keyboard walks the rows (LBR-28, `LunicleBoardCursor`): the box
+ * carries its node's row ([LUNICLE_BOARD_ROW_ATTR]) and every navigable
+ * row its `LunicleRowRef.key` ([LUNICLE_ROW_KEY_ATTR]), in the order
+ * `LunicleBoardRows.of` lists them, so the cursor finds its row again after
+ * every repaint; editable rows mark where their caret is drawn
+ * ([LUNICLE_CARET_HOST_CLASS]).
  *
  * Colours are the theme's `--t-*` variables; pills use the accent, not the
  * tags' `tagHue` palette (they are not tags). The CSS is installed by
@@ -34,6 +41,18 @@ import se.soderbjorn.lunarbor.data.LineMarkdownPrefix
 import se.soderbjorn.lunarbor.data.LineStyle
 import se.soderbjorn.lunarbor.lunicle.LunicleBoardLayout
 import se.soderbjorn.lunarbor.lunicle.LunicleSyncKind
+
+/** On a board's box: its node's document row (for `LunicleBoardCursor`). */
+internal const val LUNICLE_BOARD_ROW_ATTR = "data-lunicle-board-row"
+
+/** On every navigable board row: its `LunicleRowRef.key`. */
+internal const val LUNICLE_ROW_KEY_ATTR = "data-lunicle-key"
+
+/**
+ * On an editable row's text: where the keyboard's caret is drawn — at its
+ * end, or at its start with `is-caret-start` (an empty field's placeholder).
+ */
+internal const val LUNICLE_CARET_HOST_CLASS = "lunarbor-lunicle-caret-host"
 
 /**
  * The sync indicator for a board node: a dot and its text — "Live",
@@ -101,11 +120,14 @@ internal fun refreshLunicleSyncTexts() {
  * children (see the file header). Empty before the first read; dimmed
  * ([PaneBackingViewModel.LunicleBoardView.stale]) under an error.
  *
+ * @param nodeRow The board node's document row, set on the box
+ *   ([LUNICLE_BOARD_ROW_ATTR]) for the keyboard's cursor.
  * @param isPage `true` when the pane is zoomed into the node: the board
  *   heads the page, flush left.
  */
 internal fun buildLunicleBoard(
     view: PaneBackingViewModel.LunicleBoardView,
+    nodeRow: Int,
     viewModel: MainViewModel,
     style: EditorStyle,
     isPage: Boolean = false,
@@ -114,6 +136,7 @@ internal fun buildLunicleBoard(
     box.className = "lunarbor-lunicle-board"
     if (view.stale) box.classList.add("is-stale")
     box.setAttribute("contenteditable", "false")
+    box.setAttribute(LUNICLE_BOARD_ROW_ATTR, nodeRow.toString())
     if (!isPage) box.style.setProperty("margin-left", "calc(${style.indentStepPx}px - $BLOCK_DOT_SLOT)")
     // Keep presses away from the editor's caret placement and drag code.
     box.addEventListener("mousedown", { ev ->
@@ -122,18 +145,19 @@ internal fun buildLunicleBoard(
     })
     val now = kotlin.js.Date.now().toLong()
     for (column in view.columns) {
-        val row = boardRow(0, style, isPage, "lunarbor-lunicle-column")
+        val status = column.column.status.name
+        val row = boardRow(0, style, isPage, "lunarbor-lunicle-column", LunicleRowRef(LunicleRowKind.COLUMN, status))
         appendFoldControls(row, 0, style, folded = column.folded) { viewModel.toggleLunicleColumn(column) }
         row.appendChild(span("lunarbor-lunicle-column-name", column.column.status.name))
         row.appendChild(span("lunarbor-lunicle-dim lunarbor-lunicle-count", column.column.count.toString()))
         box.appendChild(row)
         if (column.folded) continue
         for (issue in column.issues) {
-            val issueRow = boardRow(1, style, isPage, "lunarbor-lunicle-issue")
+            val issueRow = boardRow(1, style, isPage, "lunarbor-lunicle-issue", LunicleRowRef(LunicleRowKind.ISSUE, status, issue.issue.id))
             appendFoldControls(issueRow, 1, style, folded = !issue.unfolded) { viewModel.toggleLunicleIssue(issue) }
             val line = document.createElement("span") as HTMLElement
             line.className = "lunarbor-lunicle-issue-line"
-            line.appendChild(span("lunarbor-lunicle-issue-title", issue.issue.title.ifBlank { issue.issue.key }))
+            line.appendChild(span("lunarbor-lunicle-issue-title $LUNICLE_CARET_HOST_CLASS", issue.issue.title.ifBlank { issue.issue.key }))
             for (pill in issue.pills) line.appendChild(span("lunarbor-lunicle-pill", pill.text))
             if (!issue.unfolded) {
                 issue.commentsLabel?.let { line.appendChild(span("lunarbor-lunicle-dim", it)) }
@@ -152,7 +176,7 @@ internal fun buildLunicleBoard(
             }
             issueRow.appendChild(line)
             box.appendChild(issueRow)
-            if (issue.unfolded) appendIssueChildren(box, issue, style, isPage, viewModel, now)
+            if (issue.unfolded) appendIssueChildren(box, issue, status, style, isPage, viewModel, now)
         }
     }
     return box
@@ -162,29 +186,38 @@ internal fun buildLunicleBoard(
 private fun appendIssueChildren(
     box: HTMLElement,
     issue: PaneBackingViewModel.LunicleIssueView,
+    status: String,
     style: EditorStyle,
     isPage: Boolean,
     viewModel: MainViewModel,
     now: Long,
 ) {
+    val id = issue.issue.id
     val detail = issue.detail
     if (detail == null) {
-        val row = boardRow(2, style, isPage, "lunarbor-lunicle-child")
+        // The description's row, until the issue has been read.
+        val row = boardRow(2, style, isPage, "lunarbor-lunicle-child", LunicleRowRef(LunicleRowKind.DESCRIPTION, status, id))
         appendPlainDot(row)
-        row.appendChild(span("lunarbor-lunicle-dim", if (issue.loading) "Loading…" else "Not loaded yet"))
+        row.appendChild(span("lunarbor-lunicle-dim lunarbor-lunicle-loading", if (issue.loading) "Loading…" else "Not loaded yet"))
         box.appendChild(row)
         return
     }
-    val desc = boardRow(2, style, isPage, "lunarbor-lunicle-child lunarbor-lunicle-description")
+    val desc = boardRow(2, style, isPage, "lunarbor-lunicle-child lunarbor-lunicle-description", LunicleRowRef(LunicleRowKind.DESCRIPTION, status, id))
     appendPlainDot(desc)
     if (detail.description.isBlank()) {
-        desc.appendChild(span("lunarbor-lunicle-dim", "No description"))
+        desc.appendChild(span("lunarbor-lunicle-dim $LUNICLE_CARET_HOST_CLASS is-caret-start", "No description"))
     } else {
-        desc.appendChild(markdownBody(detail.description, viewModel))
+        val body = markdownBody(detail.description, viewModel)
+        // The caret goes at the end of the last line.
+        ((body.lastElementChild as? HTMLElement) ?: body).classList.add(LUNICLE_CARET_HOST_CLASS)
+        desc.appendChild(body)
     }
     box.appendChild(desc)
     for (comment in detail.comments) {
-        val row = boardRow(2, style, isPage, "lunarbor-lunicle-child lunarbor-lunicle-comment")
+        val row = boardRow(
+            2, style, isPage, "lunarbor-lunicle-child lunarbor-lunicle-comment",
+            LunicleRowRef(LunicleRowKind.COMMENT, status, id, comment.id),
+        )
         appendPlainDot(row)
         val body = document.createElement("span") as HTMLElement
         body.className = "lunarbor-lunicle-comment-body"
@@ -195,9 +228,10 @@ private fun appendIssueChildren(
         box.appendChild(row)
     }
     // Writing a comment comes with LBR-31; the row is a placeholder until then.
-    val add = boardRow(2, style, isPage, "lunarbor-lunicle-child lunarbor-lunicle-placeholder")
+    val add = boardRow(2, style, isPage, "lunarbor-lunicle-child lunarbor-lunicle-placeholder", LunicleRowRef(LunicleRowKind.ADD_COMMENT, status, id))
     appendPlainDot(add)
-    add.appendChild(span("lunarbor-lunicle-dim", "Comment…"))
+    // An input's caret sits before its placeholder.
+    add.appendChild(span("lunarbor-lunicle-dim $LUNICLE_CARET_HOST_CLASS is-caret-start", "Comment…"))
     box.appendChild(add)
 }
 
@@ -205,11 +239,13 @@ private fun appendIssueChildren(
  * One board row at board [depth] (0 column, 1 issue, 2 an issue's
  * children): hanging indent like a bullet row, and guide lines for every
  * open level above it — the node's own included, unless the board heads
- * the page ([isPage]).
+ * the page ([isPage]). [ref] names it for the keyboard's cursor
+ * ([LUNICLE_ROW_KEY_ATTR]).
  */
-private fun boardRow(depth: Int, style: EditorStyle, isPage: Boolean, className: String): HTMLElement {
+private fun boardRow(depth: Int, style: EditorStyle, isPage: Boolean, className: String, ref: LunicleRowRef): HTMLElement {
     val row = document.createElement("div") as HTMLElement
     row.className = "lunarbor-lunicle-row $className"
+    row.setAttribute(LUNICLE_ROW_KEY_ATTR, ref.key)
     row.style.apply {
         setProperty("position", "relative")
         minHeight = "${style.lineHeightPx}px"
@@ -515,5 +551,41 @@ internal fun lunicleBoardCss(): String = """
         }
         .lunarbor-lunicle-comment-body > .lunarbor-lunicle-meta {
             margin-left: 8px;
+        }
+        /* The keyboard's caret on a board row (LBR-28, LunicleBoardCursor):
+           a focus tint on rows that cannot be edited (column names,
+           comments), a caret on the ones that can (titles, the
+           description, "Comment…"). The editor's own caret is hidden
+           meanwhile. */
+        .lunarbor-board-cursor-active {
+            caret-color: transparent;
+        }
+        .lunarbor-lunicle-row.is-board-cursor:not(.is-key-caret) > .lunarbor-lunicle-column-name,
+        .lunarbor-lunicle-row.is-board-cursor:not(.is-key-caret) > .lunarbor-lunicle-comment-body,
+        .lunarbor-lunicle-row.is-board-cursor:not(.is-key-caret) > .lunarbor-lunicle-loading {
+            background: var(--t-accent-soft, rgba(90, 160, 255, 0.18));
+            border-radius: 4px;
+            padding: 1px 4px 0;
+            margin: 0 -4px;
+        }
+        .lunarbor-lunicle-row.is-key-caret .$LUNICLE_CARET_HOST_CLASS:not(.is-caret-start)::after,
+        .lunarbor-lunicle-row.is-key-caret .$LUNICLE_CARET_HOST_CLASS.is-caret-start::before {
+            content: "";
+            display: inline-block;
+            width: 1.5px;
+            height: 1.15em;
+            margin: 0 1px;
+            vertical-align: -0.2em;
+            background: var(--t-text, currentColor);
+            animation: lunarbor-lunicle-caret-blink 1.06s steps(1) infinite;
+        }
+        @keyframes lunarbor-lunicle-caret-blink {
+            50% { opacity: 0; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .lunarbor-lunicle-row.is-key-caret .$LUNICLE_CARET_HOST_CLASS::after,
+            .lunarbor-lunicle-row.is-key-caret .$LUNICLE_CARET_HOST_CLASS::before {
+                animation: none;
+            }
         }
 """

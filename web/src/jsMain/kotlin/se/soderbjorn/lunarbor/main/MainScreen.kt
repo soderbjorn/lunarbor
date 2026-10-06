@@ -693,6 +693,12 @@ class MainScreen(
     /** The arrow keys' cursor over a search node's result rows ([SearchNodeHitCursor]). */
     private val searchNodeHitCursor = SearchNodeHitCursor(viewModel)
 
+    /** The arrow keys' cursor over a board node's rows ([LunicleBoardCursor], LBR-28). */
+    private val lunicleBoardCursor = LunicleBoardCursor(viewModel)
+
+    /** `true` while the arrow keys are on a board node's row ([LunicleBoardCursor.isActive]). */
+    val isOnLunicleBoardRow: Boolean get() = lunicleBoardCursor.isActive
+
     /**
      * The search-node result the arrow keys highlight, or `null`
      * ([SearchNodeHitCursor.selectedHit]). Read by [AppShell]'s palette to
@@ -779,6 +785,7 @@ class MainScreen(
         editor.addEventListener("mousedown", { event ->
             val me = event as MouseEvent
             searchNodeHitCursor.clear(editor)
+            lunicleBoardCursor.clear(editor)
             if (handleExternalLinkMouseDown(me)) return@addEventListener
             if (handleLunarborLinkMouseDown(me)) return@addEventListener
             // Resize-handle drag has to win against the click-popover
@@ -913,6 +920,8 @@ class MainScreen(
         // The arrow keys walk a search node's result rows (also on its
         // read-only page): they take the key first while on them.
         if (searchNodeHitCursor.handleKey(editor, event) { syncSelectionFromDom(editor) }) return
+        // And a board node's rows (LBR-28), where ⌘↑ / ⌘↓ fold columns and issues.
+        if (lunicleBoardCursor.handleKey(editor, event) { syncSelectionFromDom(editor) }) return
         if (viewModel.currentBackingState.isReadOnlyPage) {
             // Read-only: only the way up leaves it from here (Back and
             // Forward are app-wide shortcuts).
@@ -1790,6 +1799,8 @@ class MainScreen(
         carryHoverAcrossRepaint(editor)
         // The arrow keys' highlight on a search node's results survives the rebuild.
         searchNodeHitCursor.applyHighlight(editor)
+        // And the board cursor's row (LBR-28), found again by its key.
+        lunicleBoardCursor.applyHighlight(editor)
 
         if (!state.isLoaded) return
         // Map model selection back to DOM. Selection-aware: if anchor is

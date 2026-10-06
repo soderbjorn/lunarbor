@@ -237,6 +237,10 @@ class MainViewModel(
     /** See `PaneBackingViewModel.toggleLunicleIssue`. */
     fun toggleLunicleIssue(issue: PaneBackingViewModel.LunicleIssueView) = paneBackingViewModel.toggleLunicleIssue(issue)
 
+    /** See `PaneBackingViewModel.foldLunicleRow`; the clock is the browser's. */
+    fun foldLunicleRow(nodeRow: Int, ref: LunicleRowRef, folded: Boolean): LunicleRowRef? =
+        paneBackingViewModel.foldLunicleRow(nodeRow, ref, folded, kotlin.js.Date.now().toLong())
+
     /** See `PaneBackingViewModel.reportShownBoards`. */
     fun reportShownBoards(shown: Map<se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, Set<Long>>) =
         paneBackingViewModel.reportShownBoards(shown)
