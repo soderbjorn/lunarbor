@@ -1346,12 +1346,14 @@ internal class TextEditingViewModel(
     }
 
     /**
-     * Converts every block in rows [startRow]..[endRow] to bullets, one
-     * per line ([NoteConversion.nodeGroupsOfBlock]), each in its block's
-     * parent; see [convertBlockRows] for one block. Blocks whose first
-     * row [skipRow] says to leave (privacy-hidden ones) are left alone.
-     * Converted bottom-up, so the rows above stay valid. The caret goes
-     * to [startRow]. A no-op in a plain Markdown file.
+     * Converts every block of fewer than [MAX_CONVERT_BLOCK_ROWS] rows in
+     * rows [startRow]..[endRow] to bullets, one per line
+     * ([NoteConversion.nodeGroupsOfBlock]), each in its block's parent;
+     * see [convertBlockRows] for one block. Larger blocks, and blocks
+     * whose first row [skipRow] says to leave (privacy-hidden ones), are
+     * left alone. Converted bottom-up, so the rows above stay valid. The
+     * caret stays on its line (see [forEachBlockIn]). A no-op in a plain
+     * Markdown file.
      *
      * Called by `PaneBackingViewModel.convertBlockToNodes` once every
      * folder under the page is loaded; undo restores the blocks through
@@ -1359,8 +1361,12 @@ internal class TextEditingViewModel(
      *
      * @return the number of blocks converted.
      */
-    fun convertBlocksIn(startRow: Int, endRow: Int, skipRow: (Int) -> Boolean = { false }): Int =
-        forEachBlockIn(startRow, endRow, skipRow) { convertBlockRows(it) }
+    fun convertBlocksIn(startRow: Int, endRow: Int, skipRow: (Int) -> Boolean = { false }): Int {
+        val lines = state.lines
+        return forEachBlockIn(startRow, endRow, { row ->
+            skipRow(row) || (BlockLayout.rangeAt(lines, row)?.let { it.last - it.first + 1 } ?: 0) >= MAX_CONVERT_BLOCK_ROWS
+        }) { convertBlockRows(it) }
+    }
 
     /**
      * TEMPORARY ("Clean up blocks (temporary)"): strips the frame
@@ -1397,13 +1403,16 @@ internal class TextEditingViewModel(
     /**
      * Runs [edit] on the first row of every block in rows
      * [startRow]..[endRow] that [skipRow] does not name, bottom-up (so an
-     * edit may change the rows below it freely), then puts the caret at
-     * the text start of [startRow]. A no-op in a plain Markdown file.
-     * Shared by [convertBlocksIn] and [cleanUpBlocksIn].
+     * edit may change the rows below it freely). The caret (and an
+     * anchor) stays on its line, found again by id; when an edit removed
+     * that line (a later row of a converted block), on the nearest line
+     * above it that is still there, so the view does not scroll. A no-op
+     * in a plain Markdown file. Shared by [convertBlocksIn] and
+     * [cleanUpBlocksIn].
      *
      * @return the number of blocks [edit] ran on.
      */
-    private inline fun forEachBlockIn(
+    private fun forEachBlockIn(
         startRow: Int,
         endRow: Int,
         skipRow: (Int) -> Boolean,
@@ -1420,17 +1429,38 @@ internal class TextEditingViewModel(
                 r = range.last + 1
             } else r++
         }
+        if (firsts.isEmpty()) return 0
+        val oldIds = document.stateFlow.value.lineIds
         for (first in firsts.asReversed()) edit(first)
-        val lines = document.stateFlow.value.lines
-        if (lines.isNotEmpty()) {
-            val row = startRow.coerceIn(0, lines.lastIndex)
-            patch {
-                it.copy(
-                    cursorRow = row, cursorCol = DocumentLayout.caretStartCol(lines[row]),
-                    anchorRow = null, anchorCol = null,
-                    pendingInlineStyles = emptySet(),
-                )
+        val doc = document.stateFlow.value
+        if (doc.lines.isEmpty()) return firsts.size
+        val rowOf = HashMap<LineId, Int>(doc.lineIds.size * 2)
+        doc.lineIds.forEachIndexed { i, id -> rowOf[id] = i }
+        // The row a model position now lives on, and whether it is the same line.
+        fun relocate(row: Int): Pair<Int, Boolean> {
+            var k = row.coerceIn(0, oldIds.lastIndex.coerceAtLeast(0))
+            while (k >= 0) {
+                val at = oldIds.getOrNull(k)?.let { rowOf[it] }
+                if (at != null) return at to (k == row)
+                k--
             }
+            return 0 to false
+        }
+        val (cRow, cSame) = relocate(s.cursorRow)
+        val cCol = if (cSame) s.cursorCol.coerceIn(DocumentLayout.caretStartCol(doc.lines[cRow]), doc.lines[cRow].length)
+        else DocumentLayout.caretStartCol(doc.lines[cRow])
+        val anchor = s.anchorRow?.let { ar ->
+            val (aRow, aSame) = relocate(ar)
+            val aCol = if (aSame) (s.anchorCol ?: 0).coerceIn(0, doc.lines[aRow].length)
+            else DocumentLayout.caretStartCol(doc.lines[aRow])
+            aRow to aCol
+        }
+        patch {
+            it.copy(
+                cursorRow = cRow, cursorCol = cCol,
+                anchorRow = anchor?.first, anchorCol = anchor?.second,
+                pendingInlineStyles = emptySet(),
+            )
         }
         return firsts.size
     }
@@ -2092,3 +2122,9 @@ internal const val SEARCH_NODE_EXAMPLE_EXPR: String = "#todo -#done"
 
 /** The bullet text "Insert search node" puts in: a title and an example query. */
 internal const val SEARCH_NODE_EXAMPLE: String = "Open tasks {{search: $SEARCH_NODE_EXAMPLE_EXPR}}"
+
+/**
+ * Blocks with this many rows or more are left alone by "Convert block to
+ * nodes" ([TextEditingViewModel.convertBlocksIn]): long text stays whole.
+ */
+internal const val MAX_CONVERT_BLOCK_ROWS: Int = 100

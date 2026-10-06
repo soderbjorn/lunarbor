@@ -282,6 +282,9 @@ class PaneBackingViewModel(
      *   for the view's "Marked done · Undo" toast: the view shows a toast
      *   whenever the serial changes, and its Undo calls [undoHitDoneToggle].
      *   `null` when there is nothing to undo.
+     * @property bulkEditProgress While "Convert block to nodes" or "Clean up
+     *   blocks" runs on this pane ([editBlocksUnderPage]): what it does and
+     *   how far it got, for the view's progress bar. `null` otherwise.
      * @property privacyRevision Mirror of [DocumentRegistry.PrivacyView.revision]:
      *   changes whenever what is hidden may have changed, so the view repaints
      *   (folder contents, links) even when [privacy] did not.
@@ -325,6 +328,7 @@ class PaneBackingViewModel(
         val backlinksCollapsed: Boolean = false,
         val hideDone: Boolean = false,
         val hitDoneToast: HitDoneToast? = null,
+        val bulkEditProgress: BulkEditProgress? = null,
     ) {
         /**
          * `true` while the search field holds at least one word: the view
@@ -2081,71 +2085,114 @@ class PaneBackingViewModel(
     }
 
     /**
-     * "Convert block to nodes" (palette): every block in the page's whole
-     * tree becomes bullets, one per line
-     * ([TextEditingViewModel.convertBlocksIn]). See [editBlocksUnderPage].
+     * "Convert block to nodes" (palette): the block the caret is in, or
+     * every block in the caret's item's whole subtree, becomes bullets,
+     * one per line ([TextEditingViewModel.convertBlocksIn]); blocks of
+     * [MAX_CONVERT_BLOCK_ROWS] rows or more are left alone. See
+     * [editBlocksUnderPage].
      */
-    fun convertBlockToNodes() = editBlocksUnderPage { start, end, skip ->
+    fun convertBlockToNodes() = editBlocksUnderPage("Converting blocks") { start, end, skip ->
         textEditing.convertBlocksIn(start, end, skip)
     }
 
     /**
-     * TEMPORARY ("Clean up blocks (temporary)", palette): every block in
-     * the page's whole tree loses the imported-note frame — `---` lines
-     * at the top, `---` and the `![[…]]` embed at the bottom — and stays
-     * a block ([TextEditingViewModel.cleanUpBlocksIn]). See
-     * [editBlocksUnderPage].
+     * TEMPORARY ("Clean up blocks (temporary)", palette): the block the
+     * caret is in, or every block in the caret's item's whole subtree,
+     * loses the imported-note frame — `---` lines at the top, `---` and
+     * the `![[…]]` embed at the bottom — and stays a block
+     * ([TextEditingViewModel.cleanUpBlocksIn]). See [editBlocksUnderPage].
      */
-    fun cleanUpBlocks() = editBlocksUnderPage { start, end, skip ->
+    fun cleanUpBlocks() = editBlocksUnderPage("Cleaning up blocks") { start, end, skip ->
         textEditing.cleanUpBlocksIn(start, end, skip)
     }
 
     /**
-     * Loads every folder-backed item under the page (the zoom target's
-     * subtree, or the whole outline) level by level — so those items end
-     * up unfolded — then runs [edit] on the page's rows (first row, last
-     * row, and which rows to skip: those the privacy mode hides) as one
-     * undoable edit. Mirrors are not followed, so mirrored nodes
-     * elsewhere are left alone. Stops if the pane switches file while
-     * loading; a no-op in Markdown mode and on read-only pages.
+     * Runs [edit] on the caret's place as one undoable edit: inside a
+     * block, on that block's rows only; elsewhere on the caret's item and
+     * its whole subtree, after loading every folder-backed item under it
+     * level by level. [edit] gets the first row, the last row, and which
+     * rows to skip (those the privacy mode hides). Mirrors are not
+     * followed, so mirrored nodes elsewhere are left alone.
+     *
+     * The pane looks as it did: items it loads for the edit stay folded
+     * (their expansions are held, but they join [State.collapsedIds]),
+     * open items stay open, and the caret stays on its line (see
+     * [TextEditingViewModel.convertBlocksIn]), so the view neither
+     * scrolls nor unfolds. [State.bulkEditProgress] reports progress
+     * meanwhile, for the view's progress bar. Stops if the pane switches
+     * file or the item disappears while loading; a no-op in Markdown
+     * mode, on read-only pages and while another such edit runs.
      *
      * Called by [convertBlockToNodes] and [cleanUpBlocks].
+     *
+     * @param label What the progress bar says the edit does.
      */
-    private fun editBlocksUnderPage(edit: (Int, Int, (Int) -> Boolean) -> Unit) {
+    private fun editBlocksUnderPage(label: String, edit: (Int, Int, (Int) -> Boolean) -> Unit) {
         val s0 = _stateFlow.value
-        if (!s0.isLoaded || s0.isMarkdownMode || s0.isReadOnlyPage) return
+        if (!s0.isLoaded || s0.isMarkdownMode || s0.isReadOnlyPage || s0.bulkEditProgress != null) return
         val doc = document ?: return
+        val lines0 = s0.documentState?.lines ?: return
+        if (s0.cursorRow !in lines0.indices) return
+        val block = BlockLayout.rangeAt(lines0, s0.cursorRow)
+        val itemId = s0.documentState.lineIds.getOrNull(block?.first ?: s0.cursorRow) ?: return
+        // The rows the edit covers: the block, or the item with its subtree.
+        fun rangeNow(): IntRange? {
+            val ds = doc.stateFlow.value
+            val row = ds.lineIds.indexOf(itemId)
+            if (row < 0) return null
+            if (block != null) return BlockLayout.rangeAt(ds.lines, row)
+            val col = DocumentLayout.itemColumn(ds.lines, row)
+            if (col < 0) return row..row
+            return row..DocumentLayout.subtreeEnd(ds.lines, row, col)
+        }
+        patch { it.copy(bulkEditProgress = BulkEditProgress(label, 0, 0)) }
         scope.launch {
-            while (document === doc) {
-                val cur = _stateFlow.value
-                val unloaded = doc.stateFlow.value.unloadedRefIds
-                val items = foldableItemsUnderPage()
-                val toAcquire = items.filter { id ->
-                    doc.isPromotedRef(id) && !doc.isMirror(id) && id !in cur.expandedRefIdsLocal &&
-                        (id in unloaded || id in cur.collapsedIds)
+            try {
+                var loaded = 0
+                while (block == null && document === doc) {
+                    val cur = _stateFlow.value
+                    val range = rangeNow() ?: return@launch
+                    val ds = doc.stateFlow.value
+                    val unloaded = ds.unloadedRefIds
+                    val hidden = hiddenRowsIn(cur.copy(documentState = ds))
+                    val toAcquire = range.mapNotNull { row ->
+                        // Hidden items are neither loaded nor edited.
+                        if (PrivacyLayout.isHidden(hidden, row)) return@mapNotNull null
+                        if (DocumentLayout.itemColumn(ds.lines, row) < 0) return@mapNotNull null
+                        ds.lineIds.getOrNull(row)?.takeIf { id ->
+                            doc.isPromotedRef(id) && !doc.isMirror(id) && id !in cur.expandedRefIdsLocal &&
+                                (id in unloaded || id in cur.collapsedIds)
+                        }
+                    }
+                    if (toAcquire.isEmpty()) break
+                    // Held by this pane from now on, but folded as they were.
+                    patch {
+                        it.copy(
+                            collapsedIds = it.collapsedIds + toAcquire,
+                            expandedRefIdsLocal = it.expandedRefIdsLocal + toAcquire,
+                            seenLineIds = it.seenLineIds + (it.documentState?.lineIds ?: emptyList()),
+                            bulkEditProgress = BulkEditProgress(label, loaded, loaded + toAcquire.size),
+                        )
+                    }
+                    doc.acquireExpansions(toAcquire)
+                    loaded += toAcquire.size
                 }
-                val toOpen = items.filter { !doc.isMirror(it) }.toSet()
+                if (document !== doc) return@launch
                 patch {
                     it.copy(
-                        collapsedIds = it.collapsedIds - toOpen,
-                        zoomUnfoldedIds = it.zoomUnfoldedIds - toOpen,
-                        expandedRefIdsLocal = it.expandedRefIdsLocal + toAcquire,
                         seenLineIds = it.seenLineIds + (it.documentState?.lineIds ?: emptyList()),
+                        bulkEditProgress = BulkEditProgress(label, loaded, loaded),
                     )
                 }
-                if (toAcquire.isEmpty()) break
-                doc.acquireExpansions(toAcquire)
+                // Let the view paint the full bar before the edit holds the thread.
+                delay(BULK_EDIT_PAINT_MS)
+                if (document !== doc) return@launch
+                val range = rangeNow() ?: return@launch
+                val hidden = hiddenRowsIn(_stateFlow.value)
+                recordEdit(FrameKind.OTHER) { edit(range.first, range.last) { PrivacyLayout.isHidden(hidden, it) } }
+            } finally {
+                patch { it.copy(bulkEditProgress = null) }
             }
-            if (document !== doc) return@launch
-            patch { it }
-            val s = _stateFlow.value
-            val lines = s.documentState?.lines ?: return@launch
-            if (lines.isEmpty()) return@launch
-            val zoom = zoomInfoOf(s)
-            val start = zoom?.startRow ?: 0
-            val end = zoom?.endRowInclusive ?: lines.lastIndex
-            val hidden = hiddenRowsIn(s)
-            recordEdit(FrameKind.OTHER) { edit(start, end) { PrivacyLayout.isHidden(hidden, it) } }
         }
     }
 
@@ -5085,6 +5132,12 @@ class PaneBackingViewModel(
         private const val COALESCE_WINDOW_MS: Long = 1_000L
 
         /**
+         * How long [editBlocksUnderPage] waits after its last progress
+         * update before the (synchronous) edit, so the view paints it.
+         */
+        internal const val BULK_EDIT_PAINT_MS: Long = 32
+
+        /**
          * Search-node results listed under the node in its parent; the
          * rest are on its own page (zoomed into), which lists them all.
          */
@@ -5113,3 +5166,13 @@ class PaneBackingViewModel(
  *   shows a fresh toast for each, even one equal to the last.
  */
 data class HitDoneToast(val toggle: HitDoneToggle, val serial: Int)
+
+/**
+ * Progress of a whole-page block edit ([PaneBackingViewModel.State.bulkEditProgress]).
+ *
+ * @property label What the edit does ("Converting blocks").
+ * @property done Folders loaded so far.
+ * @property total Folders known to need loading; grows level by level, so
+ *   the bar may step back. `0` before the first level is known.
+ */
+data class BulkEditProgress(val label: String, val done: Int, val total: Int)

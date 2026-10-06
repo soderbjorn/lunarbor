@@ -2191,6 +2191,49 @@ fun ensureStyles() {
             pointer-events: none;
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
         }
+        /* "Convert block to nodes" / "Clean up blocks" progress
+           (MainScreen.updateBulkEditProgress). */
+        .lunarbor-bulk-progress {
+            position: fixed;
+            bottom: 14px;
+            right: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 220px;
+            padding: 8px 12px;
+            background: var(--t-surface-alt, rgba(42, 42, 42, 0.95));
+            color: var(--t-text-dim, #cfcfcf);
+            border: 1px solid var(--t-border, #4a4a4a);
+            border-radius: 8px;
+            font-size: 12px;
+            line-height: 1.2;
+            z-index: 1001;
+            pointer-events: none;
+        }
+        .lunarbor-bulk-progress-track {
+            height: 4px;
+            border-radius: 2px;
+            overflow: hidden;
+            background: var(--t-border, #4a4a4a);
+        }
+        .lunarbor-bulk-progress-fill {
+            height: 100%;
+            width: 0;
+            background: var(--t-accent, #5ab0ff);
+            transition: width 150ms ease-out;
+        }
+        .lunarbor-bulk-progress-indeterminate .lunarbor-bulk-progress-fill {
+            width: 30%;
+            animation: lunarbor-bulk-progress-slide 1.1s ease-in-out infinite;
+        }
+        @keyframes lunarbor-bulk-progress-slide {
+            from { transform: translateX(-100%); }
+            to { transform: translateX(340%); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .lunarbor-bulk-progress-indeterminate .lunarbor-bulk-progress-fill { animation: none; }
+        }
         .lunarbor-restructuring-spinner {
             width: 12px;
             height: 12px;

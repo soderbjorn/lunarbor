@@ -13,6 +13,7 @@ package se.soderbjorn.lunarbor.main
 
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import se.soderbjorn.lunarbor.data.NoteRepository
@@ -323,14 +324,23 @@ class BlockEditingTest {
         assertEquals(null, read("Packing/_node.md"))
     }
 
+    /** Lets a whole-page block edit run: it waits for the view to paint its progress first. */
+    private fun TestScope.runBulkEdit() {
+        advanceTimeBy(PaneBackingViewModel.BULK_EDIT_PAINT_MS + 1)
+        runCurrent()
+    }
+
     @Test
     fun convert_block_to_nodes_makes_one_bullet_per_line_and_undoes() = runTest {
         val p = pane("- Trip\n> First line\n> goes on\n>\n> - item\n- B\n")
         val original = p.lines
+        p.caretAtEnd(2)
         p.convertBlockToNodes()
-        runCurrent()
+        runBulkEdit()
         assertEquals(listOf("* Trip", "* First line", "* goes on", "* item", "* B"), p.lines)
-        assertEquals(0 to 2, p.caret)
+        // The caret's line was removed: it goes to the nearest one above.
+        assertEquals(1 to 2, p.caret)
+        assertEquals(null, p.stateFlow.value.bulkEditProgress)
         flush()
         assertEquals("- Trip\n- First line\n- goes on\n- item\n- B\n", read("_node.md"))
         p.undo()
@@ -338,18 +348,39 @@ class BlockEditingTest {
     }
 
     @Test
-    fun convert_block_to_nodes_converts_the_whole_tree_and_keeps_dashes() = runTest {
+    fun convert_block_to_nodes_works_on_the_caret_item_subtree_and_keeps_folds() = runTest {
         fs.writeFile("$root/Sub/_node.md", "- Leaf\n> ---\n> Deep\n")
         val p = pane("- Sub [↳](<Sub/_node.md>)\n> Top\n> ---\n")
         p.toggleCollapse(p.id(0))
         runCurrent()
+        val sub = p.id(0)
+        p.caretAtEnd(0)
         p.convertBlockToNodes()
-        runCurrent()
-        assertEquals(listOf("* Sub", "  * Leaf", "  * ---", "  * Deep", "* Top", "* ---"), p.lines)
+        runBulkEdit()
+        // Sub's folder is converted; the block beside it is not.
+        assertEquals(listOf("* Sub", "  * Leaf", "  * ---", "  * Deep", first(0, "Top"), next(0, "---")), p.lines)
+        assertTrue(sub in p.stateFlow.value.collapsedIds)
+        assertEquals(0 to p.lines[0].length, p.caret)
     }
 
     @Test
-    fun clean_up_blocks_strips_the_import_frame_in_the_whole_tree() = runTest {
+    fun convert_block_to_nodes_leaves_blocks_of_100_rows_alone() = runTest {
+        val bigBody = (1..MAX_CONVERT_BLOCK_ROWS).joinToString("\n") { "> big $it" }
+        val q = pane("- A\n$bigBody\n\n> small\n")
+        val before = q.lines
+        q.caretAtEnd(1)
+        q.convertBlockToNodes()
+        runBulkEdit()
+        assertEquals(before, q.lines)
+        q.caretAtEnd(q.lines.lastIndex)
+        q.convertBlockToNodes()
+        runBulkEdit()
+        assertEquals(first(0, "big 1"), q.lines[1])
+        assertEquals("* small", q.lines.last())
+    }
+
+    @Test
+    fun clean_up_blocks_strips_the_import_frame_in_the_caret_item_tree() = runTest {
         fs.writeFile(
             "$root/Sub/_node.md",
             "- 2023-11-14\n> ---\n>\n> ---\n> Deep one.\n>\n> Deep two.\n>\n> ---\n> ![[Framna/1-1/X/Overview]]\n",
@@ -358,21 +389,26 @@ class BlockEditingTest {
         // Fold Sub, so its folder has to be loaded again.
         p.toggleCollapse(p.id(0))
         runCurrent()
-        val topBlock = p.id(p.lines.indexOf(first(0, "---")))
+        p.caretAtEnd(0)
         p.cleanUpBlocks()
-        runCurrent()
+        runBulkEdit()
         assertEquals(
-            listOf(
-                "* Sub", "  * 2023-11-14", first(2, "Deep one."), next(2), next(2, "Deep two."),
-                first(0, "Top."), next(0, "---"), next(0, "mid"),
-            ),
-            p.lines,
+            listOf("* Sub", "  * 2023-11-14", first(2, "Deep one."), next(2), next(2, "Deep two.")),
+            p.lines.take(5),
         )
-        assertEquals(topBlock, p.id(5))
+        // The block beside Sub is not touched.
+        assertEquals(first(0, "---"), p.lines[5])
         flush()
         assertEquals("- 2023-11-14\n> Deep one.\n>\n> Deep two.\n", read("Sub/_node.md"))
+
+        // With the caret in that block, only it is cleaned.
+        val topBlock = p.id(5)
+        p.caretAtEnd(8)
+        p.cleanUpBlocks()
+        runBulkEdit()
+        assertEquals(listOf(first(0, "Top."), next(0, "---"), next(0, "mid")), p.lines.drop(5))
+        assertEquals(topBlock, p.id(5))
         p.undo()
-        assertEquals(first(2, "---"), p.lines[2])
         assertTrue(p.lines.any { it == next(0, "![[A/Overview]]") })
     }
 
@@ -385,8 +421,9 @@ class BlockEditingTest {
         assertEquals("- B\n", read("Packing/_node.md"))
         val blockId = p.id(1)
 
+        p.caretAtEnd(1)
         p.convertBlockToNodes()
-        runCurrent()
+        runBulkEdit()
         assertEquals(listOf("* A", "* ## Packing", "  * list", "  * B"), p.lines)
         assertEquals(blockId, p.id(1))
         flush()

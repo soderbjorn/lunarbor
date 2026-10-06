@@ -536,6 +536,7 @@ class MainScreen(
                     }
                 }
                 updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
+                updateBulkEditProgress(backing?.bulkEditProgress)
                 if (backing != null) lastPaintedState = backing
             }
             val pending = pendingOutgoing
@@ -2105,6 +2106,51 @@ class MainScreen(
     }
 
     // ----------------------------------------------------- chrome / banners
+
+    /** The progress pill of a running block conversion / clean-up ([updateBulkEditProgress]). */
+    private var bulkEditElement: HTMLElement? = null
+
+    /**
+     * Shows, updates or removes the progress pill of "Convert block to
+     * nodes" / "Clean up blocks" ([PaneBackingViewModel.State.bulkEditProgress]):
+     * the label, folders loaded of those known, and a bar — indeterminate
+     * until the first level of folders is known. Fixed at the window's
+     * bottom right, like the restructuring banner. Called on every state
+     * emission.
+     */
+    private fun updateBulkEditProgress(progress: se.soderbjorn.lunarbor.main.BulkEditProgress?) {
+        if (progress == null) {
+            bulkEditElement?.let { it.parentNode?.removeChild(it) }
+            bulkEditElement = null
+            return
+        }
+        val pill = bulkEditElement ?: (document.createElement("div") as HTMLElement).also { el ->
+            el.className = "lunarbor-bulk-progress"
+            el.setAttribute("role", "progressbar")
+            val label = document.createElement("span") as HTMLElement
+            label.className = "lunarbor-bulk-progress-label"
+            val track = document.createElement("div") as HTMLElement
+            track.className = "lunarbor-bulk-progress-track"
+            val fill = document.createElement("div") as HTMLElement
+            fill.className = "lunarbor-bulk-progress-fill"
+            track.appendChild(fill)
+            el.appendChild(label)
+            el.appendChild(track)
+            document.body?.appendChild(el)
+            bulkEditElement = el
+        }
+        val label = pill.querySelector(".lunarbor-bulk-progress-label") as HTMLElement
+        val fill = pill.querySelector(".lunarbor-bulk-progress-fill") as HTMLElement
+        if (progress.total <= 0) {
+            label.textContent = "${progress.label}…"
+            pill.classList.add("lunarbor-bulk-progress-indeterminate")
+            fill.style.width = ""
+        } else {
+            label.textContent = "${progress.label}… ${progress.done} / ${progress.total} folders"
+            pill.classList.remove("lunarbor-bulk-progress-indeterminate")
+            fill.style.width = "${(100.0 * progress.done / progress.total).coerceIn(0.0, 100.0)}%"
+        }
+    }
 
     private fun updateRestructureBanner(banner: HTMLElement, isRestructuring: Boolean) {
         if (isRestructuring) {
