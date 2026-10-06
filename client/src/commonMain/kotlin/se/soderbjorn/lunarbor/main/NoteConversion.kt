@@ -175,6 +175,23 @@ object NoteConversion {
         return groups
     }
 
+    /**
+     * TEMPORARY ("Convert to block - temporary special"): [rowContents]
+     * without the frame imported Obsidian 1-1 notes carry — the leading
+     * rows that are blank or `---` (an empty front matter), and the
+     * trailing rows that are blank, `---` or an `![[…]]` embed (the
+     * old-format link to an overview page). Rows between are untouched.
+     *
+     * Called by `TextEditingViewModel.convertImportedBlocksIn` before
+     * [nodeGroupsOfBlock].
+     */
+    fun stripImportFrame(rowContents: List<String>): List<String> {
+        fun isFrame(c: String) = c.isBlank() || c.trim() == "---"
+        return rowContents
+            .dropWhile { isFrame(it) }
+            .dropLastWhile { isFrame(it) || it.trim().startsWith("![[") }
+    }
+
     /** A Markdown heading's prefix. */
     private val HEADING = Regex("^#{1,6} ")
 

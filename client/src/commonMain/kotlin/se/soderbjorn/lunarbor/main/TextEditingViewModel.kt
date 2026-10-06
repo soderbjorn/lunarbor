@@ -1363,13 +1363,79 @@ internal class TextEditingViewModel(
      * the pane's snapshot history.
      */
     fun convertBlockToNodesAt(row: Int) {
+        val first = convertBlockRows(row, stripImportFrame = false) ?: return
+        patch {
+            it.copy(
+                cursorRow = first.first, cursorCol = first.second,
+                anchorRow = null, anchorCol = null,
+                pendingInlineStyles = emptySet(),
+            )
+        }
+    }
+
+    /**
+     * TEMPORARY ("Convert to block - temporary special"): converts every
+     * block in rows [startRow]..[endRow] to nodes like
+     * [convertBlockToNodesAt], first dropping the frame imported Obsidian
+     * notes carry ([NoteConversion.stripImportFrame]: leading `---` /
+     * blank rows, trailing blank / `---` / `![[…]]` rows). Blocks are
+     * converted bottom-up, so the rows above stay valid. The caret goes
+     * to [startRow]. A no-op in a plain Markdown file.
+     *
+     * Called by `PaneBackingViewModel.convertImportedBlocksUnderPage`
+     * once every folder under the page is loaded.
+     *
+     * @return the number of blocks converted.
+     */
+    fun convertImportedBlocksIn(startRow: Int, endRow: Int): Int {
         val s = state
-        if (!s.isLoaded || !document.bulletsOnly) return
-        val range = BlockLayout.rangeAt(s.lines, row) ?: return
-        val indent = BlockLayout.markerColumn(s.lines[range.first])
-        val groups = NoteConversion.nodeGroupsOfBlock(range.map { BlockLayout.contentOf(s.lines[it]) }, indent)
+        if (!s.isLoaded || !document.bulletsOnly) return 0
+        val firsts = ArrayList<Int>()
+        var r = startRow.coerceAtLeast(0)
+        while (r <= endRow && r < s.lines.size) {
+            val range = BlockLayout.rangeAt(s.lines, r)
+            if (range != null && range.first == r) {
+                firsts += r
+                r = range.last + 1
+            } else r++
+        }
+        for (first in firsts.asReversed()) convertBlockRows(first, stripImportFrame = true)
+        val lines = document.stateFlow.value.lines
+        if (lines.isNotEmpty()) {
+            val row = startRow.coerceIn(0, lines.lastIndex)
+            patch {
+                it.copy(
+                    cursorRow = row, cursorCol = DocumentLayout.caretStartCol(lines[row]),
+                    anchorRow = null, anchorCol = null,
+                    pendingInlineStyles = emptySet(),
+                )
+            }
+        }
+        return firsts.size
+    }
+
+    /**
+     * The document edit behind [convertBlockToNodesAt] and
+     * [convertImportedBlocksIn]: replaces the block containing [row]
+     * with its nodes. With [stripImportFrame] the block's rows lose the
+     * imported-note frame first ([NoteConversion.stripImportFrame]).
+     *
+     * @return the first node's row and end column (where the caret
+     *   goes), or `null` when [row] is not in a block or nothing is loaded.
+     */
+    private fun convertBlockRows(row: Int, stripImportFrame: Boolean): Pair<Int, Int>? {
+        val s = state
+        if (!s.isLoaded || !document.bulletsOnly) return null
+        val lines0 = document.stateFlow.value.lines
+        val range = BlockLayout.rangeAt(lines0, row) ?: return null
+        val indent = BlockLayout.markerColumn(lines0[range.first])
+        val contents = range.map { BlockLayout.contentOf(lines0[it]) }
+        val groups = NoteConversion.nodeGroupsOfBlock(
+            if (stripImportFrame) NoteConversion.stripImportFrame(contents) else contents,
+            indent,
+        )
         // Bottom-up, so the row indices above stay valid.
-        val subtreeEnd = DocumentLayout.subtreeEnd(s.lines, range.first, indent)
+        val subtreeEnd = DocumentLayout.subtreeEnd(lines0, range.first, indent)
         groups.drop(1).flatten().forEachIndexed { i, l -> document.insertLine(subtreeEnd + 1 + i, l) }
         val first = groups.first()
         if (range.last > range.first) document.deleteRows(range.first + 1, range.last)
@@ -1377,13 +1443,7 @@ internal class TextEditingViewModel(
         document.delete(range.first, indent, range.first, old.length)
         document.insertText(range.first, indent, first.first().substring(indent))
         first.drop(1).forEachIndexed { i, l -> document.insertLine(range.first + 1 + i, l) }
-        patch {
-            it.copy(
-                cursorRow = range.first, cursorCol = first.first().length,
-                anchorRow = null, anchorCol = null,
-                pendingInlineStyles = emptySet(),
-            )
-        }
+        return range.first to first.first().length
     }
 
     /**

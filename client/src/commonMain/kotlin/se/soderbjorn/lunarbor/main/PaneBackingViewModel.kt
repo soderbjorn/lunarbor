@@ -2092,6 +2092,54 @@ class PaneBackingViewModel(
     }
 
     /**
+     * TEMPORARY ("Convert to block - temporary special", palette): loads
+     * every folder-backed item under the page (the zoom target's
+     * subtree, or the whole outline) level by level — so those items end
+     * up unfolded — then converts every block there to nodes, stripping
+     * the imported-note frame (`---` lines at the top, `---` and the
+     * `![[…]]` embed at the bottom). Mirrors are not followed, so
+     * mirrored nodes elsewhere are left alone. One undoable edit. Stops
+     * if the pane switches file while loading; a no-op in Markdown mode.
+     * See [TextEditingViewModel.convertImportedBlocksIn].
+     */
+    fun convertImportedBlocksUnderPage() {
+        val s0 = _stateFlow.value
+        if (!s0.isLoaded || s0.isMarkdownMode || s0.isReadOnlyPage) return
+        val doc = document ?: return
+        scope.launch {
+            while (document === doc) {
+                val cur = _stateFlow.value
+                val unloaded = doc.stateFlow.value.unloadedRefIds
+                val items = foldableItemsUnderPage()
+                val toAcquire = items.filter { id ->
+                    doc.isPromotedRef(id) && !doc.isMirror(id) && id !in cur.expandedRefIdsLocal &&
+                        (id in unloaded || id in cur.collapsedIds)
+                }
+                val toOpen = items.filter { !doc.isMirror(it) }.toSet()
+                patch {
+                    it.copy(
+                        collapsedIds = it.collapsedIds - toOpen,
+                        zoomUnfoldedIds = it.zoomUnfoldedIds - toOpen,
+                        expandedRefIdsLocal = it.expandedRefIdsLocal + toAcquire,
+                        seenLineIds = it.seenLineIds + (it.documentState?.lineIds ?: emptyList()),
+                    )
+                }
+                if (toAcquire.isEmpty()) break
+                for (id in toAcquire) doc.acquireExpansion(id)
+            }
+            if (document !== doc) return@launch
+            patch { it }
+            val s = _stateFlow.value
+            val lines = s.documentState?.lines ?: return@launch
+            if (lines.isEmpty()) return@launch
+            val zoom = zoomInfoOf(s)
+            val start = zoom?.startRow ?: 0
+            val end = zoom?.endRowInclusive ?: lines.lastIndex
+            recordEdit(FrameKind.OTHER) { textEditing.convertImportedBlocksIn(start, end) }
+        }
+    }
+
+    /**
      * "Convert to node" on the Markdown note [noteRel] in the folder
      * contents list: appends a bullet titled with the note's name, holding
      * one block with the note's Markdown ([NoteConversion.nodeRowsFor]),

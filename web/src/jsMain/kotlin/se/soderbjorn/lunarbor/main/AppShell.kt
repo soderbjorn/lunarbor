@@ -1365,6 +1365,12 @@ class AppShell(
         if (focusedPaneViewModel()?.isBlockLine() == true) {
             addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { it.convertBlockToNodes() }
         }
+        // TEMPORARY: every block under the page (folders loaded all the
+        // way down) becomes nodes, minus the imported notes' `---` /
+        // `![[…]]` frame.
+        addStyleCmd("convert-imported-blocks-temp", "Convert to block - temporary special") {
+            it.convertImportedBlocksUnderPage()
+        }
         // A block holding a Markdown file's text: the system file chooser
         // picks the file (anywhere, not only in the vault); its text is
         // copied in, the file is left alone.
