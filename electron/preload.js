@@ -99,6 +99,24 @@ contextBridge.exposeInMainWorld("noteApi", {
   removeMcpConnection: (id) => ipcRenderer.invoke("lunarbor:removeMcpConnection", id),
   newMcpKey: (id) => ipcRenderer.invoke("lunarbor:newMcpKey", id),
   /**
+   * App settings → Lunicle (LunicleHost.kt). `getLunicle` resolves to
+   * `{ error, connections }`, each connection
+   * `{ id, name, baseUrl, hasToken, tokenHint }` — never the token itself.
+   * `addLunicleConnection({ name?, baseUrl?, token? })`,
+   * `updateLunicleConnection({ id, name?, baseUrl?, token? })` and
+   * `removeLunicleConnection(id)` resolve to the same shape, `error`
+   * saying why a change was refused.
+   * `lunicleRequest({ connectionId, method, path, query, body })` sends one
+   * request to that instance's `/api/v1/…` with its token (Lunicle sends no
+   * CORS headers, so the renderer cannot fetch it) and resolves to
+   * `{ status, json }` or `{ transportError }`.
+   */
+  getLunicle: () => ipcRenderer.invoke("lunarbor:getLunicle"),
+  addLunicleConnection: (spec) => ipcRenderer.invoke("lunarbor:addLunicleConnection", spec),
+  updateLunicleConnection: (patch) => ipcRenderer.invoke("lunarbor:updateLunicleConnection", patch),
+  removeLunicleConnection: (id) => ipcRenderer.invoke("lunarbor:removeLunicleConnection", id),
+  lunicleRequest: (spec) => ipcRenderer.invoke("lunarbor:lunicleRequest", spec),
+  /**
    * App settings → Backup (VaultBackup.kt). Each resolves to the status
    * `{ folder, intervalHours, running, error, lastBackupName, lastBackupMs }`.
    * `setBackup` takes `{ intervalHours }`; `chooseBackupFolder` opens a

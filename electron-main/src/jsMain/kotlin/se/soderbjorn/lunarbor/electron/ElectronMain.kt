@@ -36,6 +36,9 @@
  *    the window against the new vault.
  *  - App settings → Agent access: the MCP endpoint, its settings and the
  *    request relay to the renderer (McpHttpServer.kt).
+ *  - App settings → Lunicle: named Lunicle connections (base URL +
+ *    token, `lunarbor-lunicle.json`) and the API request relay
+ *    (LunicleHost.kt).
  *  - App settings → Backup: zipping the vault into a backup folder, on
  *    demand or on a schedule, with the file-op handlers held meanwhile
  *    (VaultBackup.kt, ZipWriter.kt).
@@ -212,6 +215,8 @@ fun main() {
     registerIpcHandlers()
     // App settings → Agent access: the MCP endpoint (off unless turned on).
     McpHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-mcp.json") }) { mainWindow }
+    // App settings → Lunicle: connections + the API request relay.
+    LunicleHost.install { sharedDarknessPath("$APP_NAME_KEBAB-lunicle.json") }
     // App settings → Backup: zips of the vault and their schedule.
     BackupHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-backup.json") }, { runPaths.vaultDir }) { mainWindow }
     // The topbar's News & updates bell: its state file, the version, links.
