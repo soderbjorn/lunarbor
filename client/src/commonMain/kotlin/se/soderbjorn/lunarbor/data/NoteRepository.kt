@@ -680,7 +680,11 @@ class NoteRepository(
                     .filter { it.isDirectory && join(cur, it.name) !in trackedFolders }
                     .filter { it.name.lowercase() !in onDiskRefs }
                     .associateByTo(HashMap()) { nameKey(it.name) }
-                for (b in bullets) {
+                // Nothing free to adopt (the common case): skip encoding
+                // every leaf's title, which on a large outline dominated
+                // each save's planning.
+                if (free.isNotEmpty()) for (b in bullets) {
+                    if (free.isEmpty()) break
                     if (curOf[b.row] != null) continue
                     val withChildren = hasContent(b.children)
                     if (!withChildren && (b !is ComposedItem.Bullet || FolderName.plainTextOf(b.title).isBlank())) continue

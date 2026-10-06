@@ -250,8 +250,7 @@ internal class SearchNodeHitCursor(private val viewModel: MainViewModel) {
         }
         val rowEl = editor.querySelector("[data-row=\"${synced.cursorRow}\"]") as? HTMLElement ?: return false
         if (caret != null && caret.top - rowEl.getBoundingClientRect().top > caret.height / 2) return false
-        var prev = rowEl.previousElementSibling
-        while (prev != null && !prev.hasAttribute("data-row")) prev = prev.previousElementSibling
+        val prev = previousRowElement(rowEl)
         val prevRow = prev?.getAttribute("data-row")?.toIntOrNull() ?: return false
         val nodeId = docState.lineIds.getOrNull(prevRow) ?: return false
         val entries = entriesOf(synced, nodeId)?.takeIf { it.size > 0 } ?: return false

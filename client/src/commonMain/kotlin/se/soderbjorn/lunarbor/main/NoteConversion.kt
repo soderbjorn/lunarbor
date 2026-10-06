@@ -81,23 +81,28 @@ object NoteConversion {
     /**
      * "Convert block to nodes": the outline rows that replace a block
      * whose rows hold [rowContents], its item at column [indent]. One node
-     * per paragraph:
+     * per line:
      *
-     * - blank rows separate paragraphs; a paragraph's lines are joined
-     *   with single spaces into one bullet;
-     * - a heading (`# …` to `###### …`) is a bullet of its own;
+     * - every non-blank row is a bullet of its own (line breaks are kept
+     *   as separate bullets, never joined); blank rows are dropped;
+     * - a heading (`# …` to `###### …`) is a bullet, and everything after
+     *   it up to the next heading of the same or a higher level is its
+     *   child — so a `###` under a `##` nests one step deeper, and a
+     *   heading's lines and lists hang under it (headings that skip a
+     *   level still nest only one step);
      * - every list item (`* `, `- `, `+ `, `1. `, `1) `) is a bullet of its
      *   own — the `*` / `-` / `+` marker dropped, a number kept — and a
-     *   nested item is a child of the item above it; a paragraph indented
+     *   nested item is a child of the item above it; a line indented
      *   under a list item is that item's child;
      * - a run of code rows stays a block (code rows and all), since a
      *   bullet cannot hold code — the child of a list item it is indented
      *   under.
      *
-     * The first node is always at [indent]. An empty block gives one
+     * Lists and indented lines nest from the depth of the heading they
+     * are under. The first node is always at [indent]. An empty block gives one
      * empty bullet.
      *
-     * Called by `TextEditingViewModel.convertBlockToNodesAt`.
+     * Called by `TextEditingViewModel.convertBlockRows`.
      *
      * @param rowContents The block rows' contents after the block marker
      *   ([BlockLayout.contentOf]; code rows keep their [BlockLayout.CODE]).
@@ -110,15 +115,15 @@ object NoteConversion {
         val nodes = ArrayList<Node>()
         // Content indents of the open list items, outermost first.
         val listIndents = ArrayList<Int>()
-        // The paragraph still taking lines, or `null` after a blank row,
-        // a heading or code.
-        var open: Node? = null
+        // Levels of the open headings (1 for `#` … 6), outermost first;
+        // content nests this many steps deep.
+        val headings = ArrayList<Int>()
         var lastWasCode = false
-        // Depth of a paragraph or code run indented by [lead]: the child of
+        // Depth of a line or code run indented by [lead]: the child of
         // the innermost open list item it is indented under, else top level.
         fun depthUnderList(lead: Int): Int {
             while (listIndents.isNotEmpty() && listIndents.last() >= lead) listIndents.removeAt(listIndents.lastIndex)
-            return listIndents.size
+            return headings.size + listIndents.size
         }
         for (c in rowContents) {
             if (c.startsWith(BlockLayout.CODE)) {
@@ -129,38 +134,30 @@ object NoteConversion {
                     val lead = c.length - 1 - c.substring(1).trimStart().length
                     nodes += Node(depthUnderList(lead), code = mutableListOf(c))
                 }
-                open = null
                 lastWasCode = true
                 continue
             }
             lastWasCode = false
-            if (c.isBlank()) {
-                open = null
-                continue
-            }
+            if (c.isBlank()) continue
             val lead = c.length - c.trimStart().length
             val body = c.trim()
             val marker = LIST_MARKER.find(body)
             when {
                 HEADING.containsMatchIn(body) -> {
                     listIndents.clear()
-                    nodes += Node(0, StringBuilder(body))
-                    open = null
+                    val level = body.takeWhile { it == '#' }.length
+                    while (headings.isNotEmpty() && headings.last() >= level) headings.removeAt(headings.lastIndex)
+                    nodes += Node(headings.size, StringBuilder(body))
+                    headings += level
                 }
                 marker != null -> {
                     while (listIndents.isNotEmpty() && listIndents.last() >= lead) listIndents.removeAt(listIndents.lastIndex)
                     val text = if (marker.value.first().isDigit()) body else body.substring(marker.value.length)
-                    val node = Node(listIndents.size, StringBuilder(text.trim()))
+                    val node = Node(headings.size + listIndents.size, StringBuilder(text.trim()))
                     listIndents += lead
                     nodes += node
-                    open = node
                 }
-                open != null -> open.text?.append(' ')?.append(body)
-                else -> {
-                    val node = Node(depthUnderList(lead), StringBuilder(body))
-                    nodes += node
-                    open = node
-                }
+                else -> nodes += Node(depthUnderList(lead), StringBuilder(body))
             }
         }
         if (nodes.isEmpty()) return listOf(listOf(" ".repeat(indent) + "* "))
@@ -173,6 +170,22 @@ object NoteConversion {
             if (n.depth == 0 || groups.isEmpty()) groups += rows.toMutableList() else groups.last() += rows
         }
         return groups
+    }
+
+    /**
+     * TEMPORARY ("Clean up blocks (temporary)"): [rowContents]
+     * without the frame imported Obsidian 1-1 notes carry — the leading
+     * rows that are blank or `---` (an empty front matter), and the
+     * trailing rows that are blank, `---` or an `![[…]]` embed (the
+     * old-format link to an overview page). Rows between are untouched.
+     *
+     * Called by `TextEditingViewModel.cleanUpBlocksIn`.
+     */
+    fun stripImportFrame(rowContents: List<String>): List<String> {
+        fun isFrame(c: String) = c.isBlank() || c.trim() == "---"
+        return rowContents
+            .dropWhile { isFrame(it) }
+            .dropLastWhile { isFrame(it) || it.trim().startsWith("![[") }
     }
 
     /** A Markdown heading's prefix. */

@@ -46,6 +46,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import se.soderbjorn.lunarbor.data.DoneState
@@ -340,6 +342,12 @@ class DocumentRegistry(
     /** Paths whose status check is in flight, so a repaint storm checks each once. */
     private val pendingStatus: MutableSet<String> = mutableSetOf()
 
+    /** Paths asked about and not yet checked: drained in batches ([requestLinkStatus]). */
+    private val queuedStatus: MutableSet<String> = LinkedHashSet()
+
+    /** `true` while the batch worker of [requestLinkStatus] runs. */
+    private var statusDrainRunning = false
+
     private val _wikiLinks: MutableStateFlow<Map<String, String?>> = MutableStateFlow(emptyMap())
 
     /**
@@ -354,6 +362,12 @@ class DocumentRegistry(
 
     /** Name keys whose resolution is in flight, so a repaint storm resolves each once. */
     private val pendingWikiLinks: MutableSet<String> = mutableSetOf()
+
+    /** Name key → name asked about and not yet resolved: drained in batches ([requestWikiLink]). */
+    private val queuedWikiLinks: MutableMap<String, String> = LinkedHashMap()
+
+    /** `true` while the batch worker of [requestWikiLink] runs. */
+    private var wikiDrainRunning = false
 
     private val _linkPreviews: MutableStateFlow<Map<String, List<LinkPreviewItem>>> = MutableStateFlow(emptyMap())
 
@@ -745,16 +759,32 @@ class DocumentRegistry(
      * [linkStatusFlow]), or `null` while unknown — in which case a check
      * is started and its result lands in [linkStatusFlow]. Cheap enough to
      * call on every repaint.
+     *
+     * Checks are batched: every path a paint asks about is checked by one
+     * worker, in parallel, and lands in one update — one repaint, not one
+     * per link (on a large outline each repaint redraws thousands of rows).
      */
     fun requestLinkStatus(pathRel: String): Boolean? {
         _linkStatus.value[pathRel]?.let { return it }
         if (!pendingStatus.add(pathRel)) return null
+        queuedStatus += pathRel
+        if (statusDrainRunning) return null
+        statusDrainRunning = true
         scope.launch {
             try {
-                val exists = repository.kindOf(pathRel) != null
-                _linkStatus.update { it + (pathRel to exists) }
+                while (queuedStatus.isNotEmpty()) {
+                    val batch = queuedStatus.toList()
+                    queuedStatus.clear()
+                    val found = coroutineScope {
+                        batch.map { p -> p to async { repository.kindOf(p) != null } }.map { (p, j) -> p to j.await() }
+                    }
+                    _linkStatus.update { it + found }
+                    pendingStatus.removeAll(batch.toSet())
+                }
             } finally {
-                pendingStatus.remove(pathRel)
+                pendingStatus.removeAll(queuedStatus)
+                queuedStatus.clear()
+                statusDrainRunning = false
             }
         }
         return null
@@ -766,18 +796,32 @@ class DocumentRegistry(
      * no single match, or `null` while unknown — in which case the name is
      * resolved against [VaultIndex.targets] and the result lands in
      * [wikiLinksFlow]. Cheap enough to call on every repaint.
+     *
+     * Batched like [requestLinkStatus]: the names a paint asks about are
+     * resolved together and land in one update.
      */
     fun requestWikiLink(name: String): Result<String?>? {
         val key = WikiLink.keyOf(name)
         val cached = _wikiLinks.value
         if (key in cached) return Result.success(cached[key])
         if (!pendingWikiLinks.add(key)) return null
+        queuedWikiLinks[key] = name
+        if (wikiDrainRunning) return null
+        wikiDrainRunning = true
         scope.launch {
             try {
-                val path = vaultIndex.wikiResolver()(name)?.takeUnless { isPathHidden(it) }
-                _wikiLinks.update { it + (key to path) }
+                while (queuedWikiLinks.isNotEmpty()) {
+                    val batch = queuedWikiLinks.toMap()
+                    queuedWikiLinks.clear()
+                    val resolve = vaultIndex.wikiResolver()
+                    val found = batch.mapValues { (_, n) -> resolve(n)?.takeUnless { isPathHidden(it) } }
+                    _wikiLinks.update { it + found }
+                    pendingWikiLinks.removeAll(batch.keys)
+                }
             } finally {
-                pendingWikiLinks.remove(key)
+                pendingWikiLinks.removeAll(queuedWikiLinks.keys)
+                queuedWikiLinks.clear()
+                wikiDrainRunning = false
             }
         }
         return null

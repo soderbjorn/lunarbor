@@ -1435,11 +1435,12 @@ class AppShell(
             title = "Search this tree",
             run = { focusedPaneId()?.let { paneEditors[it]?.openSearch() } },
         )
-        // Only offered with the caret in a block: its paragraphs become
-        // bullets in the block's parent (undoable).
-        if (focusedPaneViewModel()?.isBlockLine() == true) {
-            addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { it.convertBlockToNodes() }
-        }
+        // Every block in the page's whole tree (folders loaded all the
+        // way down) becomes bullets, one per line (undoable).
+        addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { it.convertBlockToNodes() }
+        // TEMPORARY: every block under the page (folders loaded all the
+        // way down) loses the imported notes' `---` / `![[…]]` frame.
+        addStyleCmd("clean-up-blocks-temp", "Clean up blocks (temporary)") { it.cleanUpBlocks() }
         // A block holding a Markdown file's text: the system file chooser
         // picks the file (anywhere, not only in the vault); its text is
         // copied in, the file is left alone.

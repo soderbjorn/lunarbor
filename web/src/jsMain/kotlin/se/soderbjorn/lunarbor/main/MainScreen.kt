@@ -228,6 +228,12 @@ class MainScreen(
      */
     private var lastPaintedState: PaneBackingViewModel.State? = null
 
+    /** The state [reconcile] last brought the editor's rows to ([isCaretOnlyChange]). */
+    private var lastReconciledState: PaneBackingViewModel.State? = null
+
+    /** Pending deferred repaint for a background-only change ([isBackgroundOnlyChange]), if any. */
+    private var backgroundRepaintHandle: Int? = null
+
     /** Plays the zoom morph / fade-through on navigation. */
     private val navigationTransition = NavigationTransition()
 
@@ -395,7 +401,9 @@ class MainScreen(
             // `editor.style.display == "none"` in image view — the pane is
             // showing the image viewer, not an editable document, so leave
             // the click alone.
-            if ((target === scrollWrapper || target === editor) && editor.style.display != "none") {
+            if ((target === scrollWrapper || target === editor) && editor.style.display != "none" &&
+                !isOnScrollbar(scrollWrapper, me)
+            ) {
                 me.preventDefault()
                 focusEditorAtLastRow()
             }
@@ -403,146 +411,193 @@ class MainScreen(
 
         editor.focus()
 
+        // Paints the pane for one emission. Called by the collector below,
+        // and later by a deferred repaint for background-only changes.
+        fun applyState(state: MainViewModel.State) {
+            val backing = state.backingState
+            // Detect navigation transitions BEFORE running reconcile so
+            // we can snapshot the outgoing content as an overlay; the
+            // navigation animation (zoom morph or fade-through, see
+            // NavigationTransition) then plays from it onto the freshly
+            // rendered new content, avoiding a blank middle frame.
+            //
+            // Cross-file navigation (contents-list click) emits an interim
+            // `isLoaded=false` "Loading…" state before the new file's
+            // content lands. We snapshot on that first emission (so
+            // we capture the *outgoing* file's content), then hold
+            // the overlay until a subsequent `isLoaded=true` emission
+            // arrives — only then is there real new content beneath
+            // the overlay to dissolve into.
+            val navigated = isNavigationTransition(backing)
+            if (pendingOutgoing == null && navigated && backing != null && !inSpace) {
+                pendingOutgoing = captureOutgoing(backing)
+            }
+            // Pull DOM focus back into the editor whenever the pane
+            // changes file or zoom target. The trigger may have come
+            // from a click on a header button (Back / Forward) or a
+            // breadcrumb segment, the folder contents list, the starred modal, or the
+            // command palette — none of which leave focus on the
+            // editor. Mirrors the on-pane-focus behaviour so the
+            // caret is ready for keystrokes the moment the new view
+            // lands. Cursor position itself is restored from the
+            // pane VM during reconcile, so this only re-arms input.
+            if (navigated) editor.focus()
+            // Landing on a new node re-reads its folder, so the
+            // contents list picks up files added outside the app
+            // (Finder) since the folder was last read.
+            if (navigated) viewModel.refreshCurrentFolderListing()
+            // Skip the paint while an animation is pending and the new
+            // file is still loading: reconcile would wipe the editor
+            // and stamp "Loading…" underneath the overlay, which —
+            // despite the overlay being opaque — was perceptible as a
+            // brief flash on the file-nav path. Keeping the live DOM
+            // unchanged means the overlay sits over an identical copy
+            // of itself; the next emission (isLoaded=true) repaints
+            // to the new content and the animation plays onto it.
+            // Image view is "ready to paint" as soon as the new
+            // activeFileRel lands — there is no Document load step to
+            // wait on — so it bypasses the loading-skip and the
+            // animation also plays on the first emission that points
+            // at the image.
+            val skipPaint = pendingOutgoing != null &&
+                backing != null && !backing.isLoaded && !backing.isFileView
+            // A fold or unfold in the same view (armed by the fold
+            // control): animate the repaint.
+            val prev = lastPaintedState
+            val foldBefore = if (!inSpace && !navigated && !skipPaint && prev != null && backing != null &&
+                backing.isLoaded && !backing.isImageView && kotlin.js.Date.now() < foldArmedUntil
+            ) {
+                prev.documentState?.lineIds?.let { foldTransition.capture(editor, it) }
+            } else null
+            if (backing != null) showHitDoneToast(backing)
+            if (!skipPaint) {
+                if (backing != null) searchBar.update(backing)
+                // The drawing editor takes the whole pane below the
+                // title in place of the scroll wrapper.
+                // So does an HTML page's web view.
+                if (backing != null && backing.isDrawingView) {
+                    scrollWrapper.style.display = "none"
+                    html.hide()
+                    drawing.show(backing.activeFileRel, backing.drawingRevision)
+                } else if (backing != null && backing.isHtmlView) {
+                    scrollWrapper.style.display = "none"
+                    drawing.hide()
+                    html.show(backing.activeFileRel)
+                } else {
+                    drawing.hide()
+                    html.hide()
+                    scrollWrapper.style.display = ""
+                }
+                // No editor on screen: no board node shown either (LBR-27);
+                // the editor's paint reports its own.
+                if (backing == null || backing.isFileView || backing.isSearchActive) {
+                    viewModel.reportShownBoards(emptyMap())
+                }
+                if (backing != null && (backing.isDrawingView || backing.isHtmlView)) {
+                    // Nothing else to paint: the editor and the folder
+                    // contents list are hidden with the scroll wrapper.
+                } else if (backing != null && backing.isSearchActive && !backing.isImageView) {
+                    // The result list stands in for the page: the
+                    // editor is neither shown nor repainted, so typing
+                    // in the search field stays cheap.
+                    editor.style.display = "none"
+                    imageViewer.style.display = "none"
+                    folderContents.style.display = "none"
+                } else if (backing == null) {
+                    lastReconciledState = null
+                    paintLoading(editor)
+                } else if (backing.isImageView) {
+                    folderContents.style.display = ""
+                    editor.style.display = "none"
+                    imageViewer.style.display = "flex"
+                    paintImageViewer(imageViewer, backing.activeFileRel)
+                    paintFolderContents(folderContents, backing, viewModel, style, scope)
+                } else {
+                    imageViewer.style.display = "none"
+                    editor.style.display = ""
+                    folderContents.style.display = ""
+                    reconcile(editor, backing)
+                    val ids = backing.documentState?.lineIds.orEmpty()
+                    if (foldBefore != null && foldTransition.play(foldBefore, editor, ids)) {
+                        foldArmedUntil = 0.0
+                    } else {
+                        // A repaint during a fold keeps it running.
+                        foldTransition.resume(editor, ids)
+                    }
+                    paintFolderContents(folderContents, backing, viewModel, style, scope)
+                }
+                updateTitle(title, backing)
+                // A page the pane came back to scrolls where it was —
+                // once its content is painted: on the "Loading…" frame
+                // there is nothing to scroll and the offset would be lost.
+                backing?.takeIf { it.isLoaded || it.isFileView }?.scrollRestore?.let { r ->
+                    if (r.seq != lastScrollRestoreSeq) {
+                        lastScrollRestoreSeq = r.seq
+                        scrollWrapper.scrollTop = r.top
+                        // The caret counts as placed: a later repaint
+                        // with the caret where it is must not scroll it
+                        // into view and undo this.
+                        lastAppliedCursor = backing.cursorRow to backing.cursorCol
+                    }
+                }
+                updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
+                updateBulkEditProgress(backing?.bulkEditProgress)
+                if (backing != null) lastPaintedState = backing
+            }
+            val pending = pendingOutgoing
+            if (pending != null && backing != null &&
+                (backing.isLoaded || backing.isFileView)
+            ) {
+                navigationTransition.play(pending, title, scrollWrapper, editor)
+                pendingOutgoing = null
+            }
+            rememberNavSignature(backing)
+        }
+
         scope.launch {
             viewModel.stateFlow.collect { state ->
+                // Background data alone (listings, link checks, backlinks,
+                // search-node results) changed: coalesce into one deferred
+                // repaint. Each repaint redraws every row, and on a large
+                // expanded outline these arrive by the dozen.
                 val backing = state.backingState
-                // Detect navigation transitions BEFORE running reconcile so
-                // we can snapshot the outgoing content as an overlay; the
-                // navigation animation (zoom morph or fade-through, see
-                // NavigationTransition) then plays from it onto the freshly
-                // rendered new content, avoiding a blank middle frame.
-                //
-                // Cross-file navigation (contents-list click) emits an interim
-                // `isLoaded=false` "Loading…" state before the new file's
-                // content lands. We snapshot on that first emission (so
-                // we capture the *outgoing* file's content), then hold
-                // the overlay until a subsequent `isLoaded=true` emission
-                // arrives — only then is there real new content beneath
-                // the overlay to dissolve into.
-                val navigated = isNavigationTransition(backing)
-                if (pendingOutgoing == null && navigated && backing != null && !inSpace) {
-                    pendingOutgoing = captureOutgoing(backing)
+                if (backing != null && isBackgroundOnlyChange(backing)) {
+                    if (backgroundRepaintHandle == null) {
+                        backgroundRepaintHandle = window.setTimeout({
+                            backgroundRepaintHandle = null
+                            applyState(viewModel.stateFlow.value)
+                        }, BACKGROUND_REPAINT_MS)
+                    }
+                    return@collect
                 }
-                // Pull DOM focus back into the editor whenever the pane
-                // changes file or zoom target. The trigger may have come
-                // from a click on a header button (Back / Forward) or a
-                // breadcrumb segment, the folder contents list, the starred modal, or the
-                // command palette — none of which leave focus on the
-                // editor. Mirrors the on-pane-focus behaviour so the
-                // caret is ready for keystrokes the moment the new view
-                // lands. Cursor position itself is restored from the
-                // pane VM during reconcile, so this only re-arms input.
-                if (navigated) editor.focus()
-                // Landing on a new node re-reads its folder, so the
-                // contents list picks up files added outside the app
-                // (Finder) since the folder was last read.
-                if (navigated) viewModel.refreshCurrentFolderListing()
-                // Skip the paint while an animation is pending and the new
-                // file is still loading: reconcile would wipe the editor
-                // and stamp "Loading…" underneath the overlay, which —
-                // despite the overlay being opaque — was perceptible as a
-                // brief flash on the file-nav path. Keeping the live DOM
-                // unchanged means the overlay sits over an identical copy
-                // of itself; the next emission (isLoaded=true) repaints
-                // to the new content and the animation plays onto it.
-                // Image view is "ready to paint" as soon as the new
-                // activeFileRel lands — there is no Document load step to
-                // wait on — so it bypasses the loading-skip and the
-                // animation also plays on the first emission that points
-                // at the image.
-                val skipPaint = pendingOutgoing != null &&
-                    backing != null && !backing.isLoaded && !backing.isFileView
-                // A fold or unfold in the same view (armed by the fold
-                // control): animate the repaint.
-                val prev = lastPaintedState
-                val foldBefore = if (!inSpace && !navigated && !skipPaint && prev != null && backing != null &&
-                    backing.isLoaded && !backing.isImageView && kotlin.js.Date.now() < foldArmedUntil
-                ) {
-                    prev.documentState?.lineIds?.let { foldTransition.capture(editor, it) }
-                } else null
-                if (backing != null) showHitDoneToast(backing)
-                if (!skipPaint) {
-                    if (backing != null) searchBar.update(backing)
-                    // The drawing editor takes the whole pane below the
-                    // title in place of the scroll wrapper.
-                    // So does an HTML page's web view.
-                    if (backing != null && backing.isDrawingView) {
-                        scrollWrapper.style.display = "none"
-                        html.hide()
-                        drawing.show(backing.activeFileRel, backing.drawingRevision)
-                    } else if (backing != null && backing.isHtmlView) {
-                        scrollWrapper.style.display = "none"
-                        drawing.hide()
-                        html.show(backing.activeFileRel)
-                    } else {
-                        drawing.hide()
-                        html.hide()
-                        scrollWrapper.style.display = ""
-                    }
-                    // No editor on screen: no board node shown either (LBR-27);
-                    // the editor's paint reports its own.
-                    if (backing == null || backing.isFileView || backing.isSearchActive) {
-                        viewModel.reportShownBoards(emptyMap())
-                    }
-                    if (backing != null && (backing.isDrawingView || backing.isHtmlView)) {
-                        // Nothing else to paint: the editor and the folder
-                        // contents list are hidden with the scroll wrapper.
-                    } else if (backing != null && backing.isSearchActive && !backing.isImageView) {
-                        // The result list stands in for the page: the
-                        // editor is neither shown nor repainted, so typing
-                        // in the search field stays cheap.
-                        editor.style.display = "none"
-                        imageViewer.style.display = "none"
-                        folderContents.style.display = "none"
-                    } else if (backing == null) {
-                        paintLoading(editor)
-                    } else if (backing.isImageView) {
-                        folderContents.style.display = ""
-                        editor.style.display = "none"
-                        imageViewer.style.display = "flex"
-                        paintImageViewer(imageViewer, backing.activeFileRel)
-                        paintFolderContents(folderContents, backing, viewModel, style, scope)
-                    } else {
-                        imageViewer.style.display = "none"
-                        editor.style.display = ""
-                        folderContents.style.display = ""
-                        reconcile(editor, backing)
-                        val ids = backing.documentState?.lineIds.orEmpty()
-                        if (foldBefore != null && foldTransition.play(foldBefore, editor, ids)) {
-                            foldArmedUntil = 0.0
-                        } else {
-                            // A repaint during a fold keeps it running.
-                            foldTransition.resume(editor, ids)
-                        }
-                        paintFolderContents(folderContents, backing, viewModel, style, scope)
-                    }
-                    updateTitle(title, backing)
-                    // A page the pane came back to scrolls where it was —
-                    // once its content is painted: on the "Loading…" frame
-                    // there is nothing to scroll and the offset would be lost.
-                    backing?.takeIf { it.isLoaded || it.isFileView }?.scrollRestore?.let { r ->
-                        if (r.seq != lastScrollRestoreSeq) {
-                            lastScrollRestoreSeq = r.seq
-                            scrollWrapper.scrollTop = r.top
-                            // The caret counts as placed: a later repaint
-                            // with the caret where it is must not scroll it
-                            // into view and undo this.
-                            lastAppliedCursor = backing.cursorRow to backing.cursorCol
-                        }
-                    }
-                    updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
-                    if (backing != null) lastPaintedState = backing
-                }
-                val pending = pendingOutgoing
-                if (pending != null && backing != null &&
-                    (backing.isLoaded || backing.isFileView)
-                ) {
-                    navigationTransition.play(pending, title, scrollWrapper, editor)
-                    pendingOutgoing = null
-                }
-                rememberNavSignature(backing)
+                backgroundRepaintHandle?.let { window.clearTimeout(it) }
+                backgroundRepaintHandle = null
+                applyState(state)
             }
         }
+    }
+
+    /**
+     * `true` when [backing] differs from the state last painted only in
+     * data the registry fills in the background — folder listings, link
+     * and wiki-link checks, link previews, backlinks, search-node results,
+     * the privacy index revision. Such emissions come in bursts (one per
+     * folder listed or batch of links checked) and need no immediate
+     * repaint; the collector coalesces them into one deferred repaint.
+     * Edits, caret moves, folds and navigation always paint at once.
+     */
+    private fun isBackgroundOnlyChange(backing: PaneBackingViewModel.State): Boolean {
+        val prev = lastPaintedState ?: return false
+        if (backing === prev || !backing.isLoaded || !prev.isLoaded) return false
+        return backing.copy(
+            vaultListings = prev.vaultListings,
+            linkStatus = prev.linkStatus,
+            wikiLinks = prev.wikiLinks,
+            linkPreviews = prev.linkPreviews,
+            searchNodeResults = prev.searchNodeResults,
+            privacyRevision = prev.privacyRevision,
+            backlinks = prev.backlinks,
+        ) == prev
     }
 
     /**
@@ -836,6 +891,7 @@ class MainScreen(
             if (handleImageResizeMouseDown(me)) return@addEventListener
             if (handleImageMouseDown(me)) return@addEventListener
             maybeBeginGutterDrag(editor, me)
+            if (dragSession == null && !me.defaultPrevented) beginTextSelectionDrag(me)
         })
         // Right-click opens in a new window: a vault link (or a resolved
         // wiki link) its target, a bullet's dot its item. Anywhere else the
@@ -1146,6 +1202,12 @@ class MainScreen(
                 }
             }
         }
+        if ((event.key == "ArrowLeft" || event.key == "ArrowRight") && isWordMoveChord(event)) {
+            if (handleWordMoveAtLineEdge(editor, forward = event.key == "ArrowRight", extend = event.shiftKey)) {
+                event.preventDefault()
+                return
+            }
+        }
         if (event.key == "ArrowDown" && !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
             // Plain ArrowDown on the last row of a block that nothing
             // follows: the browser has nowhere to go, so leave the block
@@ -1233,6 +1295,56 @@ class MainScreen(
             }
             return
         }
+    }
+
+    /**
+     * Whether [event] is the platform's word-move chord with ← / →:
+     * Option on the Mac, Ctrl elsewhere (Shift may be added to extend).
+     */
+    private fun isWordMoveChord(event: KeyboardEvent): Boolean =
+        if (isMacPlatform) event.altKey && !event.ctrlKey && !event.metaKey
+        else event.ctrlKey && !event.altKey && !event.metaKey
+
+    /**
+     * Word moves (Option-← / Option-→ on the Mac) at a row's edges
+     * (LBR-33). Inside the text the browser's own word move is right, but
+     * across a row boundary it trips over the next row's
+     * `contenteditable="false"` bullet: Option-→ at the end of a row
+     * landed at the end of the next row's first word, Option-← at the
+     * start of a row put the caret before the bullet. Here:
+     * - at the visible text's end (start), the caret goes to the next
+     *   (previous) visible row's text start (end), like plain → / ←;
+     * - with only spaces between the caret and that edge, it goes to the
+     *   edge first, so the next press wraps.
+     *
+     * Leaves a non-extending press with a selection to the browser.
+     * Called by [handleKey].
+     *
+     * @param forward `true` for →, `false` for ←.
+     * @param extend Shift held: extend the selection instead of moving.
+     * @return `true` when the press was handled (the caller prevents the default).
+     */
+    private fun handleWordMoveAtLineEdge(editor: HTMLElement, forward: Boolean, extend: Boolean): Boolean {
+        if (!syncSelectionFromDom(editor)) return false
+        val backing = viewModel.stateFlow.value.backingState ?: return false
+        if (!extend && PaneBackingViewModel.selectionOf(backing) != null) return false
+        val line = backing.lines.getOrNull(backing.cursorRow) ?: return false
+        val col = backing.cursorCol
+        if (forward) {
+            when {
+                DocumentLayout.isAtVisibleTextEnd(line, col) -> viewModel.moveRight(extend)
+                col < line.length && line.substring(col).isBlank() -> viewModel.moveLineEnd(extend)
+                else -> return false
+            }
+        } else {
+            val start = DocumentLayout.caretStartCol(line)
+            when {
+                DocumentLayout.isAtVisibleTextStart(line, col) -> viewModel.moveLeft(extend)
+                col > start && line.substring(start, col).isBlank() -> viewModel.moveLineStart(extend)
+                else -> return false
+            }
+        }
+        return true
     }
 
     /** Cmd-C: write the model's selected text to the clipboard. */
@@ -1834,22 +1946,31 @@ class MainScreen(
      * caret would jump the viewport back to the caret row.
      */
     private fun reconcile(editor: HTMLElement, state: PaneBackingViewModel.State) {
-        val scroller = scrollWrapperElement ?: editor
-        val savedScrollTop = scroller.scrollTop
-        // A search or link page is read-only (State.isReadOnlyPage): no caret to type at.
-        editor.setAttribute("contenteditable", if (state.isReadOnlyPage) "false" else "true")
-        // A board's text field (LBR-29) is put back after the rebuild, with its selection.
-        lunicleBoardCursor.saveField()
-        paint(editor, state, viewModel, style, onBulletMouseDown = { row, ev ->
-            beginDragFromBullet(row, ev)
-        })
-        scroller.scrollTop = savedScrollTop
-        // The hovered row's −/+ and dot stay put instead of blinking (LBR-17).
-        carryHoverAcrossRepaint(editor)
-        // The arrow keys' highlight on a search node's results survives the rebuild.
-        searchNodeHitCursor.applyHighlight(editor)
-        // And the board cursor's row (LBR-28), found again by its key.
-        lunicleBoardCursor.applyHighlight(editor)
+        val prev = lastReconciledState
+        lastReconciledState = state
+        if (prev != null && isCaretOnlyChange(prev, state)) {
+            // Only the caret or selection moved (arrow keys, a click): the
+            // rows are as painted, so just move the caret's row classes —
+            // a full repaint of a long page cost hundreds of ms a keystroke.
+            moveCaretClasses(editor, state)
+        } else {
+            val scroller = scrollWrapperElement ?: editor
+            val savedScrollTop = scroller.scrollTop
+            // A search or link page is read-only (State.isReadOnlyPage): no caret to type at.
+            editor.setAttribute("contenteditable", if (state.isReadOnlyPage) "false" else "true")
+            // A board's text field (LBR-29) is put back after the rebuild, with its selection.
+            lunicleBoardCursor.saveField()
+            paint(editor, state, viewModel, style, onBulletMouseDown = { row, ev ->
+                beginDragFromBullet(row, ev)
+            })
+            scroller.scrollTop = savedScrollTop
+            // The hovered row's −/+ and dot stay put instead of blinking (LBR-17).
+            carryHoverAcrossRepaint(editor)
+            // The arrow keys' highlight on a search node's results survives the rebuild.
+            searchNodeHitCursor.applyHighlight(editor)
+            // And the board cursor's row (LBR-28), found again by its key.
+            lunicleBoardCursor.applyHighlight(editor)
+        }
 
         if (!state.isLoaded) return
         // Map model selection back to DOM. Selection-aware: if anchor is
@@ -1860,6 +1981,56 @@ class MainScreen(
         val cursorMoved = lastAppliedCursor != cursor
         applyDomSelection(editor, anchorRow, anchorCol, state.cursorRow, state.cursorCol, cursorMoved)
         lastAppliedCursor = cursor
+    }
+
+    /**
+     * `true` when [next] differs from [prev], the state the editor was
+     * last painted for, only in where the caret and selection are (and
+     * the pending inline styles typing would use) — nothing a row draws
+     * but its caret classes ([moveCaretClasses]).
+     */
+    private fun isCaretOnlyChange(prev: PaneBackingViewModel.State, next: PaneBackingViewModel.State): Boolean {
+        if (prev === next || !prev.isLoaded || !next.isLoaded) return false
+        return next.copy(
+            cursorRow = prev.cursorRow,
+            cursorCol = prev.cursorCol,
+            anchorRow = prev.anchorRow,
+            anchorCol = prev.anchorCol,
+            pendingInlineStyles = prev.pendingInlineStyles,
+        ) == prev
+    }
+
+    /**
+     * Moves the two row classes that follow the caret without a repaint:
+     * `lunarbor-row-caret` (the caret's row shows its wiki-link syntax and
+     * search query) and `lunarbor-block-active` (every row of the block the
+     * caret is in) — the only parts of the paint loop that read the caret.
+     */
+    private fun moveCaretClasses(editor: HTMLElement, state: PaneBackingViewModel.State) {
+        for (cls in listOf("lunarbor-row-caret", "lunarbor-block-active")) {
+            val els = editor.querySelectorAll(".$cls")
+            for (i in 0 until els.length) (els.item(i) as? Element)?.classList?.remove(cls)
+        }
+        val row = editor.querySelector("[data-row='${state.cursorRow}']") ?: return
+        row.classList.add("lunarbor-row-caret")
+        val start = row.getAttribute("data-block-start") ?: return
+        val block = editor.querySelectorAll("[data-block-start='$start']")
+        for (i in 0 until block.length) (block.item(i) as? Element)?.classList?.add("lunarbor-block-active")
+    }
+
+    /**
+     * `true` when [ev] pressed the scroll wrapper's own scrollbar, not
+     * the empty space below the rows: a classic scrollbar lies beyond
+     * `clientWidth`; an overlay one (macOS) takes no width, so the
+     * rightmost [OVERLAY_SCROLLBAR_PX] count too. Grabbing the scrollbar
+     * must never move the caret — it put it on the last row, repainted
+     * and jumped there.
+     */
+    private fun isOnScrollbar(scrollWrapper: HTMLElement, ev: MouseEvent): Boolean {
+        val rect = scrollWrapper.getBoundingClientRect()
+        val x = ev.clientX.toDouble()
+        return x >= rect.left + scrollWrapper.clientLeft + scrollWrapper.clientWidth ||
+            x >= rect.right - OVERLAY_SCROLLBAR_PX
     }
 
     /**
@@ -2000,6 +2171,51 @@ class MainScreen(
     }
 
     // ----------------------------------------------------- chrome / banners
+
+    /** The progress pill of a running block conversion / clean-up ([updateBulkEditProgress]). */
+    private var bulkEditElement: HTMLElement? = null
+
+    /**
+     * Shows, updates or removes the progress pill of "Convert block to
+     * nodes" / "Clean up blocks" ([PaneBackingViewModel.State.bulkEditProgress]):
+     * the label, folders loaded of those known, and a bar — indeterminate
+     * until the first level of folders is known. Fixed at the window's
+     * bottom right, like the restructuring banner. Called on every state
+     * emission.
+     */
+    private fun updateBulkEditProgress(progress: se.soderbjorn.lunarbor.main.BulkEditProgress?) {
+        if (progress == null) {
+            bulkEditElement?.let { it.parentNode?.removeChild(it) }
+            bulkEditElement = null
+            return
+        }
+        val pill = bulkEditElement ?: (document.createElement("div") as HTMLElement).also { el ->
+            el.className = "lunarbor-bulk-progress"
+            el.setAttribute("role", "progressbar")
+            val label = document.createElement("span") as HTMLElement
+            label.className = "lunarbor-bulk-progress-label"
+            val track = document.createElement("div") as HTMLElement
+            track.className = "lunarbor-bulk-progress-track"
+            val fill = document.createElement("div") as HTMLElement
+            fill.className = "lunarbor-bulk-progress-fill"
+            track.appendChild(fill)
+            el.appendChild(label)
+            el.appendChild(track)
+            document.body?.appendChild(el)
+            bulkEditElement = el
+        }
+        val label = pill.querySelector(".lunarbor-bulk-progress-label") as HTMLElement
+        val fill = pill.querySelector(".lunarbor-bulk-progress-fill") as HTMLElement
+        if (progress.total <= 0) {
+            label.textContent = "${progress.label}…"
+            pill.classList.add("lunarbor-bulk-progress-indeterminate")
+            fill.style.width = ""
+        } else {
+            label.textContent = "${progress.label}… ${progress.done} / ${progress.total} folders"
+            pill.classList.remove("lunarbor-bulk-progress-indeterminate")
+            fill.style.width = "${(100.0 * progress.done / progress.total).coerceIn(0.0, 100.0)}%"
+        }
+    }
 
     private fun updateRestructureBanner(banner: HTMLElement, isRestructuring: Boolean) {
         if (isRestructuring) {
@@ -2702,6 +2918,34 @@ class MainScreen(
      * This is the only zone where a press should be unambiguously
      * interpreted as "grab this whole block" rather than "place caret".
      */
+    /**
+     * Marks a plain press in the editor's text as a selection drag (LBR-32)
+     * until the button is released: `<body>` carries
+     * [TEXT_SELECTING_CLASS], under which the rows' non-editable islands
+     * (bullet dots, fold controls, badges — every `contenteditable="false"`)
+     * let the pointer through. Without it, dragging a selection up and
+     * left over a bullet stops extending it, since the browser finds no
+     * text position under the pointer there.
+     *
+     * Called by the editor's `mousedown` listener, after the link, image
+     * and gutter-drag handlers have declined the press (bullet-dot presses
+     * never get here: they stop propagation).
+     */
+    private fun beginTextSelectionDrag(ev: MouseEvent) {
+        if (ev.button.toInt() != 0) return
+        val body = document.body ?: return
+        body.classList.add(TEXT_SELECTING_CLASS)
+        var end: ((Event) -> Unit)? = null
+        end = { _ ->
+            body.classList.remove(TEXT_SELECTING_CLASS)
+            window.removeEventListener("mouseup", end!!, /* capture = */ true)
+            window.removeEventListener("blur", end!!)
+        }
+        window.addEventListener("mouseup", end, /* capture = */ true)
+        // A release outside the window may never reach us; losing focus ends it too.
+        window.addEventListener("blur", end)
+    }
+
     private fun maybeBeginGutterDrag(editor: HTMLElement, ev: MouseEvent) {
         val backing = viewModel.currentBackingState
         if (backing.isMarkdownMode) return
@@ -2857,16 +3101,22 @@ class MainScreen(
 
     /** The editor row whose box is vertically nearest to clientY [y], or `null` when there are no rows. */
     private fun nearestRowDiv(editor: HTMLElement, y: Double): HTMLElement? {
-        val rows = editor.querySelectorAll("[data-row]")
+        // A chunked page: only the chunks near the screen, so the rows of
+        // skipped chunks are never forced to lay out (OutlinePaintLoop.rowAppender).
+        val scopes: List<Element> = chunksNearViewport(editor, window.innerHeight.toDouble())
+            ?.takeIf { it.isNotEmpty() } ?: listOf(editor)
         var best: HTMLElement? = null
         var bestDist = Double.MAX_VALUE
-        for (i in 0 until rows.length) {
-            val el = rows.item(i) as? HTMLElement ?: continue
-            val r = el.getBoundingClientRect()
-            val dist = if (y < r.top) r.top - y else if (y > r.bottom) y - r.bottom else 0.0
-            if (dist < bestDist) {
-                bestDist = dist
-                best = el
+        for (scope in scopes) {
+            val rows = scope.querySelectorAll("[data-row]")
+            for (i in 0 until rows.length) {
+                val el = rows.item(i) as? HTMLElement ?: continue
+                val r = el.getBoundingClientRect()
+                val dist = if (y < r.top) r.top - y else if (y > r.bottom) y - r.bottom else 0.0
+                if (dist < bestDist) {
+                    bestDist = dist
+                    best = el
+                }
             }
         }
         return best
@@ -2959,6 +3209,13 @@ private const val DRAG_LEVEL_STEP_PX: Double = 24.0
 /** Class on `<body>` while a row drag is armed: a grabbing cursor everywhere. */
 private const val DRAGGING_CLASS: String = "lunarbor-dragging"
 
+/**
+ * Class on `<body>` while a press in the editor's text is held (a
+ * selection drag, LBR-32): non-editable row islands let the pointer
+ * through (`OutlinePaintLoop`'s styles).
+ */
+internal const val TEXT_SELECTING_CLASS: String = "lunarbor-text-selecting"
+
 /** Distance from the page's top / bottom edge at which a drag starts scrolling it. */
 private const val DRAG_SCROLL_EDGE_PX: Double = 40.0
 
@@ -2987,3 +3244,12 @@ private const val TITLE_EDITABLE_CLASS: String = "lunarbor-title-editable"
 
 /** Quiet time after the last scroll event before the offset is reported for persisting. */
 private const val SCROLL_SETTLE_MS: Int = 400
+
+/**
+ * How long a repaint for background data alone waits, gathering whatever
+ * else arrives meanwhile (see `MainScreen.isBackgroundOnlyChange`).
+ */
+private const val BACKGROUND_REPAINT_MS: Int = 250
+
+/** Width at the scroll wrapper's right edge where an overlay scrollbar is grabbed. */
+private const val OVERLAY_SCROLLBAR_PX: Double = 16.0

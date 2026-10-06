@@ -122,6 +122,8 @@ package se.soderbjorn.lunarbor.main
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -1087,8 +1089,9 @@ class Document(
             LunarborLink.remap(target, moves)?.let { mirrorRefs[id] = it }
         }
         var changed = false
+        val anchors by lazy { storageAnchorsOf(state.lines, state.lineIds) }
         val newLines = state.lines.mapIndexed { row, line ->
-            val base = linkBaseOf(row)
+            val base = linkBaseOf(state, row) { anchors[row] }
             val rewritten = LunarborLink.rebaseText(line, base, base, moves)
             if (rewritten != null) {
                 changed = true
@@ -1288,11 +1291,8 @@ class Document(
      * links, and by the mirror scan.
      */
     fun linkBaseOf(row: Int): String {
-        if (!bulletsOnly) return folderRel
         val state = _stateFlow.value
-        val id = state.lineIds.getOrNull(row) ?: return folderRel
-        val byText = linkBases[id]
-        return byText?.get(state.lines[row]) ?: byText?.values?.lastOrNull() ?: storageFolderOf(row)
+        return linkBaseOf(state, row) { storageAnchorOf(state.lines, state.lineIds, row) }
     }
 
     /** Records that [text] of row [id] is written relative to [base] (see [linkBases]). */
@@ -1312,10 +1312,11 @@ class Document(
     private fun recordMissingLinkBases() {
         if (!bulletsOnly) return
         val state = _stateFlow.value
+        val anchors by lazy { storageAnchorsOf(state.lines, state.lineIds) }
         for ((row, line) in state.lines.withIndex()) {
             val id = state.lineIds[row]
             if (id in linkBases || "](" !in line) continue
-            noteLinkBase(id, line, folderOfHome(ImageHome(storageAnchorOf(state.lines, state.lineIds, row))) ?: folderRel)
+            noteLinkBase(id, line, folderOfHome(ImageHome(anchors[row])) ?: folderRel)
         }
     }
 
@@ -1406,6 +1407,60 @@ class Document(
         return null
     }
 
+    /**
+     * [storageAnchorOf] for every row of [lines] at once, in one pass: a
+     * stack of the open items (each with a smaller column than the one
+     * above it) stands in for the walk up, so the whole outline costs
+     * O(rows × depth) instead of O(rows²). Used by the scans that run over
+     * every row ([scanMirrors], [rewriteLinks], the image-home and
+     * link-base bookkeeping) — on a large expanded outline the per-row
+     * walk made each emission take seconds.
+     *
+     * @return One entry per row: the nearest folder-backed (or mirror)
+     *   ancestor, or `null` for rows stored in the document's own folder.
+     *   All `null` in Markdown mode.
+     */
+    private fun storageAnchorsOf(lines: List<String>, ids: List<LineId>): List<LineId?> {
+        val out = arrayOfNulls<LineId>(lines.size).asList()
+        if (!bulletsOnly) return out
+        val result = ArrayList<LineId?>(lines.size)
+        // Open items, columns strictly increasing bottom → top; each entry
+        // carries the nearest anchor at or below it.
+        val cols = ArrayList<Int>()
+        val anchors = ArrayList<LineId?>()
+        for (row in lines.indices) {
+            val line = lines[row]
+            val blockCol = BlockLayout.markerColumn(line)
+            val lookingFor = if (blockCol >= 0) blockCol else DocumentLayout.indentOf(line)
+            var top = cols.lastIndex
+            while (top >= 0 && cols[top] >= lookingFor) top--
+            result += if (top >= 0) anchors[top] else null
+            val col = DocumentLayout.itemColumn(lines, row)
+            if (col < 0) continue
+            while (cols.isNotEmpty() && cols.last() >= col) {
+                cols.removeAt(cols.lastIndex)
+                anchors.removeAt(anchors.lastIndex)
+            }
+            val id = ids.getOrNull(row)
+            val isAnchor = id != null && (id in promotedSubtrees || id in mirrorRefs) && id !in trashedIds
+            anchors += if (isAnchor) id else anchors.lastOrNull()
+            cols += col
+        }
+        return result
+    }
+
+    /**
+     * [linkBaseOf] for a row whose storage anchor is already known
+     * (from [storageAnchorsOf]), so whole-outline scans stay linear.
+     */
+    private fun linkBaseOf(state: State, row: Int, anchor: () -> LineId?): String {
+        if (!bulletsOnly) return folderRel
+        val id = state.lineIds.getOrNull(row) ?: return folderRel
+        val byText = linkBases[id]
+        return byText?.get(state.lines[row]) ?: byText?.values?.lastOrNull()
+            ?: folderOfHome(ImageHome(anchor())) ?: folderRel
+    }
+
     /** Folder of [home], or `null` when its anchor bullet no longer has one. */
     private fun folderOfHome(home: ImageHome): String? {
         val anchor = home.anchor ?: return folderRel
@@ -1433,10 +1488,11 @@ class Document(
     private fun recordMissingImageHomes() {
         if (!bulletsOnly) return
         val state = _stateFlow.value
+        val anchors by lazy { storageAnchorsOf(state.lines, state.lineIds) }
         for ((row, line) in state.lines.withIndex()) {
             val id = state.lineIds[row]
             if (id in imageHomes || localImageNames(line).isEmpty()) continue
-            imageHomes[id] = ImageHome(storageAnchorOf(state.lines, state.lineIds, row))
+            imageHomes[id] = ImageHome(anchors[row])
         }
     }
 
@@ -1455,11 +1511,12 @@ class Document(
         class Moved(val id: LineId, val names: List<String>, val from: String, val to: String, val home: ImageHome)
         val staying = HashSet<Pair<String, String>>()
         val moved = ArrayList<Moved>()
+        val anchors by lazy { storageAnchorsOf(saved.lines, saved.lineIds) }
         for ((row, line) in saved.lines.withIndex()) {
             val id = saved.lineIds[row]
             val names = localImageNames(line)
             if (names.isEmpty()) continue
-            val now = ImageHome(storageAnchorOf(saved.lines, saved.lineIds, row))
+            val now = ImageHome(anchors[row])
             val nowFolder = folderOfHome(now)
             val before = imageHomes[id]
             val beforeFolder = before?.let { folderOfHome(it) }
@@ -1550,9 +1607,12 @@ class Document(
         recordMissingLinkBases()
         val want = HashMap<LineId, String>()
         val stale = ArrayList<LineId>()
+        val anchors by lazy { storageAnchorsOf(state.lines, state.lineIds) }
         for ((row, id) in state.lineIds.withIndex()) {
             if (id in promotedSubtrees) continue
-            val path = linkPreviewPathOf(state.lines[row], linkBaseOf(row))
+            // No link, no mirror: skip working out the row's link base.
+            val path = if ("](" !in state.lines[row]) null
+            else linkPreviewPathOf(state.lines[row], linkBaseOf(state, row) { anchors[row] })
             val known = mirrorRefs[id]
             if (known != null && id !in state.unloadedRefIds) {
                 if (path != known || mirrorTargetOk[known] == false) stale += id
@@ -1686,15 +1746,63 @@ class Document(
      *
      * No-op when [lineId] is not folder-backed or its row is gone.
      */
-    suspend fun acquireExpansion(lineId: LineId) {
+    suspend fun acquireExpansion(lineId: LineId) = acquireExpansions(listOf(lineId))
+
+    /**
+     * [acquireExpansion] for several rows at once — each occurrence in
+     * [lineIds] counts as one acquire. The folders still on disk only are
+     * read in parallel and spliced in with a single state emission, so a
+     * pane opening a level of remembered folds (or "Expand all children")
+     * costs one round of disk reads and one repaint per level instead of
+     * one per folder. Rows that need the careful path (a folder already
+     * loaded elsewhere in this document, e.g. under an open mirror) go
+     * through [spliceInUnderLock] one by one, as before.
+     *
+     * Called by `PaneBackingViewModel` (the fold-memory pass, "Expand all
+     * children", block conversion) and by [acquireExpansion].
+     */
+    suspend fun acquireExpansions(lineIds: Collection<LineId>) {
+        if (lineIds.isEmpty()) return
         expansionLock.withLock {
-            if (!isPromotedRef(lineId)) return@withLock
-            val current = expansionRefcounts[lineId] ?: 0
-            if (current > 0) {
-                expansionRefcounts[lineId] = current + 1
-                return@withLock
+            val wanted = LinkedHashMap<LineId, Int>()
+            for (id in lineIds) {
+                if (!isPromotedRef(id)) continue
+                val current = expansionRefcounts[id] ?: 0
+                if (current > 0) expansionRefcounts[id] = current + 1 else wanted[id] = (wanted[id] ?: 0) + 1
             }
-            if (spliceInUnderLock(lineId)) expansionRefcounts[lineId] = 1
+            if (wanted.isEmpty()) return@withLock
+            val state = _stateFlow.value
+            val rowOf = HashMap<LineId, Int>(state.lineIds.size * 2)
+            for ((row, id) in state.lineIds.withIndex()) rowOf[id] = row
+            val claimed = loadedFolders(state).toHashSet()
+            val batch = ArrayList<Pair<LineId, Pair<String, Int>>>()
+            val oneByOne = ArrayList<LineId>()
+            for (id in wanted.keys) {
+                val folder = refFolderOf(id) ?: continue
+                if (id !in state.unloadedRefIds) {
+                    expansionRefcounts[id] = wanted.getValue(id)
+                    continue
+                }
+                if (folder in claimed) {
+                    oneByOne += id
+                    continue
+                }
+                val row = rowOf[id] ?: continue
+                val parentIndent = DocumentLayout.itemColumn(state.lines, row)
+                if (parentIndent < 0) continue
+                claimed += folder
+                batch += id to (folder to parentIndent)
+            }
+            if (batch.isNotEmpty()) {
+                val loaded = coroutineScope {
+                    batch.map { (id, at) -> id to async { repository.loadSubtree(at.first, at.second) } }
+                        .map { (id, job) -> id to job.await() }
+                }
+                for (id in spliceLoadedAll(loaded)) expansionRefcounts[id] = wanted.getValue(id)
+            }
+            for (id in oneByOne) {
+                if (spliceInUnderLock(id)) expansionRefcounts[id] = wanted.getValue(id)
+            }
         }
     }
 
@@ -1777,35 +1885,64 @@ class Document(
      * block's last row — before any children already in memory, and
      * marks the row loaded. Returns `false` when the row is gone.
      */
-    private fun spliceLoaded(lineId: LineId, loaded: NoteRepository.Loaded): Boolean {
+    private fun spliceLoaded(lineId: LineId, loaded: NoteRepository.Loaded): Boolean =
+        lineId in spliceLoadedAll(listOf(lineId to loaded))
+
+    /**
+     * [spliceLoaded] for several rows in one pass and one state emission.
+     * Rows gone since their load are skipped; rows already loaded count
+     * as spliced.
+     *
+     * @param loaded Each row's id with what [NoteRepository.loadSubtree]
+     *   read for it; ids are distinct and no two name the same folder.
+     * @return The ids whose children are now in [State.lines].
+     */
+    private fun spliceLoadedAll(loaded: List<Pair<LineId, NoteRepository.Loaded>>): Set<LineId> {
         val current = _stateFlow.value
-        val currentRow = current.lineIds.indexOf(lineId)
-        if (currentRow < 0) return false
-        if (lineId !in current.unloadedRefIds) return true
-        val childLines = loaded.lines
-        val newIds = List(childLines.size) { allocateId() }
-        val at = DocumentLayout.itemLastRow(current.lines, currentRow) + 1
-        val mergedLines = current.lines.toMutableList()
-        val mergedIds = current.lineIds.toMutableList()
-        mergedLines.addAll(at, childLines)
-        mergedIds.addAll(at, newIds)
-        val nested = HashSet<LineId>()
-        val owner = if (lineId in mirrorRefs) lineId else mirrorOwner[lineId]
-        for ((localRow, nestedRef) in loaded.promotedByRow) {
-            val id = newIds.getOrNull(localRow) ?: continue
-            promotedSubtrees[id] = nestedRef
-            nested += id
-            if (owner != null) mirrorOwner[id] = owner
+        val done = HashSet<LineId>()
+        val rowOf = HashMap<LineId, Int>(current.lineIds.size * 2)
+        for ((row, id) in current.lineIds.withIndex()) rowOf[id] = row
+        // Insertion point (the row after the item's own text) → what goes there.
+        val inserts = HashMap<Int, Pair<LineId, NoteRepository.Loaded>>()
+        for ((lineId, l) in loaded) {
+            val row = rowOf[lineId] ?: continue
+            done += lineId
+            if (lineId !in current.unloadedRefIds) continue
+            inserts[DocumentLayout.itemLastRow(current.lines, row) + 1] = lineId to l
         }
-        refFolderOf(lineId)?.let { folder -> loaded.body?.let { baseBodies[folder] = it } }
+        if (inserts.isEmpty()) return done
+        val mergedLines = ArrayList<String>(current.lines.size + loaded.sumOf { it.second.lines.size })
+        val mergedIds = ArrayList<LineId>(mergedLines.size)
+        val nested = HashSet<LineId>()
+        val spliced = HashSet<LineId>()
+        for (row in 0..current.lines.size) {
+            inserts[row]?.let { (lineId, l) ->
+                val newIds = List(l.lines.size) { allocateId() }
+                mergedLines.addAll(l.lines)
+                mergedIds.addAll(newIds)
+                val owner = if (lineId in mirrorRefs) lineId else mirrorOwner[lineId]
+                for ((localRow, nestedRef) in l.promotedByRow) {
+                    val id = newIds.getOrNull(localRow) ?: continue
+                    promotedSubtrees[id] = nestedRef
+                    nested += id
+                    if (owner != null) mirrorOwner[id] = owner
+                }
+                refFolderOf(lineId)?.let { folder -> l.body?.let { baseBodies[folder] = it } }
+                spliced += lineId
+            }
+            if (row < current.lines.size) {
+                mergedLines += current.lines[row]
+                mergedIds += current.lineIds[row]
+            }
+        }
         _stateFlow.value = current.copy(
             lines = mergedLines,
             lineIds = mergedIds,
-            unloadedRefIds = current.unloadedRefIds - lineId + nested,
+            unloadedRefIds = current.unloadedRefIds - spliced + nested,
         )
         recordMissingImageHomes()
         recordMissingLinkBases()
-        return true
+        return done
     }
 
     /**

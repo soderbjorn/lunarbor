@@ -12,6 +12,7 @@
 package se.soderbjorn.lunarbor.main
 
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -62,6 +63,57 @@ class FolderStorageTest {
     private fun Document.appendLine(text: String) {
         val last = lines().lastIndex
         insertText(last, lines()[last].length, "\n$text")
+    }
+
+    // ---------------------------------------------------- batched expansion
+
+    @Test
+    fun acquiring_several_folders_at_once_splices_each_under_its_row_in_one_emission() = runTest {
+        seed("_node.md", "- A [↳](<A/_node.md>)\n- leaf\n> Note\n> [↳](<Note/_node.md>)\n- B [↳](<B/_node.md>)\n")
+        seed("A/_node.md", "- A1 [↳](<A1/_node.md>)\n- a2 [x](../B/_node.md)\n")
+        seed("A/A1/_node.md", "- deep ![](pic.png)\n")
+        seed("Note/_node.md", "- under note\n")
+        seed("B/_node.md", "- b1\n")
+        val doc = open()
+        val emissions = ArrayList<Document.State>()
+        val watch = backgroundScope.launch { doc.stateFlow.collect { emissions += it } }
+        runCurrent()
+        emissions.clear()
+        doc.acquireExpansions(listOf(doc.id(0), doc.id(2), doc.id(3)))
+        runCurrent()
+        // No state with only some of the three spliced in.
+        assertTrue(emissions.none { it.lines.size in 6..7 }, emissions.map { it.lines.size }.toString())
+        assertEquals(
+            listOf(
+                "* A", "  * A1", "  * a2 [x](../B/_node.md)",
+                "* leaf",
+                BlockLayout.firstLine(0, "Note"), "  * under note",
+                "* B", "  * b1",
+            ),
+            doc.lines(),
+        )
+        // The next level: storage and link folders follow the nesting.
+        doc.acquireExpansions(listOf(doc.id(1)))
+        assertEquals("    * deep ![](pic.png)", doc.lines()[2])
+        assertEquals("A/A1", doc.storageFolderOf(2))
+        assertEquals("A", doc.linkBaseOf(3))
+        assertEquals("", doc.storageFolderOf(4))
+        assertEquals("Note", doc.storageFolderOf(6))
+        watch.cancel()
+    }
+
+    @Test
+    fun a_batch_counts_each_acquire_so_one_release_keeps_the_folder_open() = runTest {
+        seed("_node.md", "- A [↳](<A/_node.md>)\n")
+        seed("A/_node.md", "- a\n")
+        val doc = open()
+        val a = doc.id(0)
+        doc.acquireExpansions(listOf(a, a))
+        assertEquals(listOf("* A", "  * a"), doc.lines())
+        doc.releaseExpansion(a)
+        assertEquals(listOf("* A", "  * a"), doc.lines())
+        doc.releaseExpansion(a)
+        assertEquals(listOf("* A"), doc.lines())
     }
 
     // ------------------------------------------------------- missing folders

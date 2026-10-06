@@ -175,6 +175,9 @@ class MainViewModel(
     /** See `PaneBackingViewModel.convertBlockToNodes`. */
     fun convertBlockToNodes() = paneBackingViewModel.convertBlockToNodes()
 
+    /** TEMPORARY. See `PaneBackingViewModel.cleanUpBlocks`. */
+    fun cleanUpBlocks() = paneBackingViewModel.cleanUpBlocks()
+
     /** See `PaneBackingViewModel.hiddenBlockRows`. */
     fun hiddenBlockRows(state: PaneBackingViewModel.State, block: IntRange): Int? =
         paneBackingViewModel.hiddenBlockRows(state, block)

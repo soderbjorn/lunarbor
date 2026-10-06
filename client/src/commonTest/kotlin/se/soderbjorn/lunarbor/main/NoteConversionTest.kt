@@ -47,10 +47,37 @@ class NoteConversionTest {
     }
 
     @Test
-    fun block_paragraphs_become_bullets_their_lines_joined() {
+    fun every_block_line_becomes_a_bullet() {
         assertEquals(
-            listOf(listOf("  * One two"), listOf("  * # Head"), listOf("  * Three"), listOf("  * Four")),
+            listOf(listOf("  * One"), listOf("  * two"), listOf("  * # Head", "    * Three", "    * Four")),
             NoteConversion.nodeGroupsOfBlock(listOf("One", "two  ", "", "# Head", "Three", "", "", "Four"), 2),
+        )
+    }
+
+    @Test
+    fun content_nests_under_headings_by_level() {
+        assertEquals(
+            listOf(
+                listOf(
+                    "* ## General",
+                    "  * ### Skepticism",
+                    "    * https://a",
+                    "    * https://b",
+                    "  * ### Agents",
+                    "    * Maestro",
+                    "      * runmaestro.ai",
+                ),
+                listOf("* ## Audio", "  * eleven"),
+                listOf("* # Top", "  * ### Skipped a level", "    * x"),
+            ),
+            NoteConversion.nodeGroupsOfBlock(
+                listOf(
+                    "## General", "", "### Skepticism", "", "https://a", "https://b", "",
+                    "### Agents", "", "* Maestro", "    * runmaestro.ai", "",
+                    "## Audio", "* eleven", "# Top", "### Skipped a level", "x",
+                ),
+                0,
+            ),
         )
     }
 
@@ -59,7 +86,7 @@ class NoteConversionTest {
         assertEquals(
             listOf(
                 listOf("* Intro"),
-                listOf("* a", "  * a1 more", "  * about a"),
+                listOf("* a", "  * a1", "    * more", "  * about a"),
                 listOf("* 2. b"),
             ),
             NoteConversion.nodeGroupsOfBlock(

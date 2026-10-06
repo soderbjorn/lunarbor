@@ -29,6 +29,7 @@ package se.soderbjorn.lunarbor.main
 
 import kotlinx.browser.document
 import kotlinx.browser.window
+import org.w3c.dom.Element
 import org.w3c.dom.HTMLElement
 
 /**
@@ -36,9 +37,12 @@ import org.w3c.dom.HTMLElement
  * [FoldTransition.capture].
  *
  * @property rows Line id → the row's element and its viewport rect
- *   (left, top, width, height) at capture time.
+ *   (left, top, width, height) at capture time — on a chunked page only
+ *   the rows near the screen ([chunksNearViewport]).
+ * @property painted The line ids of every painted row, measured or not,
+ *   so a row merely off screen is never taken for a new one.
  */
-internal class FoldSnapshot(val rows: Map<LineId, Pair<HTMLElement, DoubleArray>>)
+internal class FoldSnapshot(val rows: Map<LineId, Pair<HTMLElement, DoubleArray>>, val painted: Set<LineId>)
 
 /**
  * Plays the fold / unfold animation. One instance per `MainScreen`.
@@ -66,15 +70,51 @@ internal class FoldTransition {
      */
     fun capture(editor: HTMLElement, lineIds: List<LineId>): FoldSnapshot {
         val rows = HashMap<LineId, Pair<HTMLElement, DoubleArray>>()
-        val els = editor.querySelectorAll("[data-row]")
-        for (i in 0 until els.length) {
-            val el = els.item(i) as? HTMLElement ?: continue
-            val row = el.getAttribute("data-row")?.toIntOrNull() ?: continue
-            val id = lineIds.getOrNull(row) ?: continue
+        for ((id, el) in rowsOf(editor, lineIds, near = true)) {
             val r = el.getBoundingClientRect()
             rows[id] = el to doubleArrayOf(r.left, r.top, r.width, r.height)
         }
-        return FoldSnapshot(rows)
+        return FoldSnapshot(rows, rowsOf(editor, lineIds, near = false).keys)
+    }
+
+    /**
+     * The painted rows of [editor] by line id. With [near] on a chunked
+     * page ([RowAppender]), only those in chunks near the screen: measuring
+     * the rest would force every skipped chunk to lay out, and the
+     * animation never shows them anyway.
+     */
+    private fun rowsOf(editor: HTMLElement, lineIds: List<LineId>, near: Boolean): Map<LineId, HTMLElement> {
+        val scopes: List<Element> = (if (near) chunksNearViewport(editor, window.innerHeight.toDouble()) else null)
+            ?: listOf(editor)
+        val out = LinkedHashMap<LineId, HTMLElement>()
+        for (scope in scopes) {
+            val els = scope.querySelectorAll("[data-row]")
+            for (i in 0 until els.length) {
+                val el = els.item(i) as? HTMLElement ?: continue
+                val row = el.getAttribute("data-row")?.toIntOrNull() ?: continue
+                val id = lineIds.getOrNull(row) ?: continue
+                out[id] = el
+            }
+        }
+        return out
+    }
+
+    /**
+     * Lifts the chunk paint clip ([RowAppender]) from the chunks holding
+     * [rows] for the length of the animation, so a row gliding past its
+     * chunk's edge is not cut off, and a row gliding out of view from a
+     * chunk that is off screen is still drawn. The next repaint builds
+     * fresh chunks anyway.
+     */
+    private fun liftChunkClips(rows: Collection<HTMLElement>) {
+        val chunks = LinkedHashSet<HTMLElement>()
+        for (el in rows) {
+            val parent = el.parentElement as? HTMLElement ?: continue
+            if (parent.classList.contains(ROW_CHUNK_CLASS)) chunks += parent
+        }
+        if (chunks.isEmpty()) return
+        for (c in chunks) c.style.setProperty("content-visibility", "visible")
+        window.setTimeout({ for (c in chunks) c.style.setProperty("content-visibility", "auto") }, DURATION_MS + 50)
     }
 
     /**
@@ -86,16 +126,17 @@ internal class FoldTransition {
      *   when nothing did — e.g. an unfold whose children are still loading.
      */
     fun play(before: FoldSnapshot, editor: HTMLElement, lineIds: List<LineId>): Boolean {
+        val all = rowsOf(editor, lineIds, near = false)
+        val leaving = before.rows.keys.filter { it !in all }
+        // The rows to animate: those measured before that are still here,
+        // and the new ones near the screen.
+        val near = rowsOf(editor, lineIds, near = true)
         val now = HashMap<LineId, HTMLElement>()
-        val els = editor.querySelectorAll("[data-row]")
-        for (i in 0 until els.length) {
-            val el = els.item(i) as? HTMLElement ?: continue
-            val row = el.getAttribute("data-row")?.toIntOrNull() ?: continue
-            val id = lineIds.getOrNull(row) ?: continue
-            now[id] = el
-        }
-        val entering = now.keys.filter { it !in before.rows }
-        val leaving = before.rows.keys.filter { it !in now }
+        for (id in before.rows.keys) all[id]?.let { now[id] = it }
+        for ((id, el) in near) if (id !in before.painted) now[id] = el
+        val entering = now.keys.filter { it !in before.painted }
+        if (entering.isEmpty() && leaving.isEmpty() && now.isEmpty()) return false
+        liftChunkClips(now.values)
         // A row that grew in place (a link bullet's preview opening) counts
         // as a fold too.
         val grown = now.filter { (id, el) ->
@@ -212,13 +253,12 @@ internal class FoldTransition {
             active = null
             return
         }
-        val els = editor.querySelectorAll("[data-row]")
-        for (i in 0 until els.length) {
-            val el = els.item(i) as? HTMLElement ?: continue
-            val id = el.getAttribute("data-row")?.toIntOrNull()?.let { lineIds.getOrNull(it) } ?: continue
-            val f = rowFrames[id] ?: continue
-            animate(el, f).currentTime = elapsed
+        val animated = ArrayList<Pair<HTMLElement, Array<dynamic>>>()
+        for ((id, el) in rowsOf(editor, lineIds, near = false)) {
+            rowFrames[id]?.let { animated += el to it }
         }
+        liftChunkClips(animated.map { it.first })
+        for ((el, f) in animated) animate(el, f).currentTime = elapsed
     }
 
     /**
