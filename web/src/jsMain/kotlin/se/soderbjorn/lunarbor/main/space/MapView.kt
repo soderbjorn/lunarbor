@@ -14,8 +14,7 @@
  *    progress card shows until every listing has landed) and its link index
  *    (`linkIndexSnapshot`);
  *  - positions from [GraphLayout] (commonMain, pure, deterministic);
- *  - folds are the map's own (Space), starting from
- *    [GraphLayout.defaultFolds] so a big vault opens readable;
+ *  - folds are the map's own (Space); the map starts with every node open;
  *  - colours from [SpacePalette]: each area, and each branch inside it, a
  *    vivid hue of its own (3D mode is meant to be more colourful than the
  *    theme), branches in their child's hue and link arcs blending from one
@@ -28,11 +27,13 @@
  * cards sit on the nearest visible body.
  *
  * Input: drag to orbit, right- or Shift-drag to pan, scroll to zoom (past
- * the closest orbit, forward); click a body to select it and fly there;
- * click it again, or double-click a body, to open its page in Pages to
- * edit it (in the focused window). Keys (while the map has focus): ← →
- * siblings, ↑ parent, ↓ child, ⏎ open in the focused window, P edit its
- * page, E back to Pages, Space fold, C whole map, L next shape, F free
+ * the closest orbit, forward); click a body (or its label) to select it
+ * and fold / unfold it, the camera held still; double-click it to open its page in
+ * Pages to edit it (in the focused window) — the double-click's two clicks
+ * fold and unfold, so its fold state is left as it was. Keys (while the
+ * map has focus): ← → siblings, ↑ parent, ↓ child, ⏎ open in the focused
+ * window, P edit its page, E back to Pages, Space fold, X fold all, O
+ * unfold all, . unfold the next level, , fold the last level, C whole map, L next shape, F free
  * flight ([FreeFlight]), K the legend ([MapLegend]), ? help
  * ([showSpaceHelp]).
  *
@@ -145,7 +146,6 @@ internal class MapView(
     /** Area hues ([SpacePalette.areaHues]) from the unfiltered listings. */
     private var hues: Map<String, Double> = emptyMap()
     private var folded: MutableSet<String> = HashSet()
-    private var foldsSeeded = false
     private val bodies = LinkedHashMap<String, Body>()
     private var selected: String? = null
 
@@ -175,9 +175,6 @@ internal class MapView(
 
     /** `true` while [fetchLinks] waits for the link index (the HUD says "reading links…"). */
     private var linksReading = false
-
-    /** When [open] last ran (`performance.now()`), so a double-click does not open twice. */
-    private var openedAt = -1e9
 
     /** The graph and folds [relayout] last placed; a rebuild that yields both unchanged skips the relayout. */
     private var placed: Pair<VaultGraph, Set<String>>? = null
@@ -371,10 +368,6 @@ internal class MapView(
         hues = SpacePalette.areaHues { folder -> registry.requestLinkPreview(folder)?.mapNotNull { it.pathRel } }
         val links = VaultGraphBuilder.linkEdges(g, linksByFile) { filter.isActive && registry.isPathHidden(it, filter) }
         graph = g.copy(links = links)
-        if (!foldsSeeded && g.nodes.values.all { it.loaded }) {
-            foldsSeeded = true
-            folded = GraphLayout.defaultFolds(graph).toMutableSet()
-        }
         folded.retainAll(graph.nodes.keys)
         if (selected != null && selected !in graph.nodes) selected = null
         if (follow != null && follow !in graph.nodes) follow = null
@@ -932,12 +925,12 @@ internal class MapView(
             me.preventDefault()
             me.stopPropagation()
             focus()
-            select(id, fly = true)
+            clickBody(id)
         })
         el.addEventListener("dblclick", { e ->
             e.preventDefault()
             e.stopPropagation()
-            open(id, showPage = false)
+            open(id, showPage = true)
         })
         labelsHost.appendChild(el)
         return el
@@ -1052,7 +1045,6 @@ internal class MapView(
      * to its folder); with [showPage], switches to Pages to write there.
      */
     private fun open(id: String, showPage: Boolean) {
-        openedAt = window.performance.now()
         if (flight.isOn) land()
         val vm = mode.focusedPaneId()?.let { mode.viewModelOf(it) } ?: return
         selected = id
@@ -1072,11 +1064,66 @@ internal class MapView(
         mode.requestFrame()
     }
 
+    /**
+     * A click on body [id] (or its label): selects it and folds / unfolds
+     * it with the camera held still — no flight, no zoom, and no following
+     * the body as the relayout moves it, which made the view drift away
+     * from the click. The keyboard walk and the selection bar still fly.
+     */
+    private fun clickBody(id: String) {
+        follow = null
+        select(id, fly = false)
+        toggleFold(id)
+    }
+
     /** Folds or unfolds [id] (bodies under it fly in or out). */
     private fun toggleFold(id: String) {
         val node = graph.nodes[id] ?: return
         if (node.children.isEmpty()) return
         if (!folded.remove(id)) folded += id
+        relayout(reframe = false)
+    }
+
+    /**
+     * Folds every node but the root ([fold]), so only the root's children
+     * show, or unfolds every node. A selection tucked away by the fold moves
+     * to the body it is drawn as. Called by [onKey] on X / O.
+     */
+    private fun setAllFolded(fold: Boolean) {
+        val rootId = graph.root?.id
+        folded = if (fold) graph.nodes.values.filter { it.children.isNotEmpty() && it.id != rootId }.mapTo(HashSet()) { it.id } else HashSet()
+        selected?.let { sel ->
+            val anchor = GraphLayout.visibleAnchor(graph, folded, sel)
+            if (anchor != sel) select(anchor, fly = anchor != null)
+        }
+        relayout(reframe = false)
+    }
+
+    /**
+     * Unfolds one level more ([deeper]): every folded body on screen at the
+     * shallowest depth any is folded at. Or folds one level back: every
+     * open body on screen with children at the deepest depth any is open
+     * at (never the root). A selection tucked away moves to the body it is
+     * drawn as. Called by [onKey] on . / ,.
+     */
+    private fun stepFoldLevel(deeper: Boolean) {
+        val rootId = graph.root?.id
+        val onScreen = graph.nodes.values.filter {
+            it.children.isNotEmpty() && GraphLayout.visibleAnchor(graph, folded, it.id) == it.id
+        }
+        if (deeper) {
+            val shut = onScreen.filter { it.id in folded }
+            val depth = shut.minOfOrNull { it.depth } ?: return
+            shut.filter { it.depth == depth }.forEach { folded.remove(it.id) }
+        } else {
+            val open = onScreen.filter { it.id !in folded && it.id != rootId }
+            val depth = open.maxOfOrNull { it.depth } ?: return
+            open.filter { it.depth == depth }.forEach { folded += it.id }
+            selected?.let { sel ->
+                val anchor = GraphLayout.visibleAnchor(graph, folded, sel)
+                if (anchor != sel) select(anchor, fly = anchor != null)
+            }
+        }
         relayout(reframe = false)
     }
 
@@ -1126,8 +1173,6 @@ internal class MapView(
             val t = me.target as? org.w3c.dom.Element
             if (t != null && t.closest(".lunarbor-map-window, .lunarbor-map-label, .lunarbor-map-bar, .lunarbor-map-hud") != null) return@addEventListener
             val box = element.getBoundingClientRect()
-            // The click before it may already have opened the body (a click on the selection).
-            if (window.performance.now() - openedAt < 600) return@addEventListener
             pick(me.clientX - box.left, me.clientY - box.top)?.let { open(it, showPage = true) }
         })
         element.addEventListener("wheel", { e ->
@@ -1197,9 +1242,9 @@ internal class MapView(
         if (!dragged && dragStart != null && me.button.toInt() == 0) {
             val box = element.getBoundingClientRect()
             val hit = pick(me.clientX - box.left, me.clientY - box.top)
-            // A click on the body already selected opens it for editing.
-            if (hit != null && hit == selected && me.detail <= 1) open(hit, showPage = true)
-            else select(hit, fly = hit != null)
+            // A click selects and folds / unfolds; a double-click's second
+            // click folds it back, then `dblclick` opens it in Pages.
+            if (hit != null) clickBody(hit) else select(null, fly = false)
         }
         dragStart = null
         dragLast = null
@@ -1238,6 +1283,10 @@ internal class MapView(
             "p", "P" -> { sel?.let { open(it, showPage = true) }; sel != null }
             "e", "E" -> { mode.setShape(SpaceShape.PAGES); true }
             " " -> { sel?.let { toggleFold(it) }; sel != null }
+            "x", "X" -> { setAllFolded(true); true }
+            "o", "O" -> { setAllFolded(false); true }
+            "." -> { stepFoldLevel(deeper = true); true }
+            "," -> { stepFoldLevel(deeper = false); true }
             "-", "_" -> { changeSpread(1 / SPREAD_STEP); true }
             "+", "=" -> { changeSpread(SPREAD_STEP); true }
             "l", "L" -> { mode.nextShape(); true }
@@ -1255,6 +1304,10 @@ internal class MapView(
                 "Enter" -> "open"
                 "p", "P" -> "edit-key"
                 " " -> "fold"
+                "x", "X" -> "fold-all"
+                "o", "O" -> "unfold-all"
+                "." -> "unfold-level"
+                "," -> "fold-level"
                 "-", "_", "+", "=" -> "spread"
                 "l", "L" -> "shape"
                 "c", "C" -> "home"

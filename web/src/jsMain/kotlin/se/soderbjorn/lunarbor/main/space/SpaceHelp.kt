@@ -256,8 +256,8 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             "Drag" to "Orbit around the point you are looking at.",
             "Right-drag, or " + k("⇧") + " drag" to "Pan.",
             "Scroll / pinch" to "Zoom in and out.",
-            "Click a body or label" to "Select it and fly to it; the camera keeps it centred. Click the selected body again to edit it.",
-            "Double-click" to "Edit that node: open it in the focused window and switch to Pages, on its page.",
+            "Click a body or label" to "Select it and fold or unfold it; the camera stays where it is. The arrow keys fly to the selection.",
+            "Double-click a body or label" to "Edit that node: open it in the focused window and switch to Pages, on its page. Its fold is left as it was.",
             "Click a window card" to "Focus that window and fly to its node. Double-click: back to Pages to write in it.",
             k("←") + " " + k("→") to "Previous / next sibling.",
             k("↑") to "Parent.",
@@ -266,6 +266,10 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("P") to "Edit the selection: as double-click.",
             k("E") to "Back to Pages, where the focused window already is.",
             k("␣") to "Fold or unfold the selection.",
+            k("X") to "Fold every node, so only the top-level areas show.",
+            k("O") to "Unfold every node.",
+            k(".") to "Unfold one more level: every folded body showing at the shallowest depth.",
+            k(",") to "Fold the deepest level that is open.",
             k("−") + " " + k("+") to "Less or more space between the bodies (their size stays); remembered.",
             k("F") to "Free flight (below).",
             k("K") to "Hide or show the keyboard legend in the bottom left.",
@@ -297,8 +301,8 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           outside the app.</li>
           <li>Positions come only from the tree (folder names and the order of siblings) — never from
           chance — so the same vault always looks the same and you can learn where things are.</li>
-          <li>Very large vaults start partly folded so the map stays readable; unfold with
-          <kbd>F</kbd> or <kbd>↓</kbd>. At most 1,500 nodes are shown. Folds on the map are its own and do
+          <li>The map starts with every node unfolded; <kbd>X</kbd> folds them all and <kbd>O</kbd> unfolds
+          them all again. At most 1,500 nodes are shown. Folds on the map are its own and do
           not change folds in your windows.</li>
           <li>Moving between views makes the bodies glide to their new places, so you can follow a node
           from one shape to the next.</li>

@@ -77,7 +77,7 @@ internal class MapLegend {
                 val kk = span("lunarbor-legend-keys", "")
                 for (k in keys.split(' ')) {
                     // A word in the keys column ("click", "drag") is a gesture, not a key cap.
-                    if (k.length > 2 && k.all { it.isLowerCase() }) kk.appendChild(span("lunarbor-legend-gesture", k))
+                    if (k.length > 2 && k.all { it.isLowerCase() || it == '-' }) kk.appendChild(span("lunarbor-legend-gesture", k))
                     else kk.appendChild(document.createElement("kbd").also { it.textContent = k })
                 }
                 row.appendChild(kk)
@@ -96,8 +96,8 @@ internal class MapLegend {
         /** The map's legend: sections of (row id, keys separated by spaces, text). */
         private val MAP_SECTIONS: List<Pair<String, List<Triple<String, String, String>>>> = listOf(
             "MOUSE" to listOf(
-                Triple("click", "click", "Select a node and fly to it"),
-                Triple("edit", "click", "…the selected one again: edit it"),
+                Triple("click", "click", "Select and fold / unfold"),
+                Triple("edit", "double-click", "Edit it in Pages"),
                 Triple("orbit", "drag", "Orbit"),
                 Triple("pan", "⇧ drag", "Pan (or right-drag)"),
                 Triple("zoom", "scroll", "Zoom (or pinch)"),
@@ -108,6 +108,10 @@ internal class MapLegend {
                 Triple("edit-key", "P", "Edit the selection"),
                 Triple("open", "⏎", "Open it in the window"),
                 Triple("fold", "␣", "Fold / unfold"),
+                Triple("fold-all", "X", "Fold all"),
+                Triple("unfold-all", "O", "Unfold all"),
+                Triple("unfold-level", ".", "Unfold one more level"),
+                Triple("fold-level", ",", "Fold the deepest level"),
                 Triple("spread", "− +", "Less / more space between"),
                 Triple("fly", "F", "Free flight"),
                 Triple("shape", "L", "Next view"),

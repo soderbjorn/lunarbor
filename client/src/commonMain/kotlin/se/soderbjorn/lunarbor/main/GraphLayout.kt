@@ -303,35 +303,4 @@ object GraphLayout {
 
     /** How far bodies push each other apart in the galaxy, in world units. */
     const val REPULSION_REACH: Double = 18.0
-
-    /**
-     * The folds a freshly built map starts with, so a big vault opens
-     * readable but full: nodes are unfolded breadth first (shallowest
-     * first, in outline order) as long as the bodies on screen stay within
-     * [FOLD_ALL_BELOW]; a node whose children would not fit stays folded,
-     * and a later, smaller one may still open. The root is always open, so
-     * a vault whose top is one or two nodes deep never opens as a handful
-     * of folded bodies. Called by `MapView` once every listing has landed.
-     *
-     * @param graph The map's graph ([VaultGraph.nodes] in breadth-first order).
-     * @return The ids of the nodes that start folded.
-     */
-    fun defaultFolds(graph: VaultGraph): Set<String> {
-        val folded = graph.nodes.values.filter { it.children.isNotEmpty() }.mapTo(HashSet()) { it.id }
-        val root = graph.root ?: return folded
-        folded.remove(root.id)
-        var shown = 1 + root.children.size
-        val queue = ArrayDeque(root.children)
-        while (queue.isNotEmpty()) {
-            val node = graph.nodes[queue.removeFirst()] ?: continue
-            if (node.children.isEmpty() || shown + node.children.size > FOLD_ALL_BELOW) continue
-            folded.remove(node.id)
-            shown += node.children.size
-            queue.addAll(node.children)
-        }
-        return folded
-    }
-
-    /** How many bodies [defaultFolds] leaves on screen at most (the root's children always show). */
-    const val FOLD_ALL_BELOW: Int = 300
 }

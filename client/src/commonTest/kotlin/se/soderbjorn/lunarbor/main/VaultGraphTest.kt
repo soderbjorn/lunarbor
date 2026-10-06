@@ -194,30 +194,6 @@ class VaultGraphTest {
     }
 
     @Test
-    fun defaultFoldsOpenADeepNarrowTopBreadthFirstWithinTheBudget() {
-        // Home → Main → {A, B}; A and B each hold 200 nodes with 5 children each.
-        val nodes = LinkedHashMap<String, GraphNode>()
-        fun add(id: String, parent: String?, depth: Int, kids: List<String>) {
-            nodes[id] = GraphNode(id, parent, id.ifEmpty { "Home" }, depth, kids, 0)
-        }
-        val big = listOf("Main/A", "Main/B")
-        add("", null, 0, listOf("Main"))
-        add("Main", "", 1, big)
-        for (b in big) add(b, "Main", 2, (1..200).map { "$b/$it" })
-        for (b in big) for (i in 1..200) add("$b/$i", b, 3, (1..5).map { "$b/$i/$it" })
-        for (b in big) for (i in 1..200) for (j in 1..5) add("$b/$i/$j", "$b/$i", 4, emptyList())
-
-        val folded = GraphLayout.defaultFolds(VaultGraph(nodes))
-
-        assertFalse("" in folded)
-        assertFalse("Main" in folded)
-        assertFalse("Main/A" in folded) // 4 + 200 bodies fit
-        assertTrue("Main/B" in folded) // another 200 would not
-        assertFalse("Main/A/1" in folded) // small ones still open after a big one stays shut
-        assertTrue(nodes.keys.count { it !in folded && nodes.getValue(it).children.isNotEmpty() } > 3)
-    }
-
-    @Test
     fun galaxyStaysFiniteAroundAHubManyLinksPointAt() {
         // Home → Hub + 300 nodes, every one of them linking to Hub.
         val nodes = LinkedHashMap<String, GraphNode>()
