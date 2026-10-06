@@ -71,7 +71,9 @@ import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.demo.demoFileSystem
 
 import kotlinx.browser.document
+import org.w3c.dom.Element
 import org.w3c.dom.HTMLElement
+import kotlinx.browser.window
 import org.w3c.dom.HTMLImageElement
 import org.w3c.dom.events.MouseEvent
 import se.soderbjorn.lunula.web.showConfirmDialog
@@ -149,6 +151,8 @@ fun paint(
     style: EditorStyle,
     onBulletMouseDown: ((absoluteRow: Int, ev: MouseEvent) -> Unit)? = null,
 ) {
+    // Read before the rebuild: the chunks' boundaries and heights carry over.
+    val oldChunks = measuredChunks(editor, state.activeFileRel)
     editor.innerHTML = ""
     if (!state.isLoaded) {
         paintLoading(editor)
@@ -189,15 +193,17 @@ fun paint(
     // Zoomed into a block item: its own rows head the page as its body,
     // one level shallower than its children.
     val zoomBody = zoom?.let { z -> blockOfRow[z.zoomRow]?.takeIf { it.first == z.zoomRow } }
+    val rowAppender = RowAppender(editor, chunked = visibleRows.size > CHUNK_MIN_ROWS, style, oldChunks)
     for (row in visibleRows) {
         val rawLine = state.lines[row]
         if (zoomBody != null && row in zoomBody) {
             val strip = zoom.zoomIndent
-            editor.appendChild(
+            rowAppender.add(
                 buildRowElement(
                     row, rawLine.substring(strip), strip, state, docState, viewModel, style,
                     zoomBody, onBulletMouseDown, isZoomBody = true,
-                )
+                ),
+                docState.lineIds[row],
             )
             continue
         }
@@ -212,12 +218,14 @@ fun paint(
             (0 until viewOriginCol).all { rawLine[it] == ' ' }
         val stripPrefix = if (canStrip) viewOriginCol else 0
         val line = if (stripPrefix > 0) rawLine.substring(stripPrefix) else rawLine
-        editor.appendChild(
+        rowAppender.add(
             buildRowElement(
                 row, line, stripPrefix, state, docState, viewModel, style, blockOfRow[row], onBulletMouseDown
-            )
+            ),
+            docState.lineIds[row],
         )
     }
+    rowAppender.finish()
 
     // Empty-document affordance. A fresh/empty outline loads as a single
     // empty bullet (a plain file as a blank line); without a cue the pane
@@ -228,7 +236,7 @@ fun paint(
     // so it never covers real content.
     val onlyLine = docState.lines.singleOrNull()
     if (zoom == null && onlyLine != null && (onlyLine.isEmpty() || DocumentLayout.isEmptyBulletLine(onlyLine))) {
-        (editor.firstElementChild as? HTMLElement)?.let { firstRow ->
+        (editor.querySelector("[data-row]") as? HTMLElement)?.let { firstRow ->
             val hint = document.createElement("span") as HTMLElement
             hint.className = "lunarbor-empty-hint"
             hint.textContent =
@@ -241,6 +249,187 @@ fun paint(
             firstRow.appendChild(hint)
         }
     }
+}
+
+/**
+ * Rows per chunk on a long page (see [RowAppender]).
+ */
+private const val ROWS_PER_CHUNK: Int = 64
+
+/** Pages with more visible rows than this are painted in chunks ([RowAppender]). */
+private const val CHUNK_MIN_ROWS: Int = 2 * ROWS_PER_CHUNK
+
+/** Class of the chunk wrappers [rowAppender] groups rows into. */
+internal const val ROW_CHUNK_CLASS: String = "lunarbor-chunk"
+
+/** Attribute on a chunk: the [LineId] value of its first row. */
+private const val CHUNK_FIRST_ID_ATTR: String = "data-chunk-first"
+
+/** Attribute on a chunk: how many rows it holds. */
+private const val CHUNK_ROWS_ATTR: String = "data-chunk-rows"
+
+/**
+ * A chunk of the previous paint: its height on screen (real, or the
+ * remembered size of a skipped one) and its row count.
+ */
+private class MeasuredChunk(val height: Double, val rows: Int)
+
+/** Property on the editor element holding its chunk-height cache ([measuredChunks]). */
+private const val CHUNK_CACHE_KEY: String = "__lunarborChunkHeights"
+
+/** Property on the editor element: the file its chunks were painted for. */
+private const val CHUNK_FILE_KEY: String = "__lunarborChunkFile"
+
+/** Chunks the cache keeps, over all files, before it starts over. */
+private const val CHUNK_CACHE_MAX: Int = 20_000
+
+/**
+ * The chunk heights [editor] knows for [fileRel], by each chunk's first
+ * row's [LineId] value (ids are per document, hence per file): the
+ * chunks it shows now, measured before [paint] rebuilds them, on top of
+ * those of earlier paints — so coming back to a long page (Back, a link)
+ * sizes its off-screen chunks as they were and the remembered scroll
+ * position lands where it was. Reading a chunk's own box never lays out
+ * its skipped rows.
+ *
+ * @param fileRel The file about to be painted.
+ */
+private fun measuredChunks(editor: HTMLElement, fileRel: String): Map<Long, MeasuredChunk> {
+    val dyn = editor.asDynamic()
+    var cache = dyn[CHUNK_CACHE_KEY].unsafeCast<HashMap<String, HashMap<Long, MeasuredChunk>>?>()
+    if (cache == null || cache.values.sumOf { it.size } > CHUNK_CACHE_MAX) {
+        cache = HashMap()
+        dyn[CHUNK_CACHE_KEY] = cache
+    }
+    val paintedFile = dyn[CHUNK_FILE_KEY].unsafeCast<String?>()
+    val chunks = editor.querySelectorAll(":scope > .$ROW_CHUNK_CLASS")
+    if (paintedFile != null && chunks.length > 0) {
+        val known = cache.getOrPut(paintedFile) { HashMap() }
+        for (i in 0 until chunks.length) {
+            val c = chunks.item(i) as? HTMLElement ?: continue
+            val id = c.getAttribute(CHUNK_FIRST_ID_ATTR)?.toLongOrNull() ?: continue
+            val rows = c.getAttribute(CHUNK_ROWS_ATTR)?.toIntOrNull() ?: continue
+            known[id] = MeasuredChunk(c.getBoundingClientRect().height, rows)
+        }
+    }
+    dyn[CHUNK_FILE_KEY] = fileRel
+    return cache[fileRel] ?: emptyMap()
+}
+
+/**
+ * How [paint] adds row elements to the editor: directly, or — on a long
+ * page ([chunked]) — in chunk wrappers with `content-visibility: auto`.
+ * Chromium then skips style, layout, paint and hit-testing for every
+ * chunk off screen; without it, scrolling a page of thousands of rows
+ * hit-tested every row's layer on each frame (12k rows: 25–35 ms frames,
+ * a crawl). `overflow-clip-margin` lets the parts drawn left of a row
+ * (fold control, dots) through the chunk's paint clip.
+ *
+ * A skipped chunk is as tall as its `contain-intrinsic-size`, and every
+ * repaint builds new chunks, so the heights must carry over or the page
+ * would shift under the scroll position on each keystroke: a chunk starts
+ * at a row that started one in an earlier paint ([previous], by line
+ * id) and takes that chunk's measured height, scaled by its row count.
+ * Fresh chunks hold [ROWS_PER_CHUNK] rows; a carried one grows to at
+ * most twice that before it splits.
+ *
+ * Rows stay found by `[data-row]` / `closest`, never as the editor's
+ * direct children; code that walks rows by sibling must cross chunks
+ * ([previousRowElement]). Short pages are painted without chunks.
+ *
+ * @param editor The editor [paint] has just cleared.
+ * @param chunked `true` on a long page ([CHUNK_MIN_ROWS]).
+ * @param style Gives the row height for a fresh chunk's estimate.
+ * @param previous Chunks of earlier paints ([measuredChunks]).
+ */
+private class RowAppender(
+    private val editor: HTMLElement,
+    private val chunked: Boolean,
+    private val style: EditorStyle,
+    private val previous: Map<Long, MeasuredChunk>,
+) {
+    private var chunk: HTMLElement? = null
+    private var carried: MeasuredChunk? = null
+    private var count = 0
+
+    /** Adds [row], the element of the row with line id [id]. */
+    fun add(row: HTMLElement, id: LineId) {
+        if (!chunked) {
+            editor.appendChild(row)
+            return
+        }
+        val limit = if (carried != null) 2 * ROWS_PER_CHUNK else ROWS_PER_CHUNK
+        if (chunk == null || count >= limit || (count > 0 && id.value in previous)) open(id)
+        chunk!!.appendChild(row)
+        count++
+    }
+
+    /** Sizes the last chunk. Call once after the last [add]. */
+    fun finish() = close()
+
+    private fun open(id: LineId) {
+        close()
+        val c = document.createElement("div") as HTMLElement
+        c.className = ROW_CHUNK_CLASS
+        c.setAttribute(CHUNK_FIRST_ID_ATTR, id.value.toString())
+        c.style.setProperty("content-visibility", "auto")
+        c.style.setProperty("overflow-clip-margin", "${style.editorPaddingLeftPx + 24}px")
+        editor.appendChild(c)
+        chunk = c
+        carried = previous[id.value]
+        count = 0
+    }
+
+    private fun close() {
+        val c = chunk ?: return
+        c.setAttribute(CHUNK_ROWS_ATTR, count.toString())
+        val old = carried
+        val height = if (old != null && old.rows > 0) old.height * count / old.rows
+        else (count * style.lineHeightPx).toDouble()
+        c.style.setProperty("contain-intrinsic-size", "auto ${height}px")
+    }
+}
+
+/**
+ * The row element painted right before [row], across chunk boundaries
+ * ([RowAppender]), or `null` for the first row. Non-row elements (a
+ * search node's result list) are skipped.
+ */
+internal fun previousRowElement(row: Element): Element? {
+    var prev = row.previousElementSibling
+    while (prev != null && !prev.hasAttribute("data-row")) prev = prev.previousElementSibling
+    if (prev != null) return prev
+    val parent = row.parentElement ?: return null
+    if (!parent.classList.contains(ROW_CHUNK_CLASS)) return null
+    var chunk = parent.previousElementSibling
+    while (chunk != null) {
+        val rows = chunk.querySelectorAll(":scope > [data-row]")
+        if (rows.length > 0) return rows.item(rows.length - 1) as? Element
+        if (chunk.hasAttribute("data-row")) return chunk
+        chunk = chunk.previousElementSibling
+    }
+    return null
+}
+
+/**
+ * The chunks ([RowAppender]) of [editor] whose box lies within
+ * [marginPx] of the viewport, or `null` when the page is not chunked.
+ * Lets whole-page row scans (the fold animation, drag aiming) stay with
+ * the rows near the screen instead of forcing every skipped chunk to lay
+ * out.
+ */
+internal fun chunksNearViewport(editor: HTMLElement, marginPx: Double): List<HTMLElement>? {
+    val chunks = editor.querySelectorAll(":scope > .$ROW_CHUNK_CLASS")
+    if (chunks.length == 0) return null
+    val top = -marginPx
+    val bottom = window.innerHeight + marginPx
+    val out = ArrayList<HTMLElement>()
+    for (i in 0 until chunks.length) {
+        val c = chunks.item(i) as? HTMLElement ?: continue
+        val r = c.getBoundingClientRect()
+        if (r.bottom >= top && r.top <= bottom) out += c
+    }
+    return out
 }
 
 /**
@@ -535,7 +724,7 @@ private fun decorateBlockRow(
     // Hovering any row of the block reveals the delete control, which
     // lives on the first row.
     fun firstRowDiv(): HTMLElement? =
-        rowDiv.parentElement?.querySelector("[data-row='${block.first}']") as? HTMLElement
+        rowDiv.closest(".lunarbor-editor")?.querySelector("[data-row='${block.first}']") as? HTMLElement
     rowDiv.addEventListener("mouseenter", { _ -> firstRowDiv()?.classList?.add("lunarbor-block-hover") })
     rowDiv.addEventListener("mouseleave", { _ -> firstRowDiv()?.classList?.remove("lunarbor-block-hover") })
 

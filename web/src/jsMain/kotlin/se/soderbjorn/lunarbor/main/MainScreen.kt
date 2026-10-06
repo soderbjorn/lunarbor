@@ -2915,16 +2915,22 @@ class MainScreen(
 
     /** The editor row whose box is vertically nearest to clientY [y], or `null` when there are no rows. */
     private fun nearestRowDiv(editor: HTMLElement, y: Double): HTMLElement? {
-        val rows = editor.querySelectorAll("[data-row]")
+        // A chunked page: only the chunks near the screen, so the rows of
+        // skipped chunks are never forced to lay out (OutlinePaintLoop.rowAppender).
+        val scopes: List<Element> = chunksNearViewport(editor, window.innerHeight.toDouble())
+            ?.takeIf { it.isNotEmpty() } ?: listOf(editor)
         var best: HTMLElement? = null
         var bestDist = Double.MAX_VALUE
-        for (i in 0 until rows.length) {
-            val el = rows.item(i) as? HTMLElement ?: continue
-            val r = el.getBoundingClientRect()
-            val dist = if (y < r.top) r.top - y else if (y > r.bottom) y - r.bottom else 0.0
-            if (dist < bestDist) {
-                bestDist = dist
-                best = el
+        for (scope in scopes) {
+            val rows = scope.querySelectorAll("[data-row]")
+            for (i in 0 until rows.length) {
+                val el = rows.item(i) as? HTMLElement ?: continue
+                val r = el.getBoundingClientRect()
+                val dist = if (y < r.top) r.top - y else if (y > r.bottom) y - r.bottom else 0.0
+                if (dist < bestDist) {
+                    bestDist = dist
+                    best = el
+                }
             }
         }
         return best
