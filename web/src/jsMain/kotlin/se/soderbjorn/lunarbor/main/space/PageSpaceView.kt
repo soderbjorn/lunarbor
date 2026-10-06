@@ -215,10 +215,17 @@ internal class PageSpaceView(
         world.add(live.obj)
         // Clicking anywhere in the view focuses its window (capture phase,
         // before the editor or a preview handles the press).
-        element.addEventListener("mousedown", { _ ->
-            // A click while flying stops the ship and holds the camera: a click
-            // on a page then flies there from here; anything else lands.
+        element.addEventListener("mousedown", { e ->
             if (freeFlight.isOn) {
+                if (live.slot.contains(e.target as? org.w3c.dom.Node)) {
+                    // The window's own page: no caret, no edit — just land.
+                    e.preventDefault()
+                    e.stopPropagation()
+                    land()
+                    return@addEventListener
+                }
+                // Elsewhere the ship stops and the camera holds: a click on a
+                // page then flies there from here; anything else lands.
                 freeFlight.stop()
                 hold(CLICK_HOLD_MS)
             }
@@ -275,7 +282,7 @@ internal class PageSpaceView(
     }
 
     /** Puts the keyboard in the live page's editor, caret where the pane has it. */
-    override fun focusEditor() = screen.focusEditor()
+    override fun focusEditor() = screen.focusEditorAtCaret()
 
     // ------------------------------------------------------- free flight
 
@@ -321,7 +328,7 @@ internal class PageSpaceView(
             val mid = SpaceVec((cam.x + goal.x) / 2, (cam.y + goal.y) / 2, (cam.z + goal.z) / 2 + dist * 0.3)
             flight = Flight(cam, goal, mid, 0.0, PageSpaceLayout.flightSeconds(dist), rot)
         }
-        screen.focusEditor()
+        screen.focusEditorAtCaret()
         mode.requestFrame()
     }
 
@@ -350,7 +357,7 @@ internal class PageSpaceView(
         // The flight lands on the page where it was seen.
         placed[key] = pv.cur
         goTo(pv.lineId, pv.folderRel)
-        screen.focusEditor()
+        screen.focusEditorAtCaret()
     }
 
     /**
@@ -397,6 +404,8 @@ internal class PageSpaceView(
             } else {
                 pv.fill(title, emptyList(), null)
             }
+            // A title card: header and title only, no glow (cheap to draw in numbers).
+            pv.card.classList.toggle("is-slab", !full)
             if (!pv.inScene) {
                 pv.cur = targets[key] ?: at
                 pv.scale = 1.0
@@ -652,6 +661,7 @@ internal class PageSpaceView(
             pv.lineId = child.lineId
             pv.folderRel = child.folderRel
             pv.depth = depth
+            pv.card.classList.remove("is-slab")
             pv.fill(child.title, child.items, child)
             if (!pv.inScene) {
                 val from = parents[key]?.let { placed[it] }
@@ -1061,11 +1071,13 @@ internal class PageSpaceView(
             list.forEachIndexed { i, item ->
                 val row = div("lunarbor-space-item")
                 row.setAttribute("data-index", i.toString())
-                row.style.paddingLeft = "${item.depth * 20}px"
+                // The editor's hanging indent (OutlinePaintLoop): 30 px a level, the dot hung left of the text.
+                row.style.paddingLeft = "calc(${item.depth * INDENT_STEP_PX}px + 1.15em)"
                 val opens = item.lineId != null || item.folderRel != null
                 val dot = span(if (item.folderRel != null) "lunarbor-space-item-dot is-node" else "lunarbor-space-item-dot", "")
                 if (!opens) dot.classList.add("is-inert")
                 row.appendChild(dot)
+                row.appendChild(document.createTextNode(" "))
                 row.appendChild(span("lunarbor-space-item-text", item.title.ifEmpty { " " }))
                 body.appendChild(row)
             }
@@ -1158,10 +1170,10 @@ internal class PageSpaceView(
         const val SVG_NS = "http://www.w3.org/2000/svg"
 
         /** Free flight: pages nearest the ship drawn as previews with their bullets. */
-        const val FLIGHT_FULL = 24
+        const val FLIGHT_FULL = 12
 
-        /** Free flight: the next nearest, drawn as title cards. */
-        const val FLIGHT_SLABS = 140
+        /** Free flight: the next nearest, drawn as title cards ([FarPages] beyond). */
+        const val FLIGHT_SLABS = 48
 
         /** Free flight: how often (seconds) the pages are re-ranked round the ship. */
         const val FLIGHT_SYNC_S = 0.3
@@ -1180,6 +1192,9 @@ internal class PageSpaceView(
 
         /** `new ctor(...args)` for three.js classes reached through [ThreeLib.raw]. */
         fun construct(ctor: dynamic, vararg args: dynamic): dynamic = js("Reflect").construct(ctor, args)
+
+        /** A preview's indent per level: the editor's (`EditorStyle.indentStepPx`). */
+        const val INDENT_STEP_PX = 30
 
         /** Delay before a non-navigation refresh (typing, listings landing). */
         const val REFRESH_MS = 120

@@ -635,6 +635,29 @@ class MainScreen(
     }
 
     /**
+     * Puts the keyboard in the editor with the caret (and selection) where
+     * the pane has it, without scrolling — a bare [focusEditor] lets the
+     * browser put the caret at the editor's very start, left of the first
+     * bullet. Nothing on a hidden editor; on a read-only page only the
+     * focus.
+     *
+     * Called by 3D mode (`SpaceMode`, `PageSpaceView`, `GroveView`) when a
+     * live page takes the keyboard: entering Pages or Grove, switching
+     * from a map, landing from free flight.
+     */
+    fun focusEditorAtCaret() {
+        val editor = editorElement ?: return
+        if (editor.style.display == "none") return
+        val scroller = scrollWrapperElement
+        val top = scroller?.scrollTop
+        editor.asDynamic().focus(js("({preventScroll: true})"))
+        val s = viewModel.currentBackingState
+        if (!s.isLoaded || s.isReadOnlyPage) return
+        applyDomSelection(editor, s.anchorRow ?: s.cursorRow, s.anchorCol ?: s.cursorCol, s.cursorRow, s.cursorCol, scrollCursorIntoView = false)
+        if (scroller != null && top != null) scroller.scrollTop = top
+    }
+
+    /**
      * Opens the pane's search field (or re-focuses it when open) and puts
      * the keyboard in it. Called by the pane header's search button and
      * the "Search this tree" palette command and Cmd-F ([AppShell]).

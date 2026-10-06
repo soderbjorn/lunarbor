@@ -66,7 +66,7 @@ internal interface SpaceWindowView {
     /** Gives the editor back to its pane; with [focus], the editor takes the keyboard. */
     fun dispose(focus: Boolean)
 
-    /** Puts the keyboard in the live page's editor. */
+    /** Puts the keyboard in the live page's editor, caret where the pane has it. */
     fun focusEditor()
 
     /** Moves and sizes the view inside the overlay. */

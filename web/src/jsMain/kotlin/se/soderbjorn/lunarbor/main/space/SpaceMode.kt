@@ -631,12 +631,18 @@ class SpaceMode(
         fresh.forEach { it.start() }
         views.values.forEach { it.renderFocus() }
         renderDock()
-        // Put the keyboard in the focused window's live page, unless
-        // something else (a modal, the palette, a field) holds it.
-        val active = document.activeElement
+        // Put the keyboard in the focused window's live page — also from a
+        // map or a strip button that had it — unless a text field, a dialog,
+        // a menu or the palette holds it. A frame later, once the page is
+        // drawn where it sits, so the caret shows (and blinks) in place.
         val focusedView = focused?.let { views[it] }
-        if (focusedView != null && (active == null || active === document.body || overlay?.contains(active) != true && !isTextField(active))) {
-            focusedView.focusEditor()
+        if (focusedView != null) {
+            window.requestAnimationFrame {
+                val active = document.activeElement
+                val busy = active != null && isTextField(active) ||
+                    document.querySelector(".dt-modal-backdrop, .dt-menu-backdrop, .lunarbor-palette-backdrop, .lunarbor-space-help-backdrop") != null
+                if (isActive && views[focusedView.paneId] === focusedView && !busy) focusedView.focusEditor()
+            }
         }
         requestFrame()
     }
@@ -1198,16 +1204,24 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 }
 .lunarbor-space-nav:hover:not([disabled]) { background: var(--t-surface-alt, rgba(255,255,255,.08)); color: var(--t-text, #e6e6e6); }
 .lunarbor-space-nav[disabled] { opacity: .35; cursor: default; }
-.lunarbor-space-preview-body { flex: 1; min-height: 0; overflow: hidden; padding: 14px 22px; font-size: 14px; line-height: 1.55; }
+/* A preview's bullets in the live editor's metrics (EditorStyle: its font
+   and size, 25px lines, 12px / 40px padding, 30px a level, the dot hung
+   1.15em left of wrapping text — OutlinePaintLoop's rows), so nothing
+   reflows when the editor takes over the page. */
+.lunarbor-space-preview-body {
+    flex: 1; min-height: 0; overflow: hidden; padding: 12px 12px 12px 40px;
+    font-family: var(--dt-font-prop, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif);
+    font-size: var(--dt-font-prop-size, 17px); line-height: 25px;
+}
 .lunarbor-space-preview-empty { color: var(--t-text-dim, #9aa0a6); }
-.lunarbor-space-item { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.lunarbor-space-item { display: block; text-indent: -1.15em; white-space: normal; overflow-wrap: break-word; }
 .lunarbor-space-item-dot {
-    flex: none; width: 6px; height: 6px; border-radius: 50%; transform: translateY(-2px);
-    background: var(--t-text-dim, #9aa0a6);
+    display: inline-block; width: 0.4em; height: 0.4em; margin: 0 0.25em; border-radius: 50%;
+    vertical-align: 0.12em; text-indent: 0; background: var(--t-text-dim, #9aa0a6);
 }
 .lunarbor-space-item-dot.is-node { box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-text-dim, #9aa0a6) 35%, transparent); }
 .lunarbor-space-item-dot:not(.is-inert):hover { background: var(--t-accent, #7aa2ff); }
-.lunarbor-space-item-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lunarbor-space-item-text { text-indent: 0; }
 .lunarbor-space-page { border-top: 3px solid var(--lb-area, var(--t-border, rgba(255,255,255,.12))); }
 .lunarbor-space-page[style*="--lb-area"] { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lb-area) 35%, transparent), 0 18px 50px rgba(0,0,0,.28), 0 0 42px color-mix(in srgb, var(--lb-area) 22%, transparent); }
 .lunarbor-space-page .lunarbor-space-item-dot { background: var(--lb-area, var(--t-text-dim, #9aa0a6)); }
@@ -1225,6 +1239,10 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
     font-family: var(--dt-font-display, var(--dt-font-prop, system-ui, sans-serif)); color: var(--t-text, #e6e6e6);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* A title-only card (Grove's slabs, Pages' cards in free flight): no bullets,
+   and no blurred glow — dozens of big shadows on 3D layers make flying slow. */
+.lunarbor-space-page.is-slab { box-shadow: none !important; }
+.lunarbor-space-page.is-slab .lunarbor-space-preview-body { display: none; }
 /* Free flight: the page ahead, which Enter or a click opens, has its border lit. */
 .lunarbor-space-page.is-aimed {
     border-color: var(--t-accent, #7aa2ff) !important;
@@ -1251,5 +1269,4 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
 .is-grove .lunarbor-space-box[style*="--lb-area"] > .lunarbor-space-page { box-shadow: 0 0 0 1px color-mix(in srgb, var(--lb-area) 35%, transparent), 0 18px 50px rgba(0,0,0,.28), 0 0 42px color-mix(in srgb, var(--lb-area) 22%, transparent); }
 .is-grove .lunarbor-space-page.is-slab { min-height: 64px; }
 .is-grove .lunarbor-space-page.is-slab .lunarbor-space-preview-headline { padding-bottom: 14px; }
-.is-grove .lunarbor-space-page.is-slab .lunarbor-space-preview-body { display: none; }
 """

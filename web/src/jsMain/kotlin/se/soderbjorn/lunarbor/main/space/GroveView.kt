@@ -210,11 +210,17 @@ internal class GroveView(
         world.add(live.obj)
         // Clicking anywhere in the view focuses its window (capture phase,
         // before the editor or a preview handles the press).
-        element.addEventListener("mousedown", { _ ->
-            // A click while flying lands first; a click on a page then flies there.
-            // A click while flying stops the ship and holds the camera: a click
-            // on a page then flies there from here; anything else lands.
+        element.addEventListener("mousedown", { e ->
             if (freeFlight.isOn) {
+                if (live.slot.contains(e.target as? org.w3c.dom.Node)) {
+                    // The window's own page: no caret, no edit — just land.
+                    e.preventDefault()
+                    e.stopPropagation()
+                    land()
+                    return@addEventListener
+                }
+                // Elsewhere the ship stops and the camera holds: a click on a
+                // page then flies there from here; anything else lands.
                 freeFlight.stop()
                 hold(CLICK_HOLD_MS)
             }
@@ -265,7 +271,7 @@ internal class GroveView(
     }
 
     /** Puts the keyboard in the live page's editor, caret where the pane has it. */
-    override fun focusEditor() = screen.focusEditor()
+    override fun focusEditor() = screen.focusEditorAtCaret()
 
     // ------------------------------------------------------- free flight
 
@@ -302,7 +308,7 @@ internal class GroveView(
             val back = (cam.normal + goal.normal).normalized() ?: cam.up
             flight = Flight(cam, goal, mid + back * (dist * 0.3), 0.0, GroveLayout.flightSeconds(dist))
         }
-        screen.focusEditor()
+        screen.focusEditorAtCaret()
         mode.requestFrame()
     }
 
@@ -338,7 +344,7 @@ internal class GroveView(
         freeFlight.stop()
         hold(NAV_HOLD_MS)
         goTo(pv.lineId, pv.folderRel)
-        screen.focusEditor()
+        screen.focusEditorAtCaret()
     }
 
     // ------------------------------------------------------------ layout
@@ -951,11 +957,13 @@ internal class GroveView(
             list.forEachIndexed { i, item ->
                 val row = div("lunarbor-space-item")
                 row.setAttribute("data-index", i.toString())
-                row.style.paddingLeft = "${item.depth * 20}px"
+                // The editor's hanging indent (OutlinePaintLoop): 30 px a level, the dot hung left of the text.
+                row.style.paddingLeft = "calc(${item.depth * INDENT_STEP_PX}px + 1.15em)"
                 val opens = item.lineId != null || item.folderRel != null
                 val dot = span(if (item.folderRel != null) "lunarbor-space-item-dot is-node" else "lunarbor-space-item-dot", "")
                 if (!opens) dot.classList.add("is-inert")
                 row.appendChild(dot)
+                row.appendChild(document.createTextNode(" "))
                 row.appendChild(span("lunarbor-space-item-text", item.title.ifEmpty { " " }))
                 body.appendChild(row)
             }
@@ -973,6 +981,9 @@ internal class GroveView(
     private data class Flight(val from: SpacePose, val to: SpacePose, val ctrl: SpaceVec, val t: Double, val duration: Double)
 
     private companion object {
+        /** A preview's indent per level: the editor's (`EditorStyle.indentStepPx`). */
+        const val INDENT_STEP_PX = 30
+
         /** Delay before a non-navigation refresh (typing, listings landing). */
         const val REFRESH_MS = 120
 

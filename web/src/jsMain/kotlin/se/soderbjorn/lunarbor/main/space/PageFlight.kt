@@ -12,9 +12,11 @@
  *    only — the page views have no landed legend, their keys are the
  *    editor's);
  *  - the keyboard while flying: a capture-phase listener on `window` takes
- *    every plain key before the editor sees it (held flight keys steer;
- *    F / C land, K hides the legend, Enter opens the page ahead); Escape
- *    and ⌘ / Ctrl chords pass, so Esc leaves 3D and ⌥⌘F lands;
+ *    every key before the editor sees it (held flight keys steer; F / C
+ *    land, K hides the legend, Enter opens the page ahead), single-modifier
+ *    chords too, so nothing edits the document; Escape and two-modifier
+ *    chords (navigation, 3D mode's own) pass, so Esc leaves 3D and ⌥⌘F
+ *    lands. The views make a click on the live page land, never edit;
  *  - which page is ahead ([aim], [target]); the view highlights that
  *    page's border (`is-aimed`), no ring.
  *
@@ -163,13 +165,16 @@ internal class PageFlight(
 
     /**
      * Keys while flying: held flight keys steer; F / C land, K hides the
-     * legend, Enter opens the page ahead. Every other plain key is
-     * swallowed so the editor is never typed into unseen; Escape and
-     * ⌘ / Ctrl chords pass (Escape leaves 3D, ⌥⌘F lands).
+     * legend, Enter opens the page ahead. Nothing edits the document
+     * meanwhile: every other key is swallowed — chords with one modifier
+     * too (paste, undo, the palette's commands) — except Escape (leaves
+     * 3D) and chords of two modifiers, which are navigation and 3D mode's
+     * own (⌥⌘F lands, ⌃⌘3, ⌥⌘← / →, ⌃⌘↑).
      */
     private fun onKeyDown(e: KeyboardEvent) {
         if (!ship.isOn) return
-        if (e.key == "Escape" || e.metaKey || e.ctrlKey) return
+        val mods = listOf(e.metaKey, e.ctrlKey, e.altKey).count { it }
+        if (e.key == "Escape" || mods >= 2) return
         e.preventDefault()
         e.stopPropagation()
         when {
