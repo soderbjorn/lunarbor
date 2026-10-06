@@ -2371,66 +2371,74 @@ class PaneBackingViewModel(
     }
 
     /**
-     * Folds ([folded] `true`) or unfolds every item under the node the
-     * pane shows — the zoom target's subtree, or the whole outline — at
-     * every depth. The node itself is left alone, and so is each large
-     * block's preview ([State.expandedBlockIds]): only folds change.
+     * Folds every item under the node the pane shows — the zoom target's
+     * subtree, or the whole outline — at every depth: its children,
+     * grandchildren and so on. The node itself is left alone, and so is
+     * each large block's preview ([State.expandedBlockIds]): only folds
+     * change. Folding only marks items folded — the pane keeps its folder
+     * expansions, as a zoom's refold does, so unfolding again is instant.
      * A no-op in Markdown mode.
      *
-     * Unfolding loads folded folder-backed items' children
-     * ([Document.acquireExpansion]) level by level until nothing below is
-     * left on disk only; rows that arrive are marked seen so the
-     * default-collapse pass does not fold them again. Stops early if the
-     * pane switches file meanwhile. Folding only marks items folded — the
-     * pane keeps its folder expansions, as a zoom's refold does, so
-     * unfolding again is instant.
-     *
-     * Called by the web command palette ("Expand all children" /
-     * "Collapse all children").
+     * Called by the web command palette ("Collapse children and
+     * grandchildren").
      */
-    fun setAllChildrenFolded(folded: Boolean) {
+    fun collapseChildrenAndGrandchildren() {
         val s = _stateFlow.value
         if (!s.isLoaded || s.isMarkdownMode) return
-        val doc = document ?: return
-        if (folded) {
-            val items = foldableItemsUnderPage()
-            patch {
-                it.copy(collapsedIds = it.collapsedIds + items, zoomUnfoldedIds = it.zoomUnfoldedIds - items)
-            }
-            return
-        }
-        scope.launch {
-            while (document === doc) {
-                val cur = _stateFlow.value
-                val unloaded = doc.stateFlow.value.unloadedRefIds
-                val items = foldableItemsUnderPage()
-                // As toggleCollapse: a folder-backed item this pane does
-                // not hold is loaded, unless its children are already in
-                // `lines` and showing.
-                val toAcquire = items.filter { id ->
-                    doc.isPromotedRef(id) && id !in cur.expandedRefIdsLocal &&
-                        (id in unloaded || id in cur.collapsedIds)
-                }
-                patch {
-                    it.copy(
-                        collapsedIds = it.collapsedIds - items,
-                        zoomUnfoldedIds = it.zoomUnfoldedIds - items,
-                        expandedRefIdsLocal = it.expandedRefIdsLocal + toAcquire,
-                        seenLineIds = it.seenLineIds + (it.documentState?.lineIds ?: emptyList()),
-                    )
-                }
-                if (toAcquire.isEmpty()) break
-                doc.acquireExpansions(toAcquire)
-            }
+        val items = foldableItemsUnderPage(directOnly = false)
+        patch {
+            it.copy(collapsedIds = it.collapsedIds + items, zoomUnfoldedIds = it.zoomUnfoldedIds - items)
         }
     }
 
     /**
-     * Ids of the items with children (or folder-backed) under the node
-     * the pane shows — see [setAllChildrenFolded]. The zoom target itself
-     * is not included.
+     * Unfolds the direct children of the node the pane shows — the zoom
+     * target's, or the outline's top-level items — one level only: each
+     * child's own children come into view, while deeper folds keep their
+     * state (rows loaded now start as the default-collapse pass and the
+     * fold memory say). Large blocks' previews are left alone. A no-op in
+     * Markdown mode.
+     *
+     * Folded folder-backed children are loaded ([Document.acquireExpansions],
+     * one round of disk reads); the rows already on the page are marked
+     * seen first so the default-collapse pass does not fold the children
+     * again.
+     *
+     * Called by the web command palette ("Expand all children").
      */
-    private fun foldableItemsUnderPage(): Set<LineId> {
+    fun expandChildren() {
+        val s = _stateFlow.value
+        if (!s.isLoaded || s.isMarkdownMode) return
+        val doc = document ?: return
+        val unloaded = doc.stateFlow.value.unloadedRefIds
+        val items = foldableItemsUnderPage(directOnly = true)
+        // As toggleCollapse: a folder-backed item this pane does not hold
+        // is loaded, unless its children are already in `lines` and showing.
+        val toAcquire = items.filter { id ->
+            doc.isPromotedRef(id) && id !in s.expandedRefIdsLocal &&
+                (id in unloaded || id in s.collapsedIds)
+        }
+        patch {
+            it.copy(
+                collapsedIds = it.collapsedIds - items,
+                zoomUnfoldedIds = it.zoomUnfoldedIds - items,
+                expandedRefIdsLocal = it.expandedRefIdsLocal + toAcquire,
+                seenLineIds = it.seenLineIds + (it.documentState?.lineIds ?: emptyList()),
+            )
+        }
+        if (toAcquire.isNotEmpty()) scope.launch { doc.acquireExpansions(toAcquire) }
+    }
+
+    /**
+     * Ids of the items with children (or folder-backed) under the node
+     * the pane shows — see [collapseChildrenAndGrandchildren] and
+     * [expandChildren]. The zoom target itself is not included.
+     *
+     * @param directOnly `true` for the node's direct children only (the
+     *   items at the shallowest item column on the page), `false` for
+     *   every depth.
+     */
+    private fun foldableItemsUnderPage(directOnly: Boolean): Set<LineId> {
         val s = _stateFlow.value
         val doc = document ?: return emptySet()
         val docState = doc.stateFlow.value
@@ -2439,13 +2447,18 @@ class PaneBackingViewModel(
         val zoom = zoomInfoOf(s.copy(documentState = docState))
         val start = zoom?.let { it.zoomRow + 1 } ?: 0
         val end = zoom?.endRowInclusive ?: lines.lastIndex
-        val out = HashSet<LineId>()
         val hidden = hiddenRowsIn(s.copy(documentState = docState))
+        val candidates = ArrayList<Pair<Int, Int>>()
         for (row in start..end) {
             // Hidden items are neither folded nor unfolded (nor loaded).
             if (PrivacyLayout.isHidden(hidden, row)) continue
             val col = DocumentLayout.itemColumn(lines, row)
-            if (col < 0) continue
+            if (col >= 0) candidates += row to col
+        }
+        val childColumn = candidates.minOfOrNull { it.second } ?: return emptySet()
+        val out = HashSet<LineId>()
+        for ((row, col) in candidates) {
+            if (directOnly && col != childColumn) continue
             val id = docState.lineIds.getOrNull(row) ?: continue
             if (doc.isPromotedRef(id) || DocumentLayout.hasChildren(lines, row, col)) out += id
         }

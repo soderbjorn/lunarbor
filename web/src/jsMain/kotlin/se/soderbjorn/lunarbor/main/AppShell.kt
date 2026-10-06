@@ -1319,10 +1319,10 @@ class AppShell(
         if (lunicleService != null) {
             out += CommandPalette.Command(id = "insert-lunicle-board", title = "Insert Lunicle board…", run = { insertLunicleBoard() })
         }
-        // Every fold under the page's node, at every depth (large blocks'
-        // previews stay as they are).
-        addStyleCmd("expand-all-children", "Expand all children") { it.setAllChildrenFolded(false) }
-        addStyleCmd("collapse-all-children", "Collapse all children") { it.setAllChildrenFolded(true) }
+        // Unfold the page node's direct children (one level); fold every
+        // item under it, at every depth (large blocks' previews stay).
+        addStyleCmd("expand-all-children", "Expand all children") { it.expandChildren() }
+        addStyleCmd("collapse-all-children", "Collapse children and grandchildren") { it.collapseChildrenAndGrandchildren() }
         // The page node's direct children by name, each with its subtree.
         addStyleCmd("sort-children-by-name", "Sort children by name") { it.sortChildrenByName() }
         addStyleCmd("sort-children-by-name-reversed", "Sort children by name, reversed") { it.sortChildrenByName(reverse = true) }

@@ -90,8 +90,10 @@ class FoldMemoryTest {
         seedVault()
         val first = DocumentRegistry(repo, backgroundScope)
         val p = pane(first)
-        p.setAllChildrenFolded(false)
-        runCurrent()
+        for (t in listOf("Recipes", "Soups", "Cold")) {
+            p.toggleCollapse(p.idOf(t))
+            runCurrent()
+        }
         val remembered = first.foldMemory.snapshot()
         assertEquals(setOf("Recipes", "Recipes/Soups", "Recipes/Soups/Cold"), remembered)
 

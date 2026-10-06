@@ -1,9 +1,10 @@
 /*
  * FoldAllTest.kt (commonTest)
  * ---------------------------
- * "Expand all children" / "Collapse all children"
- * ([PaneBackingViewModel.setAllChildrenFolded]): every fold under the
- * page's node, at every depth, loading folder-backed children on the way.
+ * "Expand all children" ([PaneBackingViewModel.expandChildren]: the
+ * page node's direct children, one level) and "Collapse children and
+ * grandchildren" ([PaneBackingViewModel.collapseChildrenAndGrandchildren]:
+ * every fold under the page's node, at every depth).
  * Runs against the real stack — a [PaneBackingViewModel] over a
  * [DocumentRegistry] + [NoteRepository] on [InMemoryFileSystem].
  */
@@ -59,24 +60,33 @@ class FoldAllTest {
     }
 
     @Test
-    fun expand_all_opens_every_level_and_collapse_all_folds_them_again() = runTest {
+    fun expand_opens_one_level_and_collapse_folds_every_level() = runTest {
         seedVault()
         val p = pane()
         assertFalse(p.isShown("Pasta"))
 
-        p.setAllChildrenFolded(false)
+        p.expandChildren()
         runCurrent()
-        for (t in listOf("Pasta", "Soups", "Tomato", "Cold", "Gazpacho")) assertTrue(p.isShown(t), t)
-        assertTrue(p.stateFlow.value.collapsedIds.isEmpty())
+        assertTrue(p.isShown("Pasta"))
+        assertTrue(p.isShown("Soups"))
+        // Only one level: Soups stays folded.
+        assertFalse(p.isShown("Tomato"))
 
-        p.setAllChildrenFolded(true)
+        // Unfold the rest by hand, then collapse everything.
+        p.toggleCollapse(p.idOf("Soups"))
+        runCurrent()
+        p.toggleCollapse(p.idOf("Cold"))
+        runCurrent()
+        assertTrue(p.isShown("Gazpacho"))
+
+        p.collapseChildrenAndGrandchildren()
         runCurrent()
         assertTrue(p.isShown("Recipes"))
         assertFalse(p.isShown("Pasta"))
         for (t in listOf("Recipes", "Soups", "Cold")) assertTrue(p.idOf(t) in p.stateFlow.value.collapsedIds, t)
 
-        // Unfolding by hand one level keeps the deeper folds.
-        p.toggleCollapse(p.idOf("Recipes"))
+        // Expanding again opens Recipes only; the deeper folds stay.
+        p.expandChildren()
         runCurrent()
         assertTrue(p.isShown("Soups"))
         assertFalse(p.isShown("Tomato"))
@@ -88,15 +98,19 @@ class FoldAllTest {
         val p = pane()
         p.zoomInto(p.rowOf("Recipes"))
         runCurrent()
-        p.setAllChildrenFolded(false)
+        p.expandChildren()
         runCurrent()
-        assertTrue(p.isShown("Gazpacho"))
+        assertTrue(p.isShown("Tomato"))
+        assertFalse(p.isShown("Gazpacho"))
         val recipes = p.idOf("Recipes")
         assertEquals(recipes, p.stateFlow.value.zoomedLineId)
 
-        p.setAllChildrenFolded(true)
+        p.toggleCollapse(p.idOf("Cold"))
+        runCurrent()
+        p.collapseChildrenAndGrandchildren()
         runCurrent()
         assertTrue(p.idOf("Soups") in p.stateFlow.value.collapsedIds)
+        assertTrue(p.idOf("Cold") in p.stateFlow.value.collapsedIds)
         // The zoom target itself is not folded.
         assertFalse(recipes in p.stateFlow.value.collapsedIds)
     }

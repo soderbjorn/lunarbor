@@ -454,8 +454,11 @@ class MainViewModel(
     /** See `PaneBackingViewModel.locationOfRow`. */
     fun locationOfRow(row: Int) = paneBackingViewModel.locationOfRow(row)
 
-    /** See `PaneBackingViewModel.setAllChildrenFolded`. */
-    fun setAllChildrenFolded(folded: Boolean) = paneBackingViewModel.setAllChildrenFolded(folded)
+    /** See `PaneBackingViewModel.expandChildren`. */
+    fun expandChildren() = paneBackingViewModel.expandChildren()
+
+    /** See `PaneBackingViewModel.collapseChildrenAndGrandchildren`. */
+    fun collapseChildrenAndGrandchildren() = paneBackingViewModel.collapseChildrenAndGrandchildren()
 
     /** See `PaneBackingViewModel.pageNodeTitle`. */
     fun pageNodeTitle(state: PaneBackingViewModel.State) = paneBackingViewModel.pageNodeTitle(state)
