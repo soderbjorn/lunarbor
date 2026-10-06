@@ -1683,7 +1683,7 @@ internal class MapView(
         const val LINKS_REFRESH_MS = 4000.0
         const val ARC_STEPS = 12
         const val DUST_PER_BODY = 14
-        const val DUST_CAP = 12000
+        const val DUST_CAP = 40000
 
         fun mix(a: Double, b: Double, t: Double) = a + (b - a) * t
 

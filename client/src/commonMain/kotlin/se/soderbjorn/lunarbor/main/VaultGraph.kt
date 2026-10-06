@@ -107,7 +107,7 @@ data class VaultGraph(
  */
 object VaultGraphBuilder {
     /** At most this many bodies; a bigger vault is cut off breadth-first. */
-    const val MAX_NODES: Int = 1500
+    const val MAX_NODES: Int = 5000
 
     /**
      * Walks the vault breadth-first from the root.

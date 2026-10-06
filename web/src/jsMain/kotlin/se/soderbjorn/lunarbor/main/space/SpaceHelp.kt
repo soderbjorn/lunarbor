@@ -302,7 +302,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           <li>Positions come only from the tree (folder names and the order of siblings) — never from
           chance — so the same vault always looks the same and you can learn where things are.</li>
           <li>The map starts with every node expanded; <kbd>X</kbd> collapses them all and <kbd>O</kbd> expands
-          them all again. At most 1,500 nodes are shown. What is expanded or collapsed on the map is its own and does
+          them all again. At most 5,000 nodes are shown. What is expanded or collapsed on the map is its own and does
           not change your windows.</li>
           <li>Moving between views makes the bodies glide to their new places, so you can follow a node
           from one shape to the next.</li>
