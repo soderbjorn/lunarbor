@@ -102,7 +102,7 @@ object NoteConversion {
      * are under. The first node is always at [indent]. An empty block gives one
      * empty bullet.
      *
-     * Called by `TextEditingViewModel.convertBlockToNodesAt`.
+     * Called by `TextEditingViewModel.convertBlockRows`.
      *
      * @param rowContents The block rows' contents after the block marker
      *   ([BlockLayout.contentOf]; code rows keep their [BlockLayout.CODE]).
@@ -179,7 +179,7 @@ object NoteConversion {
      * trailing rows that are blank, `---` or an `![[…]]` embed (the
      * old-format link to an overview page). Rows between are untouched.
      *
-     * Called by `TextEditingViewModel.convertImportedBlocksIn` before
+     * Called by `TextEditingViewModel.convertBlockRows` before
      * [nodeGroupsOfBlock].
      */
     fun stripImportFrame(rowContents: List<String>): List<String> {

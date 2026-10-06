@@ -2082,27 +2082,32 @@ class PaneBackingViewModel(
     }
 
     /**
-     * "Convert block to nodes": replaces the block the caret is in with
-     * one bullet per line in the block's parent; a no-op elsewhere.
-     * The palette command. Undoable. See
-     * [TextEditingViewModel.convertBlockToNodesAt].
+     * "Convert block to nodes" (palette): every block in the page's whole
+     * tree becomes bullets, one per line. See [convertBlocksUnderPage].
      */
-    fun convertBlockToNodes() {
-        recordEdit(FrameKind.OTHER) { textEditing.convertBlockToNodesAt(_stateFlow.value.cursorRow) }
-    }
+    fun convertBlockToNodes() = convertBlocksUnderPage(stripImportFrame = false)
 
     /**
-     * TEMPORARY ("Convert to block - temporary special", palette): loads
-     * every folder-backed item under the page (the zoom target's
-     * subtree, or the whole outline) level by level — so those items end
-     * up unfolded — then converts every block there to nodes, stripping
-     * the imported-note frame (`---` lines at the top, `---` and the
-     * `![[…]]` embed at the bottom). Mirrors are not followed, so
-     * mirrored nodes elsewhere are left alone. One undoable edit. Stops
-     * if the pane switches file while loading; a no-op in Markdown mode.
-     * See [TextEditingViewModel.convertImportedBlocksIn].
+     * TEMPORARY ("Convert to block - temporary special", palette): as
+     * [convertBlockToNodes], but each block first loses the imported-note
+     * frame (`---` lines at the top, `---` and the `![[…]]` embed at the
+     * bottom; [NoteConversion.stripImportFrame]).
      */
-    fun convertImportedBlocksUnderPage() {
+    fun convertImportedBlocksUnderPage() = convertBlocksUnderPage(stripImportFrame = true)
+
+    /**
+     * Loads every folder-backed item under the page (the zoom target's
+     * subtree, or the whole outline) level by level — so those items end
+     * up unfolded — then converts every block there to nodes
+     * ([TextEditingViewModel.convertBlocksIn]), [stripImportFrame]
+     * passed on. Mirrors are not followed, so mirrored nodes elsewhere
+     * are left alone, and blocks the privacy mode hides are skipped. One
+     * undoable edit. Stops if the pane switches file while loading; a
+     * no-op in Markdown mode and on read-only pages.
+     *
+     * Called by [convertBlockToNodes] and [convertImportedBlocksUnderPage].
+     */
+    private fun convertBlocksUnderPage(stripImportFrame: Boolean) {
         val s0 = _stateFlow.value
         if (!s0.isLoaded || s0.isMarkdownMode || s0.isReadOnlyPage) return
         val doc = document ?: return
@@ -2135,7 +2140,10 @@ class PaneBackingViewModel(
             val zoom = zoomInfoOf(s)
             val start = zoom?.startRow ?: 0
             val end = zoom?.endRowInclusive ?: lines.lastIndex
-            recordEdit(FrameKind.OTHER) { textEditing.convertImportedBlocksIn(start, end) }
+            val hidden = hiddenRowsIn(s)
+            recordEdit(FrameKind.OTHER) {
+                textEditing.convertBlocksIn(start, end, stripImportFrame) { PrivacyLayout.isHidden(hidden, it) }
+            }
         }
     }
 

@@ -1360,11 +1360,9 @@ class AppShell(
             title = "Search this tree",
             run = { focusedPaneId()?.let { paneEditors[it]?.openSearch() } },
         )
-        // Only offered with the caret in a block: its lines become
-        // bullets in the block's parent (undoable).
-        if (focusedPaneViewModel()?.isBlockLine() == true) {
-            addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { it.convertBlockToNodes() }
-        }
+        // Every block in the page's whole tree (folders loaded all the
+        // way down) becomes bullets, one per line (undoable).
+        addStyleCmd("convert-block-to-nodes", "Convert block to nodes") { it.convertBlockToNodes() }
         // TEMPORARY: every block under the page (folders loaded all the
         // way down) becomes nodes, minus the imported notes' `---` /
         // `![[…]]` frame.

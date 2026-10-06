@@ -327,14 +327,25 @@ class BlockEditingTest {
     fun convert_block_to_nodes_makes_one_bullet_per_line_and_undoes() = runTest {
         val p = pane("- Trip\n> First line\n> goes on\n>\n> - item\n- B\n")
         val original = p.lines
-        p.caretAtEnd(2)
         p.convertBlockToNodes()
+        runCurrent()
         assertEquals(listOf("* Trip", "* First line", "* goes on", "* item", "* B"), p.lines)
-        assertEquals(1 to p.lines[1].length, p.caret)
+        assertEquals(0 to 2, p.caret)
         flush()
         assertEquals("- Trip\n- First line\n- goes on\n- item\n- B\n", read("_node.md"))
         p.undo()
         assertEquals(original, p.lines)
+    }
+
+    @Test
+    fun convert_block_to_nodes_converts_the_whole_tree_and_keeps_dashes() = runTest {
+        fs.writeFile("$root/Sub/_node.md", "- Leaf\n> ---\n> Deep\n")
+        val p = pane("- Sub [↳](<Sub/_node.md>)\n> Top\n> ---\n")
+        p.toggleCollapse(p.id(0))
+        runCurrent()
+        p.convertBlockToNodes()
+        runCurrent()
+        assertEquals(listOf("* Sub", "  * Leaf", "  * ---", "  * Deep", "* Top", "* ---"), p.lines)
     }
 
     @Test
@@ -369,8 +380,8 @@ class BlockEditingTest {
         assertEquals("- B\n", read("Packing/_node.md"))
         val blockId = p.id(1)
 
-        p.caretAtEnd(2)
         p.convertBlockToNodes()
+        runCurrent()
         assertEquals(listOf("* A", "* ## Packing", "  * list", "  * B"), p.lines)
         assertEquals(blockId, p.id(1))
         flush()
