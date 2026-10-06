@@ -284,6 +284,18 @@ class MainViewModel(
     fun chooseLunicleResolution(nodeRow: Int, choice: LunicleResolutionChoice, resolution: String?): LunicleRowRef? =
         paneBackingViewModel.chooseLunicleResolution(nodeRow, choice, resolution, kotlin.js.Date.now().toLong())
 
+    /** See `PaneBackingViewModel.canDragLunicleIssue`; the clock is the browser's. */
+    fun canDragLunicleIssue(nodeRow: Int, issueId: Long): Boolean =
+        paneBackingViewModel.canDragLunicleIssue(nodeRow, issueId, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.lunicleDropAt`; the clock is the browser's. */
+    fun lunicleDropAt(nodeRow: Int, issueId: Long, overKey: String, lowerHalf: Boolean): LunicleDrop? =
+        paneBackingViewModel.lunicleDropAt(nodeRow, issueId, overKey, lowerHalf, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.dropLunicleIssue`; the clock is the browser's. */
+    fun dropLunicleIssue(nodeRow: Int, drop: LunicleDrop): PaneBackingViewModel.LuniclePick =
+        paneBackingViewModel.dropLunicleIssue(nodeRow, drop, kotlin.js.Date.now().toLong())
+
     /** See `PaneBackingViewModel.beginLunicleDescription`; the clock is the browser's. */
     fun beginLunicleDescription(nodeRow: Int, ref: LunicleRowRef, line: Int, atEnd: Boolean, text: String? = null): LunicleDescriptionCaret? =
         paneBackingViewModel.beginLunicleDescription(nodeRow, ref, line, atEnd, kotlin.js.Date.now().toLong(), text)

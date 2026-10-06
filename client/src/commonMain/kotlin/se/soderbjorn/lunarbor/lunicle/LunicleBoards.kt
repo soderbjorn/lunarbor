@@ -44,6 +44,12 @@
  *    (`POST /issues/{id}/move`) or changes its priority or assignee
  *    (`PATCH /issues/{id}`) the same optimistic way
  *    ([LunicleBoardState.propertyEdits]).
+ *  - **Drags** ([dragIssue]): a dragged issue is moved to its new column
+ *    (`POST /issues/{id}/move`) and then put in its place within the
+ *    column, in its new priority (`PUT /issues/{id}/order`, `reorder_issue`)
+ *    — optimistic too ([LunicleBoardState.orderEdits]). A Lunicle without
+ *    the order route answers 404: the priority is then set with `PATCH`
+ *    and the indicator says reordering needs a newer Lunicle.
  *  - **Description and comments** (LBR-31): [setDescription]
  *    (`PATCH /issues/{id}` `{description}`) and [addComment]
  *    (`POST /issues/{id}/comments` `{body}`) are optimistic too
@@ -393,6 +399,74 @@ class LunicleBoards(
     }
 
     /**
+     * Drops issue [issueId] of board [key] at [edit]'s place (its column,
+     * priority and neighbour), optimistically: the board shows it there at
+     * once ([LunicleBoardState.orderEdits]) with "Saving to Lunicle…", then
+     * "Synced just now" and a re-read; on failure it goes back (a re-read
+     * follows, since the move may have landed before the reorder failed)
+     * and the error shows in red.
+     *
+     * Writes, in order:
+     *  - a new column: `POST /issues/{id}/move` `{status}` (plus
+     *    [LunicleOrderEdit.resolution] for a closing column — whose issues are
+     *    grouped by resolution in Lunicle, so nothing more is sent);
+     *  - otherwise `PUT /issues/{id}/order` with the neighbour and, when it
+     *    changed, the priority. A Lunicle without that route (404) gets the
+     *    priority by `PATCH` instead, and [REORDER_UNSUPPORTED_TEXT] shows.
+     *
+     * A board not resolved yet ignores it. Called by
+     * `PaneBackingViewModel.dropLunicleIssue` / `chooseLunicleDropResolution`.
+     *
+     * @param from The issue as the board showed it before the drop (its
+     *   status and priority decide which writes are needed).
+     */
+    fun dragIssue(key: LunicleBoardKey, from: LunicleBoardIssue, edit: LunicleOrderEdit) {
+        val target = stateOf(key).target ?: return
+        val issueId = from.id
+        val entry = edit.copy(seq = ++editSeq, issueId = issueId)
+        writing.getOrPut(key) { HashSet() } += issueId
+        put(key) { it.copy(orderEdits = it.orderEdits + entry, writes = it.writes + 1) }
+        scope.launch {
+            val client = service.client(target.connection.id)
+            var unsupported = false
+            var r: LunicleResult<String> = LunicleResult.Ok("")
+            if (entry.status != from.status) r = client.moveIssue(issueId, entry.status, entry.resolution)
+            if (r is LunicleResult.Ok && entry.resolution == null) {
+                val priority = entry.priority.takeIf { it != from.priority }
+                r = client.reorderIssue(issueId, entry.beforeId, entry.afterId, priority)
+                if ((r as? LunicleResult.Failure)?.error.let { it is LunicleError.Http && it.isNotFound }) {
+                    // A Lunicle before `reorder_issue`: keep what can be kept.
+                    unsupported = true
+                    r = if (priority != null) client.updateIssue(issueId, LunicleIssueChanges(priority = LunicleField.Set(priority)))
+                    else LunicleResult.Ok("")
+                }
+            }
+            writing[key]?.remove(issueId)
+            fun withoutEdit(s: LunicleBoardState) = s.orderEdits.filter { it.seq != entry.seq }
+            when (val result = r) {
+                is LunicleResult.Ok -> {
+                    ownChanges.getOrPut(key) { HashSet() } += issueId
+                    val t = now()
+                    put(key) { s ->
+                        s.copy(
+                            board = s.board?.let { b -> b.copy(issues = entry.applyTo(b.issues)) },
+                            orderEdits = withoutEdit(s),
+                            writes = (s.writes - 1).coerceAtLeast(0),
+                            savedAt = t,
+                        )
+                    }
+                    if (unsupported) showAlert(key, REORDER_UNSUPPORTED_TEXT)
+                    afterSave(key, t)
+                }
+                is LunicleResult.Failure -> {
+                    failed(key, target, result.error) { s -> s.copy(orderEdits = withoutEdit(s)) }
+                    refresh(key)
+                }
+            }
+        }
+    }
+
+    /**
      * Sets issue [issueId]'s description on board [key] to [text]
      * (`PATCH /issues/{id}` `{description}`, LBR-31), optimistically: the
      * board shows [text] at once and "Saving to Lunicle…"; on success
@@ -693,6 +767,9 @@ class LunicleBoards(
 
         /** The author shown on a comment being posted when the token owner's name is not known (LBR-31). */
         const val YOU: String = "You"
+
+        /** Shown when a drag's place could not be kept: the Lunicle has no `reorder_issue` route yet. */
+        const val REORDER_UNSUPPORTED_TEXT: String = "Moved, but this Lunicle can't reorder issues yet; update it to keep the order."
 
         /** How long a write's error, or why a board cannot be edited, shows in red (LBR-29). */
         const val ALERT_MS: Long = 8_000

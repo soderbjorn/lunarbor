@@ -3,7 +3,7 @@
  * -----------------------------
  * Typed calls to one connection's Lunicle REST API (LBR-26), over the
  * [LunicleApi] port: `me()`, `projects()`, `board(projectId)`,
- * `issue(issueId)`, `createIssue`, `updateIssue`, `moveIssue`,
+ * `issue(issueId)`, `createIssue`, `updateIssue`, `moveIssue`, `reorderIssue`,
  * `addComment`. Every call returns a [LunicleResult]; nothing throws.
  *
  * The requests themselves are built by [LunicleRequests], pure and tested
@@ -186,6 +186,20 @@ object LunicleRequests {
         return LunicleRequest(LunicleMethod.POST, "$PREFIX/issues/$issueId/move", body = JsonObject(body))
     }
 
+    /**
+     * `PUT /issues/{issue_id}/order` (`reorder_issue`): moves an issue within
+     * its column — directly above [before] or below [after] (at most one;
+     * neither puts it last in its group), after moving it into [priority]'s
+     * group of the same column when given. Only set fields are sent.
+     */
+    fun reorderIssue(issueId: Long, before: Long? = null, after: Long? = null, priority: String? = null): LunicleRequest {
+        val body = LinkedHashMap<String, JsonElement>()
+        before?.let { body["before_issue_id"] = JsonPrimitive(it) }
+        after?.let { body["after_issue_id"] = JsonPrimitive(it) }
+        priority?.let { body["priority"] = JsonPrimitive(it) }
+        return LunicleRequest(LunicleMethod.PUT, "$PREFIX/issues/$issueId/order", body = JsonObject(body))
+    }
+
     /** `POST /issues/{issue_id}/comments` (`add_comment`). */
     fun addComment(issueId: Long, body: String): LunicleRequest = LunicleRequest(
         LunicleMethod.POST,
@@ -237,6 +251,14 @@ class LunicleClient(private val api: LunicleApi, val connectionId: String) {
     /** Moves an issue to [status], with [resolution] when that column requires one. */
     suspend fun moveIssue(issueId: Long, status: String, resolution: String? = null): LunicleResult<String> =
         send(LunicleRequests.moveIssue(issueId, status, resolution), "answer", ::messageOf)
+
+    /**
+     * Moves an issue within its column, next to [before] / [after], into
+     * [priority]'s group first when given ([LunicleRequests.reorderIssue]).
+     * Lunicle before `reorder_issue` answers 404.
+     */
+    suspend fun reorderIssue(issueId: Long, before: Long? = null, after: Long? = null, priority: String? = null): LunicleResult<String> =
+        send(LunicleRequests.reorderIssue(issueId, before, after, priority), "answer", ::messageOf)
 
     /** Comments on an issue; the answer carries the comment's id. */
     suspend fun addComment(issueId: Long, body: String): LunicleResult<LunicleCreated> =

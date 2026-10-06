@@ -108,6 +108,7 @@ import se.soderbjorn.lunarbor.lunicle.LunicleBoardState
 import se.soderbjorn.lunarbor.lunicle.LunicleColumn
 import se.soderbjorn.lunarbor.lunicle.LunicleDraftAnchor
 import se.soderbjorn.lunarbor.lunicle.LunicleIssue
+import se.soderbjorn.lunarbor.lunicle.LunicleOrderEdit
 import se.soderbjorn.lunarbor.lunicle.LuniclePill
 import se.soderbjorn.lunarbor.lunicle.LunicleSyncKind
 import se.soderbjorn.lunarbor.lunicle.LunicleSyncLine
@@ -1538,8 +1539,9 @@ class PaneBackingViewModel(
         val columns = board.board?.let { read ->
             // Optimistic titles (LBR-29), and the issue being edited stays
             // even when a poll no longer lists it.
-            // and optimistic moves, priorities and assignees (LBR-30).
-            var issues = read.issues.map { board.shown(it) }
+            // and optimistic moves, priorities and assignees (LBR-30),
+            // and drags under way, in their new places.
+            var issues = board.ordered(read.issues.map { board.shown(it) })
             state.lunicleEditing?.takeIf { it.board == key && issues.none { i -> i.id == it.issue.id } }?.let { issues = issues + it.issue }
             val b = read.copy(issues = issues)
             val baseUrl = board.target?.connection?.baseUrl
@@ -1948,6 +1950,58 @@ class PaneBackingViewModel(
         placed.unfold?.let { toggleLunicleColumn(it) }
         patch { it.copy(lunicleFlash = LunicleFlash(view.key, placed.flash.key, now)) }
         return placed.caret
+    }
+
+    // ------------------------------------------------------------ board drags
+
+    /**
+     * Whether issue [issueId] on the board node at [nodeRow] can be dragged
+     * by its dot ([LunicleBoardDrag.canDrag]: editable, a write token).
+     * Called by the web view when a press on the dot starts moving.
+     */
+    fun canDragLunicleIssue(nodeRow: Int, issueId: Long, now: Long): Boolean {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return false
+        return LunicleBoardDrag.canDrag(view, issueId)
+    }
+
+    /**
+     * Where dragging issue [issueId] of the board node at [nodeRow] would
+     * drop it with the pointer over the board row [overKey], in its lower
+     * half when [lowerHalf] ([LunicleBoardDrag.dropAt]); `null` for no drop.
+     * Called by the web view on every pointer move of a drag.
+     */
+    fun lunicleDropAt(nodeRow: Int, issueId: Long, overKey: String, lowerHalf: Boolean, now: Long): LunicleDrop? {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return null
+        return LunicleBoardDrag.dropAt(view, issueId, overKey, lowerHalf)
+    }
+
+    /**
+     * Drops a dragged issue at [drop] on the board node at [nodeRow]: a
+     * column that requires a resolution answers with the popup to show first
+     * ([LuniclePick.NeedsResolution], nothing sent; its pick goes through
+     * [chooseLunicleResolution], a plain move); anything else is written at
+     * once ([LunicleBoards.dragIssue], optimistic) — the issue flashes in its
+     * new place and the caret follows it, a folded target column unfolding
+     * as for a property change ([LunicleBoardMenu.placeAfterChange]).
+     *
+     * Called by the web view's `LunicleBoardCursor` when a drag ends over a drop.
+     */
+    fun dropLunicleIssue(nodeRow: Int, drop: LunicleDrop, now: Long): LuniclePick {
+        val boards = registry.lunicleBoards ?: return LuniclePick.Done(null)
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return LuniclePick.Done(null)
+        val (board, issue) = shownIssueOf(view, drop.issueId) ?: return LuniclePick.Done(null)
+        if (!LunicleBoardDrag.canDrag(view, issue.id)) return LuniclePick.Done(null)
+        if (drop.needsResolution) {
+            return LuniclePick.NeedsResolution(LunicleResolutionChoice(view.key, issue.id, drop.status, board.resolutions))
+        }
+        boards.dragIssue(
+            view.key, issue,
+            LunicleOrderEdit(0, issue.id, drop.status, drop.priority, beforeId = drop.beforeId, afterId = drop.afterId),
+        )
+        val placed = LunicleBoardMenu.placeAfterChange(view, issue.id, drop.status.takeIf { it != issue.status })
+        placed.unfold?.let { toggleLunicleColumn(it) }
+        patch { it.copy(lunicleFlash = LunicleFlash(view.key, placed.flash.key, now)) }
+        return LuniclePick.Done(placed.caret)
     }
 
     /** Folds or unfolds a board column in this pane ([State.lunicleColumnFolds]). Called by the view's −/+ and dot. */

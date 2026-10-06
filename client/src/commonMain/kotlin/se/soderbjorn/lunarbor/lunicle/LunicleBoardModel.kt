@@ -7,7 +7,9 @@
  * (`LunicleBoardModelTest`):
  *
  *  - [LunicleBoardKey] / [LunicleBoardState]: one board node's reference
- *    and what is known about it (target, board, issue details, sync).
+ *    and what is known about it (target, board, issue details, sync), with
+ *    the optimistic edits of writes under way — drags ([LunicleOrderEdit])
+ *    among them.
  *  - [LunicleBoardLayout]: columns in board order with the ones that need
  *    a resolution last (folded by default), issues by priority (the
  *    board's own order within a priority), the pills, the sync indicator,
@@ -99,6 +101,9 @@ data class LunicleBoardKey(val connection: String?, val key: String) {
  *   as arrivals from Lunicle.
  * @property userName The token owner's name (`GET /me`), the author shown
  *   on a comment being posted; `null` when not known.
+ * @property orderEdits Drags whose writes are under way (optimistic): the
+ *   issue shown in its new column, priority and place ([ordered]) until
+ *   each write answers; dropped on failure, so it goes back.
  */
 data class LunicleBoardState(
     val key: LunicleBoardKey,
@@ -124,6 +129,7 @@ data class LunicleBoardState(
     val postingComments: List<LunicleCreatingComment> = emptyList(),
     val ownComments: Set<Long> = emptySet(),
     val userName: String? = null,
+    val orderEdits: List<LunicleOrderEdit> = emptyList(),
 ) {
     /**
      * Issue [issueId] in full as the board shows it (LBR-31), or `null`
@@ -155,6 +161,14 @@ data class LunicleBoardState(
         for (edit in propertyEdits) if (edit.issueId == issue.id) out = edit.applyTo(out)
         return out
     }
+
+    /**
+     * [issues] (the board's, in its order, already [shown]) with the drags
+     * under way applied ([orderEdits], oldest first): each dragged issue
+     * takes its new status and priority and moves next to its anchor.
+     */
+    fun ordered(issues: List<LunicleBoardIssue>): List<LunicleBoardIssue> =
+        orderEdits.fold(issues) { list, edit -> edit.applyTo(list) }
 
     /** `true` while a write of this board is under way. */
     val saving: Boolean get() = writes > 0
@@ -232,6 +246,56 @@ data class LunicleCreatingComment(
     val createdAt: Long,
     val createdId: Long? = null,
 )
+
+/**
+ * A drag of one issue whose write is under way: it goes to [status] and
+ * [priority], directly above [beforeId] or below [afterId] (neither: last
+ * in its group). Shown at once ([LunicleBoardState.ordered]).
+ *
+ * @property seq Its number, unique per [LunicleBoards] (shared with
+ *   [LunicleIssueEdit.seq]); its write removes exactly this entry.
+ * @property issueId The dragged issue.
+ * @property status The column it lands in.
+ * @property priority The priority group it lands in.
+ * @property resolution For a drop into a column that requires one, the
+ *   resolution sent with the move.
+ * @property beforeId The issue it lands directly above, or `null`.
+ * @property afterId The issue it lands directly below, or `null`.
+ */
+data class LunicleOrderEdit(
+    val seq: Long,
+    val issueId: Long,
+    val status: String,
+    val priority: String,
+    val resolution: String? = null,
+    val beforeId: Long? = null,
+    val afterId: Long? = null,
+) {
+    /**
+     * [issues] (a board's flat list, in its order) with this drag made: the
+     * issue takes the new status and priority (a move clears the resolution
+     * unless it sends one) and moves next to its anchor — a column groups its
+     * issues by priority with a stable sort, so landing beside an issue of
+     * the same status and priority is landing in that place. An anchor that
+     * is gone puts it last. Unchanged when the issue is not in [issues].
+     */
+    fun applyTo(issues: List<LunicleBoardIssue>): List<LunicleBoardIssue> {
+        val moved = issues.firstOrNull { it.id == issueId } ?: return issues
+        val landed = moved.copy(
+            status = status,
+            priority = priority,
+            resolution = if (status == moved.status) moved.resolution else resolution,
+        )
+        val rest = issues.filter { it.id != issueId }.toMutableList()
+        val at = when {
+            beforeId != null -> rest.indexOfFirst { it.id == beforeId }
+            afterId != null -> rest.indexOfFirst { it.id == afterId }.let { if (it < 0) -1 else it + 1 }
+            else -> -1
+        }
+        rest.add(if (at < 0) rest.size else at, landed)
+        return rest
+    }
+}
 
 /**
  * One status, priority or assignee change of an issue whose write is under

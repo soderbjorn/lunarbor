@@ -103,6 +103,12 @@ class LunicleClientTest {
         )
         assertEquals(json("""{ "status": "New" }"""), LunicleRequests.moveIssue(774, "New").body)
         assertEquals(
+            LunicleRequest(LunicleMethod.PUT, "/api/v1/issues/774/order", body = json("""{ "before_issue_id": 12, "priority": "High" }""")),
+            LunicleRequests.reorderIssue(774, before = 12, priority = "High"),
+        )
+        assertEquals(json("""{ "after_issue_id": 9 }"""), LunicleRequests.reorderIssue(774, after = 9).body)
+        assertEquals(json("""{}"""), LunicleRequests.reorderIssue(774).body)
+        assertEquals(
             LunicleRequest(LunicleMethod.POST, "/api/v1/issues/774/comments", body = json("""{ "body": "Looks good" }""")),
             LunicleRequests.addComment(774, "Looks good"),
         )

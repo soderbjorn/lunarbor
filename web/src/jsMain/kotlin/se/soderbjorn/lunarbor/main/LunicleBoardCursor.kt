@@ -246,6 +246,32 @@ internal class LunicleBoardCursor(
         renderMenu(editor)
     }
 
+    /**
+     * A board issue dragged by its dot and dropped at [drop]
+     * ([LUNICLE_DROP_EVENT]): the cursor goes onto the issue ([press]) and
+     * the drop is written (`MainViewModel.dropLunicleIssue`) — the caret
+     * following the issue to its new place — or, for a column that
+     * requires a resolution, the resolution popup opens first, as for a
+     * `#status` pick.
+     *
+     * @param nodeRow The board node's document row.
+     */
+    fun drop(editor: HTMLElement, nodeRow: Int, drop: LunicleDrop) {
+        closeMenus()
+        val key = LunicleRowRef(LunicleRowKind.ISSUE, "", drop.issueId).key
+        press(editor, nodeRow, key)
+        val nodeId = spot?.takeIf { it.ref.key == key }?.nodeId
+        when (val result = viewModel.dropLunicleIssue(nodeRow, drop)) {
+            is PaneBackingViewModel.LuniclePick.NeedsResolution -> {
+                if (nodeId == null) return
+                resolution = result.choice
+                menuNodeRow = nodeRow
+                renderMenu(editor)
+            }
+            is PaneBackingViewModel.LuniclePick.Done -> if (nodeId != null) followChange(editor, nodeId, result.caret)
+        }
+    }
+
     /** Remembers the field's selection before a repaint detaches it. Called by `MainScreen.reconcile`. */
     fun saveField() {
         val f = field ?: return

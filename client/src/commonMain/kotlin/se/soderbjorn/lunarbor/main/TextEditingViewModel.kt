@@ -647,6 +647,11 @@ internal class TextEditingViewModel(
                     return
                 }
                 if (isAtBulletMarkerEnd(line, s.cursorCol)) {
+                    // An empty leaf bullet right above: it goes, and this row moves up
+                    // into its place with the caret still at its start — whether or not
+                    // this bullet has children, and keeping this row's id (fold state,
+                    // backing folder), which a merge into the row above would drop.
+                    if (deleteEmptyBulletAbove(s)) return
                     // Caret at the first text position of a bullet. Deleting here would
                     // orphan any subtree this bullet anchors, so refuse on non-leaf
                     // bullets — the user must remove (or merge away) the children first
@@ -756,6 +761,33 @@ internal class TextEditingViewModel(
             return
         }
         if (range.all { BlockLayout.isEmptyContent(s.lines[it]) }) deleteBlockAt(row)
+    }
+
+    /**
+     * Backspace at the text start of bullet `s.cursorRow` when the row right
+     * above it (array-adjacent and visible) is an empty leaf bullet: deletes
+     * that row ([Document.deleteLine], so the caret's row keeps its id) and
+     * leaves the caret at the same column of its row, now one up.
+     *
+     * Not taken when the row above has children (the caret's row nested
+     * under it), is folder-backed or a mirror ([Document.isPromotedRef]), or
+     * must not be deleted under the privacy mode ([isProtectedRow]).
+     * Called only from [backspace].
+     *
+     * @return `true` when it deleted the row above.
+     */
+    private fun deleteEmptyBulletAbove(s: PaneBackingViewModel.State): Boolean {
+        val row = s.cursorRow
+        val above = row - 1
+        if (above < 0 || prevVisibleRow(s, row) != above) return false
+        val line = s.lines[above]
+        if (!DocumentLayout.isEmptyBulletLine(line)) return false
+        if (DocumentLayout.hasChildren(s.lines, above, DocumentLayout.bulletAsteriskColumn(line))) return false
+        val id = s.documentState?.lineIds?.getOrNull(above) ?: return false
+        if (document.isPromotedRef(id) || isProtectedRow(s, above)) return false
+        document.deleteLine(above)
+        patch { it.copy(cursorRow = above, anchorRow = null, anchorCol = null) }
+        return true
     }
 
     /**

@@ -150,6 +150,36 @@ class BulletsOnlyEditingTest {
     }
 
     @Test
+    fun backspace_below_an_empty_bullet_deletes_that_bullet_even_with_children() = runTest {
+        val p = pane("- A\n-\n- General\n  * Child\n")
+        val idGeneral = p.id(2)
+        p.caretAtTextStart(2)
+        p.backspace()
+        assertEquals(listOf("* A", "* General", "  * Child"), p.lines)
+        assertEquals(idGeneral, p.id(1), "The bullet keeps its identity")
+        assertEquals(1 to 2, p.caret)
+    }
+
+    @Test
+    fun backspace_below_an_empty_bullet_keeps_a_leafs_identity_and_indent() = runTest {
+        val p = pane("- A\n  * \n- B\n")
+        val idB = p.id(2)
+        p.caretAtTextStart(2)
+        p.backspace()
+        assertEquals(listOf("* A", "* B"), p.lines)
+        assertEquals(idB, p.id(1))
+        assertEquals(1 to 2, p.caret)
+    }
+
+    @Test
+    fun backspace_never_deletes_an_empty_bullet_that_is_the_rows_parent() = runTest {
+        val p = pane("-\n  * General\n    * Grand\n")
+        p.caretAtTextStart(1)
+        p.backspace()
+        assertEquals(listOf("* ", "  * General", "    * Grand"), p.lines)
+    }
+
+    @Test
     fun backspace_on_an_empty_bullet_below_a_folded_subtree_deletes_it() = runTest {
         val p = pane("- A\n  * child\n-\n")
         p.toggleCollapse(p.id(0))

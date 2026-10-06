@@ -866,6 +866,12 @@ class MainScreen(
             searchNodeHitCursor.clear(editor)
             lunicleBoardCursor.pressPill(editor, (detail.row as Number).toInt(), detail.key as String, detail.field as String)
         })
+        // A board issue dragged by its dot and dropped (LunicleBoardDragGesture).
+        editor.addEventListener(LUNICLE_DROP_EVENT, { event ->
+            val detail = event.asDynamic().detail ?: return@addEventListener
+            searchNodeHitCursor.clear(editor)
+            lunicleBoardCursor.drop(editor, (detail.row as Number).toInt(), detail.drop.unsafeCast<LunicleDrop>())
+        })
         editor.addEventListener("keydown", { event ->
             handleKey(editor, event as KeyboardEvent)
         })

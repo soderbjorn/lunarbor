@@ -43,6 +43,11 @@
  * moved ([PaneBackingViewModel.LunicleBoardView.flashKey]) gets
  * `is-flash`, a warm background fading over `LunicleBoardMenu.FLASH_MS`.
  *
+ * Drags: an editable issue's dot drags the issue (folding only on a
+ * click), `LunicleBoardDragGesture`; its marks are put back on every new
+ * box. The CSS for them (`is-dragging`, `is-drop-before` / `-after` /
+ * `-into`) is here.
+ *
  * Colours are the theme's `--t-*` variables; pills use the accent, not the
  * tags' `tagHue` palette (they are not tags). The CSS is installed by
  * [ensureLunicleBoardStyles], called from `ensureStyles`.
@@ -222,7 +227,13 @@ internal fun buildLunicleBoard(
             }
             val issueRef = LunicleRowRef(LunicleRowKind.ISSUE, status, issue.issue.id)
             val issueRow = boardRow(1, style, isPage, "lunarbor-lunicle-issue", issueRef)
-            appendFoldControls(issueRow, 1, style, folded = !issue.unfolded) { viewModel.toggleLunicleIssue(issue) }
+            // The dot folds on a click and drags the issue when moved (LunicleBoardDragGesture).
+            appendFoldControls(
+                issueRow, 1, style, folded = !issue.unfolded,
+                onPress = if (!issue.editable) null else { ev ->
+                    LunicleBoardDragGesture.press(ev, viewModel, nodeRow, issue.issue.id) { viewModel.toggleLunicleIssue(issue) }
+                },
+            ) { viewModel.toggleLunicleIssue(issue) }
             val line = document.createElement("span") as HTMLElement
             line.className = "lunarbor-lunicle-issue-line"
             val titleText = issue.issue.title.ifBlank { issue.issue.key }
@@ -259,6 +270,7 @@ internal fun buildLunicleBoard(
             box.appendChild(row)
         }
     }
+    LunicleBoardDragGesture.decorate(box, viewModel, nodeRow)
     view.flashKey?.let { flash ->
         // The row a property change moved (LBR-30) flashes; a repaint
         // resumes the fade where it was rather than starting it again.
@@ -524,6 +536,8 @@ private fun boardRow(depth: Int, style: EditorStyle, isPage: Boolean, className:
         setProperty("line-height", "${style.lineHeightPx}px")
         paddingLeft = "calc(${depth * style.indentStepPx}px + $BLOCK_DOT_SLOT)"
         setProperty("text-indent", "-$BLOCK_DOT_SLOT")
+        // Where a drag's drop line starts (LunicleBoardDragGesture): at the row's dot.
+        setProperty("--lunarbor-drop-left", "${depth * style.indentStepPx}px")
     }
     if (isPage) appendIndentGuides(row, depth, "0px", style)
     else appendIndentGuides(row, depth + 1, "-${style.indentStepPx}px", style)
@@ -532,9 +546,18 @@ private fun boardRow(depth: Int, style: EditorStyle, isPage: Boolean, className:
 
 /**
  * A foldable row's dot (a ring round it while [folded]) and its hover
- * −/+ control; pressing either runs [onToggle].
+ * −/+ control; pressing either runs [onToggle] — or, for the dot, [onPress]
+ * when given (an issue's dot, which may start a drag and folds only on a
+ * click; left button only, others do nothing).
  */
-private fun appendFoldControls(row: HTMLElement, depth: Int, style: EditorStyle, folded: Boolean, onToggle: () -> Unit) {
+private fun appendFoldControls(
+    row: HTMLElement,
+    depth: Int,
+    style: EditorStyle,
+    folded: Boolean,
+    onPress: ((MouseEvent) -> Unit)? = null,
+    onToggle: () -> Unit,
+) {
     if (folded) row.classList.add("lunarbor-row-folded")
     val chevron = buildChevron(folded, animate = false, onToggle = onToggle)
     chevron.style.left = "${depth * style.indentStepPx - 22}px"
@@ -543,9 +566,13 @@ private fun appendFoldControls(row: HTMLElement, depth: Int, style: EditorStyle,
     val prefix = dotPrefix()
     prefix.title = if (folded) "Expand" else "Collapse"
     prefix.addEventListener("mousedown", { ev ->
-        (ev as MouseEvent).preventDefault()
+        val me = ev as MouseEvent
+        me.preventDefault()
         ev.stopPropagation()
-        onToggle()
+        when {
+            onPress == null -> onToggle()
+            me.button.toInt() == 0 -> onPress(me)
+        }
     })
     row.appendChild(prefix)
 }
@@ -932,6 +959,36 @@ internal fun lunicleBoardCss(): String = """
         }
         .lunarbor-lunicle-creating .lunarbor-lunicle-issue-title {
             opacity: 0.75;
+        }
+        /* Drags (LunicleBoardDragGesture): an issue's dot grabs; the dragged
+           row dims, the drop shows as an accent line along the row's top or
+           bottom, or a ring round a column's name. */
+        .lunarbor-lunicle-issue:not(.lunarbor-lunicle-draft):not(.lunarbor-lunicle-creating):not(.lunarbor-lunicle-placeholder) > .lunarbor-bullet-prefix {
+            cursor: grab;
+        }
+        .lunarbor-lunicle-row.is-dragging {
+            opacity: 0.45;
+        }
+        .lunarbor-lunicle-row.is-drop-before,
+        .lunarbor-lunicle-row.is-drop-after {
+            box-shadow: none;
+        }
+        .lunarbor-lunicle-row.is-drop-before::after,
+        .lunarbor-lunicle-row.is-drop-after::after {
+            content: "";
+            position: absolute;
+            left: var(--lunarbor-drop-left, 0px);
+            right: 0;
+            height: 2px;
+            border-radius: 1px;
+            background: var(--t-accent, #5ab0ff);
+            pointer-events: none;
+        }
+        .lunarbor-lunicle-row.is-drop-before::after { top: -1px; }
+        .lunarbor-lunicle-row.is-drop-after::after { bottom: -1px; }
+        .lunarbor-lunicle-row.is-drop-into {
+            border-radius: 6px;
+            box-shadow: inset 0 0 0 2px var(--t-accent, #5ab0ff);
         }
         /* Properties (LBR-30): pills open their field's menu; a changed
            issue (or the folded closing column it went into) flashes a warm
