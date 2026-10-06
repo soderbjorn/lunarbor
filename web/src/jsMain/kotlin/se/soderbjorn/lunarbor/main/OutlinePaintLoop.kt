@@ -1655,6 +1655,14 @@ fun ensureStyles() {
             display: inline;
             cursor: grab;
         }
+        /* While a selection drag is held (LBR-32, MainScreen's
+           beginTextSelectionDrag), the rows' non-editable islands — bullet
+           dots, fold controls, badges — let the pointer through, so the
+           browser keeps finding a text position under it and the selection
+           follows the mouse over the bullets. */
+        body.lunarbor-text-selecting .lunarbor-editor [contenteditable="false"] {
+            pointer-events: none;
+        }
         /* Blocks (TRF-5): each row draws the side borders; the first and
            last rows add the top and bottom edges, so the rows together
            read as one rectangle that grows with its content. */

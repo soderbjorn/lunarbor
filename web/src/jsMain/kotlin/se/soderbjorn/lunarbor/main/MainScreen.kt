@@ -782,6 +782,7 @@ class MainScreen(
             if (handleImageResizeMouseDown(me)) return@addEventListener
             if (handleImageMouseDown(me)) return@addEventListener
             maybeBeginGutterDrag(editor, me)
+            if (dragSession == null && !me.defaultPrevented) beginTextSelectionDrag(me)
         })
         // Right-click opens in a new window: a vault link (or a resolved
         // wiki link) its target, a bullet's dot its item. Anywhere else the
@@ -1085,6 +1086,12 @@ class MainScreen(
                 }
             }
         }
+        if ((event.key == "ArrowLeft" || event.key == "ArrowRight") && isWordMoveChord(event)) {
+            if (handleWordMoveAtLineEdge(editor, forward = event.key == "ArrowRight", extend = event.shiftKey)) {
+                event.preventDefault()
+                return
+            }
+        }
         if (event.key == "ArrowDown" && !event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) {
             // Plain ArrowDown on the last row of a block that nothing
             // follows: the browser has nowhere to go, so leave the block
@@ -1172,6 +1179,56 @@ class MainScreen(
             }
             return
         }
+    }
+
+    /**
+     * Whether [event] is the platform's word-move chord with ← / →:
+     * Option on the Mac, Ctrl elsewhere (Shift may be added to extend).
+     */
+    private fun isWordMoveChord(event: KeyboardEvent): Boolean =
+        if (isMacPlatform) event.altKey && !event.ctrlKey && !event.metaKey
+        else event.ctrlKey && !event.altKey && !event.metaKey
+
+    /**
+     * Word moves (Option-← / Option-→ on the Mac) at a row's edges
+     * (LBR-33). Inside the text the browser's own word move is right, but
+     * across a row boundary it trips over the next row's
+     * `contenteditable="false"` bullet: Option-→ at the end of a row
+     * landed at the end of the next row's first word, Option-← at the
+     * start of a row put the caret before the bullet. Here:
+     * - at the visible text's end (start), the caret goes to the next
+     *   (previous) visible row's text start (end), like plain → / ←;
+     * - with only spaces between the caret and that edge, it goes to the
+     *   edge first, so the next press wraps.
+     *
+     * Leaves a non-extending press with a selection to the browser.
+     * Called by [handleKey].
+     *
+     * @param forward `true` for →, `false` for ←.
+     * @param extend Shift held: extend the selection instead of moving.
+     * @return `true` when the press was handled (the caller prevents the default).
+     */
+    private fun handleWordMoveAtLineEdge(editor: HTMLElement, forward: Boolean, extend: Boolean): Boolean {
+        if (!syncSelectionFromDom(editor)) return false
+        val backing = viewModel.stateFlow.value.backingState ?: return false
+        if (!extend && PaneBackingViewModel.selectionOf(backing) != null) return false
+        val line = backing.lines.getOrNull(backing.cursorRow) ?: return false
+        val col = backing.cursorCol
+        if (forward) {
+            when {
+                DocumentLayout.isAtVisibleTextEnd(line, col) -> viewModel.moveRight(extend)
+                col < line.length && line.substring(col).isBlank() -> viewModel.moveLineEnd(extend)
+                else -> return false
+            }
+        } else {
+            val start = DocumentLayout.caretStartCol(line)
+            when {
+                DocumentLayout.isAtVisibleTextStart(line, col) -> viewModel.moveLeft(extend)
+                col > start && line.substring(start, col).isBlank() -> viewModel.moveLineStart(extend)
+                else -> return false
+            }
+        }
+        return true
     }
 
     /** Cmd-C: write the model's selected text to the clipboard. */
@@ -2627,6 +2684,34 @@ class MainScreen(
      * This is the only zone where a press should be unambiguously
      * interpreted as "grab this whole block" rather than "place caret".
      */
+    /**
+     * Marks a plain press in the editor's text as a selection drag (LBR-32)
+     * until the button is released: `<body>` carries
+     * [TEXT_SELECTING_CLASS], under which the rows' non-editable islands
+     * (bullet dots, fold controls, badges — every `contenteditable="false"`)
+     * let the pointer through. Without it, dragging a selection up and
+     * left over a bullet stops extending it, since the browser finds no
+     * text position under the pointer there.
+     *
+     * Called by the editor's `mousedown` listener, after the link, image
+     * and gutter-drag handlers have declined the press (bullet-dot presses
+     * never get here: they stop propagation).
+     */
+    private fun beginTextSelectionDrag(ev: MouseEvent) {
+        if (ev.button.toInt() != 0) return
+        val body = document.body ?: return
+        body.classList.add(TEXT_SELECTING_CLASS)
+        var end: ((Event) -> Unit)? = null
+        end = { _ ->
+            body.classList.remove(TEXT_SELECTING_CLASS)
+            window.removeEventListener("mouseup", end!!, /* capture = */ true)
+            window.removeEventListener("blur", end!!)
+        }
+        window.addEventListener("mouseup", end, /* capture = */ true)
+        // A release outside the window may never reach us; losing focus ends it too.
+        window.addEventListener("blur", end)
+    }
+
     private fun maybeBeginGutterDrag(editor: HTMLElement, ev: MouseEvent) {
         val backing = viewModel.currentBackingState
         if (backing.isMarkdownMode) return
@@ -2883,6 +2968,13 @@ private const val DRAG_LEVEL_STEP_PX: Double = 24.0
 
 /** Class on `<body>` while a row drag is armed: a grabbing cursor everywhere. */
 private const val DRAGGING_CLASS: String = "lunarbor-dragging"
+
+/**
+ * Class on `<body>` while a press in the editor's text is held (a
+ * selection drag, LBR-32): non-editable row islands let the pointer
+ * through (`OutlinePaintLoop`'s styles).
+ */
+internal const val TEXT_SELECTING_CLASS: String = "lunarbor-text-selecting"
 
 /** Distance from the page's top / bottom edge at which a drag starts scrolling it. */
 private const val DRAG_SCROLL_EDGE_PX: Double = 40.0
