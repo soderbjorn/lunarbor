@@ -1303,6 +1303,15 @@ class AppShell(
         )
         // Daily notes (LBR-19): today's journal item, prepared if missing.
         out += CommandPalette.Command(id = "today", title = "Today", run = { goToToday() })
+        // 3D mode (space/SpaceMode.kt), like the planet and ⌃⌘3; offered
+        // only while App settings → Experimental has it enabled.
+        if (isSpaceModeEnabled) {
+            out += CommandPalette.Command(
+                id = "toggle-3d-mode",
+                title = if (spaceMode.isActive) "Leave 3D mode" else "Enter 3D mode",
+                run = { spaceMode.toggle() },
+            )
+        }
         // LBR-20: offered only on a journal day (or inside one); palette
         // only, no hotkeys (decided in the ticket).
         if (focusedPaneViewModel()?.let { it.journalDayOf(it.currentBackingState) } != null) {
