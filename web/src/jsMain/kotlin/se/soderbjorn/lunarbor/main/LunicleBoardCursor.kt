@@ -333,6 +333,9 @@ internal class LunicleBoardCursor(
             dropField(refocus = true)
         }
         if (row?.editable == true && ref.kind in FIELD_KINDS) {
+            // The caret is the field's own (its painted text, with the drawn
+            // caret, is hidden while the field is there); no tint.
+            rowEl.classList.add(CARET_CLASS)
             mountField(board, ref, rowEl)
         } else if (row?.editable == true) {
             rowEl.classList.add(CARET_CLASS)

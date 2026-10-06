@@ -1018,9 +1018,11 @@ class AppShell(
             val mainScreen = paneEditors[paneId] ?: return@lambda
             // Enter / Escape act on a highlighted search-node result, which
             // a search node's read-only page has with the focus on <body>;
-            // Escape leaves a board node's rows (LBR-28) the same way.
+            // Escape leaves a board node's rows (LBR-28) the same way, and
+            // Enter on a column name or a title adds a draft (LBR-29); a
+            // typed key on a title that cannot be edited says why.
             val onHit = (mainScreen.isOnSearchNodeHit && (ke.key == "Enter" || ke.key == "Escape")) ||
-                (mainScreen.isOnLunicleBoardRow && ke.key == "Escape")
+                (mainScreen.isOnLunicleBoardRow && (ke.key == "Escape" || ke.key == "Enter" || ke.key.length == 1))
             if (!onHit && !shouldDelegateToEditor(ke)) return@lambda
             // The editor's handler may preventDefault; mirror that here
             // so the browser doesn't run its own behaviour for chords
