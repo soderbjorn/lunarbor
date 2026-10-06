@@ -525,4 +525,16 @@ class InlineMarkdownTokenizerTest {
         assertNull(InlineMarkdownTokenizer.entityStartBefore("Salt &amp; Co", 9))
         assertNull(InlineMarkdownTokenizer.entityStartBefore("a & b;", 6))
     }
+
+    @Test
+    fun backslash_escapes_show_the_character_only_when_asked() {
+        val on = InlineMarkdownTokenizer.tokenize("\\* Ta *bild* \\*inte\\* \\#tag a\\b", escapes = true)
+        assertEquals("* Ta bild *inte* #tag a\\b", on.displayText)
+        // Nothing escaped opens a style or a tag; the real pair still does.
+        assertEquals(setOf(InlineStyle.ITALIC), on.runs.flatMap { it.styles }.toSet())
+        assertTrue(on.runs.none { it.isTag })
+        assertTrue(0 in on.markerCols)
+        // Off (outline bullets), a backslash is text.
+        assertEquals("\\* Ta \\#tag", InlineMarkdownTokenizer.tokenize("\\* Ta \\#tag").displayText)
+    }
 }

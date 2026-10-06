@@ -12,7 +12,9 @@
  *    masked to Lunicle's own display prefix, since the renderer never gets
  *    the token back; Replace… types a new one, with Show to reveal what is
  *    typed — a **Test** button (`GET /api/v1/me`: whose token it is and its
- *    scope, or the error), and Delete…, confirmed inside the card.
+ *    scope, or the error; shown only once a token is saved and not while a
+ *    new one is typed, and run by itself right after a token is saved),
+ *    and Delete…, confirmed inside the card.
  *  - "Add connection" adds a card with a free name and Lunicle's public
  *    address, ready to edit.
  *  - A hint says where tokens are made (Lunicle → Settings → You → API
@@ -182,6 +184,8 @@ internal fun openLunicleDialog(scope: CoroutineScope, service: LunicleService, o
  * @property errors Card id → why its last change was refused.
  * @property tests Card id → the last Test's outcome line (text, is-error).
  * @property replacing Ids of the cards whose token field is open.
+ * @property testAfterSave Ids of the cards whose token was just saved: they
+ *   run Test by themselves once the saved token shows.
  * @property addError Why Add connection was refused, if it was.
  */
 private class DialogState {
@@ -189,6 +193,7 @@ private class DialogState {
     val errors = HashMap<String, String>()
     val tests = HashMap<String, Pair<String, Boolean>>()
     val replacing = HashSet<String>()
+    val testAfterSave = HashSet<String>()
     var addError: String? = null
 }
 
@@ -274,8 +279,8 @@ private fun connectionCard(
                 state.tests.remove(c.id)
                 change(c.id) {
                     val snapshot = service.updateConnection(c.id, token = v)
-                    // Refused: keep the field open to try again.
-                    if (snapshot.error != null) state.replacing.add(c.id)
+                    // Refused: keep the field open to try again; saved: test it.
+                    if (snapshot.error != null) state.replacing.add(c.id) else state.testAfterSave.add(c.id)
                     snapshot
                 }
             }
@@ -296,32 +301,36 @@ private fun connectionCard(
     }
     card.appendChild(tokenRow)
 
-    // Test.
-    val testRow = el("div", "lunarbor-mcp-row")
-    testRow.appendChild(el("span", "lunarbor-mcp-label", ""))
-    val testButton = button("Test") {
-        state.tests[c.id] = "Testing…" to false
-        rerender()
-        scope.launch {
-            state.tests[c.id] = when (val r = service.testConnection(c.id)) {
-                is LunicleResult.Ok -> {
-                    val me = r.value
-                    val scopeText = if (me.isReadOnly) "read-only" else "read-write"
-                    val tokenName = me.tokenName.takeIf { it.isNotBlank() }?.let { " “$it”" }.orEmpty()
-                    "Works: $scopeText token$tokenName of ${me.userName}." to false
-                }
-                is LunicleResult.Failure -> r.error.message to true
-            }
+    // Test: only with a saved token, and not while a new one is being
+    // typed (it would test the old one). Saving a token tests it at once.
+    if (c.hasToken && c.id !in state.replacing) {
+        val testRow = el("div", "lunarbor-mcp-row")
+        testRow.appendChild(el("span", "lunarbor-mcp-label", ""))
+        val runTest = {
+            state.tests[c.id] = "Testing…" to false
             rerender()
+            scope.launch {
+                state.tests[c.id] = when (val r = service.testConnection(c.id)) {
+                    is LunicleResult.Ok -> {
+                        val me = r.value
+                        val scopeText = if (me.isReadOnly) "read-only" else "read-write"
+                        val tokenName = me.tokenName.takeIf { it.isNotBlank() }?.let { " “$it”" }.orEmpty()
+                        "Works: $scopeText token$tokenName of ${me.userName}." to false
+                    }
+                    is LunicleResult.Failure -> r.error.message to true
+                }
+                rerender()
+            }
         }
+        val testButton = button("Test") { runTest() }
+        testButton.title = "Ask Lunicle whose token this is"
+        testRow.appendChild(testButton)
+        state.tests[c.id]?.let { (text, isError) ->
+            testRow.appendChild(el("span", "lunarbor-lunicle-test" + if (isError) " is-error" else "", text))
+        }
+        card.appendChild(testRow)
+        if (state.testAfterSave.remove(c.id)) kotlinx.browser.window.setTimeout({ runTest() }, 0)
     }
-    testButton.disabled = !c.hasToken
-    testButton.title = if (c.hasToken) "Ask Lunicle whose token this is" else "Add a token first"
-    testRow.appendChild(testButton)
-    state.tests[c.id]?.let { (text, isError) ->
-        testRow.appendChild(el("span", "lunarbor-lunicle-test" + if (isError) " is-error" else "", text))
-    }
-    card.appendChild(testRow)
 
     card.appendChild(el("p", "lunarbor-mcp-help", "In a bullet: {{lunicle: ${c.name}/KEY}}, where KEY is the project's issue prefix."))
     return card

@@ -238,9 +238,17 @@ object InlineMarkdownTokenizer {
      * Tokenize [text]. Returns a [TokenizedLine] suitable for both
      * rendering and cursor-mapping. The input is treated as a single
      * line; `\n` is not handled specially.
+     *
+     * @param escapes Honour CommonMark backslash escapes: a `\` before
+     *   ASCII punctuation (`\*`, `\_`, `\#`, …) is hidden (a marker
+     *   column) and the character after it is plain text that opens or
+     *   closes nothing. Off by default, since outline bullets hold their
+     *   text unescaped (`SubtreeCodec`), so a backslash there is a real
+     *   character; on for verbatim Markdown that is only drawn, such as a
+     *   Lunicle issue's description and comments (`LunicleBoardView`).
      */
-    fun tokenize(text: String): TokenizedLine {
-        val parser = Parser(text)
+    fun tokenize(text: String, escapes: Boolean = false): TokenizedLine {
+        val parser = Parser(text, escapes)
         parser.parse()
         return TokenizedLine(
             runs = parser.runs,
@@ -363,7 +371,7 @@ internal fun parseLinkSyntaxAtTopLevel(text: String, bracketPos: Int): TopLevelL
     )
 }
 
-private class Parser(val text: String) {
+private class Parser(val text: String, val escapes: Boolean = false) {
     val runs = mutableListOf<StyledRun>()
     val displayBuilder = StringBuilder()
     val domToModel = ArrayList<Int>(text.length + 1)
@@ -425,6 +433,17 @@ private class Parser(val text: String) {
             //     the character it stands for; the rest of its source
             //     folds into markerCols. Not inside inline code (above).
             if (text[pos] == '&' && tryConsumeEntity()) continue
+
+            // 0e. A backslash escape (only with [escapes]): the `\` is
+            //     hidden, the punctuation after it is a plain character.
+            if (escapes && isEscapeAt(pos)) {
+                flushRun()
+                markMarker(pos, 1)
+                pos++
+                runStart = pos
+                appendLiteralChar()
+                continue
+            }
 
             // 1. Try to open a new style first — opening takes precedence over
             //    closing so that e.g. `*it **bo** it*` opens BOLD inside ITALIC
@@ -848,10 +867,19 @@ private class Parser(val text: String) {
      * For italic (`*`) we skip over `**` so a bold pair isn't mistaken for
      * an italic close. For inline code, any later backtick will do.
      */
+    /** `true` when [i] holds a `\` that escapes the ASCII punctuation after it. */
+    private fun isEscapeAt(i: Int): Boolean =
+        text[i] == '\\' && i + 1 < text.length && text[i + 1] in ESCAPABLE
+
     private fun hasMatchingCloser(from: Int, style: InlineStyle): Boolean {
         val closer = style.closeMarker
         var i = from
         while (i <= text.length - closer.length) {
+            // An escaped character never closes anything.
+            if (escapes && style != InlineStyle.INLINE_CODE && isEscapeAt(i)) {
+                i += 2
+                continue
+            }
             if (style == InlineStyle.ITALIC) {
                 if (text[i] == '*' && i + 1 < text.length && text[i + 1] == '*') {
                     i += 2
@@ -864,3 +892,6 @@ private class Parser(val text: String) {
         return false
     }
 }
+
+/** ASCII punctuation a backslash can escape (CommonMark). */
+private const val ESCAPABLE: String = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"

@@ -616,7 +616,8 @@ private fun renderMarkdownLine(line: HTMLElement, raw: String, inCode: Boolean, 
  * in the browser.
  */
 private fun appendInlineRuns(el: HTMLElement, text: String, viewModel: MainViewModel) {
-    for (run in InlineMarkdownTokenizer.tokenize(text).runs) {
+    // Lunicle text is verbatim Markdown: `\*` shows as `*`, as in Lunicle.
+    for (run in InlineMarkdownTokenizer.tokenize(text, escapes = true).runs) {
         val href = run.linkHref
         val runEl = span(
             inlineRunCssClasses(run.styles, isLink = href != null, isTag = run.isTag).joinToString(" "),

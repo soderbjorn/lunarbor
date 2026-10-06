@@ -37,6 +37,8 @@ import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.InlineStyle
 import se.soderbjorn.lunarbor.data.LineStyle
 import se.soderbjorn.lunarbor.data.LunarborLink
+import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
@@ -2927,6 +2929,20 @@ class MainScreen(
      * left over a bullet stops extending it, since the browser finds no
      * text position under the pointer there.
      *
+     * A plain single press (no Shift, no double / triple click — those
+     * stay the browser's) is then driven by the editor once it moves past
+     * [SELECTION_DRAG_SLOP_PX]. Its anchor is [selectionPointAt] at the
+     * press point (else where the browser put the caret); from there every
+     * `mousemove` is cancelled (so the browser does not extend the
+     * selection itself) and the focus is set to
+     * [selectionPointAt] — the row under the pointer by height, so a
+     * search node's result list, a Lunicle board or the gap between rows
+     * never stalls the drag, and past a row's visible end its very end
+     * (hidden syntax such as a `{{search: …}}` query included). Near the
+     * page's top or bottom edge the page scrolls, as in a row drag. The
+     * release syncs the result into the model. Nothing on screen changes
+     * size meanwhile.
+     *
      * Called by the editor's `mousedown` listener, after the link, image
      * and gutter-drag handlers have declined the press (bullet-dot presses
      * never get here: they stop propagation).
@@ -2934,16 +2950,130 @@ class MainScreen(
     private fun beginTextSelectionDrag(ev: MouseEvent) {
         if (ev.button.toInt() != 0) return
         val body = document.body ?: return
+        val editor = editorElement ?: return
         body.classList.add(TEXT_SELECTING_CLASS)
+        val drive = ev.detail == 1 && !ev.shiftKey && !ev.altKey && !ev.metaKey && !ev.ctrlKey
+        val startX = ev.clientX.toDouble()
+        val startY = ev.clientY.toDouble()
+        var lastX = startX
+        var lastY = startY
+        var anchor: Pair<Node, Int>? = null
+        var scrollTimer: Int? = null
+
+        // Puts the selection's focus at the pointer, keeping the anchor.
+        fun extend() {
+            val a = anchor ?: return
+            val f = selectionPointAt(editor, lastX, lastY) ?: return
+            try {
+                window.asDynamic().getSelection()?.setBaseAndExtent(a.first, a.second, f.first, f.second)
+            } catch (_: Throwable) {
+                // An anchor the repaint detached: leave the selection as it is.
+            }
+        }
+
+        // Scrolls the page while the pointer is near or past its top or bottom edge.
+        fun autoScroll() {
+            val scroller = scrollWrapperElement ?: return
+            val rect = scroller.getBoundingClientRect()
+            val depth = when {
+                lastY < rect.top + DRAG_SCROLL_EDGE_PX -> lastY - (rect.top + DRAG_SCROLL_EDGE_PX)
+                lastY > rect.bottom - DRAG_SCROLL_EDGE_PX -> lastY - (rect.bottom - DRAG_SCROLL_EDGE_PX)
+                else -> return
+            }
+            val step = (depth / DRAG_SCROLL_EDGE_PX * DRAG_SCROLL_MAX_STEP_PX)
+                .coerceIn(-DRAG_SCROLL_MAX_STEP_PX, DRAG_SCROLL_MAX_STEP_PX)
+            val before = scroller.scrollTop
+            scroller.scrollTop = before + step
+            if (scroller.scrollTop != before) extend()
+        }
+
+        var move: ((Event) -> Unit)? = null
+        move = { e ->
+            val me = e as MouseEvent
+            lastX = me.clientX.toDouble()
+            lastY = me.clientY.toDouble()
+            if (drive && anchor == null &&
+                (abs(lastX - startX) > SELECTION_DRAG_SLOP_PX || abs(lastY - startY) > SELECTION_DRAG_SLOP_PX)
+            ) {
+                // The press point by the same rules as the focus (a press past
+                // a row's visible end anchors after its hidden syntax), else
+                // where the browser put the caret.
+                val sel = window.asDynamic().getSelection()
+                val native = (sel?.anchorNode as? Node)?.takeIf { editor.contains(it) }
+                    ?.let { it to (sel.anchorOffset as Number).toInt() }
+                anchor = selectionPointAt(editor, startX, startY) ?: native
+                if (anchor != null) scrollTimer = window.setInterval({ autoScroll() }, DRAG_SCROLL_INTERVAL_MS)
+            }
+            if (anchor != null) {
+                // Ours from here: the browser must not extend the selection too.
+                me.preventDefault()
+                extend()
+                // Once more after the browser's own handling of the move, in
+                // case it still extended the selection itself.
+                window.requestAnimationFrame { extend() }
+            }
+        }
         var end: ((Event) -> Unit)? = null
         end = { _ ->
             body.classList.remove(TEXT_SELECTING_CLASS)
+            scrollTimer?.let { window.clearInterval(it) }
+            if (anchor != null) syncSelectionFromDom(editor)
+            window.removeEventListener("mousemove", move!!, /* capture = */ true)
             window.removeEventListener("mouseup", end!!, /* capture = */ true)
             window.removeEventListener("blur", end!!)
         }
+        window.addEventListener("mousemove", move, /* capture = */ true)
         window.addEventListener("mouseup", end, /* capture = */ true)
         // A release outside the window may never reach us; losing focus ends it too.
         window.addEventListener("blur", end)
+    }
+
+    /**
+     * The DOM position a selection drag's focus takes for the pointer at
+     * client ([x], [y]) — see [beginTextSelectionDrag]:
+     *  - the row is the one under the pointer by height ([nearestRowDiv],
+     *    the height held inside the page): a row's box includes a search
+     *    node's results or a board under its line, so those count as it;
+     *  - below the row's text (over such a list), or right of the last
+     *    visible character on its last line, the row's very end — after
+     *    any zero-width syntax, so a hidden query is selected whole;
+     *  - otherwise the caret position nearest the point within the row's
+     *    text (`caretRangeFromPoint`, held inside the text's box).
+     *
+     * @return `null` when no row is rendered.
+     */
+    private fun selectionPointAt(editor: HTMLElement, x: Double, y: Double): Pair<Node, Int>? {
+        val bounds = scrollWrapperElement?.getBoundingClientRect()
+        val cy = if (bounds != null) y.coerceIn(bounds.top + 2.0, bounds.bottom - 2.0) else y
+        val rowDiv = nearestRowDiv(editor, cy) ?: return null
+        val row = rowDiv.getAttribute("data-row")?.toIntOrNull() ?: return null
+        val prefixLen = rowDiv.getAttribute("data-prefix-len")?.toIntOrNull() ?: 0
+        val text = rowDiv.querySelector(".lunarbor-text") as? HTMLElement
+            ?: return locateDomPosition(editor, row, prefixLen)
+        val lineEnd = viewModel.currentBackingState.lines.getOrNull(row)?.length ?: prefixLen
+        val box = text.getBoundingClientRect()
+        // The last visible run of glyphs: the text's last line, where it ends.
+        val range = document.createRange()
+        range.selectNodeContents(text)
+        val rects = range.asDynamic().getClientRects()
+        var lastTop = box.top
+        var lastRight = box.left
+        for (i in 0 until (rects.length as Number).toInt()) {
+            val r = rects[i]
+            if ((r.width as Number).toDouble() > 0.0) {
+                lastTop = (r.top as Number).toDouble()
+                lastRight = (r.right as Number).toDouble()
+            }
+        }
+        if (cy > box.bottom || (cy >= lastTop && x >= lastRight)) {
+            return locateDomPosition(editor, row, lineEnd)
+        }
+        val px = x.coerceIn(box.left + 1.0, max(box.left + 1.0, box.right - 1.0))
+        val py = cy.coerceIn(box.top + 1.0, max(box.top + 1.0, box.bottom - 1.0))
+        val hit = document.asDynamic().caretRangeFromPoint(px, py)
+        val node = hit?.startContainer as? Node
+        if (node != null && text.contains(node)) return node to (hit.startOffset as Number).toInt()
+        return locateDomPosition(editor, row, if (x < box.left + box.width / 2) prefixLen else lineEnd)
     }
 
     private fun maybeBeginGutterDrag(editor: HTMLElement, ev: MouseEvent) {
@@ -3215,6 +3345,9 @@ private const val DRAGGING_CLASS: String = "lunarbor-dragging"
  * through (`OutlinePaintLoop`'s styles).
  */
 internal const val TEXT_SELECTING_CLASS: String = "lunarbor-text-selecting"
+
+/** How far (px) a press must move before the editor drives it as a selection drag ([MainScreen.beginTextSelectionDrag]). */
+private const val SELECTION_DRAG_SLOP_PX: Double = 3.0
 
 /** Distance from the page's top / bottom edge at which a drag starts scrolling it. */
 private const val DRAG_SCROLL_EDGE_PX: Double = 40.0
