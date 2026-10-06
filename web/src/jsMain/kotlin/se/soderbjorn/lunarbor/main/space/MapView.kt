@@ -212,6 +212,15 @@ internal class MapView(
     private val dust = Dots(DUST_CAP, 0.35, 0.75)
     private val labels = HashMap<String, HTMLElement>()
 
+    /**
+     * Set when the bodies' buffers (bodies, rings, glow, dust, branches,
+     * link arcs) must be rewritten: a body moved, a relayout, a theme
+     * change. Orbiting only moves the camera, so those frames skip the
+     * rewrite and its garbage — which otherwise made rotating a large map
+     * hitch every so often on garbage collection.
+     */
+    private var sceneDirty = true
+
     /** The distant starfield (built by [buildScene]; declared before `init` so it survives it). */
     private var stars: dynamic = null
 
@@ -342,6 +351,7 @@ internal class MapView(
         stars?.material?.opacity = if (dark) 0.8 else 0.35
         stars?.material?.needsUpdate = true
         for (b in bodies.values) b.colored = false
+        sceneDirty = true
         mode.requestFrame()
     }
 
@@ -450,7 +460,9 @@ internal class MapView(
             b.target = p
             b.size = sizeOf(id)
             b.colored = false
+            b.label = null
         }
+        sceneDirty = true
         if (reframe && positions.isNotEmpty()) frame(positions)
         renderHud()
         mode.requestFrame()
@@ -499,12 +511,16 @@ internal class MapView(
         val k = if (reduced) 1.0 else 1 - exp(-dt * 4.0)
         val kc = if (reduced) 1.0 else 1 - exp(-dt * 5.0)
         var moving = false
-        for ((id, b) in bodies.toList()) {
+        val it = bodies.values.iterator()
+        while (it.hasNext()) {
+            val b = it.next()
+            if (b.cur === b.target && b.scale == 1.0 && !b.leaving) continue
             val next = lerp(b.cur, b.target, k)
             b.cur = if (dist(next, b.target) < 0.01) b.target else next
             b.scale = if (b.leaving) b.scale * (1 - k) else if (1 - b.scale < 0.01) 1.0 else b.scale + (1 - b.scale) * k
+            sceneDirty = true
             if (b.leaving && (b.scale < 0.02 || b.cur == b.target)) {
-                bodies.remove(id)
+                it.remove()
                 continue
             }
             if (b.cur != b.target || (b.scale < 1.0 && !b.leaving) || b.leaving) moving = true
@@ -551,12 +567,17 @@ internal class MapView(
             camera.lookAt(target.x, target.y, target.z)
         }
         camera.updateMatrixWorld()
-        writeBodies()
-        writeLines()
+        if (sceneDirty) {
+            sceneDirty = false
+            writeBodies()
+            writeLines()
+        }
+        placeSelection()
         r.render(scene, camera)
         project()
-        placeLabels()
-        placeWindows()
+        val anchors = windowAnchors()
+        placeLabels(anchors)
+        placeWindows(anchors)
         placeFlightTarget()
     }
 
@@ -705,6 +726,7 @@ internal class MapView(
                 bodyColor(b.id)
                 bodyMesh.setColorAt(i, color)
                 b.r = color.r as Double; b.g = color.g as Double; b.b = color.b as Double
+                b.css = null
                 b.colored = true
                 b.slot = -1
             }
@@ -713,21 +735,22 @@ internal class MapView(
                 bodyMesh.setColorAt(i, color)
                 b.slot = i
             }
-            glow.set(i, b.cur, b.r, b.g, b.b)
+            glow.set(i, b.cur.x, b.cur.y, b.cur.z, b.r, b.g, b.b)
             if (b.id in folded && !b.leaving) {
-                dummy.rotation.set(PI / 2 - 0.38, GraphLayout.hash01(b.id + "|r") * 0.6 - 0.3, 0.0)
+                if (b.ringTilt.isNaN()) b.ringTilt = GraphLayout.hash01(b.id + "|r") * 0.6 - 0.3
+                dummy.rotation.set(PI / 2 - 0.38, b.ringTilt, 0.0)
                 dummy.updateMatrix()
                 ringMesh.setMatrixAt(rings, dummy.matrix)
                 ringMesh.setColorAt(rings, color.setRGB(b.r, b.g, b.b))
                 rings++
             }
             val leaves = if (b.leaving) 0 else min(graph.nodes[b.id]?.leafCount ?: 0, DUST_PER_BODY)
+            val shape = b.dustShape(leaves)
             for (j in 0 until leaves) {
                 if (dots >= DUST_CAP) break
-                val a = GraphLayout.hash01("${b.id}|d$j") * 2 * PI
-                val rr = s * (2.0 + GraphLayout.hash01("${b.id}|r$j") * 1.4)
-                val yy = (GraphLayout.hash01("${b.id}|h$j") - 0.5) * s * 1.2
-                dust.set(dots, SpaceVec(b.cur.x + cos(a) * rr, b.cur.y + yy, b.cur.z + sin(a) * rr), b.r, b.g, b.b)
+                val o = j * 4
+                val rr = s * shape[o + 2]
+                dust.set(dots, b.cur.x + shape[o] * rr, b.cur.y + shape[o + 3] * s, b.cur.z + shape[o + 1] * rr, b.r, b.g, b.b)
                 dots++
             }
             i++
@@ -740,6 +763,10 @@ internal class MapView(
         if (ringMesh.instanceColor != null) ringMesh.instanceColor.needsUpdate = true
         glow.commit(i)
         dust.commit(dots)
+    }
+
+    /** The selection ring: on the selected body, facing the camera (every frame, as the camera turns). */
+    private fun placeSelection() {
         val sel = selected?.let { bodies[it] }
         selectMesh.visible = sel != null
         if (sel != null) {
@@ -852,8 +879,8 @@ internal class MapView(
      * biggest on screen; a label that would overlap one already placed is
      * skipped.
      */
-    private fun placeLabels() {
-        val windowBodies = windowAnchors().values.toSet()
+    private fun placeLabels(anchors: Map<String, String>) {
+        val windowBodies = anchors.values.toSet()
         val sel = selected?.let { graph.nodes[it] }
         val family = HashSet<String>()
         if (sel != null) {
@@ -877,7 +904,7 @@ internal class MapView(
         for ((b, _) in scored) {
             if (shown.size >= LABEL_BUDGET) break
             val node = graph.nodes[b.id] ?: continue
-            val text = labelText(b.id)
+            val text = b.label ?: labelText(b.id).also { b.label = it }
             val w = text.length * 6.6 + 22
             val h = 20.0
             val x = b.sx - w / 2
@@ -893,7 +920,11 @@ internal class MapView(
             }
             el.classList.toggle("is-selected", b.id == selected)
             el.classList.toggle("is-top", node.depth <= 1)
-            el.style.setProperty("--c", cssColorOf(b))
+            val css = b.css ?: cssColorOf(b).also { b.css = it }
+            if (el.getAttribute("data-c") != css) {
+                el.setAttribute("data-c", css)
+                el.style.setProperty("--c", css)
+            }
             el.style.transform = "translate(${round1(b.sx)}px, ${round1(y)}px) translate(-50%, 0)"
             el.style.opacity = if (b.id == selected || b.id in windowBodies) "1" else (0.55 + 0.45 * min(1.0, b.sr / 6)).toString()
             if (el.style.display == "none") el.style.display = ""
@@ -961,8 +992,7 @@ internal class MapView(
      * Places a card per window of the tab beside the body it shows, with a
      * line to the body; a body off screen pins its card to the nearest edge.
      */
-    private fun placeWindows() {
-        val anchors = windowAnchors()
+    private fun placeWindows(anchors: Map<String, String>) {
         val focused = mode.focusedPaneId()
         val panes = mode.mapPanes()
         val sig = panes.joinToString("|") { "${it.id}:${it.label}:${anchors[it.id]}:${it.id == focused}" }
@@ -1000,8 +1030,13 @@ internal class MapView(
             val card = windowsHost.querySelector("[data-pane=\"${p.id}\"]") as? HTMLElement ?: continue
             val nth = perBody.getOrPut(anchor) { 0 }
             perBody[anchor] = nth + 1
-            val cw = max(card.offsetWidth, 60).toDouble()
-            val ch = max(card.offsetHeight, 22).toDouble()
+            // Read once per card: reading it every frame forced a layout after the label writes.
+            if (card.getAttribute("data-w") == null && card.offsetWidth > 0) {
+                card.setAttribute("data-w", max(card.offsetWidth, 60).toString())
+                card.setAttribute("data-h", max(card.offsetHeight, 22).toString())
+            }
+            val cw = card.getAttribute("data-w")?.toDouble() ?: 60.0
+            val ch = card.getAttribute("data-h")?.toDouble() ?: 22.0
             var bx = b.sx
             var by = b.sy
             if (!b.front) {
@@ -1545,9 +1580,9 @@ internal class MapView(
             obj.frustumCulled = false
         }
 
-        fun set(i: Int, at: SpaceVec, r: Double, g: Double, b: Double) {
+        fun set(i: Int, x: Double, y: Double, z: Double, r: Double, g: Double, b: Double) {
             val o = i * 3
-            pos[o] = at.x; pos[o + 1] = at.y; pos[o + 2] = at.z
+            pos[o] = x; pos[o + 1] = y; pos[o + 2] = z
             col[o] = r; col[o + 1] = g; col[o + 2] = b
         }
 
@@ -1578,6 +1613,36 @@ internal class MapView(
         var sr = 0.0
         var dist = 0.0
         var front = false
+
+        /** [labelText], cached until the next relayout (it walks a folded subtree). */
+        var label: String? = null
+
+        /** The body's CSS colour for its label, cached until it is recoloured. */
+        var css: String? = null
+
+        /** The folded ring's tilt, from the id's hash (computed once). */
+        var ringTilt = Double.NaN
+
+        private var dust: DoubleArray = DoubleArray(0)
+
+        /**
+         * Per leaf speck `j` of [n]: cos and sin of its angle, its distance
+         * and its height, in body sizes — hashed from the id once, not
+         * every frame.
+         */
+        fun dustShape(n: Int): DoubleArray {
+            if (dust.size != n * 4) {
+                dust = DoubleArray(n * 4)
+                for (j in 0 until n) {
+                    val a = GraphLayout.hash01("$id|d$j") * 2 * PI
+                    dust[j * 4] = cos(a)
+                    dust[j * 4 + 1] = sin(a)
+                    dust[j * 4 + 2] = 2.0 + GraphLayout.hash01("$id|r$j") * 1.4
+                    dust[j * 4 + 3] = (GraphLayout.hash01("$id|h$j") - 0.5) * 1.2
+                }
+            }
+            return dust
+        }
     }
 
     private companion object {
