@@ -272,11 +272,11 @@ internal class MapView(
                 var lastRevision = -1
                 var lastFilter: Any? = null
                 registry.privacyFlow.collect { pv ->
+                    // The link index is unfiltered (rebuild filters its edges),
+                    // so a privacy change only needs a rebuild, never a re-read.
                     if (pv.filter != lastFilter || pv.revision != lastRevision) {
-                        val first = lastFilter == null
                         lastFilter = pv.filter
                         lastRevision = pv.revision
-                        if (!first) linksWanted = true
                         scheduleRebuild(0)
                     }
                 }
@@ -416,6 +416,7 @@ internal class MapView(
             val fresh = try {
                 registry.linkIndexSnapshot()
             } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
                 linksReading = false
                 console.warn("Lunarbor: map could not read links", t)
                 return@launch

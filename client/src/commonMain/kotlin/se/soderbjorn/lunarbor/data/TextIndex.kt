@@ -198,6 +198,14 @@ class TextIndex(
     private var linkRefs: LinkRefs? = null
 
     private val linesByFile: MutableMap<String, Entry> = HashMap()
+
+    /**
+     * The raw text each [linesByFile] entry was built from, so a read of an
+     * unchanged file (every listing refresh reads every outline) changes
+     * nothing and tells [onChanged] nothing — which otherwise re-ran search
+     * nodes and bumped the privacy revision on every refresh.
+     */
+    private val textByFile: MutableMap<String, String> = HashMap()
     private val buildMutex = Mutex()
     private var built = false
 
@@ -215,15 +223,19 @@ class TextIndex(
      * Records the current text of the note file [fileRel]; `null` means the
      * file was deleted. Called for every read and write the repository
      * makes. App files other than outlines (`Starred.md`) are left out.
+     * A text equal to the one already indexed for the file is a no-op.
      */
     fun noteText(fileRel: String, text: String?) {
         if (text == null || (NoteRepository.isAppFile(fileRel) && !NoteRepository.isOutlineFile(fileRel))) {
+            textByFile.remove(fileRel)
             if (linesByFile.remove(fileRel) != null) {
                 dropDerived()
                 onChanged?.invoke()
             }
             return
         }
+        if (textByFile[fileRel] == text && fileRel in linesByFile) return
+        textByFile[fileRel] = text
         linesByFile[fileRel] = if (NoteRepository.isOutlineFile(fileRel)) outlineEntry(text, LunarborLink.baseOfFile(fileRel))
             else noteEntry(text, LunarborLink.baseOfFile(fileRel))
         dropDerived()
@@ -264,8 +276,17 @@ class TextIndex(
             from += file
             moved[to] = lines
         }
-        for (file in from) linesByFile.remove(file)
-        for ((file, lines) in moved) if (file !in linesByFile) linesByFile[file] = lines
+        val movedTexts = HashMap<String, String>()
+        for (file in from) {
+            linesByFile.remove(file)
+            textByFile.remove(file)?.let { movedTexts[LunarborLink.remap(file, moves) ?: file] = it }
+        }
+        for ((file, lines) in moved) {
+            if (file !in linesByFile) {
+                linesByFile[file] = lines
+                movedTexts[file]?.let { textByFile[file] = it }
+            }
+        }
         if (from.isNotEmpty()) {
             dropDerived()
             onChanged?.invoke()
