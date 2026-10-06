@@ -1502,6 +1502,48 @@ class PaneBackingViewModel(
     }
 
     /**
+     * ⌘↑ ([folded] `true`) / ⌘↓ on the board row [ref] of the board node at
+     * [nodeRow] (LBR-28): folds or unfolds the column or issue under the
+     * keyboard's caret — the same chords as [setCaretItemFolded] on outline
+     * rows. On a row under an issue (description, comment, "Comment…") ⌘↑
+     * folds that issue and the caret moves to its title; ⌘↓ there does
+     * nothing. A row already in the asked state is left alone.
+     *
+     * Called by the web view's `LunicleBoardCursor`.
+     *
+     * @param now The clock (epoch ms), as for [lunicleBoardOf].
+     * @return The row the caret is on afterwards, or `null` when [nodeRow]
+     *   is no board node or [ref] is not on its board.
+     */
+    fun foldLunicleRow(nodeRow: Int, ref: LunicleRowRef, folded: Boolean, now: Long): LunicleRowRef? {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return null
+        val rows = LunicleBoardRows.of(view)
+        val at = rows.firstOrNull { it.ref.key == ref.key }?.ref ?: return null
+        when (at.kind) {
+            LunicleRowKind.COLUMN -> {
+                val column = view.columns.firstOrNull { it.column.status.name == at.status } ?: return at
+                if (column.folded != folded) toggleLunicleColumn(column)
+                return at
+            }
+            LunicleRowKind.ISSUE -> {
+                val issue = issueViewOf(view, at.issueId) ?: return at
+                if (issue.unfolded == folded) toggleLunicleIssue(issue)
+                return at
+            }
+            else -> {
+                if (!folded) return at
+                val issue = issueViewOf(view, at.issueId) ?: return at
+                if (issue.unfolded) toggleLunicleIssue(issue)
+                return at.issueRef
+            }
+        }
+    }
+
+    /** The issue [issueId]'s view on [view], wherever its column is. */
+    private fun issueViewOf(view: LunicleBoardView, issueId: Long?): LunicleIssueView? =
+        view.columns.firstNotNullOfOrNull { c -> c.issues.firstOrNull { it.issue.id == issueId } }
+
+    /**
      * Identity this pane reports its board interest under
      * ([LunicleBoards.setInterest]).
      */
@@ -1650,7 +1692,8 @@ class PaneBackingViewModel(
      * the bullet, or the block the caret is in. A no-op when that item has
      * no children, is already in the requested state, or in Markdown mode.
      * Unfolding a folded folder-backed bullet loads its children, as a click
-     * on its −/+ control does ([toggleCollapse]).
+     * on its −/+ control does ([toggleCollapse]). A board node (LBR-28)
+     * counts as a parent: its board is its contents.
      *
      * Called by the web view for Cmd-Down (unfold) / Cmd-Up (fold).
      */
@@ -1663,8 +1706,10 @@ class PaneBackingViewModel(
         val row = BlockLayout.rangeAt(lines, s.cursorRow)?.first ?: s.cursorRow
         val id = docState.lineIds.getOrNull(row) ?: return
         val foldedRef = doc.isPromotedRef(id) && id !in s.expandedRefIdsLocal
+        // A board node (LBR-28) folds like a parent: its board is its contents.
         val hasChildren = foldedRef ||
-            DocumentLayout.hasChildren(lines, row, DocumentLayout.itemColumn(lines, row))
+            DocumentLayout.hasChildren(lines, row, DocumentLayout.itemColumn(lines, row)) ||
+            lunicleBoardOf(s, row, 0) != null
         if (!hasChildren) return
         val isFolded = foldedRef || id in s.collapsedIds
         if (isFolded != folded) toggleCollapse(id)
