@@ -47,9 +47,9 @@ class NoteConversionTest {
     }
 
     @Test
-    fun block_paragraphs_become_bullets_their_lines_joined() {
+    fun every_block_line_becomes_a_bullet() {
         assertEquals(
-            listOf(listOf("  * One two"), listOf("  * # Head"), listOf("  * Three"), listOf("  * Four")),
+            listOf(listOf("  * One"), listOf("  * two"), listOf("  * # Head"), listOf("  * Three"), listOf("  * Four")),
             NoteConversion.nodeGroupsOfBlock(listOf("One", "two  ", "", "# Head", "Three", "", "", "Four"), 2),
         )
     }
@@ -59,7 +59,7 @@ class NoteConversionTest {
         assertEquals(
             listOf(
                 listOf("* Intro"),
-                listOf("* a", "  * a1 more", "  * about a"),
+                listOf("* a", "  * a1", "    * more", "  * about a"),
                 listOf("* 2. b"),
             ),
             NoteConversion.nodeGroupsOfBlock(

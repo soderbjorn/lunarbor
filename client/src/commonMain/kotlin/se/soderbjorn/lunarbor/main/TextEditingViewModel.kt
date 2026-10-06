@@ -1346,7 +1346,7 @@ internal class TextEditingViewModel(
     }
 
     /**
-     * Replaces the block containing [row] with bullets, one per paragraph
+     * Replaces the block containing [row] with bullets, one per line
      * ([NoteConversion.nodeGroupsOfBlock]), in the block's parent.
      *
      * The first node takes over the block's first row — and with it the

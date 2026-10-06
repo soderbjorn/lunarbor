@@ -2083,7 +2083,7 @@ class PaneBackingViewModel(
 
     /**
      * "Convert block to nodes": replaces the block the caret is in with
-     * one bullet per paragraph in the block's parent; a no-op elsewhere.
+     * one bullet per line in the block's parent; a no-op elsewhere.
      * The palette command. Undoable. See
      * [TextEditingViewModel.convertBlockToNodesAt].
      */

@@ -324,15 +324,15 @@ class BlockEditingTest {
     }
 
     @Test
-    fun convert_block_to_nodes_makes_one_bullet_per_paragraph_and_undoes() = runTest {
+    fun convert_block_to_nodes_makes_one_bullet_per_line_and_undoes() = runTest {
         val p = pane("- Trip\n> First line\n> goes on\n>\n> - item\n- B\n")
         val original = p.lines
         p.caretAtEnd(2)
         p.convertBlockToNodes()
-        assertEquals(listOf("* Trip", "* First line goes on", "* item", "* B"), p.lines)
+        assertEquals(listOf("* Trip", "* First line", "* goes on", "* item", "* B"), p.lines)
         assertEquals(1 to p.lines[1].length, p.caret)
         flush()
-        assertEquals("- Trip\n- First line goes on\n- item\n- B\n", read("_node.md"))
+        assertEquals("- Trip\n- First line\n- goes on\n- item\n- B\n", read("_node.md"))
         p.undo()
         assertEquals(original, p.lines)
     }
