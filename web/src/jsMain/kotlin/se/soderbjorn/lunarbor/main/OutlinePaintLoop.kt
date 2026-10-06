@@ -542,6 +542,11 @@ private fun buildRowElement(
         val mirror = rowId != null && outline && viewModel.isMirror(rowId)
         if (mirror) rowDiv.classList.add("lunarbor-row-mirror")
 
+        // A heading's dot is centred on the heading's letters, not the row's.
+        headingScaleOf(line.substring(bulletCol + 2))?.let { scale ->
+            rowDiv.classList.add("lunarbor-row-heading")
+            rowDiv.style.setProperty("--lunarbor-heading-scale", scale.toString())
+        }
         val bulletPrefix = buildBulletPrefix(absoluteRow, if (outline) onBulletMouseDown else null, interactive = outline)
         if (mirror) bulletPrefix.title = "Mirror: editing here edits the node it shows"
         rowDiv.appendChild(bulletPrefix)
@@ -1466,6 +1471,24 @@ private fun buildBulletPrefix(
 }
 
 /**
+ * Font-size factor of the `.lunarbor-md-h*` rule for a bullet row whose
+ * text (after `* `) is [text], or `null` when it is no heading. The row
+ * painter sets it as `--lunarbor-heading-scale`, which the
+ * `.lunarbor-row-heading` rule uses to lift the dot to the middle of the
+ * heading's letters (it would otherwise sit at the small text's height,
+ * near the heading's baseline).
+ */
+private fun headingScaleOf(text: String): Double? = when (LineMarkdownPrefix.detect(text, 0).style) {
+    LineStyle.HEADING_1 -> 1.6
+    LineStyle.HEADING_2 -> 1.35
+    LineStyle.HEADING_3 -> 1.15
+    LineStyle.HEADING_4 -> 1.05
+    LineStyle.HEADING_5 -> 1.0
+    LineStyle.HEADING_6 -> 0.95
+    LineStyle.QUOTE, null -> null
+}
+
+/**
  * CSS height of the first line of a bullet row whose text (after `* `)
  * is [text]: the row's line height, or a heading's taller line
  * (font-size × line-height of its `.lunarbor-md-h*` rule, in the row's
@@ -2038,6 +2061,18 @@ fun ensureStyles() {
             vertical-align: 0.12em;
             transform-origin: center;
             transition: transform 120ms ease-out, box-shadow 120ms ease-out;
+        }
+        /* A heading bullet (--lunarbor-heading-scale, set by the row
+           painter): the dot is measured in the heading's font, so it can
+           sit at the heading's x-height (0.65ex ≈ the plain dot's 0.32em
+           in the text font) while keeping the plain dot's size. */
+        .lunarbor-row-heading > .lunarbor-bullet-prefix .lunarbor-bullet {
+            font-family: var(--dt-font-display, inherit);
+            font-size: calc(var(--lunarbor-heading-scale, 1) * 1em);
+            width: calc(0.4em / var(--lunarbor-heading-scale, 1));
+            height: calc(0.4em / var(--lunarbor-heading-scale, 1));
+            margin: 0 calc(0.25em / var(--lunarbor-heading-scale, 1));
+            vertical-align: calc(0.65ex - 0.2em / var(--lunarbor-heading-scale, 1));
         }
         .lunarbor-bullet-prefix:hover .lunarbor-bullet,
         .lunarbor-bullet-prefix.lunarbor-hover .lunarbor-bullet {
