@@ -693,8 +693,34 @@ class MainScreen(
     /** The arrow keys' cursor over a search node's result rows ([SearchNodeHitCursor]). */
     private val searchNodeHitCursor = SearchNodeHitCursor(viewModel)
 
-    /** The arrow keys' cursor over a board node's rows ([LunicleBoardCursor], LBR-28). */
-    private val lunicleBoardCursor = LunicleBoardCursor(viewModel)
+    /**
+     * The arrow keys' cursor over a board node's rows ([LunicleBoardCursor],
+     * LBR-28), and its text field on titles, drafts and "New issue" (LBR-29).
+     * When the field goes, the keyboard comes back to the editor.
+     */
+    private val lunicleBoardCursor = LunicleBoardCursor(viewModel) { focusEditorAfterBoardField() }
+
+    /**
+     * Gives the keyboard back to the editor after a board field went away
+     * (LBR-29): focus, and the DOM caret on the model's (the board node's
+     * line), so the next key's DOM sync keeps the cursor where it is. On a
+     * read-only page the editor takes no focus; the body has it.
+     */
+    private fun focusEditorAfterBoardField() {
+        val editor = editorElement ?: return
+        val s = viewModel.currentBackingState
+        if (s.isReadOnlyPage) return
+        editor.focus()
+        applyDomSelection(editor, s.anchorRow ?: s.cursorRow, s.anchorCol ?: s.cursorCol, s.cursorRow, s.cursorCol, scrollCursorIntoView = false)
+    }
+
+    /**
+     * `true` when [event] comes from a board's text field (LBR-29,
+     * [LunicleBoardCursor]): the field edits itself, so the editor's input,
+     * clipboard and selection handlers leave it alone.
+     */
+    private fun fromBoardField(event: Event): Boolean =
+        (event.target as? HTMLElement)?.classList?.contains("lunarbor-lunicle-field") == true
 
     /** `true` while the arrow keys are on a board node's row ([LunicleBoardCursor.isActive]). */
     val isOnLunicleBoardRow: Boolean get() = lunicleBoardCursor.isActive
@@ -765,7 +791,15 @@ class MainScreen(
 
     private fun wireInputListeners(editor: HTMLElement) {
         editor.addEventListener("beforeinput", { event ->
+            if (fromBoardField(event)) return@addEventListener
             handleBeforeInput(editor, event.unsafeCast<dynamic>())
+        })
+        // A press on a board's title, draft or "New issue" line starts
+        // editing it there (LBR-29).
+        editor.addEventListener(LUNICLE_PRESS_EVENT, { event ->
+            val detail = event.asDynamic().detail ?: return@addEventListener
+            searchNodeHitCursor.clear(editor)
+            lunicleBoardCursor.press(editor, (detail.row as Number).toInt(), detail.key as String)
         })
         editor.addEventListener("keydown", { event ->
             handleKey(editor, event as KeyboardEvent)
@@ -805,12 +839,15 @@ class MainScreen(
             }
         })
         editor.addEventListener("copy", { event ->
+            if (fromBoardField(event)) return@addEventListener
             handleCopy(editor, event.unsafeCast<dynamic>())
         })
         editor.addEventListener("cut", { event ->
+            if (fromBoardField(event)) return@addEventListener
             handleCut(editor, event.unsafeCast<dynamic>())
         })
         editor.addEventListener("paste", { event ->
+            if (fromBoardField(event)) return@addEventListener
             handlePaste(editor, event.unsafeCast<dynamic>())
         })
         // Drag-and-drop image files from the OS into the editor. Same
@@ -829,10 +866,12 @@ class MainScreen(
         })
         // Sync model selection from DOM on mouse interactions so any
         // selection-aware intent (cut, indent) sees the user's intent.
-        editor.addEventListener("mouseup", { _: Event ->
+        editor.addEventListener("mouseup", { event: Event ->
+            if (fromBoardField(event)) return@addEventListener
             syncSelectionFromDom(editor)
         })
         editor.addEventListener("keyup", { event ->
+            if (fromBoardField(event)) return@addEventListener
             // Only sync after navigation keys — typing keys go through
             // beforeinput which already syncs as part of the edit path.
             val ke = event as KeyboardEvent
@@ -1791,6 +1830,8 @@ class MainScreen(
         val savedScrollTop = scroller.scrollTop
         // A search or link page is read-only (State.isReadOnlyPage): no caret to type at.
         editor.setAttribute("contenteditable", if (state.isReadOnlyPage) "false" else "true")
+        // A board's text field (LBR-29) is put back after the rebuild, with its selection.
+        lunicleBoardCursor.saveField()
         paint(editor, state, viewModel, style, onBulletMouseDown = { row, ev ->
             beginDragFromBullet(row, ev)
         })

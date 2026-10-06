@@ -245,6 +245,26 @@ class MainViewModel(
     fun reportShownBoards(shown: Map<se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, Set<Long>>) =
         paneBackingViewModel.reportShownBoards(shown)
 
+    /** See `PaneBackingViewModel.beginLunicleEdit`; the clock is the browser's. */
+    fun beginLunicleEdit(nodeRow: Int, ref: LunicleRowRef): String? =
+        paneBackingViewModel.beginLunicleEdit(nodeRow, ref, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.leaveLunicleRow`. */
+    fun leaveLunicleRow(board: se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, ref: LunicleRowRef, text: String) =
+        paneBackingViewModel.leaveLunicleRow(board, ref, text)
+
+    /** See `PaneBackingViewModel.lunicleEnter`; the clock is the browser's. */
+    fun lunicleEnter(nodeRow: Int, ref: LunicleRowRef, text: String): LunicleRowRef? =
+        paneBackingViewModel.lunicleEnter(nodeRow, ref, text, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.removeLunicleDraft`; the clock is the browser's. */
+    fun removeLunicleDraft(nodeRow: Int, ref: LunicleRowRef): LunicleBoardRows.Step? =
+        paneBackingViewModel.removeLunicleDraft(nodeRow, ref, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.explainLunicleRow`; the clock is the browser's. */
+    fun explainLunicleRow(nodeRow: Int, ref: LunicleRowRef) =
+        paneBackingViewModel.explainLunicleRow(nodeRow, ref, kotlin.js.Date.now().toLong())
+
     /** See `PaneBackingViewModel.insertLunicleBoard`. */
     fun insertLunicleBoard(connection: String, key: String) = paneBackingViewModel.insertLunicleBoard(connection, key)
 

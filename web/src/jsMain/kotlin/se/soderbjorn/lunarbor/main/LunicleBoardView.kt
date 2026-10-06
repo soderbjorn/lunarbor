@@ -16,7 +16,15 @@
  * lines — but fold through the pane's own board fold state
  * (`MainViewModel.toggleLunicleColumn` / `toggleLunicleIssue`). Everything
  * acts on mousedown: a repaint between press and release would swallow a
- * click. Read-only until LBR-29 to LBR-31.
+ * click.
+ *
+ * Editing (LBR-29): an editable issue's title, a draft and the column's
+ * "New issue" line are marked as fields ([LUNICLE_FIELD_ATTR]);
+ * `LunicleBoardCursor` puts its text field there when its caret is on the
+ * row, and a press on one dispatches [LUNICLE_PRESS_EVENT] so the cursor
+ * starts editing it. A draft shows a dim note ("new issue · created in
+ * Lunicle when you leave the line"); an issue being filed shows its title
+ * with "Saving…" and then its key.
  *
  * The keyboard walks the rows (LBR-28, `LunicleBoardCursor`): the box
  * carries its node's row ([LUNICLE_BOARD_ROW_ATTR]) and every navigable
@@ -53,6 +61,23 @@ internal const val LUNICLE_ROW_KEY_ATTR = "data-lunicle-key"
  * end, or at its start with `is-caret-start` (an empty field's placeholder).
  */
 internal const val LUNICLE_CARET_HOST_CLASS = "lunarbor-lunicle-caret-host"
+
+/**
+ * On the text of a row edited in a real text field (LBR-29): an issue's
+ * title, a draft, the "New issue" line. `LunicleBoardCursor` puts its
+ * `<input>` in its place.
+ */
+internal const val LUNICLE_FIELD_ATTR = "data-lunicle-field"
+
+/**
+ * Dispatched (bubbling) by a press on a field's text ([LUNICLE_FIELD_ATTR]),
+ * with `detail = { row, key }` — the node's document row and the board
+ * row's key. `MainScreen` hands it to `LunicleBoardCursor.press`.
+ */
+internal const val LUNICLE_PRESS_EVENT = "lunarbor-lunicle-press"
+
+/** The dim note on a draft's line (LBR-29). */
+private const val DRAFT_NOTE = "new issue · created in Lunicle when you leave the line"
 
 /**
  * The sync indicator for a board node: a dot and its text — "Live",
@@ -152,12 +177,49 @@ internal fun buildLunicleBoard(
         row.appendChild(span("lunarbor-lunicle-dim lunarbor-lunicle-count", column.column.count.toString()))
         box.appendChild(row)
         if (column.folded) continue
-        for (issue in column.issues) {
-            val issueRow = boardRow(1, style, isPage, "lunarbor-lunicle-issue", LunicleRowRef(LunicleRowKind.ISSUE, status, issue.issue.id))
+        for (item in column.items) {
+            val issue = when (item) {
+                is LunicleColumnItem.Draft -> {
+                    val ref = LunicleRowRef(LunicleRowKind.DRAFT, status, item.draft.localId)
+                    val row = boardRow(1, style, isPage, "lunarbor-lunicle-issue lunarbor-lunicle-draft", ref)
+                    appendPlainDot(row)
+                    val line = document.createElement("span") as HTMLElement
+                    line.className = "lunarbor-lunicle-issue-line"
+                    line.appendChild(fieldText("lunarbor-lunicle-issue-title is-caret-start", "", nodeRow, ref))
+                    line.appendChild(span("lunarbor-lunicle-dim lunarbor-lunicle-draft-note", DRAFT_NOTE))
+                    row.appendChild(line)
+                    box.appendChild(row)
+                    continue
+                }
+                is LunicleColumnItem.Creating -> {
+                    val entry = item.entry
+                    val row = boardRow(1, style, isPage, "lunarbor-lunicle-issue lunarbor-lunicle-creating", LunicleRowRef(LunicleRowKind.CREATING, status, entry.localId))
+                    appendPlainDot(row)
+                    val line = document.createElement("span") as HTMLElement
+                    line.className = "lunarbor-lunicle-issue-line"
+                    line.appendChild(span("lunarbor-lunicle-issue-title", entry.title))
+                    line.appendChild(
+                        span(
+                            "lunarbor-lunicle-dim" + if (entry.createdKey != null) " lunarbor-lunicle-key" else "",
+                            entry.createdKey ?: "Saving to Lunicle…",
+                        ),
+                    )
+                    row.appendChild(line)
+                    box.appendChild(row)
+                    continue
+                }
+                is LunicleColumnItem.Issue -> item.view
+            }
+            val issueRef = LunicleRowRef(LunicleRowKind.ISSUE, status, issue.issue.id)
+            val issueRow = boardRow(1, style, isPage, "lunarbor-lunicle-issue", issueRef)
             appendFoldControls(issueRow, 1, style, folded = !issue.unfolded) { viewModel.toggleLunicleIssue(issue) }
             val line = document.createElement("span") as HTMLElement
             line.className = "lunarbor-lunicle-issue-line"
-            line.appendChild(span("lunarbor-lunicle-issue-title $LUNICLE_CARET_HOST_CLASS", issue.issue.title.ifBlank { issue.issue.key }))
+            val titleText = issue.issue.title.ifBlank { issue.issue.key }
+            line.appendChild(
+                if (issue.editable) fieldText("lunarbor-lunicle-issue-title", titleText, nodeRow, issueRef)
+                else span("lunarbor-lunicle-issue-title $LUNICLE_CARET_HOST_CLASS", titleText),
+            )
             for (pill in issue.pills) line.appendChild(span("lunarbor-lunicle-pill", pill.text))
             if (!issue.unfolded) {
                 issue.commentsLabel?.let { line.appendChild(span("lunarbor-lunicle-dim", it)) }
@@ -178,9 +240,42 @@ internal fun buildLunicleBoard(
             box.appendChild(issueRow)
             if (issue.unfolded) appendIssueChildren(box, issue, status, style, isPage, viewModel, now)
         }
+        if (column.newIssueLine) {
+            // The column's last row: type a title here to file an issue (LBR-29).
+            val ref = LunicleRowRef(LunicleRowKind.NEW_ISSUE, status)
+            val row = boardRow(1, style, isPage, "lunarbor-lunicle-issue lunarbor-lunicle-placeholder lunarbor-lunicle-new-issue", ref)
+            appendPlainDot(row)
+            row.appendChild(fieldText("lunarbor-lunicle-dim is-caret-start", NEW_ISSUE_TEXT, nodeRow, ref))
+            box.appendChild(row)
+        }
     }
     return box
 }
+
+/** The "New issue" line's placeholder text (LBR-29). */
+internal const val NEW_ISSUE_TEXT = "New issue"
+
+/**
+ * The text of a row edited in a field ([LUNICLE_FIELD_ATTR]): a press on
+ * it asks the keyboard's cursor to start editing the row
+ * ([LUNICLE_PRESS_EVENT]) instead of being swallowed by the board.
+ */
+private fun fieldText(className: String, text: String, nodeRow: Int, ref: LunicleRowRef): HTMLElement {
+    val el = span("$className $LUNICLE_CARET_HOST_CLASS lunarbor-lunicle-field-host", text)
+    el.setAttribute(LUNICLE_FIELD_ATTR, ref.key)
+    el.addEventListener("mousedown", { ev ->
+        val me = ev as MouseEvent
+        if (me.button.toInt() != 0 || me.metaKey || me.ctrlKey || me.shiftKey) return@addEventListener
+        val detail: dynamic = js("({})")
+        detail.row = nodeRow
+        detail.key = ref.key
+        el.dispatchEvent(org.w3c.dom.CustomEvent(LUNICLE_PRESS_EVENT, org.w3c.dom.CustomEventInit(detail = detail, bubbles = true)))
+        ev.preventDefault()
+        ev.stopPropagation()
+    })
+    return el
+}
+
 
 /** The rows under an unfolded issue: its description, its comments, and "Comment…". */
 private fun appendIssueChildren(
@@ -578,6 +673,48 @@ internal fun lunicleBoardCss(): String = """
             vertical-align: -0.2em;
             background: var(--t-text, currentColor);
             animation: lunarbor-lunicle-caret-blink 1.06s steps(1) infinite;
+        }
+        /* Editing in place (LBR-29): the cursor's text field takes the
+           place of a title, a draft or the "New issue" line, and looks
+           like the text it replaces. */
+        .lunarbor-lunicle-row.is-board-cursor:not(.is-key-caret) > .lunarbor-lunicle-issue-line {
+            background: var(--t-accent-soft, rgba(90, 160, 255, 0.18));
+            border-radius: 4px;
+            padding: 1px 4px 0;
+            margin: 0 -4px;
+        }
+        input.lunarbor-lunicle-field {
+            font: inherit;
+            color: var(--t-text, inherit);
+            caret-color: var(--t-text, currentColor);
+            background: transparent;
+            border: 0;
+            outline: 0;
+            padding: 0;
+            margin: 0;
+            min-width: 2ch;
+            max-width: 100%;
+            field-sizing: content;
+            line-height: inherit;
+            vertical-align: baseline;
+            -webkit-user-select: text;
+            user-select: text;
+        }
+        input.lunarbor-lunicle-field::placeholder {
+            color: var(--t-text-dim, #9a9a9a);
+            opacity: 1;
+        }
+        .lunarbor-lunicle-field-host {
+            cursor: text;
+        }
+        .lunarbor-lunicle-new-issue .lunarbor-lunicle-field-host {
+            font-size: 1em;
+        }
+        .lunarbor-lunicle-draft-note {
+            font-style: italic;
+        }
+        .lunarbor-lunicle-creating .lunarbor-lunicle-issue-title {
+            opacity: 0.75;
         }
         @keyframes lunarbor-lunicle-caret-blink {
             50% { opacity: 0; }
