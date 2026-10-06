@@ -164,11 +164,10 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           <li><b>View switcher</b> — Pages, Crown, Cone, Galaxy. The view you leave 3D mode in is the one
           you come back to.</li>
           <li><b>Help</b> — this dialog.</li>
-          <li><b>Palette</b> — the command palette, exactly as in 2D. Menus, popups and dialogs all open
-          above the space.</li>
           <li><b>All windows / Focused window</b> (Pages only) — see below.</li>
           <li><b>Leave 3D</b> — back to the normal layout.</li>
         </ul>
+        <p>⌘P opens the command palette, exactly as in 2D. Menus, popups and dialogs all open above the space.</p>
         <p>In Pages, along the bottom is the <b>dock</b>: on the left your tabs (with a pip per window; click
         one to switch tab), on the right the active tab's windows as <code>1 · Page title</code> chips (click
         one to focus that window; the focused one is outlined).</p>

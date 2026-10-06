@@ -971,9 +971,6 @@ class AppShell(
             layoutState = layoutState.copy(activeTabId = tabId)
             persistLayoutState()
         }
-
-        override fun openPalette() = commandPalette.open()
-
     }
 
     /**

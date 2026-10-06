@@ -119,8 +119,6 @@ interface SpaceHost {
     /** Switches to tab [tabId] (as clicking it in the tab strip would). */
     fun selectTab(tabId: String)
 
-    /** Opens the command palette. */
-    fun openPalette()
 }
 
 /**
@@ -592,7 +590,6 @@ class SpaceMode(
             return b
         }
         button("<span>Help</span>", "How 3D mode and each view work") { showSpaceHelp(shape) }
-        button("<span>Palette</span><kbd>⌘P</kbd>", "Command palette (⌘P)") { host.openPalette() }
         splitButton = button("", "The focused window alone, or all of the tab's windows (⌃⌘1)") { toggleSplit() }
         splitButton?.classList?.add("lunarbor-space-split")
         updateSplitButton()
