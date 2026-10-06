@@ -228,6 +228,9 @@ class MainScreen(
      */
     private var lastPaintedState: PaneBackingViewModel.State? = null
 
+    /** The state [reconcile] last brought the editor's rows to ([isCaretOnlyChange]). */
+    private var lastReconciledState: PaneBackingViewModel.State? = null
+
     /** Pending deferred repaint for a background-only change ([isBackgroundOnlyChange]), if any. */
     private var backgroundRepaintHandle: Int? = null
 
@@ -398,7 +401,9 @@ class MainScreen(
             // `editor.style.display == "none"` in image view — the pane is
             // showing the image viewer, not an editable document, so leave
             // the click alone.
-            if ((target === scrollWrapper || target === editor) && editor.style.display != "none") {
+            if ((target === scrollWrapper || target === editor) && editor.style.display != "none" &&
+                !isOnScrollbar(scrollWrapper, me)
+            ) {
                 me.preventDefault()
                 focusEditorAtLastRow()
             }
@@ -494,6 +499,7 @@ class MainScreen(
                     imageViewer.style.display = "none"
                     folderContents.style.display = "none"
                 } else if (backing == null) {
+                    lastReconciledState = null
                     paintLoading(editor)
                 } else if (backing.isImageView) {
                     folderContents.style.display = ""
@@ -1878,18 +1884,27 @@ class MainScreen(
      * caret would jump the viewport back to the caret row.
      */
     private fun reconcile(editor: HTMLElement, state: PaneBackingViewModel.State) {
-        val scroller = scrollWrapperElement ?: editor
-        val savedScrollTop = scroller.scrollTop
-        // A search or link page is read-only (State.isReadOnlyPage): no caret to type at.
-        editor.setAttribute("contenteditable", if (state.isReadOnlyPage) "false" else "true")
-        paint(editor, state, viewModel, style, onBulletMouseDown = { row, ev ->
-            beginDragFromBullet(row, ev)
-        })
-        scroller.scrollTop = savedScrollTop
-        // The hovered row's −/+ and dot stay put instead of blinking (LBR-17).
-        carryHoverAcrossRepaint(editor)
-        // The arrow keys' highlight on a search node's results survives the rebuild.
-        searchNodeHitCursor.applyHighlight(editor)
+        val prev = lastReconciledState
+        lastReconciledState = state
+        if (prev != null && isCaretOnlyChange(prev, state)) {
+            // Only the caret or selection moved (arrow keys, a click): the
+            // rows are as painted, so just move the caret's row classes —
+            // a full repaint of a long page cost hundreds of ms a keystroke.
+            moveCaretClasses(editor, state)
+        } else {
+            val scroller = scrollWrapperElement ?: editor
+            val savedScrollTop = scroller.scrollTop
+            // A search or link page is read-only (State.isReadOnlyPage): no caret to type at.
+            editor.setAttribute("contenteditable", if (state.isReadOnlyPage) "false" else "true")
+            paint(editor, state, viewModel, style, onBulletMouseDown = { row, ev ->
+                beginDragFromBullet(row, ev)
+            })
+            scroller.scrollTop = savedScrollTop
+            // The hovered row's −/+ and dot stay put instead of blinking (LBR-17).
+            carryHoverAcrossRepaint(editor)
+            // The arrow keys' highlight on a search node's results survives the rebuild.
+            searchNodeHitCursor.applyHighlight(editor)
+        }
 
         if (!state.isLoaded) return
         // Map model selection back to DOM. Selection-aware: if anchor is
@@ -1900,6 +1915,56 @@ class MainScreen(
         val cursorMoved = lastAppliedCursor != cursor
         applyDomSelection(editor, anchorRow, anchorCol, state.cursorRow, state.cursorCol, cursorMoved)
         lastAppliedCursor = cursor
+    }
+
+    /**
+     * `true` when [next] differs from [prev], the state the editor was
+     * last painted for, only in where the caret and selection are (and
+     * the pending inline styles typing would use) — nothing a row draws
+     * but its caret classes ([moveCaretClasses]).
+     */
+    private fun isCaretOnlyChange(prev: PaneBackingViewModel.State, next: PaneBackingViewModel.State): Boolean {
+        if (prev === next || !prev.isLoaded || !next.isLoaded) return false
+        return next.copy(
+            cursorRow = prev.cursorRow,
+            cursorCol = prev.cursorCol,
+            anchorRow = prev.anchorRow,
+            anchorCol = prev.anchorCol,
+            pendingInlineStyles = prev.pendingInlineStyles,
+        ) == prev
+    }
+
+    /**
+     * Moves the two row classes that follow the caret without a repaint:
+     * `lunarbor-row-caret` (the caret's row shows its wiki-link syntax and
+     * search query) and `lunarbor-block-active` (every row of the block the
+     * caret is in) — the only parts of the paint loop that read the caret.
+     */
+    private fun moveCaretClasses(editor: HTMLElement, state: PaneBackingViewModel.State) {
+        for (cls in listOf("lunarbor-row-caret", "lunarbor-block-active")) {
+            val els = editor.querySelectorAll(".$cls")
+            for (i in 0 until els.length) (els.item(i) as? Element)?.classList?.remove(cls)
+        }
+        val row = editor.querySelector("[data-row='${state.cursorRow}']") ?: return
+        row.classList.add("lunarbor-row-caret")
+        val start = row.getAttribute("data-block-start") ?: return
+        val block = editor.querySelectorAll("[data-block-start='$start']")
+        for (i in 0 until block.length) (block.item(i) as? Element)?.classList?.add("lunarbor-block-active")
+    }
+
+    /**
+     * `true` when [ev] pressed the scroll wrapper's own scrollbar, not
+     * the empty space below the rows: a classic scrollbar lies beyond
+     * `clientWidth`; an overlay one (macOS) takes no width, so the
+     * rightmost [OVERLAY_SCROLLBAR_PX] count too. Grabbing the scrollbar
+     * must never move the caret — it put it on the last row, repainted
+     * and jumped there.
+     */
+    private fun isOnScrollbar(scrollWrapper: HTMLElement, ev: MouseEvent): Boolean {
+        val rect = scrollWrapper.getBoundingClientRect()
+        val x = ev.clientX.toDouble()
+        return x >= rect.left + scrollWrapper.clientLeft + scrollWrapper.clientWidth ||
+            x >= rect.right - OVERLAY_SCROLLBAR_PX
     }
 
     /**
@@ -3064,3 +3129,6 @@ private const val SCROLL_SETTLE_MS: Int = 400
  * else arrives meanwhile (see `MainScreen.isBackgroundOnlyChange`).
  */
 private const val BACKGROUND_REPAINT_MS: Int = 250
+
+/** Width at the scroll wrapper's right edge where an overlay scrollbar is grabbed. */
+private const val OVERLAY_SCROLLBAR_PX: Double = 16.0
