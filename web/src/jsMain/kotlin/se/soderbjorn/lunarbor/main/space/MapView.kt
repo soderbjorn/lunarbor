@@ -1123,7 +1123,7 @@ internal class MapView(
     /**
      * Folds every node but the root ([fold]), so only the root's children
      * show, or unfolds every node. A selection tucked away by the fold moves
-     * to the body it is drawn as. Called by [onKey] on X / O.
+     * to the body it is drawn as. Called by [onKey] on O or 0 (fold) and X (unfold).
      */
     private fun setAllFolded(fold: Boolean) {
         val rootId = graph.root?.id
@@ -1319,8 +1319,9 @@ internal class MapView(
             "p", "P" -> { sel?.let { open(it, showPage = true) }; sel != null }
             "e", "E" -> { mode.setShape(SpaceShape.PAGES); true }
             " " -> { sel?.let { toggleFold(it) }; sel != null }
-            "x", "X" -> { setAllFolded(true); true }
-            "o", "O" -> { setAllFolded(false); true }
+            "x", "X" -> { setAllFolded(false); true }
+            // 0 too: the legend's O reads like a zero.
+            "o", "O", "0" -> { setAllFolded(true); true }
             "." -> { stepFoldLevel(deeper = true); true }
             "," -> { stepFoldLevel(deeper = false); true }
             "-", "_" -> { changeSpread(1 / SPREAD_STEP); true }
@@ -1340,8 +1341,8 @@ internal class MapView(
                 "Enter" -> "open"
                 "p", "P" -> "edit-key"
                 " " -> "fold"
-                "x", "X" -> "fold-all"
-                "o", "O" -> "unfold-all"
+                "o", "O", "0" -> "fold-all"
+                "x", "X" -> "unfold-all"
                 "." -> "unfold-level"
                 "," -> "fold-level"
                 "-", "_", "+", "=" -> "spread"

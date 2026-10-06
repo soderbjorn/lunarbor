@@ -266,8 +266,8 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k("P") to "Edit the selection: as double-click.",
             k("E") to "Back to Pages, where the focused window already is.",
             k("␣") to "Expand or collapse the selection.",
-            k("X") to "Collapse every node, so only the top-level areas show.",
-            k("O") to "Expand every node.",
+            k("O") to "Collapse every node, so only the top-level areas show.",
+            k("X") to "Expand every node.",
             k(".") to "Expand one more level: every collapsed body showing at the shallowest depth.",
             k(",") to "Collapse the deepest level that is expanded.",
             k("−") + " " + k("+") to "Less or more space between the bodies (their size stays); remembered.",
@@ -301,7 +301,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           outside the app.</li>
           <li>Positions come only from the tree (folder names and the order of siblings) — never from
           chance — so the same vault always looks the same and you can learn where things are.</li>
-          <li>The map starts with every node expanded; <kbd>X</kbd> collapses them all and <kbd>O</kbd> expands
+          <li>The map starts with every node expanded; <kbd>O</kbd> collapses them all and <kbd>X</kbd> expands
           them all again. At most 5,000 nodes are shown. What is expanded or collapsed on the map is its own and does
           not change your windows.</li>
           <li>Moving between views makes the bodies glide to their new places, so you can follow a node
