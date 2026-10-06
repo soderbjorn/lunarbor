@@ -228,6 +228,7 @@ class SpaceMode(
             isSplit = obj.split == true
             shape = SpaceShape.of(obj.shape as? String)
             (obj.spread as? Double)?.let { mapSpread = it }
+            (obj.bundle as? Boolean)?.let { mapBundle = it }
         }
     }
 
@@ -241,6 +242,20 @@ class SpaceMode(
     /** Remembers the maps' spacing; called by `MapView` on − / +. */
     internal fun setMapSpread(value: Double) {
         mapSpread = value
+        persist()
+    }
+
+    /**
+     * Whether the maps draw vault links bundled along the tree
+     * (`MapView`'s B, [se.soderbjorn.lunarbor.main.LinkBundling]) instead of
+     * as free arcs; remembered under [PERSIST_KEY]. On by default.
+     */
+    internal var mapBundle: Boolean = true
+        private set
+
+    /** Remembers the maps' link style; called by `MapView` on B. */
+    internal fun setMapBundle(value: Boolean) {
+        mapBundle = value
         persist()
     }
 
@@ -719,12 +734,12 @@ class SpaceMode(
 
     private fun persist() {
         val spread = mapSpread?.let { ",\"spread\":$it" } ?: ""
-        val json = "{\"split\":$isSplit,\"shape\":\"${shape.name}\"$spread}"
+        val json = "{\"split\":$isSplit,\"shape\":\"${shape.name}\"$spread,\"bundle\":$mapBundle}"
         scope.launch { persister.write(PERSIST_KEY, json) }
     }
 
     companion object {
-        /** Persister key for `{ "split": Boolean, "shape": SpaceShape name, "spread"?: Double }` (an older `on` is ignored). App state, not vault content. */
+        /** Persister key for `{ "split": Boolean, "shape": SpaceShape name, "spread"?: Double, "bundle"?: Boolean }` (an older `on` is ignored). App state, not vault content. */
         const val PERSIST_KEY: String = "lunarborSpace"
 
         /** Persister key of [isSpaceModeEnabled] (`"true"` / `"false"`; absent = off, on in the demo). */

@@ -33,7 +33,8 @@
  * fold and unfold, so its fold state is left as it was. Keys (while the
  * map has focus): ← → siblings, ↑ parent, ↓ child, ⏎ open in the focused
  * window, P edit its page, E back to Pages, Space fold, X fold all, O
- * unfold all, . unfold the next level, , fold the last level, C whole map, L next shape, F free
+ * unfold all, . unfold the next level, , fold the last level, C whole map, L next shape, B links
+ * bundled along the tree ([LinkBundling]) or as free arcs, F free
  * flight ([FreeFlight]), K the legend ([MapLegend]), ? help
  * ([showSpaceHelp]).
  *
@@ -68,6 +69,7 @@ import org.w3c.dom.events.WheelEvent
 import se.soderbjorn.lunarbor.data.LunarborLink
 import se.soderbjorn.lunarbor.main.DocumentRegistry
 import se.soderbjorn.lunarbor.main.GraphLayout
+import se.soderbjorn.lunarbor.main.LinkBundling
 import se.soderbjorn.lunarbor.main.LinkPreviewItem
 import se.soderbjorn.lunarbor.main.SpacePalette
 import se.soderbjorn.lunarbor.main.SpaceShape
@@ -124,6 +126,13 @@ internal class MapView(
      * ([SpaceMode.mapSpread]).
      */
     private var spread: Double = mode.mapSpread?.coerceIn(1.0, MAX_SPREAD) ?: DEFAULT_SPREAD
+
+    /**
+     * `true` while vault links are drawn bundled along the tree
+     * ([LinkBundling]), `false` for free arcs; B switches
+     * ([toggleBundle]), remembered with 3D mode's settings ([SpaceMode.mapBundle]).
+     */
+    private var bundle: Boolean = mode.mapBundle
 
     /** The keyboard legend in the bottom left (K hides it). */
     private val legend = MapLegend()
@@ -809,6 +818,7 @@ internal class MapView(
             val pa = GraphLayout.visibleAnchor(graph, folded, a)?.let { bodies[it] } ?: continue
             val pc = GraphLayout.visibleAnchor(graph, folded, c)?.let { bodies[it] } ?: continue
             if (pa === pc) continue
+            if (bundle && writeBundled(a, c, pa, pc)) continue
             // An arc bowed upwards (outwards from the root in the cone).
             val mid = SpaceVec((pa.cur.x + pc.cur.x) / 2, (pa.cur.y + pc.cur.y) / 2, (pa.cur.z + pc.cur.z) / 2)
             val lift = dist(pa.cur, pc.cur) * 0.28
@@ -833,6 +843,40 @@ internal class MapView(
             }
         }
         linkLines.commit()
+    }
+
+    /**
+     * Draws the link [a]–[c] as a bundled curve along the tree
+     * ([LinkBundling.controlPath] / [LinkBundling.curve]), coloured from
+     * [pa]'s colour to [pc]'s. Called by [writeLines] while [bundle] is on.
+     *
+     * @return `false` when a body on the path has no position (the caller
+     *   draws the free arc instead).
+     */
+    private fun writeBundled(a: String, c: String, pa: Body, pc: Body): Boolean {
+        val path = LinkBundling.controlPath(graph, folded, a, c) ?: return false
+        val points = ArrayList<SpaceVec>(path.size)
+        for (id in path) points += bodies[id]?.cur ?: return false
+        val curve = LinkBundling.curve(points)
+        val last = curve.size - 1
+        for (k in 1..last) {
+            val t0 = (k - 1).toDouble() / last
+            val t1 = k.toDouble() / last
+            linkLines.segment(
+                curve[k - 1], curve[k],
+                mix(pa.r, pc.r, t0), mix(pa.g, pc.g, t0), mix(pa.b, pc.b, t0),
+                mix(pa.r, pc.r, t1), mix(pa.g, pc.g, t1), mix(pa.b, pc.b, t1),
+            )
+        }
+        return true
+    }
+
+    /** Switches links between bundled curves and free arcs (B); remembered. */
+    private fun toggleBundle() {
+        bundle = !bundle
+        mode.setMapBundle(bundle)
+        sceneDirty = true
+        mode.requestFrame()
     }
 
     /** Sets [color] for body [id]: the root in the theme's text colour, others by area hue. */
@@ -1419,6 +1463,7 @@ internal class MapView(
             "-", "_" -> { changeSpread(1 / SPREAD_STEP); true }
             "+", "=" -> { changeSpread(SPREAD_STEP); true }
             "l", "L" -> { mode.nextShape(); true }
+            "b", "B" -> { toggleBundle(); true }
             "?" -> { showSpaceHelp(shape); true }
             // C, as in Lunamux's "fly camera home".
             "c", "C" -> { resetCamera(); true }
@@ -1439,6 +1484,7 @@ internal class MapView(
                 "," -> "fold-level"
                 "-", "_", "+", "=" -> "spread"
                 "l", "L" -> "shape"
+                "b", "B" -> "bundle"
                 "c", "C" -> "home"
                 else -> null
             }?.let { legend.flash(it) }

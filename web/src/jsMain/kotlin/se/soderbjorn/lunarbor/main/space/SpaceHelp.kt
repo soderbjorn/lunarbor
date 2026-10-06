@@ -237,9 +237,12 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
           <li><b>Dust</b> — the small specks circling a body are its leaf bullets (up to a dozen or so are
           drawn).</li>
           <li><b>Branches</b> — thin lines from each body to its parent.</li>
-          <li><b>Link arcs</b> — brighter curves between two bodies when a note in one links to the other
+          <li><b>Links</b> — brighter curves between two bodies when a note in one links to the other
           with a link into the vault. Links to a note or file count for the node that
-          holds it.</li>
+          holds it. By default they are <b>bundled</b>: each link follows the branches up to where its two
+          ends meet in the tree and down again, so links between the same areas run together as one
+          strand and you see which parts of your notes refer to each other. <b>B</b> switches to free arcs
+          and back (remembered).</li>
           <li><b>Rings</b> — a ring around a body means it is <b>collapsed</b> on the map: its children are
           tucked inside it. Its label shows how many (e.g. <code>Recipes · 12</code>).</li>
           <li><b>Labels</b> — up to about forty at a time, so they never pile up: the selection, the
@@ -270,6 +273,7 @@ private val HELP_SECTIONS: List<HelpSection> = listOf(
             k(".") to "Expand one more level: every collapsed body showing at the shallowest depth.",
             k(",") to "Collapse the deepest level that is expanded.",
             k("−") + " " + k("+") to "Less or more space between the bodies (their size stays); remembered.",
+            k("B") to "Links bundled along the tree, or as free arcs; remembered.",
             k("F") to "Free flight (below).",
             k("K") to "Hide or show the keyboard legend in the bottom left.",
             k("L") to "Next view.",

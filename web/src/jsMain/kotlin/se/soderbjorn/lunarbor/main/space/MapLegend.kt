@@ -113,6 +113,7 @@ internal class MapLegend {
                 Triple("unfold-level", ".", "Expand one more level"),
                 Triple("fold-level", ",", "Collapse the deepest level"),
                 Triple("spread", "− +", "Less / more space between"),
+                Triple("bundle", "B", "Bundled links / arcs"),
                 Triple("fly", "F", "Free flight"),
                 Triple("shape", "L", "Next view"),
                 Triple("pages", "E", "Back to Pages"),
