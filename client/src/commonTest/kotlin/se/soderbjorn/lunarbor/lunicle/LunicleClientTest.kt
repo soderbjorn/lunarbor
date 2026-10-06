@@ -112,6 +112,7 @@ class LunicleClientTest {
             LunicleRequest(LunicleMethod.POST, "/api/v1/issues/774/comments", body = json("""{ "body": "Looks good" }""")),
             LunicleRequests.addComment(774, "Looks good"),
         )
+        assertEquals(LunicleRequest(LunicleMethod.DELETE, "/api/v1/issues/774"), LunicleRequests.deleteIssue(774))
     }
 
     @Test
@@ -126,6 +127,8 @@ class LunicleClientTest {
 
         assertEquals(LunicleCreated(781, "FRA-14", "Created FRA-14 (issue id 781): T"), client.createIssue(2, LunicleNewIssue("T")).valueOrNull())
         assertEquals("Moved issue 774 to Closed.", client.moveIssue(774, "Closed", "Done").valueOrNull())
+        api.answer(LunicleMethod.DELETE, "/api/v1/issues/775", 200, """{ "message": "Deleted FRA-9. This cannot be undone." }""")
+        assertEquals("Deleted FRA-9. This cannot be undone.", client.deleteIssue(775).valueOrNull())
 
         val readOnly = client.updateIssue(774, LunicleIssueChanges(title = LunicleField.Set("x"))).errorOrNull()
         assertIs<LunicleError.Http>(readOnly)

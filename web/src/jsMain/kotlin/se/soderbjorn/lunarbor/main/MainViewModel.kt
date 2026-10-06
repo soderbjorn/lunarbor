@@ -268,6 +268,14 @@ class MainViewModel(
     fun explainLunicleRow(nodeRow: Int, ref: LunicleRowRef) =
         paneBackingViewModel.explainLunicleRow(nodeRow, ref, kotlin.js.Date.now().toLong())
 
+    /** See `PaneBackingViewModel.lunicleIssueToDelete`; the clock is the browser's. */
+    fun lunicleIssueToDelete(nodeRow: Int, issueId: Long): se.soderbjorn.lunarbor.lunicle.LunicleBoardIssue? =
+        paneBackingViewModel.lunicleIssueToDelete(nodeRow, issueId, kotlin.js.Date.now().toLong())
+
+    /** See `PaneBackingViewModel.deleteLunicleIssue`; the clock is the browser's. */
+    fun deleteLunicleIssue(nodeRow: Int, issueId: Long) =
+        paneBackingViewModel.deleteLunicleIssue(nodeRow, issueId, kotlin.js.Date.now().toLong())
+
     /** See `PaneBackingViewModel.openLunicleMenu`; the clock is the browser's. */
     fun openLunicleMenu(nodeRow: Int, issueId: Long, trigger: Char?, field: se.soderbjorn.lunarbor.lunicle.LuniclePill.Field?): LunicleMenu? =
         paneBackingViewModel.openLunicleMenu(nodeRow, issueId, trigger, field, kotlin.js.Date.now().toLong())
@@ -617,6 +625,12 @@ class MainViewModel(
 
     /** See `PaneBackingViewModel.renameActiveFile`. */
     fun renameActiveFile(title: String) = paneBackingViewModel.renameActiveFile(title)
+
+    /** See `PaneBackingViewModel.canRenameZoomedItem`. */
+    fun canRenameZoomedItem(state: PaneBackingViewModel.State) = paneBackingViewModel.canRenameZoomedItem(state)
+
+    /** See `PaneBackingViewModel.renameZoomedItem`. */
+    fun renameZoomedItem(title: String) = paneBackingViewModel.renameZoomedItem(title)
 
     /** See `PaneBackingViewModel.renamedTo`. */
     fun renamedTo(fromRel: String): String? = paneBackingViewModel.renamedTo(fromRel)

@@ -194,6 +194,14 @@ class MainScreen(
     private var titleEditCancelled = false
 
     /**
+     * The zoomed bullet's title source while the page title edits it
+     * (`MainViewModel.renameZoomedItem`): set on focus, when the rendered
+     * title is swapped for its Markdown source, and cleared on blur.
+     * `null` while the title is not being edited, or edits a file name.
+     */
+    private var zoomTitleSource: String? = null
+
+    /**
      * Pending `setTimeout` handle for the restructuring banner's show-debounce.
      * Non-null only between the moment `isRestructuring` flipped true and
      * either the timer firing (banner becomes visible) or the flag flipping
@@ -781,6 +789,13 @@ class MainScreen(
 
     /** `true` while the arrow keys are on a board node's row ([LunicleBoardCursor.isActive]). */
     val isOnLunicleBoardRow: Boolean get() = lunicleBoardCursor.isActive
+
+    /**
+     * The board issue the arrow keys are on, as (node row, issue id), or
+     * `null` ([LunicleBoardCursor.selectedIssue]). Read by [AppShell]'s
+     * palette to offer "Delete Lunicle issue…".
+     */
+    val selectedLunicleIssue: Pair<Int, Long>? get() = lunicleBoardCursor.selectedIssue()
 
     /**
      * The search-node result the arrow keys highlight, or `null`
@@ -2272,12 +2287,18 @@ class MainScreen(
     }
 
     /**
-     * Makes a note's, image's or drawing's title an inline rename field (the view turns
+     * Makes the page title an inline rename field (the view turns
      * `contenteditable` on in [updateTitle] only where
-     * `State.canRenameFromTitle`): Enter commits and returns to the
-     * editor, Escape reverts, and leaving the field commits too. A commit
-     * goes to `MainViewModel.renameActiveFile`, which renames the file
-     * (and the hidden `# H1` that repeated the old name).
+     * `State.canRenameFromTitle` or `MainViewModel.canRenameZoomedItem`):
+     * Enter commits and returns to the editor, Escape reverts, and leaving
+     * the field commits too.
+     *
+     * - A note's, image's or drawing's title commits to
+     *   `MainViewModel.renameActiveFile`, which renames the file (and the
+     *   hidden `# H1` that repeated the old name).
+     * - A zoomed bullet's title shows its Markdown source while focused
+     *   ([zoomTitleSource]) and commits to `MainViewModel.renameZoomedItem`,
+     *   which rewrites the bullet's text (the save renames its folder).
      */
     private fun wireTitleEditing(title: HTMLElement) {
         // A zoomed bullet's links work in the title as in its row: a press
@@ -2314,9 +2335,37 @@ class MainScreen(
                 }
             }
         })
+        title.addEventListener("focus", { _ ->
+            val backing = viewModel.currentBackingState
+            if (!viewModel.canRenameZoomedItem(backing)) return@addEventListener
+            val source = viewModel.zoomInfo(backing)?.titleText ?: return@addEventListener
+            zoomTitleSource = source
+            // The rendered title hides Markdown (bold, links, tags' look):
+            // edit the source instead, caret at its end. Plain text needs no
+            // swap, so the caret stays where the click put it.
+            if (title.textContent != source) {
+                title.textContent = source
+                val range = document.createRange()
+                range.selectNodeContents(title)
+                range.collapse(false)
+                val sel = window.asDynamic().getSelection()
+                if (sel != null) {
+                    sel.removeAllRanges()
+                    sel.addRange(range)
+                }
+            }
+        })
         title.addEventListener("blur", { _ ->
             val cancelled = titleEditCancelled
             titleEditCancelled = false
+            val zoomSource = zoomTitleSource
+            if (zoomSource != null) {
+                zoomTitleSource = null
+                val typed = (title.textContent ?: "").replace('\n', ' ').trim()
+                if (!cancelled && typed.isNotEmpty() && typed != zoomSource) viewModel.renameZoomedItem(typed)
+                updateTitle(title, viewModel.stateFlow.value.backingState)
+                return@addEventListener
+            }
             val backing = viewModel.currentBackingState
             val typed = (title.textContent ?: "").replace('\n', ' ').trim()
             val current = NoteRepository.displayNameOf(backing.activeFileRel)
@@ -2369,7 +2418,7 @@ class MainScreen(
     private fun updateTitle(title: HTMLElement, backing: PaneBackingViewModel.State?) {
         // Never repaint over a title the user is typing in.
         if (document.activeElement === title) return
-        val editable = backing?.canRenameFromTitle == true
+        val editable = backing != null && (backing.canRenameFromTitle || viewModel.canRenameZoomedItem(backing))
         title.setAttribute("contenteditable", if (editable) "plaintext-only" else "false")
         if (editable) {
             title.classList.add(TITLE_EDITABLE_CLASS)

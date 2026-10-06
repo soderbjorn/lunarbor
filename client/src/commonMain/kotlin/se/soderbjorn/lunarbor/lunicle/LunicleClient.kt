@@ -4,7 +4,7 @@
  * Typed calls to one connection's Lunicle REST API (LBR-26), over the
  * [LunicleApi] port: `me()`, `projects()`, `board(projectId)`,
  * `issue(issueId)`, `createIssue`, `updateIssue`, `moveIssue`, `reorderIssue`,
- * `addComment`. Every call returns a [LunicleResult]; nothing throws.
+ * `addComment`, `deleteIssue`. Every call returns a [LunicleResult]; nothing throws.
  *
  * The requests themselves are built by [LunicleRequests], pure and tested
  * in `LunicleClientTest`, following Lunicle's API rules (its `RestApi.kt`,
@@ -207,6 +207,9 @@ object LunicleRequests {
         body = JsonObject(mapOf("body" to JsonPrimitive(body))),
     )
 
+    /** `DELETE /issues/{issue_id}` (`delete_issue`): permanent, comments included. */
+    fun deleteIssue(issueId: Long): LunicleRequest = LunicleRequest(LunicleMethod.DELETE, "$PREFIX/issues/$issueId")
+
     private fun strings(list: List<String>): JsonArray = JsonArray(list.map { JsonPrimitive(it) })
 }
 
@@ -263,6 +266,10 @@ class LunicleClient(private val api: LunicleApi, val connectionId: String) {
     /** Comments on an issue; the answer carries the comment's id. */
     suspend fun addComment(issueId: Long, body: String): LunicleResult<LunicleCreated> =
         send(LunicleRequests.addComment(issueId, body), "created comment", LunicleJson::created)
+
+    /** Deletes an issue for good; the answer is Lunicle's sentence ("Deleted FRA-12 …"). */
+    suspend fun deleteIssue(issueId: Long): LunicleResult<String> =
+        send(LunicleRequests.deleteIssue(issueId), "answer", ::messageOf)
 
     /**
      * Sends [request] and parses a 2xx answer with [parse]; any other status

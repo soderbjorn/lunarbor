@@ -167,6 +167,21 @@ internal class LunicleBoardCursor(
     /** `true` while the cursor is on a board row. */
     val isActive: Boolean get() = spot != null
 
+    /**
+     * The issue the cursor is on — its title row, or a row under it
+     * (description, comment, "Comment…") — as (node row, issue id), found
+     * again on the board as painted now ([LunicleBoardRows.relocate]).
+     * `null` off the board or on a column, a draft or "New issue". Read by
+     * [AppShell]'s palette for "Delete Lunicle issue…".
+     */
+    fun selectedIssue(): Pair<Int, Long>? {
+        val current = spot ?: return null
+        val board = rowsOf(viewModel.currentBackingState, current.nodeId) ?: return null
+        val at = LunicleBoardRows.relocate(board.rows, current.ref, board.view.createdIds) ?: return null
+        val issueId = at.issueId?.takeIf { it > 0 } ?: return null
+        return board.nodeRow to issueId
+    }
+
     /** Set by [move], so the next [applyHighlight] scrolls the row into view. */
     private var scrollPending = false
 

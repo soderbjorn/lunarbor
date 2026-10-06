@@ -58,6 +58,9 @@
  *    ids of comments this app posted are kept
  *    ([LunicleBoardState.ownComments]), so panes never highlight them as
  *    arrivals.
+ *  - **Deleting** ([deleteIssue], `DELETE /issues/{id}`): not optimistic —
+ *    the issue stays, with "Saving to Lunicle…", until Lunicle answers; it
+ *    then leaves the board, or the error shows in red. Permanent.
  *  - **Read-only**: a board's first good read asks whether the token is
  *    read-only ([LunicleService.isReadOnly]); a write answered 403
  *    `insufficient_scope` says so too. [explain] shows why something
@@ -296,6 +299,43 @@ class LunicleBoards(
                     afterSave(key, t)
                 }
                 is LunicleResult.Failure -> failed(key, target, r.error) { s -> s.copy(titleEdits = withoutEdit(s)) }
+            }
+        }
+    }
+
+    /**
+     * Deletes issue [issueId] of board [key] for good (`DELETE
+     * /issues/{id}`, its comments with it). Not optimistic: the indicator
+     * says "Saving to Lunicle…" until the answer; on success the issue
+     * leaves the board at once ("Synced just now", then a re-read), on
+     * failure (no right to delete, a read-only token) it stays and the
+     * error shows in red. A board not resolved yet ignores it.
+     *
+     * Called by `PaneBackingViewModel.deleteLunicleIssue`, after the
+     * palette's "Delete Lunicle issue…" was confirmed.
+     */
+    fun deleteIssue(key: LunicleBoardKey, issueId: Long) {
+        val target = stateOf(key).target ?: return
+        writing.getOrPut(key) { HashSet() } += issueId
+        put(key) { it.copy(writes = it.writes + 1) }
+        scope.launch {
+            val r = service.client(target.connection.id).deleteIssue(issueId)
+            writing[key]?.remove(issueId)
+            when (r) {
+                is LunicleResult.Ok -> {
+                    ownChanges.getOrPut(key) { HashSet() } += issueId
+                    val t = now()
+                    put(key) { s ->
+                        s.copy(
+                            board = s.board?.let { b -> b.copy(issues = b.issues.filter { it.id != issueId }) },
+                            details = s.details - issueId,
+                            writes = (s.writes - 1).coerceAtLeast(0),
+                            savedAt = t,
+                        )
+                    }
+                    afterSave(key, t)
+                }
+                is LunicleResult.Failure -> failed(key, target, r.error) { it }
             }
         }
     }

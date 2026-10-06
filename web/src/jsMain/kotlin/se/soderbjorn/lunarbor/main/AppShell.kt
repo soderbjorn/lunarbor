@@ -1384,6 +1384,28 @@ class AppShell(
                 }
             }
         }
+        // The board issue the arrow keys are on (its title or a row under
+        // it), deleted in Lunicle for good after asking. Only where it can
+        // be edited; Lunicle decides who may delete.
+        focusedPaneId()?.let { paneId ->
+            val vm = paneViewModels[paneId] ?: return@let
+            val (nodeRow, issueId) = paneEditors[paneId]?.selectedLunicleIssue ?: return@let
+            val issue = vm.lunicleIssueToDelete(nodeRow, issueId) ?: return@let
+            out += CommandPalette.Command(
+                id = "delete-lunicle-issue",
+                title = "Delete Lunicle issue ${issue.key}…",
+                run = {
+                    showConfirmDialog(
+                        title = "Delete ${issue.key} “${issue.title.ifBlank { "(untitled)" }}”?",
+                        message = "The issue and its comments are deleted in Lunicle for everyone. This cannot be undone.",
+                        confirmLabel = "Delete",
+                        cancelLabel = "Cancel",
+                        destructive = true,
+                        onConfirm = { vm.deleteLunicleIssue(nodeRow, issueId) },
+                    )
+                },
+            )
+        }
         // The node the page is (zoom target, or a node's own outline), with
         // everything under it, after asking; the pane goes up a level. On a
         // note, image, drawing or other file, the same command trashes the
@@ -1907,12 +1929,13 @@ class AppShell(
     }
 
     /**
-     * The pane header's Back / Forward pair for [paneId], placed in the
-     * toolkit's leading badge slot (between the pane icon and the
+     * The pane header's Back / Forward / Up buttons for [paneId], placed
+     * in the toolkit's leading badge slot (between the pane icon and the
      * breadcrumb). Built once per pane and updated in place: each call
-     * re-reads the pane's history stacks and dims the button whose stack
-     * is empty ([DISABLED_CLASS]) — the buttons never move, for muscle
-     * memory.
+     * re-reads the pane's history stacks and location and dims a button
+     * that would go nowhere ([DISABLED_CLASS]) — the buttons never move,
+     * for muscle memory. Up is [MainViewModel.navigateUp] (Ctrl-Cmd-Up),
+     * the same step as the breadcrumb's parent segment.
      *
      * The click handlers read the live state, so a stale element can
      * never navigate somewhere the stacks no longer allow. Mousedowns are
@@ -1950,6 +1973,10 @@ class AppShell(
                 val st = vm.stateFlow.value.backingState
                 if (st != null && vm.canZoomForward(st)) vm.zoomForward()
             }
+            button("lunarbor-pane-nav-up", "Up (⌃⌘↑)", ICON_UP) { vm ->
+                val st = vm.stateFlow.value.backingState
+                if (st != null && vm.canNavigateUp(st)) vm.navigateUp()
+            }
             el
         }
         val vm = paneViewModels[paneId]
@@ -1958,6 +1985,8 @@ class AppShell(
         val canForward = backing != null && vm.canZoomForward(backing)
         cluster.querySelector(".lunarbor-pane-nav-back")?.classList?.toggle(DISABLED_CLASS, !canBack)
         cluster.querySelector(".lunarbor-pane-nav-forward")?.classList?.toggle(DISABLED_CLASS, !canForward)
+        val canUp = backing != null && vm.canNavigateUp(backing)
+        cluster.querySelector(".lunarbor-pane-nav-up")?.classList?.toggle(DISABLED_CLASS, !canUp)
         return cluster
     }
 
@@ -2121,7 +2150,7 @@ class AppShell(
     /**
      * Everything a pane's header shows that navigation changes: the
      * active file (its breadcrumb), the zoom path, and whether Back /
-     * Forward can go anywhere. See [chromeDrawnKeys].
+     * Forward can go anywhere (Up follows from file + zoom path). See [chromeDrawnKeys].
      */
     private fun chromeKeyOf(vm: MainViewModel, backing: PaneBackingViewModel.State?): List<Any?> =
         listOf(
@@ -2229,8 +2258,8 @@ class AppShell(
     /**
      * Builds the trailing-action strip for [paneId]'s pane header: the
      * Style button, before the toolkit's window controls. Navigation is
-     * not here — Back / Forward are in the leading slot
-     * ([paneNavCluster]) and the breadcrumb covers up / home.
+     * not here — Back / Forward / Up are in the leading slot
+     * ([paneNavCluster]) and the breadcrumb covers home.
      *
      * Since the toolkit's [PaneAction] has no native `disabled` flag, an
      * inert Style button gets a no-op handler and [DISABLED_CLASS]; the
@@ -2501,15 +2530,18 @@ class AppShell(
                Back / Forward (AppShell.paneNavCluster) sit in the
                toolkit's leading badge slot, right before the breadcrumb,
                so history and location read as one group. Unlike the
-               trailing action strip they are always visible. */
+               trailing action strip they are always visible. Wider than
+               the toolkit's 24 px actions, with a small gap, so a click
+               meant for one never lands on its neighbour. */
             .lunarbor-pane-nav {
                 display: inline-flex;
                 align-items: center;
-                gap: 0;
-                margin: -4px 0 -4px -2px;
+                gap: 2px;
+                margin: -4px 2px -4px -2px;
             }
             .lunarbor-pane-nav .dt-pane-action {
                 cursor: pointer;
+                width: 34px;
             }
             /* Sidebar pane rows show the pane's path (`Home / Recipes /
                Soups`), whose informative end is the tail: clip them from
@@ -3460,8 +3492,8 @@ class AppShell(
          * crosses the planet. Tilted as a whole.
          */
         private const val ICON_PLANET: String =
-            "<svg class=\"lunarbor-space-cube\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
-                "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
+            "<svg class=\"lunarbor-space-cube\" viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">" +
                 "<g transform=\"rotate(-20 12 12)\"><circle cx=\"12\" cy=\"12\" r=\"6\"/>" +
                 "<path d=\"M6.64 9.3A10 3.2 0 0 0 2 12A10 3.2 0 0 0 22 12A10 3.2 0 0 0 17.36 9.3\"/></g></svg>"
 
@@ -3498,19 +3530,26 @@ class AppShell(
          */
         private const val DISABLED_CLASS: String = "lunarbor-pane-action-disabled"
 
-        /** Left-chevron glyph for the header's Back button. */
+        /** Left arrow for the header's Back button: wide, to fill its wide hit area. */
         private const val ICON_BACK: String =
-            "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+            "<svg viewBox=\"0 0 28 24\" width=\"23\" height=\"20\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" " +
                 "stroke-linejoin=\"round\">" +
-                "<polyline points=\"15 18 9 12 15 6\"/></svg>"
+                "<line x1=\"23\" y1=\"12\" x2=\"5\" y2=\"12\"/><polyline points=\"12 5 5 12 12 19\"/></svg>"
 
-        /** Right-chevron glyph for the header's Forward button. */
+        /** Right arrow for the header's Forward button: wide, to fill its wide hit area. */
         private const val ICON_FORWARD: String =
-            "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+            "<svg viewBox=\"0 0 28 24\" width=\"23\" height=\"20\" fill=\"none\" " +
                 "stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" " +
                 "stroke-linejoin=\"round\">" +
-                "<polyline points=\"9 18 15 12 9 6\"/></svg>"
+                "<line x1=\"5\" y1=\"12\" x2=\"23\" y2=\"12\"/><polyline points=\"16 5 23 12 16 19\"/></svg>"
+
+        /** Up arrow for the header's Up button, drawn in the same box as Back / Forward. */
+        private const val ICON_UP: String =
+            "<svg viewBox=\"0 0 28 24\" width=\"23\" height=\"20\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" " +
+                "stroke-linejoin=\"round\">" +
+                "<line x1=\"14\" y1=\"20\" x2=\"14\" y2=\"4\"/><polyline points=\"7 11 14 4 21 11\"/></svg>"
 
         /** Five-point outline-star glyph for the Starred toolbar button. */
         internal const val ICON_STAR: String =

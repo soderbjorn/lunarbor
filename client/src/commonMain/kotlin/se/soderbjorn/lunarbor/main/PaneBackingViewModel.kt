@@ -1800,6 +1800,42 @@ class PaneBackingViewModel(
     }
 
     /**
+     * The issue the palette's "Delete Lunicle issue…" would delete: issue
+     * [issueId] of the board node at [nodeRow] — the board cursor's issue,
+     * or the one its row (description, comment, "Comment…") belongs to —
+     * as the board shows it. `null` for a draft, an issue being filed, or
+     * one that cannot be edited (a read-only token, Lunicle's
+     * `canEdit: false`); Lunicle itself has the last word on who may delete.
+     *
+     * Called by the web view's `AppShell` when it builds the palette.
+     */
+    fun lunicleIssueToDelete(nodeRow: Int, issueId: Long, now: Long): LunicleBoardIssue? {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return null
+        val issue = issueViewOf(view, issueId)?.takeIf { it.editable } ?: return null
+        return issue.issue
+    }
+
+    /**
+     * Deletes issue [issueId] of the board node at [nodeRow] in Lunicle, for
+     * good ([LunicleBoards.deleteIssue]); an open description edit of it is
+     * dropped. Not undoable — the caller asks first. The board cursor
+     * relocates to the issue's column once it is gone
+     * (`LunicleBoardRows.relocate`).
+     *
+     * Called by the web view's `AppShell` after "Delete Lunicle issue…" is
+     * confirmed.
+     */
+    fun deleteLunicleIssue(nodeRow: Int, issueId: Long, now: Long) {
+        val boards = registry.lunicleBoards ?: return
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return
+        if (lunicleIssueToDelete(nodeRow, issueId, now) == null) return
+        if (_stateFlow.value.lunicleDescriptionEdit?.let { it.board == view.key && it.issueId == issueId } == true) {
+            patch { it.copy(lunicleDescriptionEdit = null) }
+        }
+        boards.deleteIssue(view.key, issueId)
+    }
+
+    /**
      * A key that would edit the board row [ref] of the board node at
      * [nodeRow], which cannot be edited (LBR-29): the indicator says why,
      * once per board and reason — a read-only token, or Lunicle's
@@ -4552,6 +4588,51 @@ class PaneBackingViewModel(
             }
         }
         scope.launch { registry.renameFile(s.activeFileRel, trimmed) }
+    }
+
+    /**
+     * `true` when the page title of a zoomed page edits the zoomed
+     * bullet's own text ([renameZoomedItem]): zoomed into a bullet (a
+     * block's title is its content, already on the page) on a page that
+     * is not read-only (search and board nodes keep their title).
+     *
+     * Called by the web view's title, to make it editable.
+     */
+    fun canRenameZoomedItem(state: State = _stateFlow.value): Boolean {
+        if (state.isMarkdownMode || state.isFileView || !state.isLoaded) return false
+        val zoom = zoomInfo(state) ?: return false
+        if (zoom.isReadOnly) return false
+        return DocumentLayout.bulletAsteriskColumn(state.lines[zoom.zoomRow]) >= 0
+    }
+
+    /**
+     * Replaces the zoomed bullet's title (its text after the bullet and
+     * any heading / quote prefix, as [ZoomInfo.titleText] shows it) with
+     * [title], so a node can be renamed from its own page instead of from
+     * its parent. One undoable edit through [recordEdit]; the next save
+     * renames the bullet's folder by the usual save rules. Line breaks
+     * become spaces.
+     *
+     * No-op for a blank or unchanged title and where
+     * [canRenameZoomedItem] is `false`.
+     *
+     * Called by the web view when the zoomed page's title edit is
+     * committed.
+     */
+    fun renameZoomedItem(title: String) {
+        val s = _stateFlow.value
+        if (!canRenameZoomedItem(s)) return
+        val zoom = zoomInfo(s) ?: return
+        val text = title.replace('\r', ' ').replace('\n', ' ').trim()
+        if (text.isEmpty() || text == zoom.titleText) return
+        val doc = document ?: return
+        val row = zoom.zoomRow
+        val line = s.lines[row]
+        val start = line.length - zoom.titleText.length
+        recordEdit(FrameKind.OTHER) {
+            if (start < line.length) doc.delete(row, start, row, line.length)
+            doc.insertText(row, start, text)
+        }
     }
 
     /**
