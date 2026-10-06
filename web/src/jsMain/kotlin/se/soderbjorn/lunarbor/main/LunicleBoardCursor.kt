@@ -56,8 +56,15 @@
  * editor's caret is hidden. Other chords (the palette, navigation, app
  * shortcuts) go on as usual.
  *
- * Rows that LBR-31 will edit (the description, "Comment…") still show a
- * drawn caret. The cursor is keyed by the node's `LineId` and the row's
+ * **Description and comments (LBR-31).** On a description the field
+ * covers the caret's line ([Field.line]): ↑ / ↓ go between lines (leaving
+ * at the first / last), Enter adds a line, Backspace at a line's start and
+ * Delete at its end join lines, a multi-line paste goes in verbatim —
+ * `MainViewModel.editLunicleDescription`; the lines are pane state, so a
+ * repaint moves the field onto its new line. Leaving the row commits it.
+ * "Comment…" is a field too: Enter posts (`MainViewModel.lunicleEnter`)
+ * and empties it, and a failed post's text is merged back into it
+ * (`MainViewModel.takeLunicleCommentDraft`). The cursor is keyed by the node's `LineId` and the row's
  * `LunicleRowRef` (issue id plus row kind, never an index), and found
  * again after every repaint (`LunicleBoardRows.relocate`).
  *
@@ -134,6 +141,9 @@ internal class LunicleBoardCursor(
 
         /** See [selStart]. */
         var selEnd = 0
+
+        /** On a description (LBR-31): the line the field edits; `-1` elsewhere. */
+        var line = -1
     }
 
     private var spot: Spot? = null
@@ -161,6 +171,15 @@ internal class LunicleBoardCursor(
     private var scrollPending = false
 
     /**
+     * The line the caret starts on when it next lands on a description
+     * (LBR-31): `0` from above, `-1` (the last) from below, a pressed line.
+     */
+    private var descLine = 0
+
+    /** Whether it starts at that line's end (from below, a press) rather than its start. */
+    private var descAtEnd = false
+
+    /**
      * Leaves the board (a click in the editor): the field's text is
      * committed ([leaveField]) and the editor's caret shows again.
      */
@@ -180,13 +199,25 @@ internal class LunicleBoardCursor(
      *
      * @param nodeRow The board node's document row.
      * @param key The row's [LunicleRowRef.key].
+     * @param line On a description (LBR-31), the pressed line; `-1` elsewhere.
      */
-    fun press(editor: HTMLElement, nodeRow: Int, key: String) {
+    fun press(editor: HTMLElement, nodeRow: Int, key: String, line: Int = -1) {
         val state = viewModel.currentBackingState
         val nodeId = state.documentState?.lineIds?.getOrNull(nodeRow) ?: return
         val board = rowsOf(state, nodeId) ?: return
         val ref = board.rows.firstOrNull { it.ref.key == key }?.ref ?: return
-        if (field?.ref?.key == key) return
+        val open = field
+        if (open?.ref?.key == key) {
+            // Another line of the description being edited: the caret moves there.
+            if (ref.kind == LunicleRowKind.DESCRIPTION && line >= 0 && line != open.line) {
+                viewModel.beginLunicleDescription(nodeRow, ref, line, atEnd = true, text = open.input.value)?.let { placeDescCaret(open, it) }
+            }
+            return
+        }
+        if (ref.kind == LunicleRowKind.DESCRIPTION) {
+            descLine = line.coerceAtLeast(0)
+            descAtEnd = true
+        }
         leaveField(refocus = false)
         if (!board.isPage && state.cursorRow != nodeRow) {
             val endCol = state.lines.getOrNull(nodeRow)?.length ?: 0
@@ -267,13 +298,23 @@ internal class LunicleBoardCursor(
                 return true
             }
         }
+        // Keys between the lines of a description (LBR-31).
+        if (f != null && f.ref.kind == LunicleRowKind.DESCRIPTION && plain && descriptionKey(f, event)) {
+            event.preventDefault()
+            return true
+        }
         val foldChord = event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
         when {
             (event.key == "ArrowDown" || event.key == "ArrowUp") && plain -> {
                 val step = LunicleBoardRows.step(board.rows, at, down = event.key == "ArrowDown")
                 leaveField(refocus = true)
                 when (step) {
-                    is LunicleBoardRows.Step.To -> move(editor, current.nodeId, step.ref)
+                    is LunicleBoardRows.Step.To -> {
+                        // Onto a description: its first line going down, its last going up.
+                        descLine = if (event.key == "ArrowDown") 0 else -1
+                        descAtEnd = event.key == "ArrowUp"
+                        move(editor, current.nodeId, step.ref)
+                    }
                     LunicleBoardRows.Step.LeaveUp -> if (!board.isPage) clear(editor) else move(editor, current.nodeId, at)
                     LunicleBoardRows.Step.LeaveDown -> if (!board.isPage) {
                         // Past the last row: on to the row below the board.
@@ -307,8 +348,8 @@ internal class LunicleBoardCursor(
             // Chords that would edit the node's line unseen are swallowed;
             // the rest (palette, navigation, app shortcuts) go on.
             (event.metaKey || event.ctrlKey || event.altKey) && !isEditingChord(event) -> return false
-            // Typing on a title that cannot be edited: say why, once.
-            at.kind == LunicleRowKind.ISSUE && event.key.length == 1 && !event.metaKey && !event.ctrlKey ->
+            // Typing on a title or description that cannot be edited: say why, once.
+            (at.kind == LunicleRowKind.ISSUE || at.kind == LunicleRowKind.DESCRIPTION) && event.key.length == 1 && !event.metaKey && !event.ctrlKey ->
                 viewModel.explainLunicleRow(board.nodeRow, at)
             // Anything else does nothing on a board row.
             else -> {}
@@ -461,6 +502,72 @@ internal class LunicleBoardCursor(
     }
 
     /**
+     * A plain key on a description line (LBR-31): ↑ / ↓ between lines,
+     * Enter (a new line), Backspace at a line's start and Delete at its end
+     * (joining lines) — `MainViewModel.editLunicleDescription`. ↑ on the
+     * first line and ↓ on the last are left to the board's own step (the
+     * description is committed as the caret leaves it).
+     *
+     * @return `true` when the key was the description's.
+     */
+    private fun descriptionKey(f: Field, event: KeyboardEvent): Boolean {
+        val input = f.input
+        val value = input.value
+        val start = input.selectionStart ?: value.length
+        val end = input.selectionEnd ?: start
+        val action = when (event.key) {
+            "ArrowUp" -> LunicleDescriptionAction.UP
+            "ArrowDown" -> LunicleDescriptionAction.DOWN
+            "Enter" -> LunicleDescriptionAction.ENTER
+            "Backspace" -> if (start == 0 && end == 0) LunicleDescriptionAction.BACKSPACE else return false
+            "Delete" -> if (start == value.length && end == value.length) LunicleDescriptionAction.DELETE else return false
+            else -> return false
+        }
+        val issueId = f.ref.issueId ?: return false
+        return when (val step = viewModel.editLunicleDescription(f.board, issueId, action, value, start, end)) {
+            is LunicleDescriptionStep.Caret -> {
+                placeDescCaret(f, step.caret)
+                true
+            }
+            // Out of the description: the board's step takes the key.
+            LunicleDescriptionStep.LeaveUp, LunicleDescriptionStep.LeaveDown -> false
+            // Backspace / Delete with nothing to join: nothing happens.
+            LunicleDescriptionStep.Ignore -> action == LunicleDescriptionAction.BACKSPACE || action == LunicleDescriptionAction.DELETE
+        }
+    }
+
+    /**
+     * A paste into a description's field (LBR-31): text with line breaks
+     * goes in verbatim, one row per line (`MainViewModel.editLunicleDescription`);
+     * a single line is left to the field.
+     */
+    private fun onDescriptionPaste(f: Field, event: org.w3c.dom.events.Event) {
+        val text = event.asDynamic().clipboardData?.getData("text/plain") as? String ?: return
+        if ('\n' !in text && '\r' !in text) return
+        event.preventDefault()
+        event.stopPropagation()
+        val input = f.input
+        val start = input.selectionStart ?: input.value.length
+        val end = input.selectionEnd ?: start
+        val issueId = f.ref.issueId ?: return
+        val step = viewModel.editLunicleDescription(f.board, issueId, LunicleDescriptionAction.PASTE, input.value, start, end, text)
+        if (step is LunicleDescriptionStep.Caret) placeDescCaret(f, step.caret)
+    }
+
+    /**
+     * Puts the description field on [caret]'s line with its text; the
+     * repaint the pane's new lines cause moves the element onto that line
+     * ([mountField]).
+     */
+    private fun placeDescCaret(f: Field, caret: LunicleDescriptionCaret) {
+        f.line = caret.line
+        f.input.value = caret.text
+        f.selStart = caret.col
+        f.selEnd = caret.col
+        f.input.setSelectionRange(caret.col, caret.col)
+    }
+
+    /**
      * Enter on the board row [at] (LBR-29): `MainViewModel.lunicleEnter`
      * commits the field and says where the caret goes — a new draft, or
      * the "New issue" line again (emptied).
@@ -569,27 +676,59 @@ internal class LunicleBoardCursor(
      * edited after all keeps its tint.
      */
     private fun mountField(board: Rows, ref: LunicleRowRef, rowEl: HTMLElement) {
-        val host = rowEl.querySelector("[$LUNICLE_FIELD_ATTR]") as? HTMLElement ?: return
+        val isDescription = ref.kind == LunicleRowKind.DESCRIPTION
+        if (!isDescription && rowEl.querySelector("[$LUNICLE_FIELD_ATTR]") == null) return
         var f = field
         if (f == null) {
-            val text = viewModel.beginLunicleEdit(board.nodeRow, ref) ?: return
+            // A description starts on the line it is entered at (LBR-31).
+            val caret = if (isDescription) viewModel.beginLunicleDescription(board.nodeRow, ref, descLine, descAtEnd) ?: return else null
+            val text = caret?.text ?: viewModel.beginLunicleEdit(board.nodeRow, ref) ?: return
             val input = document.createElement("input") as HTMLInputElement
             input.type = "text"
             input.className = "lunarbor-lunicle-field"
             input.value = text
             input.spellcheck = true
             input.setAttribute("autocomplete", "off")
-            input.setAttribute("aria-label", if (ref.kind == LunicleRowKind.ISSUE) "Issue title" else "New issue title")
-            if (ref.kind == LunicleRowKind.NEW_ISSUE) input.placeholder = NEW_ISSUE_TEXT
+            input.setAttribute(
+                "aria-label",
+                when (ref.kind) {
+                    LunicleRowKind.ISSUE -> "Issue title"
+                    LunicleRowKind.DESCRIPTION -> "Description line"
+                    LunicleRowKind.ADD_COMMENT -> "Comment"
+                    else -> "New issue title"
+                },
+            )
+            when (ref.kind) {
+                LunicleRowKind.NEW_ISSUE -> input.placeholder = NEW_ISSUE_TEXT
+                LunicleRowKind.ADD_COMMENT -> input.placeholder = LunicleComments.PLACEHOLDER
+                LunicleRowKind.DESCRIPTION -> input.placeholder = "Add a description"
+                else -> {}
+            }
             // Presses inside place the field's own caret; the board's
             // handler (which prevents that) must not see them.
             input.addEventListener("mousedown", { ev -> ev.stopPropagation() })
             input.addEventListener("blur", { _ -> window.setTimeout({ onFieldBlur(input) }, 0) })
-            f = Field(board.view.key, ref, input, host)
-            f.selStart = text.length
-            f.selEnd = text.length
-            field = f
+            val created = Field(board.view.key, ref, input, null)
+            if (isDescription) input.addEventListener("paste", { ev -> onDescriptionPaste(created, ev) })
+            created.line = caret?.line ?: -1
+            created.selStart = caret?.col ?: text.length
+            created.selEnd = created.selStart
+            field = created
+            f = created
+        } else if (ref.kind == LunicleRowKind.ADD_COMMENT) {
+            // A failed post's text comes back into the open field (LBR-31).
+            viewModel.takeLunicleCommentDraft(f.board, ref.issueId ?: -1)?.let { restored ->
+                f.input.value = LunicleComments.mergeDraft(restored, f.input.value)
+                f.selStart = f.input.value.length
+                f.selEnd = f.selStart
+                f.input.setSelectionRange(f.selStart, f.selEnd)
+            }
         }
+        val host = (
+            if (isDescription) rowEl.querySelector("[$LUNICLE_DESC_LINE_ATTR=\"${f.line}\"]")
+            else rowEl.querySelector("[$LUNICLE_FIELD_ATTR]")
+            ) as? HTMLElement ?: return
+        if (f.host !== host) f.host?.style?.removeProperty("display")
         f.host = host
         if (f.input.nextSibling !== host) host.parentNode?.insertBefore(f.input, host)
         host.style.display = "none"
@@ -655,6 +794,9 @@ internal class LunicleBoardCursor(
      * @return `true` when the cursor took the key.
      */
     private fun enter(editor: HTMLElement, down: Boolean, syncSelection: () -> Boolean): Boolean {
+        // Should the board start on a description (LBR-31): its first line going down, its last going up.
+        descLine = if (down) 0 else -1
+        descAtEnd = !down
         val state = viewModel.currentBackingState
         val docState = state.documentState ?: return false
         if (state.isReadOnlyPage) {
@@ -747,8 +889,14 @@ internal class LunicleBoardCursor(
     private companion object {
         val MODIFIER_KEYS = setOf("Shift", "Meta", "Control", "Alt", "CapsLock")
 
-        /** Rows edited in a real text field (LBR-29). */
-        val FIELD_KINDS = setOf(LunicleRowKind.ISSUE, LunicleRowKind.DRAFT, LunicleRowKind.NEW_ISSUE)
+        /**
+         * Rows edited in a real text field (LBR-29): titles, drafts, "New
+         * issue" — and (LBR-31) a description's caret line and "Comment…".
+         */
+        val FIELD_KINDS = setOf(
+            LunicleRowKind.ISSUE, LunicleRowKind.DRAFT, LunicleRowKind.NEW_ISSUE,
+            LunicleRowKind.DESCRIPTION, LunicleRowKind.ADD_COMMENT,
+        )
 
         /** ⌘ / Ctrl letters the field handles itself: select all, copy, paste, cut, undo, redo. */
         val FIELD_CHORDS = setOf("a", "c", "v", "x", "z", "y")

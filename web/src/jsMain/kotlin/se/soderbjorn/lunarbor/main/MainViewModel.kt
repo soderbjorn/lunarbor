@@ -281,6 +281,28 @@ class MainViewModel(
     fun chooseLunicleResolution(nodeRow: Int, choice: LunicleResolutionChoice, resolution: String?): LunicleRowRef? =
         paneBackingViewModel.chooseLunicleResolution(nodeRow, choice, resolution, kotlin.js.Date.now().toLong())
 
+    /** See `PaneBackingViewModel.beginLunicleDescription`; the clock is the browser's. */
+    fun beginLunicleDescription(nodeRow: Int, ref: LunicleRowRef, line: Int, atEnd: Boolean, text: String? = null): LunicleDescriptionCaret? =
+        paneBackingViewModel.beginLunicleDescription(nodeRow, ref, line, atEnd, kotlin.js.Date.now().toLong(), text)
+
+    /** See `PaneBackingViewModel.editLunicleDescription`. */
+    fun editLunicleDescription(
+        board: se.soderbjorn.lunarbor.lunicle.LunicleBoardKey,
+        issueId: Long,
+        action: LunicleDescriptionAction,
+        text: String,
+        start: Int,
+        end: Int,
+        pasted: String = "",
+    ): LunicleDescriptionStep = paneBackingViewModel.editLunicleDescription(board, issueId, action, text, start, end, pasted)
+
+    /** See `PaneBackingViewModel.toggleLunicleDescription`. */
+    fun toggleLunicleDescription(issue: PaneBackingViewModel.LunicleIssueView) = paneBackingViewModel.toggleLunicleDescription(issue)
+
+    /** See `PaneBackingViewModel.takeLunicleCommentDraft`. */
+    fun takeLunicleCommentDraft(board: se.soderbjorn.lunarbor.lunicle.LunicleBoardKey, issueId: Long): String? =
+        paneBackingViewModel.takeLunicleCommentDraft(board, issueId)
+
     /** See `PaneBackingViewModel.insertLunicleBoard`. */
     fun insertLunicleBoard(connection: String, key: String) = paneBackingViewModel.insertLunicleBoard(connection, key)
 

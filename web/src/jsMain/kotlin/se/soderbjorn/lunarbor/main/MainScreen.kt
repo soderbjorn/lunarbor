@@ -795,11 +795,13 @@ class MainScreen(
             handleBeforeInput(editor, event.unsafeCast<dynamic>())
         })
         // A press on a board's title, draft or "New issue" line starts
-        // editing it there (LBR-29).
+        // editing it there (LBR-29); on a description line or "Comment…"
+        // too (LBR-31), a description at the pressed line.
         editor.addEventListener(LUNICLE_PRESS_EVENT, { event ->
             val detail = event.asDynamic().detail ?: return@addEventListener
             searchNodeHitCursor.clear(editor)
-            lunicleBoardCursor.press(editor, (detail.row as Number).toInt(), detail.key as String)
+            val line = (detail.line as? Number)?.toInt() ?: -1
+            lunicleBoardCursor.press(editor, (detail.row as Number).toInt(), detail.key as String, line)
         })
         // A press on an issue's pill opens that field's menu (LBR-30).
         editor.addEventListener(LUNICLE_PILL_EVENT, { event ->

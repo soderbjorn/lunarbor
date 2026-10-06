@@ -725,13 +725,13 @@ private fun confirmDeleteBlock(id: LineId, block: IntRange, docState: Document.S
 }
 
 /** Large block control, collapsed: show the whole block (chevrons apart). */
-private const val ICON_BLOCK_EXPAND: String =
+internal const val ICON_BLOCK_EXPAND: String =
     "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" " +
         "stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
         "<polyline points=\"7 9 12 4 17 9\"/><polyline points=\"7 15 12 20 17 15\"/></svg>"
 
 /** Large block control, expanded: show less (chevrons together). */
-private const val ICON_BLOCK_COLLAPSE: String =
+internal const val ICON_BLOCK_COLLAPSE: String =
     "<svg viewBox=\"0 0 24 24\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" " +
         "stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
         "<polyline points=\"7 4 12 9 17 4\"/><polyline points=\"7 20 12 15 17 20\"/></svg>"
