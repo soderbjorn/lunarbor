@@ -1046,9 +1046,8 @@ class PaneBackingViewModel(
                 // (each splice is seen here again, so deeper levels follow).
                 // Inline, so switchActiveFile's cancelAndJoin settles every
                 // acquire before it releases the pane's expansions.
-                for (id in withDefaults.expandedRefIdsLocal - merged.expandedRefIdsLocal) {
-                    doc.acquireExpansion(id)
-                }
+                // One batch per level: read in parallel, spliced in at once.
+                doc.acquireExpansions(withDefaults.expandedRefIdsLocal - merged.expandedRefIdsLocal)
             }
         }
     }
@@ -1517,7 +1516,7 @@ class PaneBackingViewModel(
                     )
                 }
                 if (toAcquire.isEmpty()) break
-                for (id in toAcquire) doc.acquireExpansion(id)
+                doc.acquireExpansions(toAcquire)
             }
         }
     }
@@ -2135,7 +2134,7 @@ class PaneBackingViewModel(
                     )
                 }
                 if (toAcquire.isEmpty()) break
-                for (id in toAcquire) doc.acquireExpansion(id)
+                doc.acquireExpansions(toAcquire)
             }
             if (document !== doc) return@launch
             patch { it }

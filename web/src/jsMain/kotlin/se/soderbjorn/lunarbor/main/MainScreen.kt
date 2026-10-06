@@ -228,6 +228,9 @@ class MainScreen(
      */
     private var lastPaintedState: PaneBackingViewModel.State? = null
 
+    /** Pending deferred repaint for a background-only change ([isBackgroundOnlyChange]), if any. */
+    private var backgroundRepaintHandle: Int? = null
+
     /** Plays the zoom morph / fade-through on navigation. */
     private val navigationTransition = NavigationTransition()
 
@@ -403,141 +406,186 @@ class MainScreen(
 
         editor.focus()
 
+        // Paints the pane for one emission. Called by the collector below,
+        // and later by a deferred repaint for background-only changes.
+        fun applyState(state: MainViewModel.State) {
+            val backing = state.backingState
+            // Detect navigation transitions BEFORE running reconcile so
+            // we can snapshot the outgoing content as an overlay; the
+            // navigation animation (zoom morph or fade-through, see
+            // NavigationTransition) then plays from it onto the freshly
+            // rendered new content, avoiding a blank middle frame.
+            //
+            // Cross-file navigation (contents-list click) emits an interim
+            // `isLoaded=false` "Loading…" state before the new file's
+            // content lands. We snapshot on that first emission (so
+            // we capture the *outgoing* file's content), then hold
+            // the overlay until a subsequent `isLoaded=true` emission
+            // arrives — only then is there real new content beneath
+            // the overlay to dissolve into.
+            val navigated = isNavigationTransition(backing)
+            if (pendingOutgoing == null && navigated && backing != null && !inSpace) {
+                pendingOutgoing = captureOutgoing(backing)
+            }
+            // Pull DOM focus back into the editor whenever the pane
+            // changes file or zoom target. The trigger may have come
+            // from a click on a header button (Back / Forward) or a
+            // breadcrumb segment, the folder contents list, the starred modal, or the
+            // command palette — none of which leave focus on the
+            // editor. Mirrors the on-pane-focus behaviour so the
+            // caret is ready for keystrokes the moment the new view
+            // lands. Cursor position itself is restored from the
+            // pane VM during reconcile, so this only re-arms input.
+            if (navigated) editor.focus()
+            // Landing on a new node re-reads its folder, so the
+            // contents list picks up files added outside the app
+            // (Finder) since the folder was last read.
+            if (navigated) viewModel.refreshCurrentFolderListing()
+            // Skip the paint while an animation is pending and the new
+            // file is still loading: reconcile would wipe the editor
+            // and stamp "Loading…" underneath the overlay, which —
+            // despite the overlay being opaque — was perceptible as a
+            // brief flash on the file-nav path. Keeping the live DOM
+            // unchanged means the overlay sits over an identical copy
+            // of itself; the next emission (isLoaded=true) repaints
+            // to the new content and the animation plays onto it.
+            // Image view is "ready to paint" as soon as the new
+            // activeFileRel lands — there is no Document load step to
+            // wait on — so it bypasses the loading-skip and the
+            // animation also plays on the first emission that points
+            // at the image.
+            val skipPaint = pendingOutgoing != null &&
+                backing != null && !backing.isLoaded && !backing.isFileView
+            // A fold or unfold in the same view (armed by the fold
+            // control): animate the repaint.
+            val prev = lastPaintedState
+            val foldBefore = if (!inSpace && !navigated && !skipPaint && prev != null && backing != null &&
+                backing.isLoaded && !backing.isImageView && kotlin.js.Date.now() < foldArmedUntil
+            ) {
+                prev.documentState?.lineIds?.let { foldTransition.capture(editor, it) }
+            } else null
+            if (backing != null) showHitDoneToast(backing)
+            if (!skipPaint) {
+                if (backing != null) searchBar.update(backing)
+                // The drawing editor takes the whole pane below the
+                // title in place of the scroll wrapper.
+                // So does an HTML page's web view.
+                if (backing != null && backing.isDrawingView) {
+                    scrollWrapper.style.display = "none"
+                    html.hide()
+                    drawing.show(backing.activeFileRel, backing.drawingRevision)
+                } else if (backing != null && backing.isHtmlView) {
+                    scrollWrapper.style.display = "none"
+                    drawing.hide()
+                    html.show(backing.activeFileRel)
+                } else {
+                    drawing.hide()
+                    html.hide()
+                    scrollWrapper.style.display = ""
+                }
+                if (backing != null && (backing.isDrawingView || backing.isHtmlView)) {
+                    // Nothing else to paint: the editor and the folder
+                    // contents list are hidden with the scroll wrapper.
+                } else if (backing != null && backing.isSearchActive && !backing.isImageView) {
+                    // The result list stands in for the page: the
+                    // editor is neither shown nor repainted, so typing
+                    // in the search field stays cheap.
+                    editor.style.display = "none"
+                    imageViewer.style.display = "none"
+                    folderContents.style.display = "none"
+                } else if (backing == null) {
+                    paintLoading(editor)
+                } else if (backing.isImageView) {
+                    folderContents.style.display = ""
+                    editor.style.display = "none"
+                    imageViewer.style.display = "flex"
+                    paintImageViewer(imageViewer, backing.activeFileRel)
+                    paintFolderContents(folderContents, backing, viewModel, style, scope)
+                } else {
+                    imageViewer.style.display = "none"
+                    editor.style.display = ""
+                    folderContents.style.display = ""
+                    reconcile(editor, backing)
+                    val ids = backing.documentState?.lineIds.orEmpty()
+                    if (foldBefore != null && foldTransition.play(foldBefore, editor, ids)) {
+                        foldArmedUntil = 0.0
+                    } else {
+                        // A repaint during a fold keeps it running.
+                        foldTransition.resume(editor, ids)
+                    }
+                    paintFolderContents(folderContents, backing, viewModel, style, scope)
+                }
+                updateTitle(title, backing)
+                // A page the pane came back to scrolls where it was —
+                // once its content is painted: on the "Loading…" frame
+                // there is nothing to scroll and the offset would be lost.
+                backing?.takeIf { it.isLoaded || it.isFileView }?.scrollRestore?.let { r ->
+                    if (r.seq != lastScrollRestoreSeq) {
+                        lastScrollRestoreSeq = r.seq
+                        scrollWrapper.scrollTop = r.top
+                        // The caret counts as placed: a later repaint
+                        // with the caret where it is must not scroll it
+                        // into view and undo this.
+                        lastAppliedCursor = backing.cursorRow to backing.cursorCol
+                    }
+                }
+                updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
+                if (backing != null) lastPaintedState = backing
+            }
+            val pending = pendingOutgoing
+            if (pending != null && backing != null &&
+                (backing.isLoaded || backing.isFileView)
+            ) {
+                navigationTransition.play(pending, title, scrollWrapper, editor)
+                pendingOutgoing = null
+            }
+            rememberNavSignature(backing)
+        }
+
         scope.launch {
             viewModel.stateFlow.collect { state ->
+                // Background data alone (listings, link checks, backlinks,
+                // search-node results) changed: coalesce into one deferred
+                // repaint. Each repaint redraws every row, and on a large
+                // expanded outline these arrive by the dozen.
                 val backing = state.backingState
-                // Detect navigation transitions BEFORE running reconcile so
-                // we can snapshot the outgoing content as an overlay; the
-                // navigation animation (zoom morph or fade-through, see
-                // NavigationTransition) then plays from it onto the freshly
-                // rendered new content, avoiding a blank middle frame.
-                //
-                // Cross-file navigation (contents-list click) emits an interim
-                // `isLoaded=false` "Loading…" state before the new file's
-                // content lands. We snapshot on that first emission (so
-                // we capture the *outgoing* file's content), then hold
-                // the overlay until a subsequent `isLoaded=true` emission
-                // arrives — only then is there real new content beneath
-                // the overlay to dissolve into.
-                val navigated = isNavigationTransition(backing)
-                if (pendingOutgoing == null && navigated && backing != null && !inSpace) {
-                    pendingOutgoing = captureOutgoing(backing)
-                }
-                // Pull DOM focus back into the editor whenever the pane
-                // changes file or zoom target. The trigger may have come
-                // from a click on a header button (Back / Forward) or a
-                // breadcrumb segment, the folder contents list, the starred modal, or the
-                // command palette — none of which leave focus on the
-                // editor. Mirrors the on-pane-focus behaviour so the
-                // caret is ready for keystrokes the moment the new view
-                // lands. Cursor position itself is restored from the
-                // pane VM during reconcile, so this only re-arms input.
-                if (navigated) editor.focus()
-                // Landing on a new node re-reads its folder, so the
-                // contents list picks up files added outside the app
-                // (Finder) since the folder was last read.
-                if (navigated) viewModel.refreshCurrentFolderListing()
-                // Skip the paint while an animation is pending and the new
-                // file is still loading: reconcile would wipe the editor
-                // and stamp "Loading…" underneath the overlay, which —
-                // despite the overlay being opaque — was perceptible as a
-                // brief flash on the file-nav path. Keeping the live DOM
-                // unchanged means the overlay sits over an identical copy
-                // of itself; the next emission (isLoaded=true) repaints
-                // to the new content and the animation plays onto it.
-                // Image view is "ready to paint" as soon as the new
-                // activeFileRel lands — there is no Document load step to
-                // wait on — so it bypasses the loading-skip and the
-                // animation also plays on the first emission that points
-                // at the image.
-                val skipPaint = pendingOutgoing != null &&
-                    backing != null && !backing.isLoaded && !backing.isFileView
-                // A fold or unfold in the same view (armed by the fold
-                // control): animate the repaint.
-                val prev = lastPaintedState
-                val foldBefore = if (!inSpace && !navigated && !skipPaint && prev != null && backing != null &&
-                    backing.isLoaded && !backing.isImageView && kotlin.js.Date.now() < foldArmedUntil
-                ) {
-                    prev.documentState?.lineIds?.let { foldTransition.capture(editor, it) }
-                } else null
-                if (backing != null) showHitDoneToast(backing)
-                if (!skipPaint) {
-                    if (backing != null) searchBar.update(backing)
-                    // The drawing editor takes the whole pane below the
-                    // title in place of the scroll wrapper.
-                    // So does an HTML page's web view.
-                    if (backing != null && backing.isDrawingView) {
-                        scrollWrapper.style.display = "none"
-                        html.hide()
-                        drawing.show(backing.activeFileRel, backing.drawingRevision)
-                    } else if (backing != null && backing.isHtmlView) {
-                        scrollWrapper.style.display = "none"
-                        drawing.hide()
-                        html.show(backing.activeFileRel)
-                    } else {
-                        drawing.hide()
-                        html.hide()
-                        scrollWrapper.style.display = ""
+                if (backing != null && isBackgroundOnlyChange(backing)) {
+                    if (backgroundRepaintHandle == null) {
+                        backgroundRepaintHandle = window.setTimeout({
+                            backgroundRepaintHandle = null
+                            applyState(viewModel.stateFlow.value)
+                        }, BACKGROUND_REPAINT_MS)
                     }
-                    if (backing != null && (backing.isDrawingView || backing.isHtmlView)) {
-                        // Nothing else to paint: the editor and the folder
-                        // contents list are hidden with the scroll wrapper.
-                    } else if (backing != null && backing.isSearchActive && !backing.isImageView) {
-                        // The result list stands in for the page: the
-                        // editor is neither shown nor repainted, so typing
-                        // in the search field stays cheap.
-                        editor.style.display = "none"
-                        imageViewer.style.display = "none"
-                        folderContents.style.display = "none"
-                    } else if (backing == null) {
-                        paintLoading(editor)
-                    } else if (backing.isImageView) {
-                        folderContents.style.display = ""
-                        editor.style.display = "none"
-                        imageViewer.style.display = "flex"
-                        paintImageViewer(imageViewer, backing.activeFileRel)
-                        paintFolderContents(folderContents, backing, viewModel, style, scope)
-                    } else {
-                        imageViewer.style.display = "none"
-                        editor.style.display = ""
-                        folderContents.style.display = ""
-                        reconcile(editor, backing)
-                        val ids = backing.documentState?.lineIds.orEmpty()
-                        if (foldBefore != null && foldTransition.play(foldBefore, editor, ids)) {
-                            foldArmedUntil = 0.0
-                        } else {
-                            // A repaint during a fold keeps it running.
-                            foldTransition.resume(editor, ids)
-                        }
-                        paintFolderContents(folderContents, backing, viewModel, style, scope)
-                    }
-                    updateTitle(title, backing)
-                    // A page the pane came back to scrolls where it was —
-                    // once its content is painted: on the "Loading…" frame
-                    // there is nothing to scroll and the offset would be lost.
-                    backing?.takeIf { it.isLoaded || it.isFileView }?.scrollRestore?.let { r ->
-                        if (r.seq != lastScrollRestoreSeq) {
-                            lastScrollRestoreSeq = r.seq
-                            scrollWrapper.scrollTop = r.top
-                            // The caret counts as placed: a later repaint
-                            // with the caret where it is must not scroll it
-                            // into view and undo this.
-                            lastAppliedCursor = backing.cursorRow to backing.cursorCol
-                        }
-                    }
-                    updateRestructureBanner(restructureBanner, backing?.isRestructuring == true)
-                    if (backing != null) lastPaintedState = backing
+                    return@collect
                 }
-                val pending = pendingOutgoing
-                if (pending != null && backing != null &&
-                    (backing.isLoaded || backing.isFileView)
-                ) {
-                    navigationTransition.play(pending, title, scrollWrapper, editor)
-                    pendingOutgoing = null
-                }
-                rememberNavSignature(backing)
+                backgroundRepaintHandle?.let { window.clearTimeout(it) }
+                backgroundRepaintHandle = null
+                applyState(state)
             }
         }
+    }
+
+    /**
+     * `true` when [backing] differs from the state last painted only in
+     * data the registry fills in the background — folder listings, link
+     * and wiki-link checks, link previews, backlinks, search-node results,
+     * the privacy index revision. Such emissions come in bursts (one per
+     * folder listed or batch of links checked) and need no immediate
+     * repaint; the collector coalesces them into one deferred repaint.
+     * Edits, caret moves, folds and navigation always paint at once.
+     */
+    private fun isBackgroundOnlyChange(backing: PaneBackingViewModel.State): Boolean {
+        val prev = lastPaintedState ?: return false
+        if (backing === prev || !backing.isLoaded || !prev.isLoaded) return false
+        return backing.copy(
+            vaultListings = prev.vaultListings,
+            linkStatus = prev.linkStatus,
+            wikiLinks = prev.wikiLinks,
+            linkPreviews = prev.linkPreviews,
+            searchNodeResults = prev.searchNodeResults,
+            privacyRevision = prev.privacyRevision,
+            backlinks = prev.backlinks,
+        ) == prev
     }
 
     /**
@@ -3004,3 +3052,9 @@ private const val TITLE_EDITABLE_CLASS: String = "lunarbor-title-editable"
 
 /** Quiet time after the last scroll event before the offset is reported for persisting. */
 private const val SCROLL_SETTLE_MS: Int = 400
+
+/**
+ * How long a repaint for background data alone waits, gathering whatever
+ * else arrives meanwhile (see `MainScreen.isBackgroundOnlyChange`).
+ */
+private const val BACKGROUND_REPAINT_MS: Int = 250
