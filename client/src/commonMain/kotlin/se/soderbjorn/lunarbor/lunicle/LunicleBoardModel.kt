@@ -86,6 +86,10 @@ data class LunicleBoardKey(val connection: String?, val key: String) {
  *   indicator says "Synced just now" for [LunicleBoardLayout.SAVED_MS].
  * @property readOnlyToken `true` when the connection's token is read-only
  *   (`GET /me` scope, or a write answered 403 `insufficient_scope`).
+ * @property propertyEdits Status, priority and assignee changes whose
+ *   writes are under way (optimistic, LBR-30), oldest first: shown over
+ *   the board's values ([shown]) until each write answers; dropped on
+ *   failure, so the old value comes back.
  */
 data class LunicleBoardState(
     val key: LunicleBoardKey,
@@ -106,7 +110,18 @@ data class LunicleBoardState(
     val alertUntil: Long = 0,
     val savedAt: Long? = null,
     val readOnlyToken: Boolean = false,
+    val propertyEdits: List<LunicleIssueEdit> = emptyList(),
 ) {
+    /**
+     * [issue] as the board shows it: with the title ([titleEdits]) and the
+     * status, priority and assignee ([propertyEdits]) of writes under way.
+     */
+    fun shown(issue: LunicleBoardIssue): LunicleBoardIssue {
+        var out = titleEdits[issue.id]?.let { issue.copy(title = it) } ?: issue
+        for (edit in propertyEdits) if (edit.issueId == issue.id) out = edit.applyTo(out)
+        return out
+    }
+
     /** `true` while a write of this board is under way. */
     val saving: Boolean get() = writes > 0
 
@@ -162,6 +177,34 @@ data class LunicleCreatingIssue(
     val createdId: Long? = null,
     val createdKey: String? = null,
 )
+
+/**
+ * One status, priority or assignee change of an issue whose write is under
+ * way (LBR-30), shown at once ([LunicleBoardState.shown]).
+ *
+ * @property seq Its number, unique per [LunicleBoards]; its write removes
+ *   exactly this entry when it answers.
+ * @property issueId The issue.
+ * @property field Which property.
+ * @property value The new status or priority name, or assignee name
+ *   (`null`: nobody).
+ * @property resolution For a move into a column that requires one, the
+ *   resolution sent with it.
+ */
+data class LunicleIssueEdit(
+    val seq: Long,
+    val issueId: Long,
+    val field: LuniclePill.Field,
+    val value: String?,
+    val resolution: String? = null,
+) {
+    /** [issue] with this change made. A move clears the resolution unless it sends one. */
+    fun applyTo(issue: LunicleBoardIssue): LunicleBoardIssue = when (field) {
+        LuniclePill.Field.STATUS -> issue.copy(status = value ?: issue.status, resolution = resolution)
+        LuniclePill.Field.PRIORITY -> issue.copy(priority = value ?: issue.priority)
+        LuniclePill.Field.ASSIGNEE -> issue.copy(assignee = value)
+    }
+}
 
 /** The sync indicator's colour (theme variables in the view). */
 enum class LunicleSyncKind {

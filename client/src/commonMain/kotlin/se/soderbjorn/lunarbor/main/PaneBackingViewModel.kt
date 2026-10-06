@@ -100,6 +100,7 @@ import se.soderbjorn.lunarbor.data.VaultIndex
 import se.soderbjorn.lunarbor.data.WikiLink
 import se.soderbjorn.lunarbor.platform.toNfc
 import se.soderbjorn.lunarbor.data.LunicleNodeRef
+import se.soderbjorn.lunarbor.lunicle.LunicleBoard
 import se.soderbjorn.lunarbor.lunicle.LunicleBoardIssue
 import se.soderbjorn.lunarbor.lunicle.LunicleBoardKey
 import se.soderbjorn.lunarbor.lunicle.LunicleBoardLayout
@@ -196,6 +197,9 @@ class PaneBackingViewModel(
      *   leaves one with a title, dropped when the pane navigates away.
      * @property lunicleEditing The issue whose title this pane is editing
      *   (LBR-29), or `null`: kept on its board even if a poll drops it.
+     * @property lunicleFlash The board row that flashes after a property
+     *   change (LBR-30, [LunicleFlash]): the moved issue under its new
+     *   column, or a folded closed column's row; `null` when none.
      * @property cursorRow Row of the caret, in absolute document coords.
      * @property cursorCol Column of the caret on [cursorRow].
      * @property anchorRow If non-null, together with [anchorCol] defines
@@ -328,6 +332,7 @@ class PaneBackingViewModel(
         val lunicleOpenIssues: Set<String> = emptySet(),
         val lunicleDrafts: List<LunicleDraft> = emptyList(),
         val lunicleEditing: LunicleEditingIssue? = null,
+        val lunicleFlash: LunicleFlash? = null,
         val cursorRow: Int = 0,
         val cursorCol: Int = 0,
         val anchorRow: Int? = null,
@@ -1201,6 +1206,7 @@ class PaneBackingViewModel(
             // Board drafts are dropped when the pane navigates away (LBR-29).
             lunicleDrafts = emptyList(),
             lunicleEditing = null,
+            lunicleFlash = null,
         )
         searchJob?.cancel()
         // Captured snapshots in undo/redo refer to the outgoing
@@ -1443,6 +1449,10 @@ class PaneBackingViewModel(
      * @property readOnly `true` when the connection's token is read-only.
      * @property createdIds A sent draft's local id → the new issue's id, so
      *   the keyboard's cursor follows a draft into the issue it became.
+     * @property flashKey The [LunicleRowRef.key] of the row flashing after a
+     *   property change (LBR-30), or `null`.
+     * @property flashAt When that flash started (epoch ms): the view resumes
+     *   its fade from there on every repaint.
      */
     data class LunicleBoardView(
         val ref: LunicleNodeRef,
@@ -1454,6 +1464,8 @@ class PaneBackingViewModel(
         val canCreate: Boolean = false,
         val readOnly: Boolean = false,
         val createdIds: Map<Long, Long> = emptyMap(),
+        val flashKey: String? = null,
+        val flashAt: Long = 0,
     )
 
     /**
@@ -1491,7 +1503,8 @@ class PaneBackingViewModel(
         val columns = board.board?.let { read ->
             // Optimistic titles (LBR-29), and the issue being edited stays
             // even when a poll no longer lists it.
-            var issues = read.issues.map { i -> board.titleEdits[i.id]?.let { i.copy(title = it) } ?: i }
+            // and optimistic moves, priorities and assignees (LBR-30).
+            var issues = read.issues.map { board.shown(it) }
             state.lunicleEditing?.takeIf { it.board == key && issues.none { i -> i.id == it.issue.id } }?.let { issues = issues + it.issue }
             val b = read.copy(issues = issues)
             val baseUrl = board.target?.connection?.baseUrl
@@ -1536,6 +1549,8 @@ class PaneBackingViewModel(
             canCreate = canCreate,
             readOnly = board.readOnlyToken,
             createdIds = board.createdIds,
+            flashKey = state.lunicleFlash?.takeIf { it.board == key && now - it.at < LunicleBoardMenu.FLASH_MS }?.rowKey,
+            flashAt = state.lunicleFlash?.at ?: 0,
         )
     }
 
@@ -1722,6 +1737,123 @@ class PaneBackingViewModel(
         val draft = LunicleDraft(boards.newLocalId(), board, status, priority, anchor)
         patch { it.copy(lunicleDrafts = it.lunicleDrafts + draft) }
         return LunicleRowRef(LunicleRowKind.DRAFT, status, draft.localId)
+    }
+
+    // ------------------------------------------------------------ board properties (LBR-30)
+
+    /**
+     * The board of [view] as shown — optimistic edits included — and the
+     * issue [issueId] on it, or `null` when either is missing.
+     */
+    private fun shownIssueOf(view: LunicleBoardView, issueId: Long): Pair<LunicleBoard, LunicleBoardIssue>? {
+        val boards = registry.lunicleBoards ?: return null
+        val state = boards.boardsFlow.value[view.key] ?: _stateFlow.value.lunicleBoards[view.key] ?: return null
+        val read = state.board ?: return null
+        val issue = issueViewOf(view, issueId)?.issue ?: return null
+        return read.copy(issues = read.issues.map { state.shown(it) }) to issue
+    }
+
+    /**
+     * Opens a property menu on issue [issueId] of the board node at
+     * [nodeRow] (LBR-30): `#` or `@` typed on its title row ([trigger]),
+     * or a click on its [field] pill. `null` — no menu — when the issue
+     * cannot be edited (the indicator says why, once) or, for `@`, when
+     * nobody can be assigned here ([LunicleBoardMenu.assignees] is `null`).
+     *
+     * Called by the web view's `LunicleBoardCursor`.
+     */
+    fun openLunicleMenu(nodeRow: Int, issueId: Long, trigger: Char?, field: LuniclePill.Field?, now: Long): LunicleMenu? {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return null
+        val issue = issueViewOf(view, issueId) ?: return null
+        if (!issue.editable) {
+            explainLunicleRow(nodeRow, LunicleRowRef(LunicleRowKind.ISSUE, issue.issue.status, issueId), now)
+            return null
+        }
+        val (board, _) = shownIssueOf(view, issueId) ?: return null
+        val wantsAssignee = trigger == '@' || field == LuniclePill.Field.ASSIGNEE
+        if (wantsAssignee && LunicleBoardMenu.assignees(board, view.canCreate) == null) return null
+        return if (field != null) {
+            LunicleMenu.forField(view.key, issueId, field) { lunicleMenuOptions(nodeRow, it, now) }
+        } else {
+            LunicleMenu.typed(view.key, issueId, trigger ?: '#')
+        }
+    }
+
+    /**
+     * The options [menu] offers now (its query applied), from the board as
+     * shown — so ✓ follows an optimistic change. Empty when the board or
+     * the issue is gone. Called by the web view on every key and repaint.
+     */
+    fun lunicleMenuOptions(nodeRow: Int, menu: LunicleMenu, now: Long): List<LunicleMenuOption> {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now)?.takeIf { it.key == menu.board } ?: return emptyList()
+        val (board, issue) = shownIssueOf(view, menu.issueId) ?: return emptyList()
+        return LunicleBoardMenu.options(menu, board, issue, LunicleBoardMenu.assignees(board, view.canCreate))
+    }
+
+    /** What picking a menu option did ([pickLunicleOption]). */
+    sealed interface LuniclePick {
+        /** The status needs a resolution: [choice] is the popup to show; nothing is sent yet. */
+        data class NeedsResolution(val choice: LunicleResolutionChoice) : LuniclePick
+
+        /** Done (or nothing to do); the caret goes to [caret] (`null`: stays). */
+        data class Done(val caret: LunicleRowRef?) : LuniclePick
+    }
+
+    /**
+     * Picks [option] from [menu] on the board node at [nodeRow] (LBR-30):
+     * a status that needs a resolution answers with the popup to show
+     * first ([LuniclePick.NeedsResolution], nothing sent); anything else is
+     * written at once ([applyLunicleProperty]). Picking the current value
+     * sends nothing.
+     *
+     * Called by the web view's `LunicleBoardCursor` (Enter, Tab or a press
+     * in the menu).
+     */
+    fun pickLunicleOption(nodeRow: Int, menu: LunicleMenu, option: LunicleMenuOption, now: Long): LuniclePick {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now)?.takeIf { it.key == menu.board } ?: return LuniclePick.Done(null)
+        val (board, issue) = shownIssueOf(view, menu.issueId) ?: return LuniclePick.Done(null)
+        LunicleBoardMenu.resolutionStep(menu, option, board, issue)?.let { return LuniclePick.NeedsResolution(it) }
+        return LuniclePick.Done(applyLunicleProperty(view, issue, option.field, option.value, null, now))
+    }
+
+    /**
+     * The resolution popup's pick (LBR-30): moves the issue to
+     * [choice]'s status with [resolution] (`POST /issues/{id}/move`
+     * `{status, resolution}`). Esc on the popup never gets here — the move
+     * is cancelled. Called by the web view's `LunicleBoardCursor`.
+     *
+     * @return Where the caret goes, as for [pickLunicleOption].
+     */
+    fun chooseLunicleResolution(nodeRow: Int, choice: LunicleResolutionChoice, resolution: String?, now: Long): LunicleRowRef? {
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now)?.takeIf { it.key == choice.board } ?: return null
+        val (_, issue) = shownIssueOf(view, choice.issueId) ?: return null
+        return applyLunicleProperty(view, issue, LuniclePill.Field.STATUS, choice.status, resolution, now)
+    }
+
+    /**
+     * Writes one property change ([LunicleBoards.setProperty],
+     * optimistic) and places the result: the issue flashes where it now is
+     * ([State.lunicleFlash]) and the caret follows it. A move into a
+     * folded column unfolds it — except a folded closing column (one that
+     * starts folded, e.g. Closed), which stays folded: its row flashes, its
+     * count goes up, and the caret goes to it.
+     *
+     * @return The row the caret goes to.
+     */
+    private fun applyLunicleProperty(view: LunicleBoardView, issue: LunicleBoardIssue, field: LuniclePill.Field, value: String?, resolution: String?, now: Long): LunicleRowRef? {
+        val boards = registry.lunicleBoards ?: return null
+        val current = when (field) {
+            LuniclePill.Field.STATUS -> issue.status
+            LuniclePill.Field.PRIORITY -> issue.priority
+            LuniclePill.Field.ASSIGNEE -> issue.assignee
+        }
+        val issueRef = LunicleRowRef(LunicleRowKind.ISSUE, issue.status, issue.id)
+        if (value == current) return issueRef
+        boards.setProperty(view.key, issue.id, field, value, resolution)
+        val placed = LunicleBoardMenu.placeAfterChange(view, issue.id, if (field == LuniclePill.Field.STATUS) value else null)
+        placed.unfold?.let { toggleLunicleColumn(it) }
+        patch { it.copy(lunicleFlash = LunicleFlash(view.key, placed.flash.key, now)) }
+        return placed.caret
     }
 
     /** Folds or unfolds a board column in this pane ([State.lunicleColumnFolds]). Called by the view's −/+ and dot. */

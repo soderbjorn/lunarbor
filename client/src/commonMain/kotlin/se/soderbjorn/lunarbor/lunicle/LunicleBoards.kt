@@ -40,6 +40,10 @@
  *    main process's `X-Lunicle-Origin`, so the stream marks its echo `self`;
  *    and the issues this app changed are left out of the next read's
  *    remote-change notice, so an own edit never reads as someone else's.
+ *  - **Properties** (LBR-30): [setProperty] moves an issue
+ *    (`POST /issues/{id}/move`) or changes its priority or assignee
+ *    (`PATCH /issues/{id}`) the same optimistic way
+ *    ([LunicleBoardState.propertyEdits]).
  *  - **Read-only**: a board's first good read asks whether the token is
  *    read-only ([LunicleService.isReadOnly]); a write answered 403
  *    `insufficient_scope` says so too. [explain] shows why something
@@ -318,6 +322,61 @@ class LunicleBoards(
                     afterSave(key, t)
                 }
                 is LunicleResult.Failure -> failed(key, target, r.error) { s -> s.copy(creating = s.creating.filter { it.localId != localId }) }
+            }
+        }
+    }
+
+    /** Last [LunicleIssueEdit.seq] handed out. */
+    private var editSeq = 0L
+
+    /**
+     * Changes issue [issueId]'s status, priority or assignee on board [key]
+     * (LBR-30), optimistically: the board shows [value] at once
+     * ([LunicleBoardState.propertyEdits]) with "Saving to Lunicle…" — so a
+     * moved issue is already under its new column — then "Synced just now"
+     * and a re-read; on failure the old value comes back and the error
+     * (Lunicle's own sentence, e.g. an ambiguous assignee name) shows in red.
+     *
+     *  - [LuniclePill.Field.STATUS]: `POST /issues/{id}/move` `{status}`,
+     *    plus [resolution] for a column that requires one.
+     *  - [LuniclePill.Field.PRIORITY]: `PATCH /issues/{id}` `{priority}`.
+     *  - [LuniclePill.Field.ASSIGNEE]: `PATCH /issues/{id}` `{assignee}` by
+     *    display name; [value] `null` sends `assignee: null` (nobody).
+     *
+     * A board not resolved yet ignores it. Called by
+     * `PaneBackingViewModel.pickLunicleOption` / `chooseLunicleResolution`.
+     */
+    fun setProperty(key: LunicleBoardKey, issueId: Long, field: LuniclePill.Field, value: String?, resolution: String? = null) {
+        val target = stateOf(key).target ?: return
+        if (field != LuniclePill.Field.ASSIGNEE && value == null) return
+        val edit = LunicleIssueEdit(++editSeq, issueId, field, value, resolution)
+        writing.getOrPut(key) { HashSet() } += issueId
+        put(key) { it.copy(propertyEdits = it.propertyEdits + edit, writes = it.writes + 1) }
+        scope.launch {
+            val client = service.client(target.connection.id)
+            val r = when (field) {
+                LuniclePill.Field.STATUS -> client.moveIssue(issueId, value!!, resolution)
+                LuniclePill.Field.PRIORITY -> client.updateIssue(issueId, LunicleIssueChanges(priority = LunicleField.Set(value!!)))
+                LuniclePill.Field.ASSIGNEE -> client.updateIssue(issueId, LunicleIssueChanges(assignee = LunicleField.Set(value)))
+            }
+            writing[key]?.remove(issueId)
+            fun withoutEdit(s: LunicleBoardState) = s.propertyEdits.filter { it.seq != edit.seq }
+            when (r) {
+                is LunicleResult.Ok -> {
+                    ownChanges.getOrPut(key) { HashSet() } += issueId
+                    val t = now()
+                    put(key) { s ->
+                        s.copy(
+                            board = s.board?.let { b -> b.copy(issues = b.issues.map { if (it.id == issueId) edit.applyTo(it) else it }) },
+                            details = s.details[issueId]?.let { d -> s.details + (issueId to d.copy(summary = edit.applyTo(d.summary))) } ?: s.details,
+                            propertyEdits = withoutEdit(s),
+                            writes = (s.writes - 1).coerceAtLeast(0),
+                            savedAt = t,
+                        )
+                    }
+                    afterSave(key, t)
+                }
+                is LunicleResult.Failure -> failed(key, target, r.error) { s -> s.copy(propertyEdits = withoutEdit(s)) }
             }
         }
     }
