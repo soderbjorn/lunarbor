@@ -31,6 +31,7 @@ package se.soderbjorn.lunarbor.main
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.LineMarkdownPrefix
 import se.soderbjorn.lunarbor.data.SearchNode
+import se.soderbjorn.lunarbor.data.LunicleNode
 import se.soderbjorn.lunarbor.data.SubtreeCodec
 import kotlin.math.PI
 import kotlin.math.abs
@@ -479,7 +480,7 @@ object PageSpaceModel {
      * inline Markdown and a search node's query removed.
      */
     fun plainTitle(raw: String): String {
-        val stripped = SearchNode.stripQuery(raw)
+        val stripped = LunicleNode.stripQueries(raw)
         val prefix = LineMarkdownPrefix.detect(stripped, 0)
         return InlineMarkdownTokenizer.tokenize(stripped.substring(prefix.markerEnd)).displayText.trim()
     }

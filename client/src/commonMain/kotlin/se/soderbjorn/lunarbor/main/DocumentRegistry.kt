@@ -29,6 +29,9 @@
  * Search, search nodes, link search, wiki links, Insert Image and the
  * listings filter by it here; panes filter their own rows.
  *
+ * And owns the Lunicle board cache ([lunicleBoards], LBR-27) when the
+ * platform has Lunicle: the boards `{{lunicle: …}}` nodes show.
+ *
  * commonMain only — no DOM, Android UI, or UIKit imports.
  */
 
@@ -67,6 +70,7 @@ import se.soderbjorn.lunarbor.data.VaultEntryKind
 import se.soderbjorn.lunarbor.data.VaultIndex
 import se.soderbjorn.lunarbor.data.WikiLink
 import kotlin.time.TimeSource
+import se.soderbjorn.lunarbor.lunicle.LunicleBoards
 
 /**
  * App-scoped registry of loaded [Document]s and shared vault state.
@@ -85,12 +89,17 @@ import kotlin.time.TimeSource
  *   creates; see [Document.DEFAULT_SAVE_DEBOUNCE_MILLIS].
  * @param maxSaveDelayMillis Forwarded likewise; see
  *   [Document.DEFAULT_MAX_SAVE_DELAY_MILLIS].
+ * @param lunicleBoards The board cache behind `{{lunicle: …}}` nodes
+ *   (LBR-27), or `null` where there is no Lunicle (the browser demo,
+ *   tests): board nodes are then plain bullets.
  */
 class DocumentRegistry(
     private val repository: NoteRepository,
     private val scope: CoroutineScope,
     private val saveDebounceMillis: Long = Document.DEFAULT_SAVE_DEBOUNCE_MILLIS,
     private val maxSaveDelayMillis: Long = Document.DEFAULT_MAX_SAVE_DELAY_MILLIS,
+    /** See the `lunicleBoards` parameter; panes read and report through it. */
+    val lunicleBoards: LunicleBoards? = null,
 ) {
 
     /** Vault-relative path of the configured root file. */

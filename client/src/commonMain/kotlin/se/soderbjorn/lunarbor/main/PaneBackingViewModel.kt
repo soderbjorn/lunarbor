@@ -87,6 +87,7 @@ import se.soderbjorn.lunarbor.data.bareUrlEndAt
 import se.soderbjorn.lunarbor.data.TagCount
 import se.soderbjorn.lunarbor.data.TextHit
 import se.soderbjorn.lunarbor.data.SearchNode
+import se.soderbjorn.lunarbor.data.LunicleNode
 import se.soderbjorn.lunarbor.data.SearchQuery
 import se.soderbjorn.lunarbor.data.TextIndex
 import se.soderbjorn.lunarbor.data.TextScope
@@ -98,6 +99,16 @@ import se.soderbjorn.lunarbor.data.LinkSource
 import se.soderbjorn.lunarbor.data.VaultIndex
 import se.soderbjorn.lunarbor.data.WikiLink
 import se.soderbjorn.lunarbor.platform.toNfc
+import se.soderbjorn.lunarbor.data.LunicleNodeRef
+import se.soderbjorn.lunarbor.lunicle.LunicleBoardIssue
+import se.soderbjorn.lunarbor.lunicle.LunicleBoardKey
+import se.soderbjorn.lunarbor.lunicle.LunicleBoardLayout
+import se.soderbjorn.lunarbor.lunicle.LunicleBoardState
+import se.soderbjorn.lunarbor.lunicle.LunicleColumn
+import se.soderbjorn.lunarbor.lunicle.LunicleIssue
+import se.soderbjorn.lunarbor.lunicle.LuniclePill
+import se.soderbjorn.lunarbor.lunicle.LunicleSyncKind
+import se.soderbjorn.lunarbor.lunicle.LunicleSyncLine
 
 /**
  * Per-pane backing view-model. Mirrors the active [Document]'s content
@@ -168,6 +179,17 @@ class PaneBackingViewModel(
      *   [DocumentRegistry.searchNodeResultsFlow]: each search node's
      *   results, refreshed a few seconds after the vault changes. Read
      *   through [searchNodeOf].
+     * @property lunicleBoards Mirror of `LunicleBoards.boardsFlow`
+     *   (LBR-27): every board node's board, kept current by the registry's
+     *   board cache. Read through [lunicleBoardOf].
+     * @property lunicleEnabled `true` when the app has Lunicle
+     *   ([DocumentRegistry.lunicleBoards] is set — the desktop app);
+     *   without it (the browser demo) a `{{lunicle: …}}` bullet is plain.
+     * @property lunicleColumnFolds Pane fold state of board columns, by
+     *   [lunicleColumnKey] → `true` folded / `false` open; a column not
+     *   listed starts folded only when it needs a resolution.
+     * @property lunicleOpenIssues Issues this pane has unfolded on a board,
+     *   by [lunicleIssueKey]. Unfolded issues are read in full.
      * @property cursorRow Row of the caret, in absolute document coords.
      * @property cursorCol Column of the caret on [cursorRow].
      * @property anchorRow If non-null, together with [anchorCol] defines
@@ -294,6 +316,10 @@ class PaneBackingViewModel(
         val wikiLinks: Map<String, String?> = emptyMap(),
         val linkPreviews: Map<String, List<LinkPreviewItem>> = emptyMap(),
         val searchNodeResults: Map<DocumentRegistry.SearchNodeKey, TextSearchResult> = emptyMap(),
+        val lunicleBoards: Map<LunicleBoardKey, LunicleBoardState> = emptyMap(),
+        val lunicleEnabled: Boolean = false,
+        val lunicleColumnFolds: Map<String, Boolean> = emptyMap(),
+        val lunicleOpenIssues: Set<String> = emptySet(),
         val cursorRow: Int = 0,
         val cursorCol: Int = 0,
         val anchorRow: Int? = null,
@@ -400,9 +426,10 @@ class PaneBackingViewModel(
             get() = isFileView || (isMarkdownMode && isLoaded && !NoteRepository.isAppFile(activeFileRel))
 
         /**
-         * `true` while the pane is zoomed into a search node or a link
-         * bullet ([ZoomInfo.isReadOnly]): the page shows its results or the
-         * linked node's preview, which are not its own, so nothing on it
+         * `true` while the pane is zoomed into a search node, a board node
+         * (LBR-27) or a link bullet ([ZoomInfo.isReadOnly]): the page shows
+         * its results, its board or the linked node's preview, which are
+         * not its own, so nothing on it
          * can be edited — no typing, no new bullets, no moves, no undo
          * ([recordEdit]). The bullet itself is edited from the parent.
          */
@@ -525,6 +552,9 @@ class PaneBackingViewModel(
      * @property isSearchNode `true` when the zoomed bullet is a search node
      *   ([SearchNode]): the page lists its results and is read-only
      *   ([State.isReadOnlyPage]).
+     * @property isBoardNode `true` when the zoomed bullet is a board node
+     *   (`{{lunicle: …}}`, [LunicleNode], LBR-27) and the app has Lunicle
+     *   ([State.lunicleEnabled]): the page shows its board and is read-only.
      */
     data class ZoomInfo(
         val zoomRow: Int,
@@ -534,15 +564,16 @@ class PaneBackingViewModel(
         val titleText: String,
         val style: LineStyle? = null,
         val isSearchNode: Boolean = false,
+        val isBoardNode: Boolean = false,
     ) {
         /** `true` when the page is read-only ([State.isReadOnlyPage]). */
-        val isReadOnly: Boolean get() = isSearchNode
+        val isReadOnly: Boolean get() = isSearchNode || isBoardNode
 
         /** `true` when the zoom target has at least one descendant bullet. */
         val hasVisibleRows: Boolean get() = startRow <= endRowInclusive
     }
 
-    private val _stateFlow = MutableStateFlow(State(activeFileRel = initialFileRel))
+    private val _stateFlow = MutableStateFlow(State(activeFileRel = initialFileRel, lunicleEnabled = registry.lunicleBoards != null))
 
     /**
      * Observable stream of pane states. Platform `MainViewModel`s
@@ -674,6 +705,14 @@ class PaneBackingViewModel(
         scope.launch {
             registry.searchNodeResultsFlow.collect { results ->
                 _stateFlow.value = _stateFlow.value.copy(searchNodeResults = results)
+            }
+        }
+        // Board nodes (LBR-27): every board the registry's cache holds.
+        registry.lunicleBoards?.let { boards ->
+            scope.launch {
+                boards.boardsFlow.collect { all ->
+                    _stateFlow.value = _stateFlow.value.copy(lunicleBoards = all)
+                }
             }
         }
         // The active drawing's change counter, so the drawing editor
@@ -1183,6 +1222,7 @@ class PaneBackingViewModel(
      */
     suspend fun release() {
         registry.removeRenameListener(renameListener)
+        registry.lunicleBoards?.clearInterest(lunicleInterestOwner)
         _stateFlow.value.activeFileRel.takeIf { NoteRepository.isDrawingPath(it) }?.let { registry.flushDrawings(it) }
         // Strip any throwaway placeholder before tearing down — a pane
         // closed mid-leaf-zoom should not persist its empty placeholder
@@ -1325,6 +1365,169 @@ class PaneBackingViewModel(
             TextSearchResult(hits, r.total - (r.hits.size - hits.size))
         }
         return SearchNodeView(query, shown, folded, scopeFolder)
+    }
+
+    // ------------------------------------------------------------ board nodes
+
+    /**
+     * One issue of a board node as the view draws it (LBR-27).
+     *
+     * @property issue The issue as the board lists it.
+     * @property foldKey Its key in [State.lunicleOpenIssues] ([lunicleIssueKey]).
+     * @property unfolded `true` when this pane has unfolded it.
+     * @property pills The pills on its line ([LunicleBoardLayout.pills]).
+     * @property commentsLabel "N comments", when its details are known and it has any.
+     * @property detail The issue in full (description, comments), once read.
+     * @property loading `true` while its full read is under way.
+     * @property url Its page in Lunicle's web app, or `null` (no `https:` base URL).
+     */
+    data class LunicleIssueView(
+        val issue: LunicleBoardIssue,
+        val foldKey: String,
+        val unfolded: Boolean,
+        val pills: List<LuniclePill>,
+        val commentsLabel: String?,
+        val detail: LunicleIssue?,
+        val loading: Boolean,
+        val url: String?,
+    )
+
+    /**
+     * One column of a board node as the view draws it.
+     *
+     * @property column The column and its issues, by priority.
+     * @property foldKey Its key in [State.lunicleColumnFolds] ([lunicleColumnKey]).
+     * @property folded `true` when folded in this pane (by default: a column that needs a resolution).
+     * @property issues Its issues' views, in [LunicleColumn.issues] order.
+     */
+    data class LunicleColumnView(
+        val column: LunicleColumn,
+        val foldKey: String,
+        val folded: Boolean,
+        val issues: List<LunicleIssueView>,
+    )
+
+    /**
+     * A board node as the view draws it ([lunicleBoardOf]).
+     *
+     * @property ref The node's reference as written.
+     * @property key Its board's cache key.
+     * @property folded `true` when the node itself is folded ([State.collapsedIds]).
+     * @property sync The indicator on the node line.
+     * @property columns The board's columns; empty before the first read.
+     * @property stale `true` when an error stands over a board read earlier:
+     *   the board is drawn dimmed under the error.
+     */
+    data class LunicleBoardView(
+        val ref: LunicleNodeRef,
+        val key: LunicleBoardKey,
+        val folded: Boolean,
+        val sync: LunicleSyncLine,
+        val columns: List<LunicleColumnView>,
+        val stale: Boolean,
+    )
+
+    /**
+     * The board node at [row], or `null`: an outline bullet whose text holds
+     * `{{lunicle: …}}` ([LunicleNode]) in an app with Lunicle. Its board
+     * comes from [State.lunicleBoards]; an unknown one starts its first
+     * read ([LunicleBoards.request]) and arrives as a new state, which
+     * repaints. A malformed reference gives a view whose indicator says
+     * how to write it.
+     *
+     * Called by the web paint loop for every bullet row and by the page
+     * title of a zoomed board node.
+     *
+     * @param now The clock (epoch ms), for "Synced 12s ago" and the
+     *   remote-change notice's expiry.
+     */
+    fun lunicleBoardOf(state: State, row: Int, now: Long): LunicleBoardView? {
+        val boards = registry.lunicleBoards ?: return null
+        if (state.isMarkdownMode) return null
+        val docState = state.documentState ?: return null
+        val line = docState.lines.getOrNull(row) ?: return null
+        if (DocumentLayout.bulletAsteriskColumn(line) < 0) return null
+        val ref = LunicleNode.refOf(SubtreeCodec.titleOf(line)) ?: return null
+        val id = docState.lineIds.getOrNull(row) ?: return null
+        val folded = id in state.collapsedIds
+        val key = LunicleBoardKey.of(ref)
+        if (!ref.isValid) {
+            return LunicleBoardView(ref, key, folded, LunicleSyncLine(LunicleSyncKind.ERROR, LunicleBoardLayout.MALFORMED_TEXT), emptyList(), false)
+        }
+        val board = state.lunicleBoards[key] ?: boards.request(key) ?: LunicleBoardState(key)
+        val sync = LunicleBoardLayout.syncLine(board, now)
+        val columns = board.board?.let { b ->
+            val baseUrl = board.target?.connection?.baseUrl
+            LunicleBoardLayout.columns(b).map { column ->
+                val columnKey = lunicleColumnKey(key, column.status.name)
+                LunicleColumnView(
+                    column = column,
+                    foldKey = columnKey,
+                    folded = state.lunicleColumnFolds[columnKey] ?: column.foldedByDefault,
+                    issues = column.issues.map { issue ->
+                        val issueKey = lunicleIssueKey(key, issue.id)
+                        val unfolded = issueKey in state.lunicleOpenIssues
+                        val detail = board.details[issue.id]
+                        LunicleIssueView(
+                            issue = issue,
+                            foldKey = issueKey,
+                            unfolded = unfolded,
+                            pills = LunicleBoardLayout.pills(issue, b.priorities, unfolded),
+                            commentsLabel = detail?.let { LunicleBoardLayout.commentsLabel(it.comments.size) },
+                            detail = detail,
+                            loading = issue.id in board.loadingIssues,
+                            url = baseUrl?.let { LunicleBoardLayout.issueUrl(it, issue.key) },
+                        )
+                    },
+                )
+            }
+        }.orEmpty()
+        return LunicleBoardView(ref, key, folded, sync, columns, stale = board.error != null && board.board != null)
+    }
+
+    /** Folds or unfolds a board column in this pane ([State.lunicleColumnFolds]). Called by the view's −/+ and dot. */
+    fun toggleLunicleColumn(column: LunicleColumnView) {
+        patch { it.copy(lunicleColumnFolds = it.lunicleColumnFolds + (column.foldKey to !column.folded)) }
+    }
+
+    /**
+     * Unfolds or folds an issue on a board in this pane
+     * ([State.lunicleOpenIssues]); unfolding reads it in full (through the
+     * next [reportShownBoards]). Called by the view's −/+ and dot.
+     */
+    fun toggleLunicleIssue(issue: LunicleIssueView) {
+        patch {
+            it.copy(lunicleOpenIssues = if (issue.unfolded) it.lunicleOpenIssues - issue.foldKey else it.lunicleOpenIssues + issue.foldKey)
+        }
+    }
+
+    /**
+     * Identity this pane reports its board interest under
+     * ([LunicleBoards.setInterest]).
+     */
+    private val lunicleInterestOwner = Any()
+
+    /**
+     * Tells the board cache which boards this pane shows unfolded and which
+     * of their issues it has unfolded — what is polled, streamed and read
+     * in full. Called by the web view after every paint (an empty map when
+     * nothing is shown) and by [release].
+     */
+    fun reportShownBoards(shown: Map<LunicleBoardKey, Set<Long>>) {
+        registry.lunicleBoards?.setInterest(lunicleInterestOwner, shown)
+    }
+
+    /**
+     * Puts a board node for [connection]'s project [key] where "Insert
+     * search node" would put a search node, its title selected
+     * ([TextEditingViewModel.insertLunicleBoard]). Undoable. Called by the
+     * "Insert Lunicle board…" palette command once a project is picked.
+     */
+    fun insertLunicleBoard(connection: String, key: String) {
+        recordEdit(FrameKind.OTHER) {
+            commitPlaceholderIfAny()
+            textEditing.insertLunicleBoard(connection, key)
+        }
     }
 
 
@@ -1566,7 +1769,7 @@ class PaneBackingViewModel(
         if (!state.isLoaded || state.isMarkdownMode) return null
         zoomInfoOf(state)?.let { zoom ->
             if (isProtectedRow(state, zoom.zoomRow)) return null
-            return FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(SearchNode.stripQuery(zoom.titleText))).trim()
+            return FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(LunicleNode.stripQueries(zoom.titleText))).trim()
         }
         if (!NoteRepository.isOutlineFile(state.activeFileRel) || parentFileOf(state.activeFileRel) == null) return null
         if (registry.hasHiddenUnder(NoteRepository.folderOfOutline(state.activeFileRel))) return null
@@ -5031,6 +5234,12 @@ class PaneBackingViewModel(
          * rest are on its own page (zoomed into), which lists them all.
          */
         const val SEARCH_NODE_INLINE: Int = 10
+
+        /** A board column's key in [State.lunicleColumnFolds]: `<connection>/<KEY>/<status>`. */
+        fun lunicleColumnKey(board: LunicleBoardKey, status: String): String = "${board.id}/$status"
+
+        /** An issue's key in [State.lunicleOpenIssues]: `<connection>/<KEY>#<issue id>`. */
+        fun lunicleIssueKey(board: LunicleBoardKey, issueId: Long): String = "${board.id}#$issueId"
 
         /** Most pages a pane remembers the scroll and search of ([PageView]). */
         private const val PAGE_MEMORY_CAP: Int = 200

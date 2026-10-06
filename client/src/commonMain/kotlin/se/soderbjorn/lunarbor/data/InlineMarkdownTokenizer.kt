@@ -158,6 +158,13 @@ data class StyledRun(
      * query reads and edits as written; renderers draw it as a chip.
      */
     val isSearchQuery: Boolean = false,
+    /**
+     * When `true`, this run is a board node's reference `{{lunicle: …}}`
+     * ([LunicleNode], LBR-27). Like [isSearchQuery]: every character
+     * visible and editable; renderers draw it as a chip on the caret's
+     * row and as a small board icon elsewhere.
+     */
+    val isLunicleQuery: Boolean = false,
 )
 
 /**
@@ -383,6 +390,7 @@ private class Parser(val text: String) {
             // A search node's `{{search: …}}`: one verbatim run, so no
             // Markdown inside the query (a `*` in `#proj*`) opens a style.
             if (text[pos] == '{' && tryConsumeSearchQuery()) continue
+            if (text[pos] == '{' && tryConsumeLunicleQuery()) continue
 
             if (text[pos] == '!' && pos + 1 < text.length && text[pos + 1] == '[' && tryConsumeImage()) continue
 
@@ -785,6 +793,33 @@ private class Parser(val text: String) {
             modelStart = start,
             modelEnd = pos,
             isSearchQuery = true,
+        )
+        runStart = pos
+        return true
+    }
+
+    /**
+     * Try to consume a board node's reference `{{lunicle: …}}`
+     * ([LunicleNode]) at [pos]. On success emits one run with
+     * [StyledRun.isLunicleQuery], every character visible, and returns
+     * `true`; otherwise leaves [pos] alone.
+     */
+    private fun tryConsumeLunicleQuery(): Boolean {
+        val range = LunicleNode.rangeIn(text, pos)?.takeIf { it.first == pos } ?: return false
+        flushRun()
+        val start = pos
+        while (pos <= range.last) {
+            modelToDom[pos] = displayBuilder.length
+            domToModel.add(pos)
+            displayBuilder.append(text[pos])
+            pos++
+        }
+        runs += StyledRun(
+            text = text.substring(start, pos),
+            styles = activeStyles.toSet(),
+            modelStart = start,
+            modelEnd = pos,
+            isLunicleQuery = true,
         )
         runStart = pos
         return true

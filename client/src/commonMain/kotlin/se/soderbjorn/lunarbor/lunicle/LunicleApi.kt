@@ -135,3 +135,24 @@ interface LunicleConnectionStore {
     /** Removes connection [id]. */
     suspend fun remove(id: String): LunicleConnectionsSnapshot
 }
+
+/**
+ * A connection's change stream (Lunicle's SSE, LNL-224), held by the
+ * Electron main process (`LunicleHost.kt`'s `LunicleStream`: one stream per
+ * connection, with the token, no CORS) and relayed to the renderer
+ * (`lunarbor:lunicleWatch` / `lunarbor:lunicleEvent`).
+ *
+ * Implemented by `ElectronLunicleBridge`; tests use a fake that records
+ * [watch] calls and feeds messages to the listener by hand.
+ */
+interface LunicleEventSource {
+    /**
+     * Sets which projects connection [connectionId]'s stream covers; an
+     * empty set closes it. The main process opens (or re-opens, resuming
+     * from the last event id) `GET /api/v1/events?projects=…&origin=…`.
+     */
+    fun watch(connectionId: String, projectIds: Set<Long>)
+
+    /** Where every relayed message goes. One listener; a second call replaces it. */
+    fun setListener(listener: (LunicleStreamMessage) -> Unit)
+}

@@ -64,7 +64,7 @@ object FolderName {
      */
     fun plainTextOf(title: String): String {
         // A search node's `{{search: …}}` is its query, not its title.
-        val shown = SearchNode.stripQuery(title)
+        val shown = LunicleNode.stripQueries(title)
         val prefix = LineMarkdownPrefix.detect(shown, 0)
         val body = if (prefix.style != null) shown.substring(prefix.markerEnd) else shown
         return InlineMarkdownTokenizer.tokenize(body).displayText
@@ -84,7 +84,7 @@ object FolderName {
      *   no `* ` marker).
      */
     fun nameTextOf(title: String): String {
-        val shown = SearchNode.stripQuery(title)
+        val shown = LunicleNode.stripQueries(title)
         val prefix = LineMarkdownPrefix.detect(shown, 0)
         val body = if (prefix.style != null) shown.substring(prefix.markerEnd) else shown
         return withoutTags(InlineMarkdownTokenizer.tokenize(body))

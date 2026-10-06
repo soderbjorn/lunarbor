@@ -38,6 +38,7 @@
 package se.soderbjorn.lunarbor.main
 
 import se.soderbjorn.lunarbor.data.LunarborLink
+import se.soderbjorn.lunarbor.data.LunicleNode
 import se.soderbjorn.lunarbor.data.InlineMarkdownTokenizer
 import se.soderbjorn.lunarbor.data.InlineStyle
 import se.soderbjorn.lunarbor.data.LineMarkdownPrefix
@@ -1275,6 +1276,31 @@ internal class TextEditingViewModel(
      * (the "Insert search node" palette command).
      */
     fun insertSearchNode() {
+        insertNodeItem(SEARCH_NODE_EXAMPLE, SEARCH_NODE_EXAMPLE_EXPR)
+    }
+
+    /**
+     * Puts a board node (LBR-27), `Lunicle board {{lunicle: <connection>/<KEY>}}`
+     * (always the full form, [LunicleNode.format]), where [insertSearchNode]
+     * would put a search node, with its title ("Lunicle board") selected so
+     * typing renames it. Outlines only. Called by
+     * `PaneBackingViewModel.insertLunicleBoard` (the "Insert Lunicle board…"
+     * palette command).
+     *
+     * @param connection The connection's name (App settings → Lunicle).
+     * @param key The project's key prefix.
+     */
+    fun insertLunicleBoard(connection: String, key: String) {
+        insertNodeItem("$LUNICLE_BOARD_TITLE ${LunicleNode.format(connection, key)}", LUNICLE_BOARD_TITLE)
+    }
+
+    /**
+     * Inserts the bullet text [itemText] on the caret's empty leaf bullet,
+     * or as a new item after the caret's item (with its subtree), at its
+     * level — where [insertBlock] would put a block — and selects the first
+     * [selected] in it. Shared by [insertSearchNode] and [insertLunicleBoard].
+     */
+    private fun insertNodeItem(itemText: String, selected: String) {
         val s = state
         if (!s.isLoaded || !document.bulletsOnly) return
         val row = s.cursorRow
@@ -1293,17 +1319,17 @@ internal class TextEditingViewModel(
             bulletCol >= 0 -> DocumentLayout.subtreeEnd(s.lines, row, bulletCol) + 1 to bulletCol
             else -> row + 1 to DocumentLayout.indentOf(line)
         }
-        val text = " ".repeat(indent) + "* " + SEARCH_NODE_EXAMPLE
+        val text = " ".repeat(indent) + "* " + itemText
         if (emptyLeaf) {
-            document.insertText(row, line.length, SEARCH_NODE_EXAMPLE)
+            document.insertText(row, line.length, itemText)
         } else {
             document.insertLine(at, text)
         }
-        val exprStart = text.indexOf(SEARCH_NODE_EXAMPLE_EXPR)
+        val selStart = text.indexOf(selected, startIndex = indent + 2)
         patch {
             it.copy(
-                cursorRow = at, cursorCol = exprStart + SEARCH_NODE_EXAMPLE_EXPR.length,
-                anchorRow = at, anchorCol = exprStart,
+                cursorRow = at, cursorCol = selStart + selected.length,
+                anchorRow = at, anchorCol = selStart,
                 pendingInlineStyles = emptySet(),
             )
         }
@@ -2014,3 +2040,6 @@ internal const val SEARCH_NODE_EXAMPLE_EXPR: String = "#todo -#done"
 
 /** The bullet text "Insert search node" puts in: a title and an example query. */
 internal const val SEARCH_NODE_EXAMPLE: String = "Open tasks {{search: $SEARCH_NODE_EXAMPLE_EXPR}}"
+
+/** The title "Insert Lunicle board…" gives a new board node, selected after the insert. */
+internal const val LUNICLE_BOARD_TITLE: String = "Lunicle board"

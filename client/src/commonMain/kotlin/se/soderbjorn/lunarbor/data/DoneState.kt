@@ -39,7 +39,8 @@ object DoneState {
 
     /**
      * The part of [text] the done rule looks at: [text] with leading and
-     * trailing whitespace, `#tags` and `{{search: …}}` queries cut off, as
+     * trailing whitespace, `#tags`, `{{search: …}}` queries and
+     * `{{lunicle: …}}` references ([LunicleNode]) cut off, as
      * a half-open `[first, last)` column pair. Equal ends when nothing is
      * left (an empty title, or one made only of tags).
      */
@@ -49,7 +50,8 @@ object DoneState {
         while (true) {
             while (start < end && text[start].isWhitespace()) start++
             if (start >= end) break
-            val query = SearchNode.rangeIn(text, start)
+            val query = SearchNode.rangeIn(text, start)?.takeIf { it.first == start }
+                ?: LunicleNode.rangeIn(text, start)
             if (query != null && query.first == start && query.last < end) {
                 start = query.last + 1
                 continue
@@ -66,8 +68,14 @@ object DoneState {
             while (end > start && text[end - 1].isWhitespace()) end--
             if (end <= start) break
             if (text.startsWith("}}", end - 2)) {
-                val open = text.lastIndexOf("{{search:", end - 1)
-                val query = if (open >= start) SearchNode.rangeIn(text, open) else null
+                val openSearch = text.lastIndexOf("{{search:", end - 1)
+                val openBoard = text.lastIndexOf("{{lunicle:", end - 1)
+                val open = maxOf(openSearch, openBoard)
+                val query = when {
+                    open < start -> null
+                    open == openSearch -> SearchNode.rangeIn(text, open)
+                    else -> LunicleNode.rangeIn(text, open)
+                }
                 if (query != null && query.first == open && query.last == end - 1) {
                     end = open
                     continue

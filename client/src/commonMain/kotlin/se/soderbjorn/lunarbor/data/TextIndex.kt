@@ -622,7 +622,7 @@ class TextIndex(
          */
         private fun visibleText(raw: String): Pair<String, List<String>> {
             val prefix = LineMarkdownPrefix.detect(raw, 0)
-            val tokens = InlineMarkdownTokenizer.tokenize(SearchNode.stripQuery(raw.substring(prefix.markerEnd)))
+            val tokens = InlineMarkdownTokenizer.tokenize(LunicleNode.stripQueries(raw.substring(prefix.markerEnd)))
             return tokens.displayText.trim() to tokens.runs.filter { it.isTag }.map { it.text }
         }
 

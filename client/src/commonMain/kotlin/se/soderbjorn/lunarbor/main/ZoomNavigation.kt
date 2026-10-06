@@ -30,6 +30,7 @@ package se.soderbjorn.lunarbor.main
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import se.soderbjorn.lunarbor.data.SearchNode
+import se.soderbjorn.lunarbor.data.LunicleNode
 import se.soderbjorn.lunarbor.main.PaneBackingViewModel.Companion.TAB_SIZE
 
 /**
@@ -522,9 +523,11 @@ internal class ZoomNavigation(
 
     /**
      * `true` when a childless bullet [line] zooms into a read-only page
-     * ([PaneBackingViewModel.ZoomInfo.isReadOnly]): a search node.
+     * ([PaneBackingViewModel.ZoomInfo.isReadOnly]): a search node, or a
+     * board node (LBR-27) where the app has Lunicle.
      */
-    private fun isReadOnlyLeaf(line: String): Boolean = SearchNode.queryOf(line) != null
+    private fun isReadOnlyLeaf(line: String): Boolean =
+        SearchNode.queryOf(line) != null || (stateProvider().lunicleEnabled && LunicleNode.refOf(line) != null)
 
     private fun popValid(
         stack: List<LineId?>,

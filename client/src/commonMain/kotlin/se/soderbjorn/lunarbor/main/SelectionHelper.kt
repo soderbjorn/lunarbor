@@ -19,6 +19,7 @@ import se.soderbjorn.lunarbor.data.LineMarkdownPrefix
 import se.soderbjorn.lunarbor.data.LineStyle
 import se.soderbjorn.lunarbor.data.NoteRepository
 import se.soderbjorn.lunarbor.data.SearchNode
+import se.soderbjorn.lunarbor.data.LunicleNode
 import se.soderbjorn.lunarbor.data.SubtreeCodec
 import se.soderbjorn.lunarbor.platform.toNfc
 
@@ -443,6 +444,7 @@ internal fun zoomInfoOf(
         titleText = titleText,
         style = prefix.style,
         isSearchNode = !isBlock && SearchNode.queryOf(rawTitle) != null,
+        isBoardNode = !isBlock && state.lunicleEnabled && LunicleNode.refOf(rawTitle) != null,
     )
 }
 
@@ -472,7 +474,7 @@ internal fun zoomPathSegmentsOf(
     // A search node's `{{search: …}}` is its query, not part of its name,
     // and `#tags` label the item rather than name it (FolderName.withoutTags).
     return (ancestors.map { it.titleText } + zoom.titleText)
-        .map { FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(SearchNode.stripQuery(it))) }
+        .map { FolderName.withoutTags(InlineMarkdownTokenizer.tokenize(LunicleNode.stripQueries(it))) }
 }
 
 /**
