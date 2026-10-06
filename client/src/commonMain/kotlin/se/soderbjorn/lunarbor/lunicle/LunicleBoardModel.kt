@@ -90,6 +90,15 @@ data class LunicleBoardKey(val connection: String?, val key: String) {
  *   writes are under way (optimistic, LBR-30), oldest first: shown over
  *   the board's values ([shown]) until each write answers; dropped on
  *   failure, so the old value comes back.
+ * @property descriptionEdits Issue id → the description a write under way
+ *   is setting (optimistic, LBR-31): shown in place of the issue's own
+ *   until the write answers; dropped on failure.
+ * @property postingComments Comments being posted (optimistic, LBR-31),
+ *   shown after the issue's comments until a read of the issue lists them.
+ * @property ownComments Ids of comments this app posted: never highlighted
+ *   as arrivals from Lunicle.
+ * @property userName The token owner's name (`GET /me`), the author shown
+ *   on a comment being posted; `null` when not known.
  */
 data class LunicleBoardState(
     val key: LunicleBoardKey,
@@ -111,7 +120,32 @@ data class LunicleBoardState(
     val savedAt: Long? = null,
     val readOnlyToken: Boolean = false,
     val propertyEdits: List<LunicleIssueEdit> = emptyList(),
+    val descriptionEdits: Map<Long, String> = emptyMap(),
+    val postingComments: List<LunicleCreatingComment> = emptyList(),
+    val ownComments: Set<Long> = emptySet(),
+    val userName: String? = null,
 ) {
+    /**
+     * Issue [issueId] in full as the board shows it (LBR-31), or `null`
+     * before it was read: with the description of a write under way
+     * ([descriptionEdits]) and the comments being posted
+     * ([postingComments]) after its own, until a read lists them.
+     */
+    fun shownDetail(issueId: Long): LunicleIssue? {
+        val detail = details[issueId] ?: return null
+        val description = descriptionEdits[issueId]
+        val known = detail.comments.mapTo(HashSet()) { it.id }
+        val posting = postingComments.filter { it.issueId == issueId && (it.createdId == null || it.createdId !in known) }
+        if (description == null && posting.isEmpty()) return detail
+        return detail.copy(
+            description = description ?: detail.description,
+            comments = detail.comments + posting.map { LunicleComment(it.localId, it.body, it.author, null, it.createdAt) },
+        )
+    }
+
+    /** `true` when comment [id] of the shown details is still being posted (a local id). */
+    fun isPosting(id: Long): Boolean = postingComments.any { it.localId == id }
+
     /**
      * [issue] as the board shows it: with the title ([titleEdits]) and the
      * status, priority and assignee ([propertyEdits]) of writes under way.
@@ -176,6 +210,27 @@ data class LunicleCreatingIssue(
     val anchor: LunicleDraftAnchor,
     val createdId: Long? = null,
     val createdKey: String? = null,
+)
+
+/**
+ * A comment being posted from the "Comment…" row (LBR-31): shown at once
+ * after the issue's comments, until a read of the issue lists it.
+ *
+ * @property localId Its row's id until Lunicle gives it one (negative,
+ *   from [LunicleBoards.newLocalId]).
+ * @property issueId The issue.
+ * @property body The Markdown sent.
+ * @property author Who it is shown as: the token owner, or "You".
+ * @property createdAt When it was sent (epoch ms).
+ * @property createdId The new comment's id, once Lunicle answered.
+ */
+data class LunicleCreatingComment(
+    val localId: Long,
+    val issueId: Long,
+    val body: String,
+    val author: String,
+    val createdAt: Long,
+    val createdId: Long? = null,
 )
 
 /**
@@ -382,6 +437,12 @@ object LunicleBoardLayout {
 
     /** Why no issue can be filed on a board: a project viewer. */
     fun noCreateText(projectKey: String): String = "You can't file issues in $projectKey (viewer)."
+
+    /**
+     * The indicator while a pane edits an issue's description that someone
+     * changed in Lunicle meanwhile (LBR-31): the edit is kept and wins.
+     */
+    fun descriptionChangedText(title: String): String = "$title's description changed in Lunicle; your edit is kept"
 
     /** The message for a reference that is not `[<connection>/]<KEY>`. */
     const val MALFORMED_TEXT: String = "Write it as {{lunicle: <connection>/<KEY>}}."

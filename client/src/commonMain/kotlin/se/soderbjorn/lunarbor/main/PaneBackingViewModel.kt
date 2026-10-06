@@ -200,6 +200,21 @@ class PaneBackingViewModel(
      * @property lunicleFlash The board row that flashes after a property
      *   change (LBR-30, [LunicleFlash]): the moved issue under its new
      *   column, or a folded closed column's row; `null` when none.
+     * @property lunicleDescriptionEdit The issue description this pane is
+     *   editing (LBR-31, [LunicleDescriptionEdit]): its lines and the
+     *   caret's line; a poll never overwrites it. `null` when none.
+     * @property lunicleOpenDescriptions Large descriptions this pane shows
+     *   whole (LBR-31), by [lunicleIssueKey]; others show a preview.
+     * @property lunicleCommentDrafts Text typed in an issue's "Comment…"
+     *   row and not posted (LBR-31), by [lunicleIssueKey] — while the caret
+     *   is elsewhere, and a failed post's text until the field takes it back.
+     * @property lunicleSeenComments The comment ids this pane has seen on
+     *   each unfolded issue (LBR-31), by [lunicleIssueKey]: what arrives
+     *   beyond them is highlighted.
+     * @property lunicleArrivedComments Comments that arrived from Lunicle
+     *   since this pane last saw their issue (LBR-31), by
+     *   `<issue key>:<comment id>` → when (epoch ms), highlighted for
+     *   [LunicleComments.ARRIVAL_MS].
      * @property cursorRow Row of the caret, in absolute document coords.
      * @property cursorCol Column of the caret on [cursorRow].
      * @property anchorRow If non-null, together with [anchorCol] defines
@@ -333,6 +348,11 @@ class PaneBackingViewModel(
         val lunicleDrafts: List<LunicleDraft> = emptyList(),
         val lunicleEditing: LunicleEditingIssue? = null,
         val lunicleFlash: LunicleFlash? = null,
+        val lunicleDescriptionEdit: LunicleDescriptionEdit? = null,
+        val lunicleOpenDescriptions: Set<String> = emptySet(),
+        val lunicleCommentDrafts: Map<String, String> = emptyMap(),
+        val lunicleSeenComments: Map<String, Set<Long>> = emptyMap(),
+        val lunicleArrivedComments: Map<String, Long> = emptyMap(),
         val cursorRow: Int = 0,
         val cursorCol: Int = 0,
         val anchorRow: Int? = null,
@@ -724,7 +744,7 @@ class PaneBackingViewModel(
         registry.lunicleBoards?.let { boards ->
             scope.launch {
                 boards.boardsFlow.collect { all ->
-                    _stateFlow.value = _stateFlow.value.copy(lunicleBoards = all)
+                    _stateFlow.value = noteLunicleArrivals(_stateFlow.value.copy(lunicleBoards = all), boards.clock())
                 }
             }
         }
@@ -1399,6 +1419,14 @@ class PaneBackingViewModel(
      * @property url Its page in Lunicle's web app, or `null` (no `https:` base URL).
      * @property editable `true` when its title can be edited here (LBR-29):
      *   Lunicle's `canEdit` and a token that may write.
+     * @property description Its description rows (LBR-31), once read
+     *   ([LunicleDescriptionView]); `null` before.
+     * @property comments Its comments oldest first (LBR-31), comments being
+     *   posted last; empty before it was read.
+     * @property canComment `true` when a "Comment…" row is drawn (LBR-31): a
+     *   write token and Lunicle's `canComment`.
+     * @property commentDraft Text typed in its "Comment…" row and not posted
+     *   ([State.lunicleCommentDrafts]); `""` for none.
      */
     data class LunicleIssueView(
         val issue: LunicleBoardIssue,
@@ -1410,6 +1438,10 @@ class PaneBackingViewModel(
         val loading: Boolean,
         val url: String?,
         val editable: Boolean = false,
+        val description: LunicleDescriptionView? = null,
+        val comments: List<LunicleCommentView> = emptyList(),
+        val canComment: Boolean = false,
+        val commentDraft: String = "",
     )
 
     /**
@@ -1514,7 +1546,8 @@ class PaneBackingViewModel(
                 val issueViews = column.issues.map { issue ->
                     val issueKey = lunicleIssueKey(key, issue.id)
                     val unfolded = issueKey in state.lunicleOpenIssues
-                    val detail = board.details[issue.id]
+                    val detail = board.shownDetail(issue.id)
+                    val canComment = detail != null && detail.canComment && !board.readOnlyToken
                     LunicleIssueView(
                         issue = issue,
                         foldKey = issueKey,
@@ -1525,6 +1558,10 @@ class PaneBackingViewModel(
                         loading = issue.id in board.loadingIssues,
                         url = baseUrl?.let { LunicleBoardLayout.issueUrl(it, issue.key) },
                         editable = board.canEdit(issue),
+                        description = detail?.let { descriptionViewOf(state, key, issueKey, it, board.canEdit(issue) && canComment) },
+                        comments = detail?.let { commentViewsOf(state, board, issueKey, it) }.orEmpty(),
+                        canComment = canComment,
+                        commentDraft = state.lunicleCommentDrafts[issueKey].orEmpty(),
                     )
                 }
                 val status = column.status.name
@@ -1543,8 +1580,18 @@ class PaneBackingViewModel(
                 )
             }
         }.orEmpty()
+        // Someone changed the description this pane is editing (LBR-31): the
+        // edit is kept and wins on leaving; the indicator says so meanwhile.
+        val edit = state.lunicleDescriptionEdit?.takeIf { it.board == key }
+        val changedTitle = edit?.let { e ->
+            columns.firstNotNullOfOrNull { c -> c.issues.firstOrNull { it.issue.id == e.issueId } }
+                ?.takeIf { LunicleDescription.changedRemotely(e, it.detail?.description) }?.issue?.title
+        }
+        val shownSync = if (changedTitle != null && sync.kind in REMOTE_OVERRIDABLE) {
+            LunicleSyncLine(LunicleSyncKind.REMOTE, LunicleBoardLayout.descriptionChangedText(changedTitle))
+        } else sync
         return LunicleBoardView(
-            ref, key, folded, sync, columns,
+            ref, key, folded, shownSync, columns,
             stale = board.error != null && board.board != null,
             canCreate = canCreate,
             readOnly = board.readOnlyToken,
@@ -1566,8 +1613,11 @@ class PaneBackingViewModel(
      * Called by the web view's `LunicleBoardCursor` when its caret lands on
      * such a row.
      *
+     * On an issue's "Comment…" row (LBR-31) the field starts from the text
+     * kept there ([State.lunicleCommentDrafts]), which it takes over.
+     *
      * @return The text the field starts with (the title shown, `""` for a
-     *   draft or "New issue"), or `null` when the row cannot be edited (a
+     *   draft or "New issue", the kept comment text), or `null` when the row cannot be edited (a
      *   read-only token, `canEdit: false`): the cursor then shows a tint.
      */
     fun beginLunicleEdit(nodeRow: Int, ref: LunicleRowRef, now: Long): String? {
@@ -1582,6 +1632,12 @@ class PaneBackingViewModel(
             }
             LunicleRowKind.DRAFT -> if (_stateFlow.value.lunicleDrafts.any { it.localId == ref.issueId }) "" else null
             LunicleRowKind.NEW_ISSUE -> if (view.canCreate) "" else null
+            LunicleRowKind.ADD_COMMENT -> {
+                // The field takes over the text kept for the row (LBR-31).
+                val issue = issueViewOf(view, ref.issueId)?.takeIf { it.canComment } ?: return null
+                if (issue.commentDraft.isNotEmpty()) patch { it.copy(lunicleCommentDrafts = it.lunicleCommentDrafts - issue.foldKey) }
+                issue.commentDraft
+            }
             else -> null
         }
     }
@@ -1597,7 +1653,12 @@ class PaneBackingViewModel(
      *  - a draft with a title is filed ([LunicleBoards.createIssue]) and
      *    gets its key from the answer; an empty draft is removed;
      *  - text on the "New issue" line files an issue at the end of the
-     *    column, at the default priority.
+     *    column, at the default priority;
+     *  - an edited description (LBR-31) is sent (`PATCH /issues/{id}`
+     *    `{description}`, optimistic, [LunicleBoards.setDescription]) when
+     *    its text — the lines with [text] on the caret's — differs from
+     *    the one the edit started from, even if Lunicle's changed meanwhile;
+     *  - text left in "Comment…" stays with the row, unposted.
      *
      * Called by the web view's `LunicleBoardCursor`. Keyed by the board,
      * not a row, since the node may be gone (the pane navigated).
@@ -1620,6 +1681,21 @@ class PaneBackingViewModel(
             LunicleRowKind.NEW_ISSUE -> LunicleBoardEditing.draftTitle(text)?.let {
                 boards.createIssue(board, boards.newLocalId(), ref.status, null, it, LunicleDraftAnchor.End)
             }
+            LunicleRowKind.DESCRIPTION -> {
+                val edit = _stateFlow.value.lunicleDescriptionEdit?.takeIf { it.board == board && it.issueId == ref.issueId } ?: return
+                val lines = edit.lines.toMutableList().also { if (edit.line in it.indices) it[edit.line] = text }
+                val description = LunicleDescription.textOf(lines)
+                patch { it.copy(lunicleDescriptionEdit = null) }
+                // The user's text wins over a remote change made meanwhile.
+                if (description != edit.original) boards.setDescription(board, edit.issueId, description)
+            }
+            LunicleRowKind.ADD_COMMENT -> {
+                // Text typed and not posted stays with the row (LBR-31).
+                val issueKey = lunicleIssueKey(board, ref.issueId ?: return)
+                patch { s ->
+                    s.copy(lunicleCommentDrafts = if (text.isBlank()) s.lunicleCommentDrafts - issueKey else s.lunicleCommentDrafts + (issueKey to text))
+                }
+            }
             else -> {}
         }
     }
@@ -1636,7 +1712,11 @@ class PaneBackingViewModel(
      *  - on a column's name: starts a draft at the top of the column with
      *    the priority of its first issue, unfolding the column;
      *  - on the "New issue" line with text: files it at the end of the
-     *    column at the default priority; the line stays, empty.
+     *    column at the default priority; the line stays, empty;
+     *  - on an issue's "Comment…" row with text (LBR-31): posts it
+     *    (`POST /issues/{id}/comments` `{body}`, optimistic,
+     *    [LunicleBoards.addComment]) and the row stays, empty; a failed
+     *    post puts the text back into it.
      *
      * With a read-only token, `canEdit: false` or as a viewer nothing
      * happens and the indicator says why ([LunicleBoards.explain], once).
@@ -1644,7 +1724,8 @@ class PaneBackingViewModel(
      * Called by the web view's `LunicleBoardCursor`.
      *
      * @return Where the caret goes: the new draft, the "New issue" line
-     *   again, or `null` for nowhere new (nothing happened).
+     *   or "Comment…" row again (its field emptied), or `null` for nowhere
+     *   new (nothing happened).
      */
     fun lunicleEnter(nodeRow: Int, ref: LunicleRowRef, text: String, now: Long): LunicleRowRef? {
         val boards = registry.lunicleBoards ?: return null
@@ -1684,6 +1765,12 @@ class PaneBackingViewModel(
                 leaveLunicleRow(view.key, ref, text)
                 return ref
             }
+            LunicleRowKind.ADD_COMMENT -> {
+                val issue = issueViewOf(view, ref.issueId)?.takeIf { it.canComment } ?: return null
+                val body = text.trim().takeIf { it.isNotEmpty() } ?: return null
+                postLunicleComment(view.key, issue.issue.id, body)
+                return ref
+            }
             else -> return null
         }
     }
@@ -1712,14 +1799,18 @@ class PaneBackingViewModel(
      * [nodeRow], which cannot be edited (LBR-29): the indicator says why,
      * once per board and reason — a read-only token, or Lunicle's
      * `canEdit: false`. Called by the web view's `LunicleBoardCursor` for
-     * typing on such a title, and by [lunicleEnter].
+     * typing on such a title or description (LBR-31), and by [lunicleEnter].
      */
     fun explainLunicleRow(nodeRow: Int, ref: LunicleRowRef, now: Long) {
         val boards = registry.lunicleBoards ?: return
         val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return
-        if (ref.kind != LunicleRowKind.ISSUE) return
         val issue = issueViewOf(view, ref.issueId) ?: return
-        if (issue.editable) return
+        when (ref.kind) {
+            LunicleRowKind.ISSUE -> if (issue.editable) return
+            // The description (LBR-31): only once read, and not when editable.
+            LunicleRowKind.DESCRIPTION -> if (issue.detail == null || issue.description?.editable == true) return
+            else -> return
+        }
         if (view.readOnly) boards.explain(view.key, "read-only", LunicleBoardLayout.READ_ONLY_TEXT)
         else boards.explain(view.key, "no-edit", LunicleBoardLayout.noEditText(issue.issue.key))
     }
@@ -1868,7 +1959,8 @@ class PaneBackingViewModel(
      */
     fun toggleLunicleIssue(issue: LunicleIssueView) {
         patch {
-            it.copy(lunicleOpenIssues = if (issue.unfolded) it.lunicleOpenIssues - issue.foldKey else it.lunicleOpenIssues + issue.foldKey)
+            val opened = it.copy(lunicleOpenIssues = if (issue.unfolded) it.lunicleOpenIssues - issue.foldKey else it.lunicleOpenIssues + issue.foldKey)
+            registry.lunicleBoards?.let { boards -> noteLunicleArrivals(opened, boards.clock()) } ?: opened
         }
     }
 
@@ -1913,6 +2005,195 @@ class PaneBackingViewModel(
     /** The issue [issueId]'s view on [view], wherever its column is. */
     private fun issueViewOf(view: LunicleBoardView, issueId: Long?): LunicleIssueView? =
         view.columns.firstNotNullOfOrNull { c -> c.issues.firstOrNull { it.issue.id == issueId } }
+
+    /**
+     * Issue [detail]'s description rows as this pane draws them (LBR-31):
+     * the edit's lines while it edits them, else the shown description's;
+     * a large one cut to its preview unless expanded (or being edited past
+     * it).
+     */
+    private fun descriptionViewOf(state: State, board: LunicleBoardKey, issueKey: String, detail: LunicleIssue, editable: Boolean): LunicleDescriptionView {
+        val edit = state.lunicleDescriptionEdit?.takeIf { it.board == board && it.issueId == detail.id }
+        val lines = edit?.lines ?: LunicleDescription.linesOf(detail.description)
+        val expanded = issueKey in state.lunicleOpenDescriptions
+        return LunicleDescriptionView(
+            lines = lines,
+            caretLine = edit?.line?.coerceIn(0, (lines.size - 1).coerceAtLeast(0)),
+            editable = editable,
+            hiddenRows = LunicleDescription.hiddenRows(lines.size, expanded),
+            large = LunicleDescription.isLarge(lines.size),
+        )
+    }
+
+    /** Issue [detail]'s comments as this pane draws them (LBR-31): oldest first, posts under way last, arrivals marked. */
+    private fun commentViewsOf(state: State, board: LunicleBoardState, issueKey: String, detail: LunicleIssue): List<LunicleCommentView> {
+        val (posting, own) = detail.comments.partition { board.isPosting(it.id) }
+        return LunicleComments.ordered(own) { it.createdAt }.map { c ->
+            LunicleCommentView(
+                c.id, LunicleComments.inlineBody(c.body), c.author, c.agentName, c.createdAt,
+                arrivedAt = state.lunicleArrivedComments["$issueKey:${c.id}"],
+            )
+        } + posting.map { c -> LunicleCommentView(c.id, LunicleComments.inlineBody(c.body), c.author, null, c.createdAt, pending = true) }
+    }
+
+    /**
+     * [state] with the comments that arrived on its unfolded issues since it
+     * last saw them marked ([State.lunicleArrivedComments], at [now]) and
+     * what it has seen updated ([State.lunicleSeenComments]). The first
+     * look at an issue marks nothing; this app's own comments are never
+     * marked. Run on every board change (the pane's collector) and when an
+     * issue is unfolded.
+     */
+    private fun noteLunicleArrivals(state: State, now: Long): State {
+        if (state.lunicleOpenIssues.isEmpty()) return state
+        var seen = state.lunicleSeenComments
+        var arrived = state.lunicleArrivedComments
+        for ((key, board) in state.lunicleBoards) {
+            for ((id, detail) in board.details) {
+                val issueKey = lunicleIssueKey(key, id)
+                if (issueKey !in state.lunicleOpenIssues) continue
+                val ids = detail.comments.map { it.id }
+                val before = seen[issueKey]
+                val fresh = LunicleComments.arrivals(before, ids, board.ownComments)
+                if (fresh.isNotEmpty()) {
+                    arrived = arrived.filterValues { now - it < LunicleComments.ARRIVAL_MS } +
+                        fresh.associate { "$issueKey:$it" to now }
+                }
+                val after = before.orEmpty() + ids
+                if (before == null || after.size != before.size) seen = seen + (issueKey to after)
+            }
+        }
+        if (seen === state.lunicleSeenComments && arrived === state.lunicleArrivedComments) return state
+        return state.copy(lunicleSeenComments = seen, lunicleArrivedComments = arrived)
+    }
+
+    // ------------------------------------------------------------ description and comments (LBR-31)
+
+    /**
+     * Starts editing the description row [ref] of the board node at
+     * [nodeRow] (LBR-31), or carries on with the edit already under way:
+     * the description's lines become pane state
+     * ([State.lunicleDescriptionEdit]) — a poll never overwrites them — with
+     * the caret on [line] (`-1`: the last line, entering from below). A
+     * collapsed large description whose hidden rows the caret lands in is
+     * expanded.
+     *
+     * Called by the web view's `LunicleBoardCursor` when its caret lands on
+     * the description.
+     *
+     * @return The caret's line, column and text, or `null` when the
+     *   description cannot be edited here (a read-only token, Lunicle's
+     *   `canEdit` / `canComment`, not read yet): the cursor shows a tint.
+     * @param line The line the caret goes to; `-1` for the last.
+     * @param atEnd Put the caret at the line's end (entering from below, a
+     *   press) rather than its start (entering from above).
+     * @param now The clock (epoch ms), as for [lunicleBoardOf].
+     * @param text With an edit already under way (a press on another of its
+     *   lines), the live text of the line the caret leaves.
+     */
+    fun beginLunicleDescription(nodeRow: Int, ref: LunicleRowRef, line: Int, atEnd: Boolean, now: Long, text: String? = null): LunicleDescriptionCaret? {
+        if (ref.kind != LunicleRowKind.DESCRIPTION) return null
+        val view = lunicleBoardOf(_stateFlow.value, nodeRow, now) ?: return null
+        val issue = issueViewOf(view, ref.issueId) ?: return null
+        val detail = issue.detail ?: return null
+        if (issue.description?.editable != true) return null
+        val current = _stateFlow.value.lunicleDescriptionEdit?.takeIf { it.board == view.key && it.issueId == detail.id }
+            ?.let { e -> if (text != null && e.line in e.lines.indices) e.copy(lines = e.lines.toMutableList().also { it[e.line] = text }) else e }
+        val edit = current ?: LunicleDescriptionEdit(view.key, detail.id, detail.description, LunicleDescription.linesOf(detail.description), 0)
+        val at = when {
+            current != null && line == current.line -> current.line
+            line < 0 -> edit.lines.size - 1
+            else -> line.coerceIn(0, edit.lines.size - 1)
+        }
+        val placed = edit.copy(line = at)
+        patch { s ->
+            val open = if (LunicleDescription.isHidden(placed.lines.size, at)) s.lunicleOpenDescriptions + issue.foldKey else s.lunicleOpenDescriptions
+            s.copy(lunicleDescriptionEdit = placed, lunicleOpenDescriptions = open)
+        }
+        val lineText = placed.lines[at]
+        return LunicleDescriptionCaret(at, if (atEnd) lineText.length else 0, lineText)
+    }
+
+    /**
+     * A key on the description line being edited (LBR-31) of issue
+     * [issueId] on board [board], whose field holds [text] with the
+     * selection [start]..[end]: moves the caret between lines, adds a line
+     * (Enter), joins lines (Backspace at a line's start, Delete at its end)
+     * or puts in a multi-line paste ([pasted]) — [LunicleDescription.apply].
+     * The caret landing in a collapsed large description's hidden rows
+     * expands it.
+     *
+     * Called by the web view's `LunicleBoardCursor`.
+     *
+     * @return Where the caret goes ([LunicleDescriptionStep.Caret]), or that
+     *   it leaves the description (↑ on the first line, ↓ on the last —
+     *   the cursor then commits it via [leaveLunicleRow] and moves on), or
+     *   [LunicleDescriptionStep.Ignore]; `Ignore` too when no edit is under
+     *   way for that issue.
+     */
+    fun editLunicleDescription(
+        board: LunicleBoardKey,
+        issueId: Long,
+        action: LunicleDescriptionAction,
+        text: String,
+        start: Int,
+        end: Int,
+        pasted: String = "",
+    ): LunicleDescriptionStep {
+        val edit = _stateFlow.value.lunicleDescriptionEdit?.takeIf { it.board == board && it.issueId == issueId }
+            ?: return LunicleDescriptionStep.Ignore
+        val (lines, step) = LunicleDescription.apply(edit.lines, edit.line, action, text, start, end, pasted)
+        val line = (step as? LunicleDescriptionStep.Caret)?.caret?.line ?: edit.line
+        val issueKey = lunicleIssueKey(board, issueId)
+        patch { s ->
+            val open = if (LunicleDescription.isHidden(lines.size, line)) s.lunicleOpenDescriptions + issueKey else s.lunicleOpenDescriptions
+            s.copy(lunicleDescriptionEdit = edit.copy(lines = lines, line = line), lunicleOpenDescriptions = open)
+        }
+        return step
+    }
+
+    /**
+     * Shows a large description whole in this pane, or cuts it back to its
+     * preview (LBR-31, [State.lunicleOpenDescriptions]). Called by the
+     * view's expand / collapse control and its "N more lines" label.
+     */
+    fun toggleLunicleDescription(issue: LunicleIssueView) {
+        patch { s ->
+            val open = s.lunicleOpenDescriptions
+            s.copy(lunicleOpenDescriptions = if (issue.foldKey in open) open - issue.foldKey else open + issue.foldKey)
+        }
+    }
+
+    /**
+     * Takes the text a failed post put back for issue [issueId]'s
+     * "Comment…" row (LBR-31) while the row's field is open: the field
+     * merges it with what it holds ([LunicleComments.mergeDraft]). `null`
+     * when there is none. Called by the web view's `LunicleBoardCursor`
+     * after every repaint.
+     */
+    fun takeLunicleCommentDraft(board: LunicleBoardKey, issueId: Long): String? {
+        val issueKey = lunicleIssueKey(board, issueId)
+        val text = _stateFlow.value.lunicleCommentDrafts[issueKey] ?: return null
+        patch { it.copy(lunicleCommentDrafts = it.lunicleCommentDrafts - issueKey) }
+        return text
+    }
+
+    /**
+     * Posts [text] from issue [issueId]'s "Comment…" row (LBR-31,
+     * [LunicleBoards.addComment]): shown at once; on failure the text goes
+     * back to the row ([State.lunicleCommentDrafts], merged with anything
+     * kept there).
+     */
+    private fun postLunicleComment(board: LunicleBoardKey, issueId: Long, text: String) {
+        val boards = registry.lunicleBoards ?: return
+        val issueKey = lunicleIssueKey(board, issueId)
+        boards.addComment(board, issueId, text) { body ->
+            patch { s ->
+                val kept = s.lunicleCommentDrafts[issueKey].orEmpty()
+                s.copy(lunicleCommentDrafts = s.lunicleCommentDrafts + (issueKey to LunicleComments.mergeDraft(body, kept)))
+            }
+        }
+    }
 
     /**
      * Identity this pane reports its board interest under
@@ -5658,6 +5939,9 @@ class PaneBackingViewModel(
 
         /** An issue's key in [State.lunicleOpenIssues]: `<connection>/<KEY>#<issue id>`. */
         fun lunicleIssueKey(board: LunicleBoardKey, issueId: Long): String = "${board.id}#$issueId"
+
+        /** Indicator kinds a remote change to a description being edited stands in for (LBR-31). */
+        private val REMOTE_OVERRIDABLE = setOf(LunicleSyncKind.SYNCED, LunicleSyncKind.LIVE, LunicleSyncKind.REMOTE)
 
         /** Most pages a pane remembers the scroll and search of ([PageView]). */
         private const val PAGE_MEMORY_CAP: Int = 200

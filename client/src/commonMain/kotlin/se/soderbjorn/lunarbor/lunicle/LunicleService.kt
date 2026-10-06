@@ -72,6 +72,9 @@ class LunicleService(
     /** Connection id → whether its token is read-only, once `GET /me` answered (LBR-29). */
     private val readOnlyCache = HashMap<String, Boolean>()
 
+    /** Connection id → the token owner's name, from the same `/me` ([userName]). */
+    private val userNameCache = HashMap<String, String>()
+
     /**
      * Re-reads the connections from the store.
      *
@@ -91,6 +94,7 @@ class LunicleService(
         projectsMutex.withLock {
             projectCache.remove(id)
             readOnlyCache.remove(id)
+            userNameCache.remove(id)
         }
         return adopt(store.update(id, name, baseUrl, token))
     }
@@ -115,9 +119,19 @@ class LunicleService(
         // nothing. A failed `/me` is remembered as "not known to be
         // read-only" too, so it is not asked on every read.
         val readOnly = me?.tokenScope == "read"
-        projectsMutex.withLock { readOnlyCache[connectionId] = readOnly }
+        projectsMutex.withLock {
+            readOnlyCache[connectionId] = readOnly
+            me?.userName?.takeIf { it.isNotBlank() }?.let { userNameCache[connectionId] = it }
+        }
         return readOnly
     }
+
+    /**
+     * The token owner's name on connection [connectionId], as `GET /me`
+     * gave it when [isReadOnly] asked, or `null` (not asked yet, or it could
+     * not be read). The author a comment being posted shows (LBR-31).
+     */
+    suspend fun userName(connectionId: String): String? = projectsMutex.withLock { userNameCache[connectionId] }
 
     /** Remembers that [connectionId]'s token is read-only (a write answered 403 `insufficient_scope`). */
     suspend fun markReadOnly(connectionId: String) {
@@ -193,6 +207,7 @@ class LunicleService(
         projectsMutex.withLock {
             projectCache.keys.retainAll(ids)
             readOnlyCache.keys.retainAll(ids)
+            userNameCache.keys.retainAll(ids)
         }
         return snapshot
     }

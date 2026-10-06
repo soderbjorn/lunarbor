@@ -24,7 +24,8 @@ package se.soderbjorn.lunarbor.main
  * What a board row is. [editable] rows take a caret (an issue's title, a
  * draft, the "New issue" line, its description, "Comment…") — a row's own
  * [LunicleBoardRow.editable] can still say no (a read-only token,
- * `canEdit: false`); the others are drawn as a highlight and swallow typing.
+ * `canEdit: false`, `canComment: false`); the others are drawn as a
+ * highlight and swallow typing.
  */
 enum class LunicleRowKind(val editable: Boolean) {
     /** A column's name and count. */
@@ -42,7 +43,11 @@ enum class LunicleRowKind(val editable: Boolean) {
     /** The last row of an unfolded column: "New issue" (LBR-29). */
     NEW_ISSUE(true),
 
-    /** An unfolded issue's description (its "Loading…" row until it is read). */
+    /**
+     * An unfolded issue's description (its "Loading…" row until it is read):
+     * one navigable row whose lines the caret walks inside (LBR-31,
+     * [LunicleDescription]).
+     */
     DESCRIPTION(true),
 
     /** One comment of an unfolded issue. Comments are add-only here. */
@@ -117,8 +122,9 @@ object LunicleBoardRows {
      * `LunicleBoardView.buildLunicleBoard` draws them: each column, and
      * unless it is folded its entries ([PaneBackingViewModel.LunicleColumnView.items]:
      * issues, drafts, issues being filed), each unfolded issue followed by
-     * its description, its comments (once read) and "Comment…" (once
-     * read), and last the column's "New issue" line when it has one.
+     * its description, its comments (once read; posts under way last) and
+     * "Comment…" (once read, and only where the token may comment —
+     * LBR-31), and last the column's "New issue" line when it has one.
      * Empty before the first read and for a malformed reference.
      */
     fun of(view: PaneBackingViewModel.LunicleBoardView): List<LunicleBoardRow> {
@@ -142,13 +148,13 @@ object LunicleBoardRows {
                 val id = issue.issue.id
                 out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.ISSUE, status, id), 1, editable = issue.editable)
                 if (!issue.unfolded) continue
-                val detail = issue.detail
-                out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.DESCRIPTION, status, id), 2, editable = detail != null)
-                if (detail == null) continue
-                for (comment in detail.comments) {
+                val description = issue.description
+                out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.DESCRIPTION, status, id), 2, editable = description?.editable == true)
+                if (issue.detail == null) continue
+                for (comment in issue.comments) {
                     out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.COMMENT, status, id, comment.id), 2, editable = false)
                 }
-                out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.ADD_COMMENT, status, id), 2, editable = true)
+                if (issue.canComment) out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.ADD_COMMENT, status, id), 2, editable = true)
             }
             if (column.newIssueLine) out += LunicleBoardRow(LunicleRowRef(LunicleRowKind.NEW_ISSUE, status), 1, editable = true)
         }

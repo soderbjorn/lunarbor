@@ -44,6 +44,14 @@
  *    (`POST /issues/{id}/move`) or changes its priority or assignee
  *    (`PATCH /issues/{id}`) the same optimistic way
  *    ([LunicleBoardState.propertyEdits]).
+ *  - **Description and comments** (LBR-31): [setDescription]
+ *    (`PATCH /issues/{id}` `{description}`) and [addComment]
+ *    (`POST /issues/{id}/comments` `{body}`) are optimistic too
+ *    ([LunicleBoardState.descriptionEdits] / [LunicleBoardState.postingComments]);
+ *    a failed comment hands its text back to the pane that wrote it. The
+ *    ids of comments this app posted are kept
+ *    ([LunicleBoardState.ownComments]), so panes never highlight them as
+ *    arrivals.
  *  - **Read-only**: a board's first good read asks whether the token is
  *    read-only ([LunicleService.isReadOnly]); a write answered 403
  *    `insufficient_scope` says so too. [explain] shows why something
@@ -236,6 +244,9 @@ class LunicleBoards(
         }
     }
 
+    /** The cache's clock (epoch ms): panes stamp comment arrivals with it (LBR-31). */
+    fun clock(): Long = now()
+
     /**
      * A new local id for a draft (LBR-29): negative, never reused, unique
      * app-wide — so a draft anchored after another pane's new issue, or a
@@ -382,6 +393,92 @@ class LunicleBoards(
     }
 
     /**
+     * Sets issue [issueId]'s description on board [key] to [text]
+     * (`PATCH /issues/{id}` `{description}`, LBR-31), optimistically: the
+     * board shows [text] at once and "Saving to Lunicle…"; on success
+     * "Synced just now" and a re-read, on failure the old description and
+     * the error in red. A board not resolved yet ignores it.
+     *
+     * Called by `PaneBackingViewModel.leaveLunicleRow` when the caret
+     * leaves an edited description.
+     */
+    fun setDescription(key: LunicleBoardKey, issueId: Long, text: String) {
+        val target = stateOf(key).target ?: return
+        writing.getOrPut(key) { HashSet() } += issueId
+        put(key) { it.copy(descriptionEdits = it.descriptionEdits + (issueId to text), writes = it.writes + 1) }
+        scope.launch {
+            val r = service.client(target.connection.id).updateIssue(issueId, LunicleIssueChanges(description = LunicleField.Set(text)))
+            writing[key]?.remove(issueId)
+            fun withoutEdit(s: LunicleBoardState) =
+                if (s.descriptionEdits[issueId] == text) s.descriptionEdits - issueId else s.descriptionEdits
+            when (r) {
+                is LunicleResult.Ok -> {
+                    ownChanges.getOrPut(key) { HashSet() } += issueId
+                    val t = now()
+                    put(key) { s ->
+                        s.copy(
+                            details = s.details[issueId]?.let { d -> s.details + (issueId to d.copy(description = text)) } ?: s.details,
+                            descriptionEdits = withoutEdit(s),
+                            writes = (s.writes - 1).coerceAtLeast(0),
+                            savedAt = t,
+                        )
+                    }
+                    afterSave(key, t)
+                }
+                is LunicleResult.Failure -> failed(key, target, r.error) { s -> s.copy(descriptionEdits = withoutEdit(s)) }
+            }
+        }
+    }
+
+    /**
+     * Posts [body] as a comment on issue [issueId] of board [key]
+     * (`POST /issues/{id}/comments` `{body}`, LBR-31), optimistically: the
+     * comment shows at once after the issue's comments, as the token's
+     * owner, with "Saving to Lunicle…"; on success its id is remembered as
+     * this app's own and the issue is read again, which replaces the
+     * stand-in; on failure it goes, the error shows in red and [onFailed]
+     * gets [body] back (the pane puts it into the "Comment…" input again).
+     * A board not resolved yet calls [onFailed] at once.
+     *
+     * Called by `PaneBackingViewModel.lunicleEnter` on the "Comment…" row.
+     */
+    fun addComment(key: LunicleBoardKey, issueId: Long, body: String, onFailed: (String) -> Unit) {
+        val target = stateOf(key).target
+        if (target == null) {
+            onFailed(body)
+            return
+        }
+        val entry = LunicleCreatingComment(newLocalId(), issueId, body, stateOf(key).userName ?: YOU, now())
+        writing.getOrPut(key) { HashSet() } += issueId
+        put(key) { it.copy(postingComments = it.postingComments + entry, writes = it.writes + 1) }
+        scope.launch {
+            val r = service.client(target.connection.id).addComment(issueId, body)
+            writing[key]?.remove(issueId)
+            when (r) {
+                is LunicleResult.Ok -> {
+                    val id = r.value.id
+                    ownChanges.getOrPut(key) { HashSet() } += issueId
+                    val t = now()
+                    put(key) { s ->
+                        s.copy(
+                            postingComments = s.postingComments.map { if (it.localId == entry.localId) it.copy(createdId = id) else it },
+                            ownComments = s.ownComments + id,
+                            writes = (s.writes - 1).coerceAtLeast(0),
+                            savedAt = t,
+                        )
+                    }
+                    fetchDetails(key, setOf(issueId))
+                    afterSave(key, t)
+                }
+                is LunicleResult.Failure -> {
+                    failed(key, target, r.error) { s -> s.copy(postingComments = s.postingComments.filter { it.localId != entry.localId }) }
+                    onFailed(body)
+                }
+            }
+        }
+    }
+
+    /**
      * Shows [text] in red on board [key]'s indicator, once per board and
      * [reason] this session: why a title cannot be edited or no issue can
      * be filed (a read-only token, `canEdit: false`, a viewer). Called by
@@ -520,6 +617,7 @@ class LunicleBoards(
             }
         }
         val readOnly = service.isReadOnly(target.connection.id)
+        val userName = service.userName(target.connection.id)
         // Issues this app changed are not news: left out of the notice.
         val own = ownChanges.remove(key).orEmpty() + writing[key].orEmpty()
         val before = stateOf(key)
@@ -550,6 +648,8 @@ class LunicleBoards(
                 // A created issue the board now lists needs its stand-in row no more.
                 creating = it.creating.filter { c -> c.createdId == null || c.createdId !in onBoard },
                 readOnlyToken = it.readOnlyToken || readOnly,
+                userName = userName ?: it.userName,
+                postingComments = withoutListed(it.postingComments, details),
             )
         }
         if (message != null) {
@@ -570,9 +670,16 @@ class LunicleBoards(
             val client = service.client(target.connection.id)
             val got = HashMap<Long, LunicleIssue>()
             for (id in ids) client.issue(id).valueOrNull()?.let { got[id] = it }
-            put(key) { it.copy(details = it.details + got, loadingIssues = it.loadingIssues - ids) }
+            put(key) {
+                val details = it.details + got
+                it.copy(details = details, loadingIssues = it.loadingIssues - ids, postingComments = withoutListed(it.postingComments, details))
+            }
         }
     }
+
+    /** [posting] without the comments Lunicle filed that [details] now list (LBR-31). */
+    private fun withoutListed(posting: List<LunicleCreatingComment>, details: Map<Long, LunicleIssue>): List<LunicleCreatingComment> =
+        posting.filter { c -> c.createdId == null || details[c.issueId]?.comments?.none { it.id == c.createdId } ?: true }
 
     companion object {
         /** Pause between polls of a shown board without a live stream. */
@@ -583,6 +690,9 @@ class LunicleBoards(
 
         /** How long the remote-change notice shows on the node line. */
         const val NOTICE_MS: Long = 6_000
+
+        /** The author shown on a comment being posted when the token owner's name is not known (LBR-31). */
+        const val YOU: String = "You"
 
         /** How long a write's error, or why a board cannot be edited, shows in red (LBR-29). */
         const val ALERT_MS: Long = 8_000

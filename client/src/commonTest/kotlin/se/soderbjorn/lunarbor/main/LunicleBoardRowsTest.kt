@@ -9,7 +9,7 @@
  * row is found again by issue id plus kind after a poll that adds issues
  * above it, moves it, or removes it; and ⌘↑ on the node's own line folds
  * the board node. Each unfolded column ends with its "New issue" line
- * (LBR-29). */
+ * (LBR-29); "Comment…" only where the token may comment (LBR-31). */
 package se.soderbjorn.lunarbor.main
 
 import kotlinx.coroutines.flow.first
@@ -63,7 +63,7 @@ class LunicleBoardRowsTest {
         answer(LunicleMethod.GET, boardPath, 200, boardJson(firstIssues))
         answer(
             LunicleMethod.GET, "/api/v1/issues/2", 200,
-            """{"id":2,"key":"FRA-2","title":"Urgent","status":"New","priority":"High","updatedAt":1,"projectId":2,
+            """{"id":2,"key":"FRA-2","title":"Urgent","status":"New","priority":"High","updatedAt":1,"projectId":2,"canComment":true,
                "description":"Fix it","comments":[{"id":5,"body":"On it","author":"Linus","createdAt":0},
                {"id":6,"body":"Done soon","author":"Ada","createdAt":0}]}""",
         )
@@ -203,7 +203,7 @@ class LunicleBoardRowsTest {
         )
         api.answer(
             LunicleMethod.GET, "/api/v1/issues/2", 200,
-            """{"id":2,"key":"FRA-2","title":"Urgent","status":"New","priority":"High","updatedAt":3,"projectId":2,
+            """{"id":2,"key":"FRA-2","title":"Urgent","status":"New","priority":"High","updatedAt":3,"projectId":2,"canComment":true,
                "description":"Fix it","comments":[{"id":5,"body":"On it","author":"Linus","createdAt":0}]}""",
         )
         boards.onStreamMessage(
