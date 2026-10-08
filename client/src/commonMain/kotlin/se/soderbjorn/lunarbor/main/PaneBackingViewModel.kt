@@ -5132,6 +5132,98 @@ class PaneBackingViewModel(
     }
 
     /**
+     * Source range `[start, end)` of the first image on [line] whose
+     * destination is [src] — the whole `![alt|width](src)` syntax — or
+     * `null` when the line holds no such image.
+     */
+    private fun imageSyntaxRange(line: String, src: String): Pair<Int, Int>? {
+        val run = InlineMarkdownTokenizer.tokenize(line).runs.firstOrNull { it.imageSrc == src } ?: return null
+        val end = InlineMarkdownTokenizer.imageEndAt(line, run.modelStart) ?: return null
+        return run.modelStart to end
+    }
+
+    /**
+     * Removes the inline image showing [src] from [row] — its whole
+     * Markdown syntax, the rest of the row kept — and puts the caret
+     * where it was. One undoable edit; the image file stays on disk (it
+     * shows in the folder contents list, where it can be trashed).
+     *
+     * Called by the web view's × on a hovered image.
+     */
+    fun removeImageAt(row: Int, src: String) {
+        val line = _stateFlow.value.documentState?.lines?.getOrNull(row) ?: return
+        val (start, end) = imageSyntaxRange(line, src) ?: return
+        recordEdit(FrameKind.OTHER) {
+            commitPlaceholderIfAny()
+            currentDocument().delete(row, start, row, end)
+            patch {
+                it.copy(
+                    cursorRow = row, cursorCol = start, anchorRow = null, anchorCol = null,
+                    pendingInlineStyles = emptySet(),
+                )
+            }
+        }
+    }
+
+    /**
+     * Moves the inline image showing [src] on [fromRow] to a line of its
+     * own at [toRow], placed as a drop is ([onImageDropped]: an empty row
+     * takes it, else a new line after the row). A source row the image
+     * leaves empty is removed when nothing hangs under it, so a move
+     * leaves no blank bullet behind. Alt text and width are kept; the
+     * destination is re-written for the new row's folder (a bare name
+     * there, vault-rooted elsewhere, as [insertVaultImage]) — the file
+     * itself does not move. One undoable edit.
+     *
+     * Called by the web view when an image is dragged onto a row.
+     */
+    fun moveImage(fromRow: Int, src: String, toRow: Int) {
+        val state = _stateFlow.value
+        if (!state.isLoaded || state.isReadOnlyPage) return
+        val lines = state.documentState?.lines ?: return
+        val line = lines.getOrNull(fromRow) ?: return
+        if (toRow !in lines.indices) return
+        val (start, end) = imageSyntaxRange(line, src) ?: return
+        val run = InlineMarkdownTokenizer.tokenize(line).runs.first { it.imageSrc == src }
+        val rest = line.removeRange(start, end)
+        val restEmpty = rest.trimEnd().length <= DocumentLayout.caretStartCol(rest)
+        if (toRow == fromRow && restEmpty) return
+        val file = resolveImageSrc(fromRow, src)
+        recordEdit(FrameKind.OTHER) {
+            commitPlaceholderIfAny()
+            val d = currentDocument()
+            d.delete(fromRow, start, fromRow, end)
+            var target = toRow
+            val now = d.stateFlow.value.lines
+            val removable = restEmpty && fromRow != toRow && now.size > 1 &&
+                (DocumentLayout.bulletAsteriskColumn(rest) >= 0 || !d.bulletsOnly) &&
+                !DocumentLayout.hasChildren(now, fromRow, DocumentLayout.indentOf(rest))
+            if (removable) {
+                d.deleteRows(fromRow, fromRow)
+                if (fromRow < target) target--
+            }
+            val targetLine = d.stateFlow.value.lines.getOrNull(target) ?: return@recordEdit
+            patch {
+                it.copy(
+                    cursorRow = target, cursorCol = targetLine.length, anchorRow = null, anchorCol = null,
+                    pendingInlineStyles = emptySet(),
+                )
+            }
+            if (targetLine.trimEnd().length > DocumentLayout.caretStartCol(targetLine)) insertNewline()
+            val row = _stateFlow.value.cursorRow
+            val folder = imageFolderOf(row)
+            val newSrc = when {
+                file == null -> src
+                file.substringBeforeLast('/', missingDelimiterValue = "") == (folder ?: "") ->
+                    file.substringAfterLast('/')
+                else -> ImagePaths.vaultRooted(file)
+            }
+            insertImageRef(newSrc, run.imageAlt.orEmpty(), run.imageWidthPx)
+            if ('/' !in newSrc) d.noteImageHomeAt(row)
+        }
+    }
+
+    /**
      * Vault-relative folder the images on [row] resolve against — see
      * [Document.storageFolderOf] — or `null` when no document is loaded.
      */

@@ -946,6 +946,7 @@ class MainScreen(
             // handler since the handle sits inside the image span; the
             // popover only opens when the press lands on the image body.
             if (handleImageResizeMouseDown(me)) return@addEventListener
+            if (handleImageRemoveMouseDown(me)) return@addEventListener
             if (handleImageMouseDown(me)) return@addEventListener
             maybeBeginGutterDrag(editor, me)
             if (dragSession == null && !me.defaultPrevented) beginTextSelectionDrag(me)
@@ -1883,16 +1884,17 @@ class MainScreen(
     private var pendingResizeAnchor: HTMLElement? = null
 
     /**
-     * If [ev] hit an inline image span (carrying `data-img-src`),
-     * navigate the pane to the image's read-only viewer — or, for an
-     * embedded drawing, the drawing editor — instead of placing the caret. Returns `true` when the event was handled.
+     * If [ev] hit an inline image span (carrying `data-img-src`), a press
+     * that does not move opens the image's read-only viewer — or, for an
+     * embedded drawing, the drawing editor — instead of placing the
+     * caret; one that moves [IMAGE_DRAG_THRESHOLD_PX] drags the image:
+     * the row under the pointer ([nearestRowDiv]) is marked
+     * (`lunarbor-image-drop-target`) and the release moves the image
+     * there, on a line of its own (`PaneBackingViewModel.moveImage`).
+     * Escape cancels the drag. Returns `true` when the event was handled.
      *
-     * The earlier `handleImageResizeMouseDown` dispatch (line ~358) wins
-     * for events that land on the bottom-right resize handle, so
-     * dragging to resize still works. Pixel-perfect resize via the
-     * popover is no longer reachable from a plain click; the popover
-     * machinery is left parked in case a future affordance wants to
-     * reopen it.
+     * The earlier dispatches win for the resize handle (bottom right)
+     * and the remove × (top right, [handleImageRemoveMouseDown]).
      */
     private fun handleImageMouseDown(ev: MouseEvent): Boolean {
         if (ev.button.toInt() != 0) return false
@@ -1901,11 +1903,83 @@ class MainScreen(
         val src = imgSpan.getAttribute("data-img-src") ?: return false
         ev.preventDefault()
         ev.stopPropagation()
-        // The src is relative to the row's folder (or vault-rooted); an
-        // external URL has no vault file to open.
-        val row = ancestorRowDiv(imgSpan)?.getAttribute("data-row")?.toIntOrNull()
-        val file = if (row != null) viewModel.resolveImageSrc(row, src) else ImagePaths.resolve("", src)
-        if (file != null) viewModel.navigateToVaultFile(file)
+        val editor = editorElement ?: return true
+        val fromRow = ancestorRowDiv(imgSpan)?.getAttribute("data-row")?.toIntOrNull()
+        val startX = ev.clientX.toDouble()
+        val startY = ev.clientY.toDouble()
+        var dragging = false
+        var dropRow: HTMLElement? = null
+        var move: ((Event) -> Unit)? = null
+        var up: ((Event) -> Unit)? = null
+        var key: ((Event) -> Unit)? = null
+        fun mark(row: HTMLElement?) {
+            dropRow?.classList?.remove(IMAGE_DROP_TARGET_CLASS)
+            dropRow = row
+            row?.classList?.add(IMAGE_DROP_TARGET_CLASS)
+        }
+        fun finish() {
+            document.removeEventListener("mousemove", move!!, /* capture = */ true)
+            document.removeEventListener("mouseup", up!!, /* capture = */ true)
+            document.removeEventListener("keydown", key!!, /* capture = */ true)
+            document.body?.classList?.remove(DRAGGING_CLASS)
+            imgSpan.classList.remove("is-dragging")
+        }
+        move = { e ->
+            val me = e as MouseEvent
+            val dx = me.clientX.toDouble() - startX
+            val dy = me.clientY.toDouble() - startY
+            if (!dragging && fromRow != null && !viewModel.currentBackingState.isReadOnlyPage &&
+                dx * dx + dy * dy >= IMAGE_DRAG_THRESHOLD_PX * IMAGE_DRAG_THRESHOLD_PX
+            ) {
+                dragging = true
+                document.body?.classList?.add(DRAGGING_CLASS)
+                imgSpan.classList.add("is-dragging")
+            }
+            if (dragging) mark(nearestRowDiv(editor, me.clientY.toDouble()))
+        }
+        up = { _ ->
+            finish()
+            val toRow = dropRow?.getAttribute("data-row")?.toIntOrNull()
+            mark(null)
+            if (dragging) {
+                if (fromRow != null && toRow != null) viewModel.moveImage(fromRow, src, toRow)
+            } else {
+                // The src is relative to the row's folder (or vault-rooted);
+                // an external URL has no vault file to open.
+                val file = if (fromRow != null) viewModel.resolveImageSrc(fromRow, src) else ImagePaths.resolve("", src)
+                if (file != null) viewModel.navigateToVaultFile(file)
+            }
+        }
+        key = { e ->
+            if ((e as KeyboardEvent).key == "Escape") {
+                e.preventDefault()
+                e.stopPropagation()
+                finish()
+                mark(null)
+            }
+        }
+        document.addEventListener("mousemove", move, /* capture = */ true)
+        document.addEventListener("mouseup", up, /* capture = */ true)
+        document.addEventListener("keydown", key, /* capture = */ true)
+        return true
+    }
+
+    /**
+     * If [ev] hit a hovered image's remove × (`lunarbor-image-remove`),
+     * takes the image out of its row (`PaneBackingViewModel.removeImageAt`;
+     * undoable, the file stays on disk). Returns `true` when consumed.
+     */
+    private fun handleImageRemoveMouseDown(ev: MouseEvent): Boolean {
+        if (ev.button.toInt() != 0) return false
+        val target = ev.target as? Element ?: return false
+        if (!target.classList.contains("lunarbor-image-remove")) return false
+        ev.preventDefault()
+        ev.stopPropagation()
+        if (viewModel.currentBackingState.isReadOnlyPage) return true
+        val span = ancestorImageSpan(target) ?: return true
+        val src = span.getAttribute("data-img-src") ?: return true
+        val row = ancestorRowDiv(span)?.getAttribute("data-row")?.toIntOrNull() ?: return true
+        viewModel.removeImageAt(row, src)
         return true
     }
 
@@ -3427,6 +3501,12 @@ private const val DRAG_LEVEL_STEP_PX: Double = 24.0
 
 /** Class on `<body>` while a row drag is armed: a grabbing cursor everywhere. */
 private const val DRAGGING_CLASS: String = "lunarbor-dragging"
+
+/** Marks the row a dragged inline image will move to (MainScreen.handleImageMouseDown). */
+private const val IMAGE_DROP_TARGET_CLASS: String = "lunarbor-image-drop-target"
+
+/** How far (CSS px) a press on an image must move before it drags the image. */
+private const val IMAGE_DRAG_THRESHOLD_PX: Double = 4.0
 
 /**
  * Class on `<body>` while a press in the editor's text is held (a

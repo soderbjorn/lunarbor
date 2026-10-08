@@ -1466,6 +1466,15 @@ private fun appendImageResizeHandle(span: HTMLElement) {
     handle.className = "lunarbor-image-resize-handle"
     handle.setAttribute("contenteditable", "false")
     span.appendChild(handle)
+    // The remove ×, top right, also only on hover
+    // (MainScreen.handleImageRemoveMouseDown).
+    val remove = document.createElement("span") as HTMLElement
+    remove.className = "lunarbor-image-remove"
+    remove.setAttribute("contenteditable", "false")
+    remove.setAttribute("title", "Remove image (the file stays)")
+    // The × is CSS content: text here would count as display columns
+    // in MainScreen's caret mapping (displayColForDomPosition).
+    span.appendChild(remove)
 }
 
 /**
@@ -2667,6 +2676,10 @@ fun ensureStyles() {
             display: inline-block;
             position: relative;
             vertical-align: top;
+            /* Room either side, so a caret next to the image is drawn
+               beside it rather than under it (the positioned span paints
+               over the caret). */
+            margin: 0 3px;
             user-select: none;
             cursor: pointer;
             max-width: 100%;
@@ -2704,6 +2717,38 @@ fun ensureStyles() {
             background: var(--t-accent, #5ab0ff);
             border: 2px solid var(--t-surface, #1a1a1a);
             box-sizing: content-box;
+        }
+        /* Remove ×, top right, on hover (MainScreen.handleImageRemoveMouseDown). */
+        .lunarbor-image-remove {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            line-height: 1;
+            cursor: pointer;
+            color: var(--t-text, #eee);
+            background: var(--t-surface, #1a1a1a);
+            border: 1px solid var(--t-border, rgba(255, 255, 255, 0.2));
+            opacity: 0;
+            transition: opacity 0.1s;
+            z-index: 2;
+        }
+        .lunarbor-image-remove::before { content: "\00D7"; }
+        .lunarbor-image-remove:hover { color: var(--t-danger, #e5534b); }
+        .lunarbor-md-image:hover .lunarbor-image-remove { opacity: 1; }
+        body.lunarbor-dragging .lunarbor-image-remove,
+        body.lunarbor-dragging .lunarbor-image-resize-handle { opacity: 0 !important; }
+        .lunarbor-md-image.is-dragging { opacity: 0.4; }
+        /* The row a dragged image moves to: a line under it. */
+        .lunarbor-row.lunarbor-image-drop-target,
+        [data-row].lunarbor-image-drop-target {
+            box-shadow: inset 0 -2px 0 var(--t-accent, #5ab0ff);
         }
         .lunarbor-md-image:hover .lunarbor-image-resize-handle,
         .lunarbor-md-image.is-resizing .lunarbor-image-resize-handle {

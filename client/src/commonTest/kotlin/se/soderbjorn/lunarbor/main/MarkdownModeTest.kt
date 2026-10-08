@@ -257,6 +257,54 @@ class MarkdownModeTest {
     }
 
     @Test
+    fun removing_an_image_keeps_the_rest_of_the_row() = runTest {
+        seed("_node.md", "- See ![|300](shot.png) here\n")
+        val p = pane()
+        p.removeImageAt(0, "shot.png")
+        runCurrent()
+        assertEquals("* See  here", p.lines[0])
+        assertEquals(6, p.stateFlow.value.cursorCol)
+        p.undo()
+        runCurrent()
+        assertEquals("* See ![|300](shot.png) here", p.lines[0])
+    }
+
+    @Test
+    fun a_moved_image_gets_its_own_line_and_leaves_no_empty_bullet() = runTest {
+        seed("_node.md", "- Groceries\n- Trip\n- ![|300](shot.png)\n")
+        val p = pane()
+        p.moveImage(2, "shot.png", 0)
+        runCurrent()
+        assertEquals(listOf("* Groceries", "* ![|300](shot.png)", "* Trip"), p.lines)
+        // One undo puts it all back.
+        p.undo()
+        runCurrent()
+        assertEquals(listOf("* Groceries", "* Trip", "* ![|300](shot.png)"), p.lines)
+
+        // Out of a sentence: the text closes up, the image goes below.
+        seed("_node.md", "- directly o![](shot.png)n a phone\n")
+        val q = pane()
+        q.moveImage(0, "shot.png", 0)
+        runCurrent()
+        assertEquals(listOf("* directly on a phone", "* ![](shot.png)"), q.lines)
+    }
+
+    @Test
+    fun an_image_moved_into_another_folder_is_referenced_vault_rooted() = runTest {
+        seed("_node.md", "- Groceries ![](shot.png)\n- Recipes [↳](<Recipes/_node.md>)\n")
+        seed("Recipes/_node.md", "- Pasta\n")
+        seed("shot.png", "x")
+        val p = pane()
+        p.toggleCollapse(p.id(1))
+        runCurrent()
+        assertEquals("  * Pasta", p.lines[2])
+        p.moveImage(0, "shot.png", 2)
+        runCurrent()
+        assertEquals(listOf("  * Pasta", "  * ![](/shot.png)"), p.lines.drop(2))
+        assertEquals("shot.png", p.resolveImageSrc(3, "/shot.png"))
+    }
+
+    @Test
     fun a_pasted_image_at_the_root_lands_in_the_vault_root() = runTest {
         seed("_node.md", "- Groceries\n")
         val p = pane()

@@ -768,6 +768,12 @@ class MainViewModel(
     suspend fun onImagePasted(suggestedName: String, bytes: ByteArray) =
         paneBackingViewModel.onImagePasted(suggestedName, bytes)
 
+    /** See `PaneBackingViewModel.removeImageAt`. */
+    fun removeImageAt(row: Int, src: String) = paneBackingViewModel.removeImageAt(row, src)
+
+    /** See `PaneBackingViewModel.moveImage`. */
+    fun moveImage(fromRow: Int, src: String, toRow: Int) = paneBackingViewModel.moveImage(fromRow, src, toRow)
+
     /** See `PaneBackingViewModel.onImageDropped`. */
     suspend fun onImageDropped(row: Int, suggestedName: String, bytes: ByteArray) =
         paneBackingViewModel.onImageDropped(row, suggestedName, bytes)
