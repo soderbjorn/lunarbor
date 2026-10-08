@@ -768,6 +768,10 @@ class MainViewModel(
     suspend fun onImagePasted(suggestedName: String, bytes: ByteArray) =
         paneBackingViewModel.onImagePasted(suggestedName, bytes)
 
+    /** See `PaneBackingViewModel.onImageDropped`. */
+    suspend fun onImageDropped(row: Int, suggestedName: String, bytes: ByteArray) =
+        paneBackingViewModel.onImageDropped(row, suggestedName, bytes)
+
     /** See `PaneBackingViewModel.setImageWidth`. */
     fun setImageWidth(row: Int, imageSrc: String, widthPx: Int?) =
         paneBackingViewModel.setImageWidth(row, imageSrc, widthPx)

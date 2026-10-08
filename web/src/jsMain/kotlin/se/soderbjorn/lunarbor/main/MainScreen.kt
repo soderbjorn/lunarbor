@@ -1507,9 +1507,11 @@ class MainScreen(
 
     /**
      * Drop handler for image files dragged from the OS. Shares the
-     * filename generation + bytes-to-disk pipeline with paste. Drops
-     * are routed through the cursor position the browser placed before
-     * the drop event fired, so the markdown lands where the user aimed.
+     * filename generation + bytes-to-disk pipeline with paste, but each
+     * image gets a line of its own at the row under the drop point
+     * ([nearestRowDiv]; see `PaneBackingViewModel.onImageDropped`) — the
+     * caret's place never splits the text. Several images are inserted in
+     * turn, one coroutine, each after the one before.
      */
     private fun handleDrop(editor: HTMLElement, event: dynamic) {
         if (viewModel.currentBackingState.isReadOnlyPage) return
@@ -1517,22 +1519,20 @@ class MainScreen(
         val files = dt.files ?: return
         val length = (files.length as? Int) ?: return
         if (length == 0) return
-        var consumedAny = false
-        for (i in 0 until length) {
-            val file = files[i]
-            val type = file.type as? String ?: continue
-            if (!type.startsWith("image/")) continue
-            consumedAny = true
-            val suggested = buildPastedImageName(type)
-            scope.launch {
+        val images = (0 until length).map { files[it] }
+            .filter { (it.type as? String)?.startsWith("image/") == true }
+        if (images.isEmpty()) return
+        event.preventDefault()
+        val dropRow = nearestRowDiv(editor, (event.clientY as Number).toDouble())
+            ?.getAttribute("data-row")?.toIntOrNull() ?: -1
+        scope.launch {
+            images.forEachIndexed { i, file ->
+                val suggested = buildPastedImageName(file.type as String)
                 val buffer = (file.arrayBuffer() as kotlin.js.Promise<dynamic>).await()
                 val bytes = uint8ArrayToByteArray(js("new Uint8Array(buffer)"))
-                viewModel.onImagePasted(suggested, bytes)
+                val row = if (i == 0) dropRow else viewModel.currentBackingState.cursorRow
+                viewModel.onImageDropped(row, suggested, bytes)
             }
-        }
-        if (consumedAny) {
-            event.preventDefault()
-            syncSelectionFromDom(editor)
         }
     }
 

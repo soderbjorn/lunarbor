@@ -5103,6 +5103,35 @@ class PaneBackingViewModel(
     }
 
     /**
+     * Handles an image file dropped onto [row]. Unlike a paste, which goes
+     * where the caret is, a drop gets a line of its own: on an empty row it
+     * fills that row, otherwise it goes on a new line right after the row,
+     * as Enter at the row's end would make it (a new sibling bullet, a
+     * first child, a block's next row, a note's next line). The image is
+     * then written and referenced as by [onImagePasted]. So a drop never
+     * splits the text where the caret happened to be.
+     *
+     * Called by the web view's drop handler, once per dropped image; for
+     * several images it passes the caret's row after the first, so they
+     * follow each other.
+     *
+     * @param row Model row under the drop point; out of range falls back
+     *   to the caret, like a paste.
+     * @param suggestedName Filename including extension, as for [onImagePasted].
+     * @param bytes Raw image data.
+     */
+    suspend fun onImageDropped(row: Int, suggestedName: String, bytes: ByteArray) {
+        val state = _stateFlow.value
+        if (!state.isLoaded) return
+        val line = state.lines.getOrNull(row)
+        if (line != null) {
+            setSelection(row, line.length, row, line.length)
+            if (line.trimEnd().length > DocumentLayout.caretStartCol(line)) insertNewline()
+        }
+        onImagePasted(suggestedName, bytes)
+    }
+
+    /**
      * Vault-relative folder the images on [row] resolve against — see
      * [Document.storageFolderOf] — or `null` when no document is loaded.
      */

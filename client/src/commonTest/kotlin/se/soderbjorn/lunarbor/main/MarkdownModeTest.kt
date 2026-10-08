@@ -241,6 +241,22 @@ class MarkdownModeTest {
     }
 
     @Test
+    fun a_dropped_image_gets_a_line_of_its_own_at_the_drop_row() = runTest {
+        seed("_node.md", "- Buy oat milk\n- \n- Trip\n")
+        val p = pane()
+        // The caret mid-word elsewhere never splits that text.
+        p.moveTo(2, 4)
+        p.onImageDropped(0, "shot.png", png)
+        runCurrent()
+        assertEquals(listOf("* Buy oat milk", "* ![](shot.png)", "* ", "* Trip"), p.lines)
+
+        // An empty row takes the image itself.
+        p.onImageDropped(2, "pic.png", png)
+        runCurrent()
+        assertEquals(listOf("* Buy oat milk", "* ![](shot.png)", "* ![](pic.png)", "* Trip"), p.lines)
+    }
+
+    @Test
     fun a_pasted_image_at_the_root_lands_in_the_vault_root() = runTest {
         seed("_node.md", "- Groceries\n")
         val p = pane()
