@@ -35,7 +35,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # --no-daemon so a stale daemon doesn't reuse cached env vars.
 ./gradlew --no-daemon :electron:dist
 
-IDENTITY="Developer ID Application: Robert Söderbjörn (CCJP95ZXG4)"
+# Sign by the certificate's SHA-1 hash, looked up by team ID: codesign on
+# macOS 27 misreads a non-ASCII name ("Söderbjörn" → "S√∂derbj√∂rn") and
+# reports "no identity found".
+IDENTITY="$(security find-identity -v -p codesigning \
+    | awk -v team="($APPLE_TEAM_ID_PERSONAL)\"" '/"Developer ID Application:/ && index($0, team) { print $2; exit }')"
+: "${IDENTITY:?no Developer ID Application identity for team $APPLE_TEAM_ID_PERSONAL}"
 DMG="$(ls -t electron/dist/Lunarbor-*.dmg | head -1)"
 echo "==> Built: $DMG"
 
