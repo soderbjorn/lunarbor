@@ -1251,6 +1251,8 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .lunarbor-space-
     outline: 3px solid var(--t-accent, #7aa2ff); outline-offset: 3px;
     box-shadow: 0 0 0 1px var(--t-accent, #7aa2ff), 0 0 48px color-mix(in srgb, var(--t-accent, #7aa2ff) 55%, transparent) !important;
 }
+/* Pages: while a view moves, its previews keep their raster (PageSpaceView.tick). */
+.lunarbor-space-view.is-moving .lunarbor-space-slot.is-preview { will-change: transform; }
 /* Pages and Grove fly (⌥⌘F); the maps fly with F. */
 .lunarbor-space.is-map .lunarbor-space-fly { display: none; }
 /* Grove (GroveView): a page's slot is page-sized and transparent; its slab

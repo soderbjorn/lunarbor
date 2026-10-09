@@ -59,6 +59,11 @@
  *    it takes focus (elements attach on render).
  *  - Every frame resets stray `scrollTop` / `scrollLeft` a focused caret
  *    puts on the `overflow: hidden` containers.
+ *  - Frame rate: the cards are nearly as tall as the view and a flight moves
+ *    the camera mostly in depth, so each card's size on screen changes every
+ *    frame. While anything moves the previews keep their raster
+ *    (`is-moving` → `will-change: transform`), and a preview the camera
+ *    comes close to fades out and hides ([NEAR_FADE], [NEAR_HIDE]).
  *
  * jsMain only: DOM and three.js. No document logic — intents go to the
  * pane's `MainViewModel`.
@@ -926,6 +931,12 @@ internal class PageSpaceView(
             page?.let { p -> placed[p.key]?.let { pages[p.key] = it } }
             markAimed(freeFlight.aim(pages, camPose(), geometry.cameraDistance, w, h, geometry.pageWidth))
         }
+        // While anything moves, the previews keep the raster they have
+        // (`will-change: transform`): a flight changes every card's size on
+        // screen each frame, and Chrome would otherwise redraw each one —
+        // text, glow — at its new scale every frame. At rest they redraw
+        // once, sharp.
+        element.classList.toggle("is-moving", moving)
         return moving
     }
 
@@ -1003,6 +1014,18 @@ internal class PageSpaceView(
             // Only the content fades (`--lb-fade`): a translucent card would
             // let the cards behind it show through its text.
             if (pv.card.style.getPropertyValue("--lb-fade") != opacity) pv.card.style.setProperty("--lb-fade", opacity)
+            // A page the camera comes close to (flying past or through it)
+            // fades out and is then hidden: near the camera a page-sized card
+            // would cover several screens, each frame drawn at that size.
+            val near = (depth - NEAR_HIDE * geometry.cameraDistance) / ((NEAR_FADE - NEAR_HIDE) * geometry.cameraDistance)
+            val slotOpacity = when {
+                near >= 1 -> ""
+                near <= 0 -> "0"
+                else -> ((round(near * 20) / 20).coerceIn(0.05, 0.95)).toString()
+            }
+            if (pv.el.style.opacity != slotOpacity) pv.el.style.opacity = slotOpacity
+            val visibility = if (slotOpacity == "0") "hidden" else ""
+            if (pv.el.style.visibility != visibility) pv.el.style.visibility = visibility
         }
     }
 
@@ -1155,7 +1178,7 @@ internal class PageSpaceView(
      */
     private inner class PreviewPage(var key: String) {
         /** The page-sized transparent slot the CSS3D object places. */
-        val el: HTMLElement = div("lunarbor-space-slot")
+        val el: HTMLElement = div("lunarbor-space-slot is-preview")
 
         /** The visible card, as tall as its items (at most the slot). */
         val card: HTMLElement = div("lunarbor-space-page")
@@ -1411,6 +1434,12 @@ internal class PageSpaceView(
 
         /** How long a click in free flight holds the camera, waiting to see whether it opens a page. */
         const val CLICK_HOLD_MS = 400
+
+        /** A preview starts fading out this close to the camera, in camera distances ([orderHits]). */
+        const val NEAR_FADE = 0.6
+
+        /** A preview this close to the camera (or behind it), in camera distances, is hidden. */
+        const val NEAR_HIDE = 0.3
 
         /** How long a pick in free flight holds the camera, waiting for its navigation. */
         const val NAV_HOLD_MS = 2500
