@@ -269,6 +269,14 @@ class MainScreen(
     private var foldArmedUntil: Double = 0.0
 
     /**
+     * True while a mouse button pressed in this pane's page (the scroll
+     * wrapper: the editor and the space around it) is down. A focus
+     * the editor takes meanwhile comes from the press, which places the
+     * caret itself, so [restoreCaretOnFocus] leaves it alone.
+     */
+    private var pressInPane: Boolean = false
+
+    /**
      * The outgoing view, captured the moment the navigation signature
      * changed and before the new view was painted. Held across one or
      * more `isLoaded=false` "Loading…" frames of a cross-file switch and
@@ -429,6 +437,19 @@ class MainScreen(
                 focusEditorAtLastRow()
             }
         })
+
+        scrollWrapper.addEventListener("mousedown", { _ ->
+            pressInPane = true
+            var up: ((Event) -> Unit)? = null
+            up = { _ ->
+                pressInPane = false
+                window.removeEventListener("mouseup", up!!, /* capture = */ true)
+                window.removeEventListener("blur", up!!)
+            }
+            window.addEventListener("mouseup", up, /* capture = */ true)
+            window.addEventListener("blur", up)
+        }, /* capture = */ true)
+        editor.addEventListener("focus", { _ -> restoreCaretOnFocus(editor) })
 
         editor.focus()
 
@@ -666,6 +687,36 @@ class MainScreen(
         if (!s.isLoaded || s.isReadOnlyPage) return
         applyDomSelection(editor, s.anchorRow ?: s.cursorRow, s.anchorCol ?: s.cursorCol, s.cursorRow, s.cursorCol, scrollCursorIntoView = false)
         if (scroller != null && top != null) scroller.scrollTop = top
+    }
+
+    /**
+     * Puts the caret back where the pane has it when the editor takes focus
+     * with no caret inside it. A bare `focus()` on a contenteditable lets the
+     * browser put the caret at the editor's very start, left of the first
+     * bullet, and typing would then sync that into the model.
+     *
+     * The case that matters: clicking a background window raises it, and the
+     * window toolkit rebuilds the layout to do so — the editor is detached
+     * (losing its DOM selection, while the model already holds the clicked
+     * caret) and then re-focused with a plain `focus()`. [focusEditor] calls
+     * from the sidebar, palettes and modals land here too.
+     *
+     * Runs from the editor's `focus` listener, before the browser places its
+     * own caret (it keeps a selection already inside the editor). Skipped
+     * while a press in this pane is down ([pressInPane]: the press places the
+     * caret), when the selection is already in the editor, on a hidden
+     * editor, and before the document has loaded.
+     *
+     * @param editor this pane's editor element.
+     */
+    private fun restoreCaretOnFocus(editor: HTMLElement) {
+        if (pressInPane || editor.style.display == "none") return
+        val sel = window.asDynamic().getSelection()
+        val anchor = sel?.anchorNode as? Node
+        if (anchor != null && editor.contains(anchor)) return
+        val s = viewModel.currentBackingState
+        if (!s.isLoaded) return
+        applyDomSelection(editor, s.anchorRow ?: s.cursorRow, s.anchorCol ?: s.cursorCol, s.cursorRow, s.cursorCol, scrollCursorIntoView = false)
     }
 
     /**
