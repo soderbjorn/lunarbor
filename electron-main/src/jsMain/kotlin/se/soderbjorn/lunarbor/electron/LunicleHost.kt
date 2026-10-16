@@ -54,6 +54,50 @@ private val nodeRequireLunicle: dynamic = js("require")
 private val httpsModule: dynamic = nodeRequireLunicle("https")
 private val httpModuleLunicle: dynamic = nodeRequireLunicle("http")
 private val cryptoModuleLunicle: dynamic = nodeRequireLunicle("crypto")
+private val dnsModuleLunicle: dynamic = nodeRequireLunicle("dns")
+
+/**
+ * The host-name lookup Lunicle requests use (`lookup` in their options).
+ * Normally Node's `dns.lookup`, which runs on libuv's thread pool; while
+ * that pool is wedged ([LibuvPool.isStuck]) it would never answer,
+ * so names are resolved with c-ares DNS queries instead (`localhost`
+ * answered directly, since those queries skip `/etc/hosts`).
+ *
+ * Follows Node's `lookup(hostname, options, callback)` contract, including
+ * `options.all` (an array of `{ address, family }`).
+ */
+private val lunicleLookup: dynamic = { hostname: String, options: dynamic, callback: dynamic ->
+    if (!LibuvPool.isStuck) {
+        dnsModuleLunicle.lookup(hostname, options, callback)
+    } else {
+        lookupWithoutPool(hostname, options, callback)
+    }
+}
+
+/** [lunicleLookup] while libuv's pool is wedged: IPv4 records, then IPv6. */
+private fun lookupWithoutPool(hostname: String, options: dynamic, callback: dynamic) {
+    fun answer(address: String, family: Int) {
+        if (options?.all == true) {
+            val entry: dynamic = js("({})")
+            entry.address = address
+            entry.family = family
+            callback(null, arrayOf(entry))
+        } else {
+            callback(null, address, family)
+        }
+    }
+    if (hostname.equals("localhost", ignoreCase = true)) return answer("127.0.0.1", 4)
+    dnsModuleLunicle.resolve4(hostname) { err4: dynamic, v4: dynamic ->
+        if (err4 == null && v4.length > 0) {
+            answer(v4[0] as String, 4)
+        } else {
+            dnsModuleLunicle.resolve6(hostname) { err6: dynamic, v6: dynamic ->
+                if (err6 == null && v6.length > 0) answer(v6[0] as String, 6)
+                else callback(err4 ?: err6)
+            }
+        }
+    }
+}
 
 /** Version of `lunarbor-lunicle.json`; a file with another version is read as empty. */
 internal const val LUNICLE_SETTINGS_FORMAT: Int = 1
@@ -350,6 +394,7 @@ internal class LunicleRemote(val record: LunicleConnectionRecord) {
             val opts: dynamic = js("({})")
             opts.method = method
             opts.headers = h
+            opts.lookup = lunicleLookup
             val module = if ((url.protocol as String) == "http:") httpModuleLunicle else httpsModule
             var req: dynamic = null
             req = module.request(url, opts) { res: dynamic ->
@@ -512,6 +557,7 @@ internal class LunicleStream(private val remote: LunicleRemote, private val send
         val opts: dynamic = js("({})")
         opts.method = "GET"
         opts.headers = h
+        opts.lookup = lunicleLookup
         val module = if ((url.protocol as String) == "http:") httpModuleLunicle else httpsModule
         val parser = SseParser(
             onEvent = { id, event, data -> if (gen == generation) forward(id, event, data) },

@@ -1,7 +1,7 @@
 /* NodeExternals.kt
  * Thin `external` shims for the Node modules the main process uses:
  * fs (sync read), fs/promises (async writes/reads/mkdir/rename/unlink/
- * readdir/rmdir), os (homedir), path (join/dirname/basename/resolve), process
+ * readdir/rmdir — served by FileThread.kt, off libuv's pool), os (homedir), path (join/dirname/basename/resolve), process
  * (platform/env/argv) — plus `fs.watch` for the shared-themes file
  * watcher. Loaded via `kotlin.js.require` because the bundle's CommonJS
  * output emits literal `require("…")` calls at runtime; that matches
@@ -12,7 +12,15 @@ import kotlin.js.Promise
 
 private val nodeRequire: dynamic = js("require")
 
-internal val fsPromises: FsPromises = nodeRequire("fs/promises").unsafeCast<FsPromises>()
+/** `fs/promises` as the main process uses it: run on [FileThread], never on libuv's pool. */
+internal val fsPromises: FsPromises = fileThreadPromises()
+
+/**
+ * Node's real `fs/promises`, on libuv's shared thread pool. Only
+ * `FsWatchdog` uses it, to notice when that pool wedges; files go
+ * through [fsPromises].
+ */
+internal val poolFsPromises: FsPromises = nodeRequire("fs/promises").unsafeCast<FsPromises>()
 internal val fsSync: FsSync = nodeRequire("fs").unsafeCast<FsSync>()
 internal val osModule: OsModule = nodeRequire("os").unsafeCast<OsModule>()
 internal val pathModule: PathModule = nodeRequire("path").unsafeCast<PathModule>()

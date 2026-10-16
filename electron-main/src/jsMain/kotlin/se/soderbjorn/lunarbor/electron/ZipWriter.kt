@@ -243,11 +243,8 @@ private fun toBuffer(bytes: ByteArray): dynamic {
     return bufferClass.from(view.buffer, view.byteOffset, view.length)
 }
 
-private suspend fun deflateRaw(data: dynamic): dynamic = Promise<dynamic> { resolve, reject ->
-    zlibModule.deflateRaw(data) { err: dynamic, out: dynamic ->
-        if (err != null) reject(err.unsafeCast<Throwable>()) else resolve(out)
-    }
-}.await()
+/** Raw DEFLATE of [data] on the file thread (async `zlib` would use libuv's pool; see FileThread.kt). */
+private suspend fun deflateRaw(data: dynamic): dynamic = FileThread.deflateRaw(data).await()
 
 /** CRC-32 of a Node `Buffer`: `zlib.crc32` where Node has it (20.15+), else [crc32]. */
 private fun crc32Of(data: dynamic): Long {

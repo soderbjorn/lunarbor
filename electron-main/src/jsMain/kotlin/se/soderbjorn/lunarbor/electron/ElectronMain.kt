@@ -48,8 +48,9 @@
  *    (VaultBackup.kt, ZipWriter.kt).
  *  - The topbar's News & updates bell: the running version for the
  *    renderer, `lunarbor-news.json`, and opening its links (NewsHost.kt).
- *  - A watchdog on the thread pool behind every async file operation,
- *    offering a restart when it stops answering (FsWatchdog.kt).
+ *  - File I/O on a thread of its own, off libuv's shared pool, which has
+ *    been seen to wedge (FileThread.kt), and a watchdog on both that
+ *    offers a restart if file access stops answering (FsWatchdog.kt).
  *  - BrowserWindow setup with the boot-time `--darkness-settings=` /
  *    `--darkness-layout-state=` argument injection the renderer's
  *    preload script picks up.
@@ -225,7 +226,7 @@ fun main() {
     BackupHost.install({ sharedDarknessPath("$APP_NAME_KEBAB-backup.json") }, { runPaths.vaultDir }) { mainWindow }
     // The topbar's News & updates bell: its state file, the version, links.
     NewsHost.install { sharedDarknessPath("$APP_NAME_KEBAB-news.json") }
-    // Offers a restart if async file access stops answering (FsWatchdog.kt).
+    // Offers a restart if file access stops answering; watches libuv's pool (FsWatchdog.kt).
     FsWatchdog.start { mainWindow }
 
     app.on("second-instance") { _, _ ->
@@ -237,6 +238,8 @@ fun main() {
     }
 
     app.on("window-all-closed") { _, _ -> app.quit() }
+    // A wedged libuv pool would hang Node's exit (FsWatchdog.kt).
+    app.on("quit") { _, _ -> FsWatchdog.hardExitIfPoolStuck() }
 
     app.whenReady().then {
         // Load the window-chrome cache so [createWindow] picks the right

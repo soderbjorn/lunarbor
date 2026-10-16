@@ -304,7 +304,8 @@ electron-main/src/jsMain/.../electron/
   McpHttpServer.kt                    ← MCP endpoint: localhost, key, relay to renderer
   LunicleHost.kt                      ← Lunicle connections (lunarbor-lunicle.json), API relay, SSE change streams
   NewsHost.kt                         ← app version for the renderer, lunarbor-news.json, external links
-  FsWatchdog.kt                       ← notices a stuck libuv thread pool, offers a restart
+  FileThread.kt                       ← all main-process file I/O, sync on a worker thread (off libuv's pool)
+  FsWatchdog.kt                       ← probes the file thread + libuv's pool; restart offer, hard exit
 
 docs/files-and-bullets.md             ← the on-disk model, for humans
 demo/source/                          ← the browser demo's tour (generates demo/vault/)
