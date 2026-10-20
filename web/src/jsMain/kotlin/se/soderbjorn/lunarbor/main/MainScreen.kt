@@ -245,6 +245,12 @@ class MainScreen(
      */
     private var lastPaintedState: PaneBackingViewModel.State? = null
 
+    /**
+     * Paints the pane's newest state at once when the screen is behind the
+     * model; set by [render]. See [catchUpPaint].
+     */
+    private var paintLatestNow: (() -> Unit)? = null
+
     /** The state [reconcile] last brought the editor's rows to ([isCaretOnlyChange]). */
     private var lastReconciledState: PaneBackingViewModel.State? = null
 
@@ -596,8 +602,25 @@ class MainScreen(
             rememberNavSignature(backing)
         }
 
+        paintLatestNow = {
+            val current = viewModel.currentBackingState
+            // Only for an edit in the view on screen: navigations, loads
+            // and file views keep their collector-driven paint (animations,
+            // the "Loading…" frame).
+            if (current !== lastPaintedState && current.isLoaded && !current.isFileView &&
+                !current.isSearchActive && pendingOutgoing == null && !isNavigationTransition(current)
+            ) {
+                applyState(MainViewModel.State(backingState = current))
+                rememberNavSignature(current)
+            }
+        }
+
         scope.launch {
             viewModel.stateFlow.collect { state ->
+                // [catchUpPaint] already put the model's newest state on
+                // screen: this (older or equal) emission has nothing to add.
+                val newest = viewModel.currentBackingState
+                if (state.backingState != null && lastPaintedState === newest) return@collect
                 // Background data alone (listings, link checks, backlinks,
                 // search-node results) changed: coalesce into one deferred
                 // repaint. Each repaint redraws every row, and on a large
@@ -1061,10 +1084,28 @@ class MainScreen(
      * the default contenteditable mutation. We always own the document
      * model — the DOM is rebuilt from state on the next emission.
      */
+    /**
+     * Brings the screen up to the model before the DOM caret is read.
+     *
+     * The collector paints a state two coroutine hops after it is made,
+     * and Chromium runs input events ahead of that queued work. Typing
+     * faster than the pane repaints then handed [syncSelectionFromDom] the
+     * caret from before the previous keystroke's paint: the model's caret
+     * moved back, the next character went in before the last one, and the
+     * caret fell further behind the text with every key. Painting first
+     * makes the DOM caret the model's again.
+     *
+     * Called at the start of [handleBeforeInput] and [handleKey].
+     */
+    private fun catchUpPaint() {
+        paintLatestNow?.invoke()
+    }
+
     private fun handleBeforeInput(editor: HTMLElement, event: dynamic) {
         // preventDefault first so a typo in our routing never lets the
         // browser silently mutate our DOM behind the model's back.
         event.preventDefault()
+        catchUpPaint()
         if (viewModel.currentBackingState.isReadOnlyPage) return
         // Skip the DOM→model selection sync when an inline style is armed
         // and the caret is collapsed: hidden marker runs (`**`, `~~`, …)
@@ -1128,6 +1169,7 @@ class MainScreen(
      * bullet lazy-loads its linked file, giving "open this page" UX).
      */
     private fun handleKey(editor: HTMLElement, event: KeyboardEvent) {
+        catchUpPaint()
         val cmd = event.ctrlKey || event.metaKey
         // The arrow keys walk a search node's result rows (also on its
         // read-only page): they take the key first while on them.
