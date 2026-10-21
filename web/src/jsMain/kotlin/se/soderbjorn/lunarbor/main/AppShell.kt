@@ -2533,6 +2533,13 @@ class AppShell(
                             0 0 16px color-mix(in srgb, var(--t-text, #f5f5f5) 28%, transparent);
                 flex-shrink: 0;
             }
+            /* Lunula's Clean shell style draws no glow anywhere in the
+               chrome, so under Clean only the bead loses its halo. It
+               keeps its size, colour and save-state pulse; Classic never
+               matches this selector. */
+            :root[data-dt-style="clean"] .app-logo-dot {
+                box-shadow: none;
+            }
             .app-logo-dot.state-unsaved {
                 /* Opacity driven by the JS pulse loop (AppLogo.kt). Own
                    compositor layer while pulsing so per-frame repaints
