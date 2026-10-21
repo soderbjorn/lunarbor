@@ -312,6 +312,37 @@ internal class NavigationTransition {
     // ---------------------------------------------------------------- helpers
 
     /**
+     * The colour the pane's content actually sits on: [root]'s own computed
+     * background, or, when that is fully transparent, the nearest
+     * ancestor's. Under Classic the pane root paints `--t-bg` itself, so
+     * this is exactly its own colour; under the Clean shell style the root
+     * is transparent (the window colours it by focus), and the snapshot
+     * overlay still has to be opaque to hide the new view while it fades.
+     * Called by [cloneIntoOverlay].
+     *
+     * @param root the pane's content root.
+     * @return a CSS colour; `--t-bg` when nothing up the tree paints one.
+     */
+    private fun opaqueBackgroundOf(root: HTMLElement): String {
+        var el: Element? = root
+        while (el != null) {
+            val bg = window.getComputedStyle(el).backgroundColor
+            if (!isFullyTransparent(bg)) return bg
+            el = el.parentElement
+        }
+        return "var(--t-bg, #1e1e1e)"
+    }
+
+    /** True for a computed colour with zero alpha (`transparent`, `rgba(…, 0)`). */
+    private fun isFullyTransparent(color: String): Boolean {
+        val c = color.trim()
+        if (c.isEmpty() || c == "transparent") return true
+        if (!c.startsWith("rgba(")) return false
+        val alpha = c.substringAfterLast(',').substringBefore(')').trim().toDoubleOrNull()
+        return alpha == 0.0
+    }
+
+    /**
      * Clones [root]'s children into an opaque, fixed-position overlay on
      * `document.body`, pinned to [root]'s rect. `position: fixed` escapes
      * the toolkit pane's clipping context, and `display: block` keeps the
@@ -334,7 +365,7 @@ internal class NavigationTransition {
             setProperty("pointer-events", "none")
             setProperty("z-index", "2147483600")
             setProperty("overflow", "hidden")
-            setProperty("background", rootStyle.backgroundColor)
+            setProperty("background", opaqueBackgroundOf(root))
             setProperty("color", rootStyle.color)
             setProperty("font-family", rootStyle.fontFamily)
             setProperty("display", "block")

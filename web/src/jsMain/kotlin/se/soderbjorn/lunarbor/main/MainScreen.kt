@@ -2932,6 +2932,9 @@ class MainScreen(
             bodyStyle.padding = "0"
             bodyStyle.backgroundColor = "var(--t-bg, #1e1e1e)"
         }
+        // Lets the Clean shell style's rules find the pane body (see the
+        // Clean block in `ensureStyles`); nothing matches it under Classic.
+        root.classList.add(PANE_BODY_CLASS)
         root.style.margin = "0"
         root.style.height = "100%"
         root.style.minHeight = "0"
@@ -3600,6 +3603,13 @@ private const val IMAGE_DROP_TARGET_CLASS: String = "lunarbor-image-drop-target"
 
 /** How far (CSS px) a press on an image must move before it drags the image. */
 private const val IMAGE_DRAG_THRESHOLD_PX: Double = 4.0
+
+/**
+ * Class on a pane's content root (the container [MainScreen.render] mounts
+ * into), so the Clean shell style can let the window colour through it
+ * (`OutlinePaintLoop`'s styles). Matches no rule under Classic.
+ */
+internal const val PANE_BODY_CLASS: String = "lunarbor-pane-body"
 
 /**
  * Class on `<body>` while a press in the editor's text is held (a
