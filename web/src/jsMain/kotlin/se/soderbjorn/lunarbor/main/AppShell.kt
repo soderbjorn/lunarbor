@@ -631,10 +631,10 @@ class AppShell(
                     // 3D mode (space/SpaceMode.kt), also ⌃⌘3. Hidden by CSS
                     // until App settings → "Enable 3D mode" turns it on.
                     spaceTopbarAction(),
-                ) + listOfNotNull(
-                    // News & updates (desktop only; NewsUpdates.kt).
-                    newsUpdates?.let { newsTopbarAction(it) },
                 ),
+                // News & updates (desktop only; NewsUpdates.kt), right of
+                // the settings gear, where Lunamux has its bell.
+                extraTopbarTrailing = listOfNotNull(newsUpdates?.let { newsTopbarAction(it) }),
                 // Brand logo (dot + "lunarbor" wordmark, termtastic-style)
                 // pinned to the top of the left sidebar. The factory returns
                 // a cached element so toolkit rerenders re-parent the same
