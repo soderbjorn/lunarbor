@@ -557,6 +557,10 @@ class AppShell(
             scheduleSpaceLayout()
         }
 
+        // In Electron (the preload injects `darknessApi`); in a plain browser
+        // this resolves to `undefined`. Gates the toolkit's Custom title bar
+        // toggle and, with it, the Behaviour tab and its App settings jump.
+        val isElectron = js("typeof globalThis !== 'undefined' && globalThis.darknessApi != null") as Boolean
         shellHandle = mountAppShell(
             AppShellSpec(
                 rootContainer = root,
@@ -642,12 +646,11 @@ class AppShell(
                 // logo above, so the strip earns nothing.
                 showBottomBar = false,
                 // The Settings sidebar's "Custom title bar" toggle only
-                // makes sense in Electron — gate it on the preload-injected
-                // `darknessApi`. In a plain browser this resolves to
-                // `undefined` and the toggle stays hidden.
-                isElectron = (js("typeof globalThis !== 'undefined' && globalThis.darknessApi != null") as Boolean),
-                // The topbar gear: jumps to Themes / Appearance / Keyboard
-                // Shortcuts, plus the Vault, Backup, Agent access and Lunicle sections
+                // makes sense in Electron (see isElectron above).
+                isElectron = isElectron,
+                // The topbar gear: jumps to Themes / Appearance / Fonts /
+                // Behaviour / Keyboard Shortcuts, plus the Vault, Backup,
+                // Agent access and Lunicle sections
                 // (AppSettingsContent.kt).
                 appSettingsContent = {
                     buildAppSettingsContent(
@@ -663,6 +666,7 @@ class AppShell(
                             spaceModeEnabled = { isSpaceModeEnabled },
                             setSpaceModeEnabled = { spaceMode.setEnabled(it) },
                             openAppearance = { tab -> shellHandle?.openAppearance(tab) },
+                            showBehaviour = isElectron,
                         ),
                     )
                 },

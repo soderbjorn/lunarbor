@@ -4,9 +4,10 @@
  * `AppSettingsContent.kt` / `HotkeysSidebarContent.kt`:
  *
  *  - **App settings** (the topbar gear, `AppShellSpec.appSettingsContent`):
- *     1. Jump buttons to Themes, Appearance and Keyboard Shortcuts. Themes /
- *        Appearance click the toolkit's own topbar buttons, so they behave
- *        exactly like those (including closing this sidebar); Keyboard
+ *     1. Jump buttons to Themes, Appearance, Fonts, Behaviour (Electron
+ *        only, like the toolkit's tab) and Keyboard Shortcuts. The first four
+ *        open the toolkit's Appearance pane on that tab, so they behave
+ *        exactly like its tabs (including closing this sidebar); Keyboard
  *        Shortcuts opens the hotkeys sidebar below.
  *     2. A **Vault** section (Electron only — it needs the `noteApi` vault
  *        bridge): the current vault path and a Change… button that opens a
@@ -71,6 +72,10 @@ import kotlin.js.Promise
  * @property spaceModeEnabled Whether 3D mode is turned on
  *   (`isSpaceModeEnabled`), read when the body is built.
  * @property setSpaceModeEnabled Turns 3D mode on or off (`SpaceMode.setEnabled`).
+ * @property openAppearance Opens the toolkit's Appearance pane on a tab.
+ * @property showBehaviour Whether to offer the Behaviour jump: only in
+ *   Electron, where the toolkit shows that tab (its one setting, Custom title
+ *   bar, needs Electron).
  */
 class AppSettingsHandlers(
     val scope: CoroutineScope,
@@ -83,8 +88,9 @@ class AppSettingsHandlers(
     val openPrivacy: () -> Unit = {},
     val spaceModeEnabled: () -> Boolean = { false },
     val setSpaceModeEnabled: (Boolean) -> Unit = {},
-    /** Opens the toolkit's Appearance pane on a tab (Themes or Appearance). */
+    /** Opens the toolkit's Appearance pane on a tab. */
     val openAppearance: (AppearanceTab) -> Unit = {},
+    val showBehaviour: Boolean = false,
 )
 
 /**
@@ -99,6 +105,10 @@ fun buildAppSettingsContent(handlers: AppSettingsHandlers): HTMLElement {
     val nav = div("lunarbor-app-settings-nav")
     nav.appendChild(navButton("Themes", ICON_THEMES) { handlers.openAppearance(AppearanceTab.Themes) })
     nav.appendChild(navButton("Appearance", ICON_APPEARANCE) { handlers.openAppearance(AppearanceTab.Appearance) })
+    nav.appendChild(navButton("Fonts", ICON_FONTS) { handlers.openAppearance(AppearanceTab.Fonts) })
+    if (handlers.showBehaviour) {
+        nav.appendChild(navButton("Behaviour", ICON_BEHAVIOUR) { handlers.openAppearance(AppearanceTab.Behaviour) })
+    }
     nav.appendChild(navButton("Keyboard Shortcuts", ICON_HOTKEYS) { handlers.openHotkeys() })
     body.appendChild(nav)
     if (vaultBridge() != null) body.appendChild(buildVaultSection(handlers))
@@ -364,6 +374,14 @@ private const val ICON_THEMES =
 /** "Aa" glyph for the "Appearance" button, which opens the Appearance tab. */
 private const val ICON_APPEARANCE =
     """<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><text x="1" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="700" letter-spacing="-0.5">A</text><text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="10" font-weight="500" letter-spacing="-0.3">a</text></svg>"""
+
+/** Type glyph for the "Fonts" button (same as lunamux's). */
+private const val ICON_FONTS =
+    """<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="5 7 5 4 19 4 19 7"/><line x1="12" y1="4" x2="12" y2="17"/><line x1="9" y1="17" x2="15" y2="17"/><line x1="4" y1="21" x2="20" y2="21"/></svg>"""
+
+/** Toggle-switch glyph for the "Behaviour" button (same as lunamux's). */
+private const val ICON_BEHAVIOUR =
+    """<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="7" width="20" height="10" rx="5"/><circle cx="16" cy="12" r="2.5"/></svg>"""
 
 /** Keyboard glyph for the "Keyboard Shortcuts" button. */
 private const val ICON_HOTKEYS =
