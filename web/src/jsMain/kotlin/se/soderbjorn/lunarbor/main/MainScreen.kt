@@ -2932,15 +2932,16 @@ class MainScreen(
             bodyStyle.padding = "0"
             bodyStyle.backgroundColor = "var(--t-bg, #1e1e1e)"
         }
-        // Lets the Clean shell style's rules find the pane body (see the
-        // Clean block in `ensureStyles`); nothing matches it under Classic.
+        // Names the pane body for stylesheet rules that need to find it.
         root.classList.add(PANE_BODY_CLASS)
         root.style.margin = "0"
         root.style.height = "100%"
         root.style.minHeight = "0"
         root.style.display = "flex"
         root.style.flexDirection = "column"
-        root.style.backgroundColor = "var(--t-bg, #1e1e1e)"
+        // `--dt-window-bg` is the window colour under Lunula's Active window:
+        // Tone setting (active vs idle), unset otherwise; see `ensureStyles`.
+        root.style.backgroundColor = "var(--dt-window-bg, var(--t-bg, #1e1e1e))"
     }
 
     /**
@@ -2956,7 +2957,7 @@ class MainScreen(
             setProperty("min-height", "0")
             setProperty("overflow-x", "hidden")
             setProperty("overflow-y", "auto")
-            backgroundColor = "var(--t-bg, #1e1e1e)"
+            backgroundColor = "var(--dt-window-bg, var(--t-bg, #1e1e1e))"
         }
         return wrapper
     }
@@ -3606,8 +3607,8 @@ private const val IMAGE_DRAG_THRESHOLD_PX: Double = 4.0
 
 /**
  * Class on a pane's content root (the container [MainScreen.render] mounts
- * into), so the Clean shell style can let the window colour through it
- * (`OutlinePaintLoop`'s styles). Matches no rule under Classic.
+ * into), so stylesheet rules can find the pane body (`OutlinePaintLoop`'s
+ * styles).
  */
 internal const val PANE_BODY_CLASS: String = "lunarbor-pane-body"
 

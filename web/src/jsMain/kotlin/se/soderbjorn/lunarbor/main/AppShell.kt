@@ -662,6 +662,7 @@ class AppShell(
                             openPrivacy = { openPrivacyDialog(scope, documentRegistry) },
                             spaceModeEnabled = { isSpaceModeEnabled },
                             setSpaceModeEnabled = { spaceMode.setEnabled(it) },
+                            openAppearance = { tab -> shellHandle?.openAppearance(tab) },
                         ),
                     )
                 },
@@ -2533,11 +2534,11 @@ class AppShell(
                             0 0 16px color-mix(in srgb, var(--t-text, #f5f5f5) 28%, transparent);
                 flex-shrink: 0;
             }
-            /* Lunula's Clean shell style draws no glow anywhere in the
-               chrome, so under Clean only the bead loses its halo. It
-               keeps its size, colour and save-state pulse; Classic never
-               matches this selector. */
-            :root[data-dt-style="clean"] .app-logo-dot {
+            /* Lunula's Soft surfaces (`data-dt-surface="soft"`) draw no glow
+               anywhere in the chrome, so there the bead loses its halo. It
+               keeps its size, colour and save-state pulse; with any other
+               Surfaces setting this never matches. */
+            :root[data-dt-surface="soft"] .app-logo-dot {
                 box-shadow: none;
             }
             .app-logo-dot.state-unsaved {
@@ -2597,11 +2598,10 @@ class AppShell(
                 --dt-pane-title-tracking: 0;
                 --dt-pane-title-size: 12.5px;
             }
-            /* Under Lunula's Clean style every app's titlebar reads at the
-               toolkit's 14px (its hidden window controls no longer take the
-               title's room, so a half-width window still fits it). The
-               12.5px above stays for Classic. */
-            :root[data-dt-style="clean"] .dt-pane-header {
+            /* Under Lunula's sentence-case Labels (`data-dt-labels="sentence"`)
+               every app's titlebar reads at the toolkit's 14px. The 12.5px
+               above stays for Uppercase labels. */
+            :root[data-dt-labels="sentence"] .dt-pane-header {
                 --dt-pane-title-size: 14px;
             }
             /* The breadcrumb is the pane's up / home navigation, so each
@@ -2920,40 +2920,40 @@ class AppShell(
                 color: var(--t-text, #e6e6e6);
                 outline: none;
             }
-            /* ── Clean shell style: dialogs, menus and popovers ──────────
-               Under Lunula's Clean style (`:root[data-dt-style="clean"]`)
+            /* ── Soft surfaces: dialogs, menus and popovers ──────────────
+               Under Lunula's Soft surfaces (`:root[data-dt-surface="soft"]`)
                Lunarbor's floating surfaces take the toolkit's calm card, as
                its own dialogs and menus do: the theme's surface, a 1px
                `--t-border` hairline, 12px corners on dialogs and 10px on
-               menus and popovers, and the soft neutral `--dt-clean-lift`
+               menus and popovers, and the soft neutral `--dt-soft-lift`
                shadow (on :root, so it reaches panels mounted on <body>). The
                command palette (also the starred, image and link pickers)
                loses its 3px accent frame and accent halo. Each surface's own
                rules live with it (CommandPalette, AgentAccessSettings,
                NewsUpdates, …); these sit here because this sheet is always
                loaded, and win on specificity whatever order they inject in.
-               Content, layout, padding and stacking are untouched, and
-               Classic never matches these selectors. */
-            :root[data-dt-style="clean"] .lunarbor-palette-panel,
-            :root[data-dt-style="clean"] .lunarbor-mcp-dialog,
-            :root[data-dt-style="clean"] .lunarbor-news-dialog,
-            :root[data-dt-style="clean"] .lunarbor-space-help {
+               Content, layout, padding and stacking are untouched, and with
+               any other Surfaces setting these selectors never match. */
+            :root[data-dt-surface="soft"] .lunarbor-palette-panel,
+            :root[data-dt-surface="soft"] .lunarbor-mcp-dialog,
+            :root[data-dt-surface="soft"] .lunarbor-news-dialog,
+            :root[data-dt-surface="soft"] .lunarbor-space-help {
                 background: var(--t-surface, #1e1e1e);
                 border: 1px solid var(--t-border, rgba(255, 255, 255, 0.12));
                 border-radius: 12px;
-                box-shadow: var(--dt-clean-lift, 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.1));
+                box-shadow: var(--dt-soft-lift, 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.1));
             }
-            :root[data-dt-style="clean"] .lunarbor-image-popover,
-            :root[data-dt-style="clean"] .lunarbor-link-popup,
-            :root[data-dt-style="clean"] .lunarbor-linkedit-hits,
-            :root[data-dt-style="clean"] .lunarbor-lunicle-menu,
-            :root[data-dt-style="clean"] .lunarbor-style-menu,
-            :root[data-dt-style="clean"] .lunarbor-tag-menu,
-            :root[data-dt-style="clean"] .lunarbor-undo-toast {
+            :root[data-dt-surface="soft"] .lunarbor-image-popover,
+            :root[data-dt-surface="soft"] .lunarbor-link-popup,
+            :root[data-dt-surface="soft"] .lunarbor-linkedit-hits,
+            :root[data-dt-surface="soft"] .lunarbor-lunicle-menu,
+            :root[data-dt-surface="soft"] .lunarbor-style-menu,
+            :root[data-dt-surface="soft"] .lunarbor-tag-menu,
+            :root[data-dt-surface="soft"] .lunarbor-undo-toast {
                 background: var(--t-surface, #1e1e1e);
                 border: 1px solid var(--t-border, rgba(255, 255, 255, 0.12));
                 border-radius: 10px;
-                box-shadow: var(--dt-clean-lift, 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.1));
+                box-shadow: var(--dt-soft-lift, 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 32px rgba(0, 0, 0, 0.1));
             }
         """.trimIndent()
         document.head?.appendChild(style)

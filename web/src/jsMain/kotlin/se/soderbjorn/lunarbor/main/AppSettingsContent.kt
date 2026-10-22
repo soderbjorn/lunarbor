@@ -38,6 +38,7 @@
  * Platform view code only — builds DOM, delegates every action. */
 package se.soderbjorn.lunarbor.main
 
+import se.soderbjorn.lunula.web.themeeditor.AppearanceTab
 import kotlinx.browser.document
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.await
@@ -82,6 +83,8 @@ class AppSettingsHandlers(
     val openPrivacy: () -> Unit = {},
     val spaceModeEnabled: () -> Boolean = { false },
     val setSpaceModeEnabled: (Boolean) -> Unit = {},
+    /** Opens the toolkit's Appearance pane on a tab (Themes or Appearance). */
+    val openAppearance: (AppearanceTab) -> Unit = {},
 )
 
 /**
@@ -94,8 +97,8 @@ fun buildAppSettingsContent(handlers: AppSettingsHandlers): HTMLElement {
     ensureAppSettingsStyles()
     val body = div("lunarbor-app-settings-body")
     val nav = div("lunarbor-app-settings-nav")
-    nav.appendChild(navButton("Themes", ICON_THEMES) { clickTopbarButton("Theme manager") })
-    nav.appendChild(navButton("Appearance", ICON_APPEARANCE) { clickTopbarButton("Appearance") })
+    nav.appendChild(navButton("Themes", ICON_THEMES) { handlers.openAppearance(AppearanceTab.Themes) })
+    nav.appendChild(navButton("Appearance", ICON_APPEARANCE) { handlers.openAppearance(AppearanceTab.Appearance) })
     nav.appendChild(navButton("Keyboard Shortcuts", ICON_HOTKEYS) { handlers.openHotkeys() })
     body.appendChild(nav)
     if (vaultBridge() != null) body.appendChild(buildVaultSection(handlers))
@@ -329,15 +332,6 @@ private fun vaultBridge(): dynamic {
     return api
 }
 
-/**
- * Clicks the toolkit topbar button whose tooltip is [title], so the jump
- * behaves exactly like the toolbar icon — including the toolkit's mutual
- * exclusion, which closes this sidebar first.
- */
-private fun clickTopbarButton(title: String) {
-    (document.querySelector(".dt-topbar-icon-button[title=\"$title\"]") as? HTMLElement)?.click()
-}
-
 private fun navButton(label: String, iconHtml: String, onClick: () -> Unit): HTMLElement {
     val button = document.createElement("button") as HTMLButtonElement
     button.type = "button"
@@ -367,7 +361,7 @@ private fun ensureAppSettingsStyles() {
 private const val ICON_THEMES =
     """<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r="1.2"/><circle cx="17.5" cy="10.5" r="1.2"/><circle cx="8.5" cy="7.5" r="1.2"/><circle cx="6.5" cy="12.5" r="1.2"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c1.7 0 3-1.3 3-3 0-.8-.3-1.5-.8-2-.5-.5-.8-1.2-.8-2 0-1.7 1.3-3 3-3h2c2.2 0 4-1.8 4-4 0-4.4-4.5-8-10-8z"/></svg>"""
 
-/** "Aa" glyph for the "Appearance" button — the toolkit topbar's own mark. */
+/** "Aa" glyph for the "Appearance" button, which opens the Appearance tab. */
 private const val ICON_APPEARANCE =
     """<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><text x="1" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="700" letter-spacing="-0.5">A</text><text x="12" y="18" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="10" font-weight="500" letter-spacing="-0.3">a</text></svg>"""
 

@@ -1919,39 +1919,27 @@ fun ensureStyles() {
     style.textContent = """
         .lunarbor-scroll::-webkit-scrollbar { width: 12px; }
         .lunarbor-scroll::-webkit-scrollbar-track {
-            background: var(--t-bg, #1e1e1e);
+            background: var(--dt-window-bg, var(--t-bg, #1e1e1e));
         }
         .lunarbor-scroll::-webkit-scrollbar-thumb {
             background: var(--t-border, #4a4a4a);
             border-radius: 6px;
-            border: 2px solid var(--t-bg, #1e1e1e);
+            border: 2px solid var(--dt-window-bg, var(--t-bg, #1e1e1e));
         }
         .lunarbor-scroll::-webkit-scrollbar-thumb:hover {
             background: var(--t-text-dim, #5e5e5e);
         }
-        /* ── Clean shell style ─────────────────────────────────────────
-           Under Lunula's Clean style (`:root[data-dt-style="clean"]`,
-           stamped by the toolkit when the user picks Style: Clean) the
-           toolkit colours each window by focus: `--t-surface` for the
-           active window, `--t-window-idle` for the rest. The pane body
+        /* ── Window colour (Lunula's Active window: Tone) ───────────────
+           Under Lunula's Tone setting the toolkit colours each window by
+           focus (`--t-window-active` for the active window,
+           `--t-window-idle` for the rest) and publishes that colour on the
+           window as `--dt-window-bg`. The pane body
            (`.lunarbor-pane-body`, MainScreen.installRootStyles) and its
-           scroll wrapper paint `--t-bg` inline, which would hide that, so
-           under Clean only they step aside (`!important` because the fill
-           is an inline style). The scrollbar track goes with them, and the
-           thumb's inset ring (a border in the old track colour) becomes a
-           transparent border clipped off, so the thumb keeps its size.
-           Content is unchanged; Classic never matches these selectors. */
-        :root[data-dt-style="clean"] .lunarbor-pane-body,
-        :root[data-dt-style="clean"] .lunarbor-scroll {
-            background-color: transparent !important;
-        }
-        :root[data-dt-style="clean"] .lunarbor-scroll::-webkit-scrollbar-track {
-            background: transparent;
-        }
-        :root[data-dt-style="clean"] .lunarbor-scroll::-webkit-scrollbar-thumb {
-            border-color: transparent;
-            background-clip: padding-box;
-        }
+           scroll wrapper paint `var(--dt-window-bg, var(--t-bg))` inline,
+           and the scrollbar track and the thumb's inset ring (a border in
+           the track colour) above read the same, so all of them follow the
+           window under Tone and keep `--t-bg` with any other setting, where
+           the variable is unset. Content is unchanged. */
         /* The theme's opaque selection colour (lunula's `selection` token),
            with selected text in the bright text colour: links, tags, code
            and headings carry colours of their own (a tag's comes from its

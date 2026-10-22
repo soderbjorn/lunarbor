@@ -314,10 +314,11 @@ internal class NavigationTransition {
     /**
      * The colour the pane's content actually sits on: [root]'s own computed
      * background, or, when that is fully transparent, the nearest
-     * ancestor's. Under Classic the pane root paints `--t-bg` itself, so
-     * this is exactly its own colour; under the Clean shell style the root
-     * is transparent (the window colours it by focus), and the snapshot
-     * overlay still has to be opaque to hide the new view while it fades.
+     * ancestor's. The pane root paints `var(--dt-window-bg, var(--t-bg))`
+     * itself (the window colour under Lunula's Tone setting), so this is
+     * normally exactly its own colour; the ancestor walk covers a root that
+     * is transparent, since the snapshot overlay still has to be opaque to
+     * hide the new view while it fades.
      * Called by [cloneIntoOverlay].
      *
      * @param root the pane's content root.
