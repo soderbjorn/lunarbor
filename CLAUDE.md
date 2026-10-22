@@ -281,6 +281,7 @@ web/src/jsMain/.../
   main/PrivacyDialog.kt               ← Configure privacy dialog + top-bar mode chip
   main/McpBridge.kt                   ← MCP requests from the main process → McpServer
   main/NewsUpdates.kt                 ← News & updates bell + dialog, Electron store/fetch
+  main/AboutDialog.kt                 ← About button + dialog: version, links, licensing
   main/space/SpaceMode.kt             ← 3D mode: enter / leave, views, strip + dock, backdrop, render loop
   main/space/PageSpaceView.kt         ← one window's view: live page, previews, flights, threads
   main/space/GroveView.kt             ← Grove: one window's view over the whole vault (slabs, turning camera)

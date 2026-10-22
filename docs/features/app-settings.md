@@ -33,6 +33,8 @@ App settings → **Backup** (Electron only) zips the whole vault into a folder t
 
 ## News & updates
 
+An info button right of the bell opens "About Lunarbor" (`web/.../main/AboutDialog.kt`, as in Lunamux): an **About** tab (copyright, MIT License, the version in Electron, links to lunarbor.dev and GitHub) and a **Licensing** tab (third-party libraries, the bundled fonts each set in its own face, a link to `NOTICE` on GitHub). Its lists follow `NOTICE`, the canonical attribution. It shows in the browser demo too, without a version.
+
 A bell at the right end of the top bar, after the settings gear (Electron only), shows when lunarbor.dev publishes a newer build or an announcement; clicking it opens the "News & updates" dialog. Ported from Lunamux and kept behaving the same, except that Lunarbor's builds and announcements share one file.
 
 - **Hosted file** (`lunarbor-www`): `https://lunarbor.dev/news.json` (`newsupdates/NewsFeed.kt`) — `platforms.mac` (`latestVersionCode`, `latestVersionName`, `url`) and `items` (`id`, `active`, `date`?, `title`, `body`, `url`?) in one file. The app hardcodes only that URL; the download and "Learn more" links come from the file. Parsing is lenient (`NewsFeedParser`: comments, trailing commas, unknown keys; a missing half reads as empty); a newer `schemaVersion` reads as nothing.

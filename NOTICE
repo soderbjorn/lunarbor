@@ -19,6 +19,11 @@ Metro (runtime)
   Source:  https://github.com/ZacSweers/metro
   License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
 
+Ktor (HTTP client)
+  Copyright JetBrains s.r.o. and Ktor contributors
+  Source:  https://github.com/ktorio/ktor
+  License: Apache License 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+
 Lunula (UI toolkit)
   Copyright (c) 2026 Robert Söderbjörn
   License: MIT License
@@ -297,6 +302,8 @@ ships in web/build/dist/js/productionExecutable. Versions as built.
     Copyright JS Foundation and other contributors
   stylis 4.4.0
     Copyright (c) 2016-present Sultan Tarimo
+  three 0.170.0
+    Copyright (c) 2010-2024 three.js authors
   ts-dedent 2.3.0
     Copyright (c) 2018 Tamino Martinius
   tunnel-rat 0.1.2
