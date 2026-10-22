@@ -713,30 +713,29 @@ class MainScreen(
     }
 
     /**
-     * Puts the caret back where the pane has it when the editor takes focus
-     * with no caret inside it. A bare `focus()` on a contenteditable lets the
+     * Puts the caret back where the pane has it whenever the editor takes
+     * focus without a press. A bare `focus()` on a contenteditable lets the
      * browser put the caret at the editor's very start, left of the first
      * bullet, and typing would then sync that into the model.
      *
      * The case that matters: clicking a background window raises it, and the
      * window toolkit rebuilds the layout to do so — the editor is detached
      * (losing its DOM selection, while the model already holds the clicked
-     * caret) and then re-focused with a plain `focus()`. [focusEditor] calls
-     * from the sidebar, palettes and modals land here too.
+     * caret) and then re-focused with a plain `focus()`. By the time the
+     * `focus` listener runs, Chromium has already put a caret at the
+     * editor's start, so a caret inside the editor proves nothing: the
+     * model's is applied regardless (a no-op when the DOM already matches
+     * it). [focusEditor] calls from the sidebar, palettes and modals land
+     * here too.
      *
-     * Runs from the editor's `focus` listener, before the browser places its
-     * own caret (it keeps a selection already inside the editor). Skipped
-     * while a press in this pane is down ([pressInPane]: the press places the
-     * caret), when the selection is already in the editor, on a hidden
+     * Runs from the editor's `focus` listener. Skipped while a press in this
+     * pane is down ([pressInPane]: the press places the caret), on a hidden
      * editor, and before the document has loaded.
      *
      * @param editor this pane's editor element.
      */
     private fun restoreCaretOnFocus(editor: HTMLElement) {
         if (pressInPane || editor.style.display == "none") return
-        val sel = window.asDynamic().getSelection()
-        val anchor = sel?.anchorNode as? Node
-        if (anchor != null && editor.contains(anchor)) return
         val s = viewModel.currentBackingState
         if (!s.isLoaded) return
         applyDomSelection(editor, s.anchorRow ?: s.cursorRow, s.anchorCol ?: s.cursorCol, s.cursorRow, s.cursorCol, scrollCursorIntoView = false)
